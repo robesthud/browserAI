@@ -1,0 +1,183 @@
+# ============================================
+# AI CODE STUDIO - DOCKER COMPOSE
+# Complete production stack
+# ============================================
+
+version: '3.8'
+
+services:
+  # ============================================
+  # PostgreSQL Database
+  # ============================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: aicode-postgres
+    environment:
+      POSTGRES_DB: aicode
+      POSTGRES_USER: aicode
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-supersecret}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aicode -d aicode"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ============================================
+  # Redis Cache & Pub/Sub
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: aicode-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ============================================
+  # Backend API Server
+  # ============================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aicode-backend
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://aicode:${POSTGRES_PASSWORD:-supersecret}@postgres:5432/aicode
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-change-this-in-production}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+      CODE_RUNNER_URL: http://code-runner:8000
+      BROWSER_AI_URL: http://browser-agent:8080
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
+    volumes:
+      - ./data/projects:/app/data/projects
+      - ./data/blobs:/app/data/blobs
+    restart: unless-stopped
+
+  # ============================================
+  # Code Runner (FastAPI + Docker)
+  # ============================================
+  code-runner:
+    build:
+      context: ./code-runner
+      dockerfile: Dockerfile
+    container_name: aicode-runner
+    ports:
+      - "8000:8000"
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/runner-temp:/tmp/runner
+    environment:
+      MAX_EXECUTION_TIME: 30
+      MAX_MEMORY_MB: 256
+    restart: unless-stopped
+
+  # ============================================
+  # Browser Agent (Playwright)
+  # ============================================
+  browser-agent:
+    build:
+      context: ./browser-agent
+      dockerfile: Dockerfile
+    container_name: aicode-browser
+    ports:
+      - "8080:8080"
+    shm_size: 2gb
+    environment:
+      HEADLESS: "true"
+    restart: unless-stopped
+
+  # ============================================
+  # Collaboration Server (Yjs)
+  # ============================================
+  collaboration:
+    build:
+      context: ./collaboration
+      dockerfile: Dockerfile
+    container_name: aicode-collab
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # ============================================
+  # Frontend (Nginx)
+  # ============================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: aicode-frontend
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    restart: unless-stopped
+
+  # ============================================
+  # Ollama (Local AI - Optional)
+  # ============================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: aicode-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    profiles:
+      - local-ai
+
+# ============================================
+# Volumes
+# ============================================
+volumes:
+  postgres_data:
+  redis_data:
+  ollama_data:
+
+# ============================================
+# Networks
+# ============================================
+networks:
+  default:
+    name: aicode-network
+    driver: bridge

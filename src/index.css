@@ -1,0 +1,448 @@
+/* Fonts - loaded via index.html */
+
+@import "tailwindcss";
+
+/* ============================================
+   AI CODE STUDIO - GLOBAL STYLES
+   ============================================ */
+
+/* Root Variables */
+:root {
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  
+  /* Colors */
+  --primary: #6366f1;
+  --primary-hover: #4f46e5;
+  --secondary: #8b5cf6;
+  --accent: #06b6d4;
+  
+  /* Grays */
+  --gray-950: #030712;
+  --gray-900: #111827;
+  --gray-800: #1f2937;
+  --gray-700: #374151;
+  --gray-600: #4b5563;
+  --gray-500: #6b7280;
+  --gray-400: #9ca3af;
+  --gray-300: #d1d5db;
+  
+  /* Collaboration Colors */
+  --collab-red: #ef4444;
+  --collab-orange: #f97316;
+  --collab-yellow: #eab308;
+  --collab-green: #22c55e;
+  --collab-cyan: #06b6d4;
+  --collab-blue: #3b82f6;
+  --collab-purple: #a855f7;
+  --collab-pink: #ec4899;
+}
+
+/* Base Styles */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--gray-950);
+  color: white;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar Styles */
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--gray-700) transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background-color: var(--gray-700);
+  border-radius: 4px;
+  border: 2px solid transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background-color: var(--gray-600);
+}
+
+/* Monaco Editor Customizations */
+.monaco-editor {
+  font-family: var(--font-mono) !important;
+}
+
+.monaco-editor .cursor {
+  border-left-width: 2px !important;
+}
+
+/* Collaboration Cursor Styles */
+.cursor-marker {
+  position: relative;
+}
+
+.cursor-marker::before {
+  content: '';
+  position: absolute;
+  width: 2px;
+  height: 18px;
+  animation: cursor-blink 1s ease-in-out infinite;
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.collab-selection {
+  background-color: rgba(99, 102, 241, 0.3) !important;
+}
+
+/* Selection Colors for Different Users */
+.selection-user-1 { background-color: rgba(239, 68, 68, 0.3) !important; }
+.selection-user-2 { background-color: rgba(34, 197, 94, 0.3) !important; }
+.selection-user-3 { background-color: rgba(59, 130, 246, 0.3) !important; }
+.selection-user-4 { background-color: rgba(168, 85, 247, 0.3) !important; }
+
+/* Code Block Syntax Highlighting */
+pre code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Prose Styles for Chat */
+.prose {
+  max-width: none;
+}
+
+.prose pre {
+  margin: 0;
+  padding: 0;
+  background: none;
+}
+
+.prose code {
+  color: #e879f9;
+  background-color: rgba(139, 92, 246, 0.1);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-size: 0.875em;
+  font-family: var(--font-mono);
+}
+
+.prose pre code {
+  color: inherit;
+  background: none;
+  padding: 0;
+}
+
+/* Animation Utilities */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out;
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out;
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.3s ease-out;
+}
+
+/* Focus Styles */
+*:focus {
+  outline: none;
+}
+
+*:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Button Base Styles */
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Input Base Styles */
+input, textarea, select {
+  font: inherit;
+  color: inherit;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--gray-500);
+}
+
+/* Resize Handle */
+.resize-handle {
+  position: absolute;
+  background: transparent;
+  z-index: 10;
+}
+
+.resize-handle:hover {
+  background: var(--primary);
+}
+
+.resize-handle-horizontal {
+  width: 4px;
+  height: 100%;
+  cursor: col-resize;
+  right: 0;
+  top: 0;
+}
+
+.resize-handle-vertical {
+  width: 100%;
+  height: 4px;
+  cursor: row-resize;
+  bottom: 0;
+  left: 0;
+}
+
+/* Terminal Styles */
+.terminal-output {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* File Tree Indent Guide */
+.tree-indent-guide {
+  border-left: 1px solid var(--gray-700);
+  margin-left: 8px;
+}
+
+/* Loading Spinner */
+.loading-spinner {
+  border: 2px solid var(--gray-700);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Tooltip */
+.tooltip {
+  position: relative;
+}
+
+.tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.5rem 0.75rem;
+  background: var(--gray-800);
+  border: 1px solid var(--gray-700);
+  border-radius: 0.375rem;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s, visibility 0.2s;
+  z-index: 100;
+}
+
+.tooltip:hover::after {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Glass Effect */
+.glass {
+  background: rgba(17, 24, 39, 0.8);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Gradient Text */
+.gradient-text {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Tab Active Indicator */
+.tab-active {
+  position: relative;
+}
+
+.tab-active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--primary);
+}
+
+/* Agent Step Connector */
+.step-connector {
+  position: absolute;
+  left: 12px;
+  top: 24px;
+  bottom: 0;
+  width: 2px;
+  background: var(--gray-700);
+}
+
+/* Keyboard Shortcut Key */
+kbd {
+  display: inline-block;
+  padding: 0.125rem 0.375rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  background: var(--gray-800);
+  border: 1px solid var(--gray-700);
+  border-radius: 0.25rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* Badge */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  border-radius: 9999px;
+}
+
+.badge-primary {
+  background: rgba(99, 102, 241, 0.2);
+  color: #a5b4fc;
+}
+
+.badge-success {
+  background: rgba(34, 197, 94, 0.2);
+  color: #86efac;
+}
+
+.badge-warning {
+  background: rgba(234, 179, 8, 0.2);
+  color: #fde047;
+}
+
+.badge-error {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+}
+
+/* Context Menu */
+.context-menu {
+  position: fixed;
+  min-width: 180px;
+  background: var(--gray-800);
+  border: 1px solid var(--gray-700);
+  border-radius: 0.5rem;
+  padding: 0.25rem;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  z-index: 100;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.context-menu-item:hover {
+  background: var(--gray-700);
+}
+
+.context-menu-separator {
+  height: 1px;
+  background: var(--gray-700);
+  margin: 0.25rem 0;
+}
+
+/* Panel Transitions */
+.panel-enter {
+  opacity: 0;
+  transform: translateX(20px);
+}
+
+.panel-enter-active {
+  opacity: 1;
+  transform: translateX(0);
+  transition: opacity 0.2s, transform 0.2s;
+}
+
+.panel-exit {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.panel-exit-active {
+  opacity: 0;
+  transform: translateX(20px);
+  transition: opacity 0.2s, transform 0.2s;
+}

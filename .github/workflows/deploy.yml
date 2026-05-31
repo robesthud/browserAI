@@ -1,0 +1,73 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  # ============================================
+  # BUILD & TEST FRONTEND
+  # ============================================
+  build-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node_version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build frontend
+        run: npm run build
+
+  # ============================================
+  # BUILD & TEST BACKEND
+  # ============================================
+  build-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node_version: 20
+          cache: 'npm'
+          cache-dependency-path: public/backend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd public/backend
+          npm install
+
+      - name: Generate Prisma Client
+        run: |
+          cd public/backend
+          npx prisma generate
+
+      - name: Build backend
+        run: |
+          cd public/backend
+          npm run build
+
+  # ============================================
+  # DEPLOYMENT JOB (EXAMPLE FOR DOCKER VPS)
+  # ============================================
+  deploy:
+    needs: [build-frontend, build-backend]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    steps:
+      - name: Print deployment notice
+        run: |
+          echo "All builds succeeded. Deployment ready."
+          echo "To deploy to your VPS, add SSH steps here or integrate with Railway/Render/Vercel."

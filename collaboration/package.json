@@ -1,0 +1,17 @@
+{
+  "name": "collaboration-server",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "tsx server.ts"
+  },
+  "dependencies": {
+    "ws": "^8.16.0",
+    "y-websocket": "^2.0.0",
+    "yjs": "^13.6.15"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}

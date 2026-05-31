@@ -1,0 +1,114 @@
+# ============================================
+# AI CODE STUDIO - MASTER DOCKER COMPOSE
+# Launch all full-stack services with one command
+# ============================================
+
+version: '3.8'
+
+services:
+  # ============================================
+  # PostgreSQL Database
+  # ============================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: aicode-postgres
+    environment:
+      POSTGRES_DB: aicode
+      POSTGRES_USER: aicode
+      POSTGRES_PASSWORD: supersecret
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  # ============================================
+  # Redis Cache & Pub/Sub
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: aicode-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  # ============================================
+  # Node.js Backend API Server
+  # ============================================
+  backend:
+    build:
+      context: ./public/backend
+      dockerfile: Dockerfile
+    container_name: aicode-backend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+      - redis
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://aicode:supersecret@postgres:5432/aicode
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - ./data/projects:/app/data/projects
+    restart: unless-stopped
+
+  # ============================================
+  # Code Runner (FastAPI + Docker)
+  # ============================================
+  code-runner:
+    build:
+      context: ./code-runner
+      dockerfile: Dockerfile
+    container_name: aicode-runner
+    ports:
+      - "8000:8000"
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  # ============================================
+  # Browser Agent (Playwright)
+  # ============================================
+  browser-agent:
+    build:
+      context: ./browser-ai
+      dockerfile: Dockerfile
+    container_name: aicode-browser
+    ports:
+      - "8080:8080"
+    shm_size: 2gb
+    environment:
+      HEADLESS: "true"
+    restart: unless-stopped
+
+  # ============================================
+  # Collaboration Server (Yjs)
+  # ============================================
+  collaboration:
+    build:
+      context: ./collaboration
+      dockerfile: Dockerfile
+    container_name: aicode-collab
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
+
+  # ============================================
+  # Frontend Application (Nginx)
+  # ============================================
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aicode-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

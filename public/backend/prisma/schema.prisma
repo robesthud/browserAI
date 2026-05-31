@@ -1,0 +1,207 @@
+// ============================================
+// AI CODE STUDIO - PRISMA SCHEMA (POSTGRESQL FOR DOCKER/PROD)
+// ============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User model - authenticated users
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String
+  avatar    String?
+  githubId  String?  @unique
+  password  String?
+  settings  String?
+  
+  projects  Project[]
+  sessions  Session[]
+  agentTasks AgentTask[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Session for JWT tracking
+model Session {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+// Project - a code project/repository
+model Project {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  
+  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  ownerId     String
+  
+  files       File[]
+  gitRepo     GitRepo?
+  agentTasks  AgentTask[]
+  
+  isPublic    Boolean  @default(false)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// File - individual files in a project
+model File {
+  id        String   @id @default(uuid())
+  path      String
+  name      String
+  type      String   @default("FILE") // FILE or FOLDER
+  
+  // Content for small files (<1MB)
+  content   String?  @db.Text
+  
+  // Hash for deduplication
+  hash      String?
+  
+  // For large files, store reference to blob storage
+  blobUrl   String?
+  
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+  
+  // File history
+  versions  FileVersion[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@unique([projectId, path])
+  @@index([projectId])
+}
+
+// File version history
+model FileVersion {
+  id        String   @id @default(uuid())
+  file      File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  fileId    String
+  content   String   @db.Text
+  hash      String
+  createdAt DateTime @default(now())
+  
+  @@index([fileId, createdAt])
+}
+
+// Git repository connection
+model GitRepo {
+  id        String   @id @default(uuid())
+  remoteUrl String
+  branch    String   @default("main")
+  
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String   @unique
+  
+  // Sync tracking
+  lastCommit String?
+  lastSync   DateTime @default(now())
+  
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+// Collaboration session
+model CollabSession {
+  id        String   @id @default(uuid())
+  projectId String
+  
+  // Yjs document state (binary)
+  docState  Bytes?
+  
+  // Active participants
+  participants CollabParticipant[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model CollabParticipant {
+  id        String   @id @default(uuid())
+  userId    String
+  userName  String
+  color     String
+  
+  session   CollabSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sessionId String
+  
+  // Current cursor position
+  cursorFile   String?
+  cursorLine   Int?
+  cursorColumn Int?
+  
+  lastSeen  DateTime @default(now())
+  
+  @@unique([sessionId, userId])
+}
+
+// AI chat history
+model ChatHistory {
+  id        String   @id @default(uuid())
+  projectId String
+  userId    String
+  
+  messages  ChatMessage[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ChatMessage {
+  id        String   @id @default(uuid())
+  role      String   // user, assistant, system
+  content   String   @db.Text
+  
+  history   ChatHistory @relation(fields: [historyId], references: [id], onDelete: Cascade)
+  historyId String
+  
+  createdAt DateTime @default(now())
+  
+  @@index([historyId, createdAt])
+}
+
+// Agent tasks
+model AgentTask {
+  id        String   @id @default(uuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  goal      String   @db.Text
+  status    String   @default("pending") // pending, running, completed, failed
+  
+  steps     AgentStep[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model AgentStep {
+  id          String   @id @default(uuid())
+  taskId      String
+  task        AgentTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  
+  type        String   // thought, action, observation, error
+  content     String   @db.Text
+  status      String   @default("pending")
+  order       Int
+  result      String?  @db.Text
+  error       String?  @db.Text
+  
+  createdAt   DateTime @default(now())
+}

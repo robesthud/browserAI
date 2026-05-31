@@ -1,0 +1,243 @@
+// ============================================
+// AI CODE STUDIO - REACT AGENT IMPLEMENTATION
+// Handles the ReAct Loop (Reasoning + Acting) with Graceful Shutdown
+// ============================================
+
+import { AIAdapter, type Message, type AIConfig } from './aiAdapter.js';
+import { prisma } from '../index.js';
+import { randomUUID } from 'crypto';
+import { AgentTools } from './agentTools.js';
+import { WebSocket } from 'ws';
+
+// Global graceful shutdown tracking
+let isShutdownRequested = false;
+process.on('SIGTERM', () => {
+  console.log('⚠️ [ReAct Agent] SIGTERM received. Requesting graceful shutdown of current steps...');
+  isShutdownRequested = true;
+});
+
+export class ReActAgent {
+  private goal: string;
+  private projectId: string;
+  private config: AIConfig;
+  private taskId: string;
+  private ws: WebSocket | null = null;
+  private stepCount = 0;
+  private maxSteps = 30;
+
+  constructor(goal: string, projectId: string, config: AIConfig, taskId: string, ws: WebSocket | null = null) {
+    this.goal = goal;
+    this.projectId = projectId;
+    this.config = config;
+    this.taskId = taskId;
+    this.ws = ws;
+  }
+
+  /**
+   * Broadcast message to the websocket client
+   */
+  private sendClientUpdate(type: string, payload: any) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type, payload }));
+    }
+  }
+
+  /**
+   * Main Execution Loop (Maximum 30 steps)
+   */
+  async run(): Promise<void> {
+    console.log(`[ReAct Agent] Running loop for task [${this.taskId}]...`);
+    this.sendClientUpdate('agent:running', { taskId: this.taskId, goal: this.goal });
+
+    const messageHistory: Message[] = [
+      {
+        role: 'system',
+        content: `Ты — AI Agent, помогающий разрабатывать ПО. Твоя задача — выполнить goal пользователя.
+        
+        Доступные инструменты:
+        - read_file(path) — прочитать файл
+        - write_file(path, content) — создать/перезаписать файл
+        - edit_file(path, search, replace) — отредактировать файл (первое вхождение)
+        - list_dir(path) — список файлов в директории
+        - run_command(command) — выполнить команду терминала
+        - install_package(package, manager) — установить пакет
+        - browser_navigate(url) — открыть URL
+        - browser_click(selector) — кликнуть на селектор
+        - browser_type(selector, text) — ввести текст в поле
+        - browser_extract(selector) — извлечь данные с веб-страницы
+        - search_web(query) — поискать в интернете
+        - complete(result) — завершить задачу с результатом
+
+        Каждый твой ответ должен быть СТРОГИМ JSON с полями: thought, action, action_input. Не пиши никакой другой текст.
+        Формат:
+        {
+          "thought": "Твои размышления",
+          "action": "имя_инструмента",
+          "action_input": {
+            "параметр": "значение"
+          }
+        }
+        `
+      },
+      {
+        role: 'user',
+        content: `Goal: "${this.goal}"`
+      }
+    ];
+
+    while (this.stepCount < this.maxSteps) {
+      // Check for SIGTERM graceful shutdown request
+      if (isShutdownRequested) {
+        const shutdownMsg = 'Graceful shutdown triggered: Agent execution suspended by SIGTERM.';
+        console.warn(`[ReAct Agent] [${this.taskId}] ${shutdownMsg}`);
+        await this.saveAndObserve('error', shutdownMsg);
+        await prisma.agentTask.update({
+          where: { id: this.taskId },
+          data: { status: 'failed' }
+        });
+        this.sendClientUpdate('agent:error', { taskId: this.taskId, error: shutdownMsg });
+        return;
+      }
+
+      this.stepCount++;
+      console.log(`[ReAct Agent] Step ${this.stepCount}/${this.maxSteps}`);
+
+      // 1. Think (Call LLM)
+      let decision: any;
+      try {
+        decision = await this.think(messageHistory);
+      } catch (err: any) {
+        console.error('[ReAct Agent] Thinking failed:', err);
+        await this.saveAndObserve('error', `Thinking failed: ${err.message}`);
+        await prisma.agentTask.update({
+          where: { id: this.taskId },
+          data: { status: 'failed' }
+        });
+        break;
+      }
+
+      // 2. Save Thought & Action to DB and notify Client
+      await this.saveAndObserve('thought', decision.thought);
+
+      if (decision.action === 'complete') {
+        const result = decision.action_input?.result || 'Task completed successfully.';
+        await this.saveAndObserve('complete', result);
+        await prisma.agentTask.update({
+          where: { id: this.taskId },
+          data: { status: 'completed' }
+        });
+        this.sendClientUpdate('agent:complete', { taskId: this.taskId, result });
+        return;
+      }
+
+      // 3. Act (Execute tool)
+      let observation = '';
+      try {
+        observation = await this.act(decision.action, decision.action_input);
+      } catch (err: any) {
+        observation = `Error executing ${decision.action}: ${err.message}`;
+      }
+
+      // 4. Observe (Save to DB & push WS updates)
+      await this.saveAndObserve('observation', observation);
+      
+      // Append outputs to message history context
+      messageHistory.push({
+        role: 'assistant',
+        content: JSON.stringify(decision)
+      });
+      messageHistory.push({
+        role: 'user',
+        content: `Observation: ${observation}`
+      });
+    }
+
+    if (this.stepCount >= this.maxSteps) {
+      const forceCompleteMsg = `Task force completed because it reached the maximum step limit of ${this.maxSteps}.`;
+      console.warn(`[ReAct Agent] ${forceCompleteMsg}`);
+      await this.saveAndObserve('complete', forceCompleteMsg);
+      await prisma.agentTask.update({
+        where: { id: this.taskId },
+        data: { status: 'completed' }
+      });
+      this.sendClientUpdate('agent:complete', { taskId: this.taskId, result: forceCompleteMsg });
+    }
+  }
+
+  /**
+   * Prompts LLM for next step decision
+   */
+  private async think(history: Message[]): Promise<any> {
+    const rawResponse = await AIAdapter.chat(this.config, history);
+    try {
+      const cleanJSON = rawResponse.replace(/```json/g, '').replace(/```/g, '').trim();
+      return JSON.parse(cleanJSON);
+    } catch {
+      throw new Error(`Failed to parse structured output from LLM: ${rawResponse}`);
+    }
+  }
+
+  /**
+   * Executes the mapped action tool
+   */
+  private async act(action: string, input: any): Promise<string> {
+    this.sendClientUpdate('agent:step', { taskId: this.taskId, action, input });
+
+    switch (action) {
+      case 'read_file':
+        return await AgentTools.read_file(this.projectId, input.path);
+      case 'write_file':
+        return await AgentTools.write_file(this.projectId, input.path, input.content);
+      case 'edit_file':
+        return await AgentTools.edit_file(this.projectId, input.path, input.search, input.replace);
+      case 'list_dir':
+        const dirContent = await AgentTools.list_dir(this.projectId, input.path || '');
+        return JSON.stringify(dirContent);
+      case 'run_command':
+        return await AgentTools.run_command(this.projectId, input.command, input.cwd);
+      case 'install_package':
+        return await AgentTools.install_package(this.projectId, input.package, input.manager);
+      case 'browser_navigate':
+        return JSON.stringify(await AgentTools.browser_navigate(input.url));
+      case 'browser_click':
+        return JSON.stringify(await AgentTools.browser_click(input.selector));
+      case 'browser_type':
+        return JSON.stringify(await AgentTools.browser_type(input.selector, input.text));
+      case 'browser_extract':
+        return JSON.stringify(await AgentTools.browser_extract(input.selector));
+      case 'search_web':
+        return JSON.stringify(await AgentTools.search_web(input.query));
+      default:
+        throw new Error(`Unknown tool action: ${action}`);
+    }
+  }
+
+  /**
+   * Logs steps and outputs to Prisma (prisma.agentStep.create) and WebSockets
+   */
+  private async saveAndObserve(type: 'thought' | 'action' | 'observation' | 'complete' | 'error', content: string) {
+    const isError = type === 'error';
+    const status = isError ? 'error' : 'completed';
+
+    await prisma.agentStep.create({
+      data: {
+        id: randomUUID(),
+        taskId: this.taskId,
+        type,
+        content: content.slice(0, 1000), // Ensure DB limit safety
+        status,
+        order: this.stepCount,
+        result: content,
+        error: isError ? content : null
+      }
+    });
+
+    this.sendClientUpdate('agent:step:complete', {
+      taskId: this.taskId,
+      type,
+      status,
+      content
+    });
+  }
+}
+export default ReActAgent;
