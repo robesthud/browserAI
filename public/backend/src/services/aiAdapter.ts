@@ -64,6 +64,11 @@ const PROVIDER_CONFIGS: Record<string, {
     format: 'openai',
     defaultModel: 'qwen-max',
   },
+  zhipu: {
+    defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    format: 'openai',
+    defaultModel: 'glm-5.1',
+  },
   ollama: {
     defaultBaseUrl: 'http://localhost:11434/v1',
     format: 'openai',

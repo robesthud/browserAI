@@ -19,14 +19,46 @@ model User {
   avatar    String?
   githubId  String?  @unique
   password  String?
-  settings  String?
   
+  // Persistence connections
+  settings  UserSettings?
   projects  Project[]
   sessions  Session[]
   agentTasks AgentTask[]
   
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// UserSettings Model for persistent client preferences & keys
+model UserSettings {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // AI Settings
+  provider    String   @default("openai")
+  apiKey      String?  // AES-256-GCM Encrypted
+  model       String   @default("gpt-4o")
+  baseUrl     String   @default("https://api.openai.com/v1")
+  temperature Float    @default(0.7)
+  maxTokens   Int      @default(4096)
+  
+  // Editor Settings
+  fontSize    Int      @default(14)
+  tabSize     Int      @default(2)
+  wordWrap    Boolean  @default(true)
+  minimap     Boolean  @default(true)
+  lineNumbers Boolean  @default(true)
+  autoSave    Boolean  @default(true)
+  autoComplete Boolean @default(true)
+  streaming   Boolean  @default(true)
+  
+  // Appearance
+  theme       String   @default("dark")
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 // Session for JWT tracking

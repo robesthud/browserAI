@@ -1,38 +1,105 @@
 // ============================================
-// AI CODE STUDIO - SETTINGS ROUTES
+// AI CODE STUDIO - SETTINGS ROUTER
+// Manages User Settings persisted inside the Database with AES encryption
 // ============================================
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { prisma } from '../index.js';
+import { encrypt, decrypt } from '../utils/encryption.js';
 
 export async function settingsRoutes(fastify: FastifyInstance) {
-  // Get user settings
+  // Get user settings (Prisma database lookup with decryptions)
   fastify.get('/', {
     preHandler: [fastify.authenticate],
   }, async (request: any) => {
-    const user = await prisma.user.findUnique({
-      where: { id: request.user.userId },
-      select: { settings: true },
+    const userId = request.user.userId;
+
+    let settings = await prisma.userSettings.findUnique({
+      where: { userId },
     });
 
-    return { settings: user?.settings ? JSON.parse(user.settings) : getDefaultSettings() };
+    // Create default settings row in DB if not present yet
+    if (!settings) {
+      settings = await prisma.userSettings.create({
+        data: {
+          userId,
+          provider: 'openai',
+          model: 'gpt-4o',
+          baseUrl: 'https://api.openai.com/v1',
+          temperature: 0.7,
+          maxTokens: 4096,
+        },
+      });
+    }
+
+    // Decrypt API key before returning to Client
+    const decryptedApiKey = settings.apiKey ? decrypt(settings.apiKey) : '';
+
+    return {
+      settings: {
+        ...settings,
+        apiKey: decryptedApiKey,
+      }
+    };
   });
 
-  // Update user settings
+  // Update user settings (Prisma Database upsert with encryptions)
   fastify.put('/', {
     preHandler: [fastify.authenticate],
   }, async (request: any) => {
-    const settings = request.body;
+    const userId = request.user.userId;
+    const data = request.body;
 
-    // Validate settings
-    const validatedSettings = validateSettings(settings);
+    // Encrypt the API Key before saving to Postgres/SQLite database
+    const encryptedApiKey = data.apiKey ? encrypt(data.apiKey) : null;
 
-    await prisma.user.update({
-      where: { id: request.user.userId },
-      data: { settings: JSON.stringify(validatedSettings) },
+    const settings = await prisma.userSettings.upsert({
+      where: { userId },
+      update: {
+        provider: data.provider,
+        apiKey: encryptedApiKey,
+        model: data.model,
+        baseUrl: data.baseUrl,
+        temperature: parseFloat(data.temperature ?? 0.7),
+        maxTokens: parseInt(data.maxTokens ?? 4096),
+        fontSize: parseInt(data.fontSize ?? 14),
+        tabSize: parseInt(data.tabSize ?? 2),
+        wordWrap: Boolean(data.wordWrap),
+        minimap: Boolean(data.minimap),
+        lineNumbers: Boolean(data.lineNumbers),
+        autoSave: Boolean(data.autoSave),
+        autoComplete: Boolean(data.autoComplete),
+        streaming: Boolean(data.streaming),
+        theme: data.theme || 'dark',
+      },
+      create: {
+        userId,
+        provider: data.provider || 'openai',
+        apiKey: encryptedApiKey,
+        model: data.model || 'gpt-4o',
+        baseUrl: data.baseUrl || 'https://api.openai.com/v1',
+        temperature: parseFloat(data.temperature ?? 0.7),
+        maxTokens: parseInt(data.maxTokens ?? 4096),
+        fontSize: parseInt(data.fontSize ?? 14),
+        tabSize: parseInt(data.tabSize ?? 2),
+        wordWrap: Boolean(data.wordWrap),
+        minimap: Boolean(data.minimap),
+        lineNumbers: Boolean(data.lineNumbers),
+        autoSave: Boolean(data.autoSave),
+        autoComplete: Boolean(data.autoComplete),
+        streaming: Boolean(data.streaming),
+        theme: data.theme || 'dark',
+      },
     });
 
-    return { settings: validatedSettings };
+    const decryptedApiKey = settings.apiKey ? decrypt(settings.apiKey) : '';
+
+    return {
+      settings: {
+        ...settings,
+        apiKey: decryptedApiKey,
+      }
+    };
   });
 
   // Validate API key
@@ -52,53 +119,98 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       return { valid: false, error: String(error) };
     }
   });
+
+  // Fetch available models dynamically
+  fastify.post('/models', {
+    preHandler: [fastify.authenticate],
+  }, async (request: any, reply: FastifyReply) => {
+    const { provider, apiKey, baseUrl } = request.body as {
+      provider: string;
+      apiKey: string;
+      baseUrl?: string;
+    };
+
+    try {
+      let models: string[] = [];
+
+      if (provider === 'anthropic') {
+        models = ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'];
+      } else if (provider === 'ollama') {
+        const url = `${baseUrl || 'http://localhost:11434'}/api/tags`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const data = await res.json() as any;
+          if (Array.isArray(data.models)) {
+            models = data.models.map((m: any) => m.name || m.id);
+          }
+        }
+      } else if (provider === 'lmstudio') {
+        const url = `${baseUrl || 'http://localhost:1234'}/v1/models`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const data = await res.json() as any;
+          if (Array.isArray(data.data)) {
+            models = data.data.map((m: any) => m.id);
+          }
+        }
+      } else {
+        // OpenAI-compatible / Zhipu API models endpoint
+        const targetBaseUrl = baseUrl || getProviderBaseUrl(provider);
+        const url = `${targetBaseUrl}/models`;
+        const headers: any = { 'Content-Type': 'application/json' };
+        if (apiKey) {
+          headers['Authorization'] = `Bearer ${apiKey}`;
+        }
+
+        const res = await fetch(url, { headers });
+        if (res.ok) {
+          const data = await res.json() as any;
+          if (Array.isArray(data.data)) {
+            models = data.data.map((m: any) => m.id);
+          }
+        }
+      }
+
+      // Filter out empty or duplicate entries
+      const uniqueModels = Array.from(new Set(models.filter(Boolean)));
+      return { models: uniqueModels.length > 0 ? uniqueModels : getDefaultModels(provider) };
+    } catch (error) {
+      console.error('Fetch Models Error:', error);
+      return { models: getDefaultModels(provider) };
+    }
+  });
 }
 
 // ============================================
 // HELPERS
 // ============================================
 
-function getDefaultSettings() {
-  return {
-    // AI Settings
-    provider: 'openai',
-    model: 'gpt-4o',
-    temperature: 0.7,
-    maxTokens: 4096,
-    
-    // Editor Settings
-    fontSize: 14,
-    tabSize: 2,
-    wordWrap: true,
-    minimap: true,
-    lineNumbers: true,
-    autoSave: true,
-    autoComplete: true,
-    streaming: true,
-    
-    // Appearance
-    theme: 'dark',
+function getProviderBaseUrl(provider: string): string {
+  const urls: Record<string, string> = {
+    openai: 'https://api.openai.com/v1',
+    groq: 'https://api.groq.com/openai/v1',
+    deepseek: 'https://api.deepseek.com/v1',
+    mistral: 'https://api.mistral.ai/v1',
+    qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    zhipu: 'https://open.bigmodel.cn/api/paas/v4',
   };
+  return urls[provider] || 'https://api.openai.com/v1';
 }
 
-function validateSettings(settings: any) {
-  const defaults = getDefaultSettings();
-  
-  return {
-    provider: settings.provider || defaults.provider,
-    model: settings.model || defaults.model,
-    temperature: Math.min(Math.max(settings.temperature ?? defaults.temperature, 0), 1),
-    maxTokens: Math.min(Math.max(settings.maxTokens ?? defaults.maxTokens, 100), 32000),
-    fontSize: Math.min(Math.max(settings.fontSize ?? defaults.fontSize, 10), 24),
-    tabSize: Math.min(Math.max(settings.tabSize ?? defaults.tabSize, 1), 8),
-    wordWrap: settings.wordWrap ?? defaults.wordWrap,
-    minimap: settings.minimap ?? defaults.minimap,
-    lineNumbers: settings.lineNumbers ?? defaults.lineNumbers,
-    autoSave: settings.autoSave ?? defaults.autoSave,
-    autoComplete: settings.autoComplete ?? defaults.autoComplete,
-    streaming: settings.streaming ?? defaults.streaming,
-    theme: ['dark', 'light'].includes(settings.theme) ? settings.theme : defaults.theme,
+function getDefaultModels(provider: string): string[] {
+  const models: Record<string, string[]> = {
+    openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
+    anthropic: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'],
+    google: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'],
+    groq: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768', 'gemma2-9b-it'],
+    deepseek: ['deepseek-chat', 'deepseek-coder'],
+    mistral: ['mistral-large-latest', 'mistral-small-latest', 'codestral-latest', 'open-mixtral-8x22b'],
+    qwen: ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen-coder-plus'],
+    zhipu: ['glm-5.1', 'glm-5v-turbo', 'glm-4-plus', 'glm-4-flash', 'glm-4-air', 'glm-4-long'],
+    ollama: ['llama3.2', 'codellama', 'mistral', 'deepseek-coder', 'qwen2.5-coder'],
+    lmstudio: ['local-model'],
   };
+  return models[provider] || ['gpt-4o'];
 }
 
 async function validateApiKey(provider: string, apiKey: string, baseUrl?: string): Promise<boolean> {
@@ -126,7 +238,6 @@ async function validateApiKey(provider: string, apiKey: string, baseUrl?: string
 
   const config = testEndpoints[provider];
   if (!config) {
-    // For local providers, just return true
     if (provider === 'ollama' || provider === 'lmstudio') {
       return true;
     }

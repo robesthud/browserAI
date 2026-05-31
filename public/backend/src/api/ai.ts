@@ -50,6 +50,7 @@ function getEnvApiKey(provider: string): string {
     case 'deepseek': return process.env.DEEPSEEK_API_KEY || '';
     case 'mistral': return process.env.MISTRAL_API_KEY || '';
     case 'qwen': return process.env.QWEN_API_KEY || '';
+    case 'zhipu': return process.env.ZHIPU_API_KEY || '';
     default: return '';
   }
 }

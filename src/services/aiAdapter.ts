@@ -155,6 +155,7 @@ const providerMap: Record<string, string> = {
   deepseek: 'openai',
   mistral: 'openai',
   qwen: 'openai',
+  zhipu: 'openai',
   ollama: 'openai',
   lmstudio: 'openai',
   anthropic: 'anthropic',
@@ -339,6 +340,7 @@ export class AIAdapter {
       deepseek: 'deepseek-chat',
       mistral: 'mistral-small-latest',
       qwen: 'qwen-turbo',
+      zhipu: 'glm-4-flash',
       ollama: this.model,
       lmstudio: this.model,
     };

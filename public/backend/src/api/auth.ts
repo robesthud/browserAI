@@ -29,12 +29,21 @@ export async function authRoutes(fastify: FastifyInstance) {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    // Create user
+    // Create user with default settings
     const user = await prisma.user.create({
       data: {
         email,
         name,
         password: hashedPassword,
+        settings: {
+          create: {
+            provider: 'openai',
+            model: 'gpt-4o',
+            baseUrl: 'https://api.openai.com/v1',
+            temperature: 0.7,
+            maxTokens: 4096,
+          }
+        }
       },
       select: {
         id: true,

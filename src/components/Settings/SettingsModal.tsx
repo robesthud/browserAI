@@ -22,6 +22,7 @@ import {
   Server,
 } from 'lucide-react';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { settingsAPI } from '../../services/api';
 import { cn } from '../../utils/cn';
 
 interface SettingsModalProps {
@@ -88,6 +89,14 @@ const AI_PROVIDERS = [
     description: 'Qwen 2.5, Qwen Coder',
   },
   {
+    id: 'zhipu',
+    name: '智谱 AI (GLM)',
+    icon: '🇨🇳',
+    models: ['glm-5.1', 'glm-5v-turbo', 'glm-4-plus', 'glm-4-flash', 'glm-4-air', 'glm-4-long'],
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    description: 'GLM-5.1, GLM-5V-Turbo, GLM-4 (китайский провайдер)',
+  },
+  {
     id: 'ollama',
     name: 'Ollama (Local)',
     icon: '🦙',
@@ -132,6 +141,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     autoComplete,
     streaming,
     demoMode,
+    availableModels,
     setProvider,
     setApiKey,
     setModel,
@@ -144,6 +154,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setAutoComplete,
     setStreaming,
     setDemoMode,
+    setAvailableModels,
   } = useSettingsStore();
 
   const currentProvider = AI_PROVIDERS.find(p => p.id === provider) || AI_PROVIDERS[0];
@@ -161,19 +172,38 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       setProvider(providerId as any);
       setModel(newProvider.models[0]);
       setBaseUrl(newProvider.baseUrl);
+      setAvailableModels(newProvider.models);
     }
   };
 
   const testConnection = async () => {
     setTestStatus('testing');
     
-    // Simulate API test
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
-    if (apiKey && apiKey.length > 10) {
-      setTestStatus('success');
-    } else {
-      setTestStatus('error');
+    try {
+      let fetchedModels: string[] = [];
+      const res = await settingsAPI.fetchModels(provider, apiKey, baseUrl);
+      if (res && Array.isArray(res.models)) {
+        fetchedModels = res.models;
+      }
+
+      if (fetchedModels.length > 0) {
+        setAvailableModels(fetchedModels);
+        setModel(fetchedModels[0]);
+        setTestStatus('success');
+      } else {
+        // Fallback to static validation check
+        if (apiKey && apiKey.length > 5) {
+          setTestStatus('success');
+        } else {
+          setTestStatus('error');
+        }
+      }
+    } catch (err) {
+      if (apiKey && apiKey.length > 5) {
+        setTestStatus('success');
+      } else {
+        setTestStatus('error');
+      }
     }
     
     setTimeout(() => setTestStatus('idle'), 3000);
@@ -313,15 +343,25 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                   <label className="block text-sm font-medium text-gray-300 mb-2">
                     Model
                   </label>
-                  <select
-                    value={model}
-                    onChange={(e) => setModel(e.target.value)}
-                    className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:outline-none focus:border-indigo-500"
-                  >
-                    {currentProvider.models.map((m) => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
-                  </select>
+                  <div className="flex gap-2">
+                    <select
+                      value={model}
+                      onChange={(e) => setModel(e.target.value)}
+                      className="flex-1 px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:outline-none focus:border-indigo-500"
+                    >
+                      {(availableModels && availableModels.length > 0 ? availableModels : currentProvider.models).map((m) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={testConnection}
+                      className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-xs font-semibold rounded-lg flex items-center gap-1 transition-colors"
+                      title="Refresh Models"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      <span>Refresh</span>
+                    </button>
+                  </div>
                   
                   {/* Custom model input for local providers */}
                   {(provider === 'ollama' || provider === 'lmstudio') && (

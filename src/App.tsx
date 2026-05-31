@@ -121,6 +121,9 @@ export default function App() {
 
       const fetchRealData = async () => {
         try {
+          // Synchronize/migrate user settings with Postgres/SQLite database on backend
+          await useSettingsStore.getState().syncWithBackend();
+
           // Attempt to fetch real projects
           const { projects } = await projectsAPI.list();
           if (projects && projects.length > 0) {

@@ -210,3 +210,24 @@ export const aiAPI = {
     });
   },
 };
+
+// ============================================
+// SETTINGS API
+// ============================================
+export const settingsAPI = {
+  get: async () => {
+    return fetchAPI<{ settings: any }>('/settings');
+  },
+  update: async (settings: any) => {
+    return fetchAPI<{ settings: any }>('/settings', {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+    });
+  },
+  fetchModels: async (provider: string, apiKey: string, baseUrl?: string) => {
+    return fetchAPI<{ models: string[] }>('/settings/models', {
+      method: 'POST',
+      body: JSON.stringify({ provider, apiKey, baseUrl }),
+    });
+  },
+};
