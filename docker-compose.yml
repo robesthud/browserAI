@@ -1,6 +1,6 @@
 # ============================================
 # AI CODE STUDIO - MASTER DOCKER COMPOSE
-# Complete stack with production orchestrations
+# Optimized for PaaS platforms (Railway, Render) with Healthchecks and Restarts
 # ============================================
 
 version: '3.8'
@@ -25,7 +25,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    restart: unless-stopped
+    networks:
+      - aicode_network
+    restart: on-failure
 
   # ============================================
   # Redis Cache & Pub/Sub
@@ -40,10 +42,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    restart: unless-stopped
+    networks:
+      - aicode_network
+    restart: on-failure
 
   # ============================================
-  # Node.js Backend API Server
+  # Node.js Backend API Server (Fastify)
   # ============================================
   backend:
     build:
@@ -67,10 +71,17 @@ services:
       COLLABORATION_URL: http://collaboration:3001
     volumes:
       - ./data/projects:/app/data/projects
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aicode_network
+    restart: on-failure
 
   # ============================================
-  # Code Runner (FastAPI + Docker)
+  # Code Runner (FastAPI + Docker SDK)
   # ============================================
   code-runner:
     build:
@@ -82,7 +93,9 @@ services:
     privileged: true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    restart: unless-stopped
+    networks:
+      - aicode_network
+    restart: on-failure
 
   # ============================================
   # Browser Agent (Playwright)
@@ -97,7 +110,9 @@ services:
     shm_size: 2gb
     environment:
       HEADLESS: "true"
-    restart: unless-stopped
+    networks:
+      - aicode_network
+    restart: on-failure
 
   # ============================================
   # Collaboration Server (Yjs)
@@ -109,7 +124,9 @@ services:
     container_name: aicode-collab
     ports:
       - "3001:3001"
-    restart: unless-stopped
+    networks:
+      - aicode_network
+    restart: on-failure
 
   # ============================================
   # Frontend Application (Nginx)
@@ -117,13 +134,24 @@ services:
   frontend:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: ./frontend/Dockerfile
     container_name: aicode-frontend
     ports:
       - "80:80"
     depends_on:
-      - backend
-    restart: unless-stopped
+      backend:
+        condition: service_healthy
+    networks:
+      - aicode_network
+    restart: on-failure
+
+# ============================================
+# Networks & Volumes Definitions
+# ============================================
+networks:
+  aicode_network:
+    name: aicode_network
+    driver: bridge
 
 volumes:
   postgres_data:

@@ -1,11 +1,15 @@
+# ============================================
+# AI CODE STUDIO - COLLABORATION SERVER DOCKERFILE
+# ============================================
+
 FROM node:20-slim
 
 WORKDIR /app
 
-COPY package.json ./
+COPY package*.json ./
 RUN npm install
 
-COPY server.ts ./
+COPY . .
 
 EXPOSE 3001
 
