@@ -1,6 +1,6 @@
 # ============================================
 # AI CODE STUDIO - MASTER DOCKER COMPOSE
-# Launch all full-stack services with one command
+# Complete stack with production orchestrations
 # ============================================
 
 version: '3.8'
@@ -20,6 +20,11 @@ services:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aicode -d aicode"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   # ============================================
@@ -30,6 +35,11 @@ services:
     container_name: aicode-redis
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   # ============================================
@@ -43,13 +53,18 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file:
       - .env
     environment:
       DATABASE_URL: postgresql://aicode:supersecret@postgres:5432/aicode
       REDIS_URL: redis://redis:6379
+      CODE_RUNNER_URL: http://code-runner:8000
+      BROWSER_AI_URL: http://browser-agent:8080
+      COLLABORATION_URL: http://collaboration:3001
     volumes:
       - ./data/projects:/app/data/projects
     restart: unless-stopped

@@ -17,13 +17,10 @@ RUN npx prisma generate
 # Copy source
 COPY . .
 
-# Build
+# Build TypeScript to Javascript
 RUN npm run build
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
-
+# Expose port
 EXPOSE 3000
 
 CMD ["npm", "start"]

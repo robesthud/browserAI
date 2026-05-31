@@ -18,9 +18,14 @@ import { codeRoutes } from './api/code.js';
 import { settingsRoutes } from './api/settings.js';
 import { proxyRoutes } from './api/proxy.js';
 import { figmaRoutes } from './api/figma.js';
+import { aiRoutes } from './api/ai.js';
 // WebSocket handlers
 import { setupWebSocket } from './websocket/index.js';
 dotenv.config();
+// SQLite Fallback if DEMO_MODE is active or DATABASE_URL is missing
+if (process.env.DEMO_MODE === 'true' || !process.env.DATABASE_URL) {
+    process.env.DATABASE_URL = 'file:./dev.db';
+}
 // Initialize
 const fastify = Fastify({
     logger: true,
@@ -73,6 +78,7 @@ await fastify.register(codeRoutes, { prefix: '/api/code' });
 await fastify.register(settingsRoutes, { prefix: '/api/settings' });
 await fastify.register(proxyRoutes, { prefix: '/api/proxy' });
 await fastify.register(figmaRoutes, { prefix: '/api/figma' });
+await fastify.register(aiRoutes, { prefix: '/api/ai' });
 // Setup WebSocket
 setupWebSocket(fastify);
 // ============================================

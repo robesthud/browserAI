@@ -1,17 +1,18 @@
 // ============================================
 // AI CODE STUDIO - WEBSOCKET HANDLERS
-// Chat streaming, collaboration, browser agent
+// Chat streaming, collaboration, browser agent, and background ReAct Agent updates
 // ============================================
 import { WebSocket } from 'ws';
 import { AIAdapter } from '../services/aiAdapter.js';
 import { prisma } from '../index.js';
-import { agentQueue } from '../services/queues.js';
+import { agentQueue } from '../services/agentQueue.js';
+import { PTYManager } from '../services/ptyManager.js';
 import { randomUUID } from 'crypto';
 import * as Y from 'yjs';
-// Store for Yjs documents
+// Global map matching task IDs to their active Websockets for real-time streaming feedback
+export const activeAgentSockets = new Map();
 const docs = new Map();
 const connections = new Map();
-export const activeAgentSockets = new Map();
 export function setupWebSocket(fastify) {
     fastify.register(async function (fastify) {
         fastify.get('/ws', { websocket: true }, (connection, req) => {
@@ -42,7 +43,7 @@ export function setupWebSocket(fastify) {
             ws.on('message', async (rawMessage) => {
                 try {
                     const message = JSON.parse(rawMessage.toString());
-                    await handleMessage(ws, message, { userId, projectId });
+                    await handleMessage(ws, message, { userId, projectId, host: req.headers.host || 'localhost', token: token || '' });
                 }
                 catch (error) {
                     console.error('WebSocket message error:', error);
@@ -56,6 +57,15 @@ export function setupWebSocket(fastify) {
             ws.on('close', () => {
                 if (projectId) {
                     connections.get(projectId)?.delete(ws);
+                    // Force gracefully kill the PTY session associated with this WebSocket on close
+                    const ptySessionId = `${projectId}-${userId || 'guest'}`;
+                    PTYManager.killSession(ptySessionId);
+                }
+                // Clean up active sockets
+                for (const [taskId, socket] of activeAgentSockets.entries()) {
+                    if (socket === ws) {
+                        activeAgentSockets.delete(taskId);
+                    }
                 }
             });
         });
@@ -183,7 +193,6 @@ async function handleMessage(ws, message, ctx) {
         // ============================================
         case 'browser:action': {
             const { requestId, action } = payload;
-            // Forward to browser agent service
             try {
                 const response = await fetch(`${process.env.BROWSER_AI_URL || 'http://localhost:8080'}/action`, {
                     method: 'POST',
@@ -211,11 +220,12 @@ async function handleMessage(ws, message, ctx) {
             const { goal, config } = payload;
             const taskId = randomUUID();
             const projectId = ctx.projectId || 'demo-project-1';
+            const wsUrl = `ws://${ctx.host}/ws?token=${ctx.token}&projectId=${projectId}`;
             try {
-                // Register WebSocket for live updates
+                // Save the active WebSocket connection to map for streaming updates
                 activeAgentSockets.set(taskId, ws);
-                // Create task tracking in DB
-                const task = await prisma.agentTask.create({
+                // Create Task tracker row in Postgres/SQLite database
+                await prisma.agentTask.create({
                     data: {
                         id: taskId,
                         projectId,
@@ -224,13 +234,15 @@ async function handleMessage(ws, message, ctx) {
                         status: 'pending',
                     }
                 });
-                // Add task to Bull Queue (processed in background by Redis)
+                // Add execution task to Bull queue
                 await agentQueue.add('agent-task', {
                     taskId,
                     projectId,
                     goal,
                     config,
+                    wsUrl,
                 });
+                // Notify client that task is successfully queued
                 ws.send(JSON.stringify({
                     type: 'agent:queued',
                     payload: { taskId, status: 'pending', message: 'Task queued for background execution' }
@@ -242,6 +254,32 @@ async function handleMessage(ws, message, ctx) {
                     payload: { error: err.message || String(err) }
                 }));
             }
+            break;
+        }
+        // ============================================
+        // REAL-TIME PTY TERMINAL WORKFLOW
+        // ============================================
+        case 'terminal:init': {
+            const ptySessionId = `${ctx.projectId || 'default'}-${ctx.userId || 'guest'}`;
+            try {
+                await PTYManager.createSession(ptySessionId, ctx.projectId || 'default', ws);
+            }
+            catch (err) {
+                ws.send(JSON.stringify({
+                    type: 'terminal:output',
+                    payload: { sessionId: ptySessionId, data: `\r\n\x1b[31m[PTY Error] Failed to launch terminal shell: ${err.message}\x1b[0m\r\n` }
+                }));
+            }
+            break;
+        }
+        case 'terminal:input': {
+            const ptySessionId = `${ctx.projectId || 'default'}-${ctx.userId || 'guest'}`;
+            PTYManager.write(ptySessionId, payload.data);
+            break;
+        }
+        case 'terminal:resize': {
+            const ptySessionId = `${ctx.projectId || 'default'}-${ctx.userId || 'guest'}`;
+            PTYManager.resize(ptySessionId, payload.cols, payload.rows);
             break;
         }
         default:
@@ -262,43 +300,4 @@ function broadcast(projectId, excludeWs, message) {
         }
     }
 }
-async function planAgentTask(goal, config) {
-    // Use AI to plan steps
-    const messages = [
-        {
-            role: 'system',
-            content: `You are a project planning AI. Given a goal, output a JSON array of steps to achieve it.
-Each step should have: id, type (create_file, edit_file, run_command, install), description, and details.
-Output only valid JSON, no markdown.`,
-        },
-        {
-            role: 'user',
-            content: `Plan steps to: ${goal}`,
-        },
-    ];
-    try {
-        const response = await AIAdapter.chat(config, messages);
-        return JSON.parse(response);
-    }
-    catch {
-        // Fallback to basic steps
-        return [
-            { id: '1', type: 'plan', description: `Planning: ${goal}` },
-            { id: '2', type: 'create_file', description: 'Creating project structure' },
-            { id: '3', type: 'complete', description: 'Task completed' },
-        ];
-    }
-}
-async function executeAgentStep(step, _config) {
-    // Execute different step types
-    switch (step.type) {
-        case 'create_file':
-            return { success: true, file: step.details?.path };
-        case 'run_command':
-            return { success: true, output: 'Command executed' };
-        case 'install':
-            return { success: true, packages: step.details?.packages };
-        default:
-            return { success: true };
-    }
-}
+export default setupWebSocket;

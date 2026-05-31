@@ -239,6 +239,18 @@ class WebSocketService {
     return requestId;
   }
 
+  // ============================================
+  // PTY TERMINAL METHODS
+  // ============================================
+
+  sendTerminalInput(data: string) {
+    this.send('terminal:input', { data });
+  }
+
+  sendTerminalResize(cols: number, rows: number) {
+    this.send('terminal:resize', { cols, rows });
+  }
+
   getUserId() {
     return this.userId;
   }

@@ -8,6 +8,7 @@ import { WebSocket } from 'ws';
 import { AIAdapter, type Message, type AIConfig } from '../services/aiAdapter.js';
 import { prisma, redis } from '../index.js';
 import { agentQueue } from '../services/agentQueue.js';
+import { PTYManager } from '../services/ptyManager.js';
 import { randomUUID } from 'crypto';
 import * as Y from 'yjs';
 
@@ -63,6 +64,10 @@ export function setupWebSocket(fastify: FastifyInstance) {
       ws.on('close', () => {
         if (projectId) {
           connections.get(projectId)?.delete(ws);
+          
+          // Force gracefully kill the PTY session associated with this WebSocket on close
+          const ptySessionId = `${projectId}-${userId || 'guest'}`;
+          PTYManager.killSession(ptySessionId);
         }
         // Clean up active sockets
         for (const [taskId, socket] of activeAgentSockets.entries()) {
@@ -297,6 +302,34 @@ async function handleMessage(ws: WebSocket, message: any, ctx: Context) {
           payload: { error: err.message || String(err) }
         }));
       }
+      break;
+    }
+
+    // ============================================
+    // REAL-TIME PTY TERMINAL WORKFLOW
+    // ============================================
+    case 'terminal:init': {
+      const ptySessionId = `${ctx.projectId || 'default'}-${ctx.userId || 'guest'}`;
+      try {
+        await PTYManager.createSession(ptySessionId, ctx.projectId || 'default', ws);
+      } catch (err: any) {
+        ws.send(JSON.stringify({
+          type: 'terminal:output',
+          payload: { sessionId: ptySessionId, data: `\r\n\x1b[31m[PTY Error] Failed to launch terminal shell: ${err.message}\x1b[0m\r\n` }
+        }));
+      }
+      break;
+    }
+
+    case 'terminal:input': {
+      const ptySessionId = `${ctx.projectId || 'default'}-${ctx.userId || 'guest'}`;
+      PTYManager.write(ptySessionId, payload.data);
+      break;
+    }
+
+    case 'terminal:resize': {
+      const ptySessionId = `${ctx.projectId || 'default'}-${ctx.userId || 'guest'}`;
+      PTYManager.resize(ptySessionId, payload.cols, payload.rows);
       break;
     }
 

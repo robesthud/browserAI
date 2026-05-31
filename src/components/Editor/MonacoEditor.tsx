@@ -8,7 +8,7 @@ import type * as Monaco from 'monaco-editor';
 import { useEditorStore, useUIStore } from '../../stores/useStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { simulateCompletion } from '../../services/mockBackend';
-import { getCodeCompletion } from '../../services/aiAdapter';
+import { aiAPI } from '../../services/api';
 
 interface MonacoEditorProps {
   fileId: string;
@@ -88,11 +88,15 @@ export function MonacoEditor({ fileId, content, language, onChange }: MonacoEdit
               language
             );
           } else {
-            completion = await getCodeCompletion(
-              textUntilPosition.slice(-1000),
+            const res = await aiAPI.complete(
+              textUntilPosition.slice(-2000),
               textAfterPosition.slice(0, 500),
-              language
+              language,
+              settings.provider,
+              settings.model,
+              settings.apiKey
             );
+            completion = res.completion;
           }
 
           if (completion) {

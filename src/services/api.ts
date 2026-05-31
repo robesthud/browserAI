@@ -196,10 +196,10 @@ export const aiAPI = {
     });
   },
   
-  complete: async (prefix: string, suffix: string, language: string) => {
+  complete: async (prefix: string, suffix: string, language: string, provider?: string, model?: string, apiKey?: string) => {
     return fetchAPI<{ completion: string }>('/ai/complete', {
       method: 'POST',
-      body: JSON.stringify({ prefix, suffix, language }),
+      body: JSON.stringify({ prefix, suffix, language, provider, model, apiKey }),
     });
   },
   

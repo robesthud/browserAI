@@ -1,12 +1,18 @@
 // ============================================
 // AI CODE STUDIO - REACT AGENT IMPLEMENTATION
-// Handles the ReAct Loop (Reasoning + Acting)
+// Handles the ReAct Loop (Reasoning + Acting) with Graceful Shutdown
 // ============================================
 import { AIAdapter } from './aiAdapter.js';
 import { prisma } from '../index.js';
 import { randomUUID } from 'crypto';
 import { AgentTools } from './agentTools.js';
 import { WebSocket } from 'ws';
+// Global graceful shutdown tracking
+let isShutdownRequested = false;
+process.on('SIGTERM', () => {
+    console.log('⚠️ [ReAct Agent] SIGTERM received. Requesting graceful shutdown of current steps...');
+    isShutdownRequested = true;
+});
 export class ReActAgent {
     goal;
     projectId;
@@ -31,12 +37,11 @@ export class ReActAgent {
         }
     }
     /**
-     * Main Execution Loop
+     * Main Execution Loop (Maximum 30 steps)
      */
     async run() {
         console.log(`[ReAct Agent] Running loop for task [${this.taskId}]...`);
         this.sendClientUpdate('agent:running', { taskId: this.taskId, goal: this.goal });
-        // Initial system history
         const messageHistory = [
             {
                 role: 'system',
@@ -73,6 +78,18 @@ export class ReActAgent {
             }
         ];
         while (this.stepCount < this.maxSteps) {
+            // Check for SIGTERM graceful shutdown request
+            if (isShutdownRequested) {
+                const shutdownMsg = 'Graceful shutdown triggered: Agent execution suspended by SIGTERM.';
+                console.warn(`[ReAct Agent] [${this.taskId}] ${shutdownMsg}`);
+                await this.saveAndObserve('error', shutdownMsg);
+                await prisma.agentTask.update({
+                    where: { id: this.taskId },
+                    data: { status: 'failed' }
+                });
+                this.sendClientUpdate('agent:error', { taskId: this.taskId, error: shutdownMsg });
+                return;
+            }
             this.stepCount++;
             console.log(`[ReAct Agent] Step ${this.stepCount}/${this.maxSteps}`);
             // 1. Think (Call LLM)
@@ -83,15 +100,23 @@ export class ReActAgent {
             catch (err) {
                 console.error('[ReAct Agent] Thinking failed:', err);
                 await this.saveAndObserve('error', `Thinking failed: ${err.message}`);
+                await prisma.agentTask.update({
+                    where: { id: this.taskId },
+                    data: { status: 'failed' }
+                });
                 break;
             }
-            // 2. Save Thought & Action to DB/Client
+            // 2. Save Thought & Action to DB and notify Client
             await this.saveAndObserve('thought', decision.thought);
             if (decision.action === 'complete') {
                 const result = decision.action_input?.result || 'Task completed successfully.';
                 await this.saveAndObserve('complete', result);
+                await prisma.agentTask.update({
+                    where: { id: this.taskId },
+                    data: { status: 'completed' }
+                });
                 this.sendClientUpdate('agent:complete', { taskId: this.taskId, result });
-                break;
+                return;
             }
             // 3. Act (Execute tool)
             let observation = '';
@@ -101,9 +126,9 @@ export class ReActAgent {
             catch (err) {
                 observation = `Error executing ${decision.action}: ${err.message}`;
             }
-            // 4. Observe
+            // 4. Observe (Save to DB & push WS updates)
             await this.saveAndObserve('observation', observation);
-            // Append step output to LLM history context
+            // Append outputs to message history context
             messageHistory.push({
                 role: 'assistant',
                 content: JSON.stringify(decision)
@@ -114,9 +139,14 @@ export class ReActAgent {
             });
         }
         if (this.stepCount >= this.maxSteps) {
-            const errorMsg = 'Task terminated due to exceeding max steps limit.';
-            await this.saveAndObserve('error', errorMsg);
-            this.sendClientUpdate('agent:error', { taskId: this.taskId, error: errorMsg });
+            const forceCompleteMsg = `Task force completed because it reached the maximum step limit of ${this.maxSteps}.`;
+            console.warn(`[ReAct Agent] ${forceCompleteMsg}`);
+            await this.saveAndObserve('complete', forceCompleteMsg);
+            await prisma.agentTask.update({
+                where: { id: this.taskId },
+                data: { status: 'completed' }
+            });
+            this.sendClientUpdate('agent:complete', { taskId: this.taskId, result: forceCompleteMsg });
         }
     }
     /**
@@ -166,7 +196,7 @@ export class ReActAgent {
         }
     }
     /**
-     * Logs steps and outputs to Prisma and WebSockets
+     * Logs steps and outputs to Prisma (prisma.agentStep.create) and WebSockets
      */
     async saveAndObserve(type, content) {
         const isError = type === 'error';
@@ -176,10 +206,10 @@ export class ReActAgent {
                 id: randomUUID(),
                 taskId: this.taskId,
                 type,
-                description: content.slice(0, 200),
+                content: content.slice(0, 1000), // Ensure DB limit safety
                 status,
-                result: content,
                 order: this.stepCount,
+                result: content,
                 error: isError ? content : null
             }
         });
@@ -191,3 +221,4 @@ export class ReActAgent {
         });
     }
 }
+export default ReActAgent;

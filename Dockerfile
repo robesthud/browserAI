@@ -1,3 +1,7 @@
+# ============================================
+# AI CODE STUDIO - FRONTEND DOCKERFILE
+# ============================================
+
 # Build stage
 FROM node:20-alpine AS build
 
