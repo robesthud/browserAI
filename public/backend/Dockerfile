@@ -35,11 +35,12 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Install runtime dependencies for native node-pty execution
+# Install runtime dependencies for native node-pty execution & curl healthcheck
 RUN apt-get update && apt-get install -y \
     python3 \
     make \
     g++ \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy production node_modules from builder
