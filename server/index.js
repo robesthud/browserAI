@@ -14,6 +14,8 @@ import { isIP as isIp } from 'is-ip'
 import ipaddr from 'ipaddr.js'
 import AdmZip from 'adm-zip'
 import path from 'node:path'
+import crypto from 'node:crypto'
+import nodemailer from 'nodemailer'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { existsSync } from 'node:fs'
@@ -36,6 +38,7 @@ import {
   dumpRawKeys,
   restoreRawKeys,
 } from './db.js'
+import db from './db.js'
 import {
   generateSalt,
   deriveKey,
@@ -110,6 +113,296 @@ app.use(limiter)
 // and a mismatched Access-Control-Allow-Origin header makes browsers block JS/CSS.
 app.use(process.env.CORS_ORIGIN ? cors({ origin: process.env.CORS_ORIGIN }) : cors())
 app.use(express.json({ limit: '50mb' }))
+
+// ---- Auth + encrypted cloud sync ----
+const AUTH_COOKIE = 'browserai_session'
+const SESSION_DAYS = 30
+const APP_URL = (process.env.APP_URL
+  || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '')
+  || 'http://localhost:8787').replace(/\/$/, '')
+const AUTH_SECRET = process.env.AUTH_SECRET || 'browserai-dev-secret-change-me'
+if (!process.env.AUTH_SECRET) {
+  console.warn('⚠ AUTH_SECRET is not set. Set a long random AUTH_SECRET in Railway Variables for production.')
+}
+
+function now() {
+  return Date.now()
+}
+
+function uidAuth() {
+  return crypto.randomUUID()
+}
+
+function sha256(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex')
+}
+
+function passwordHash(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const hash = crypto.scryptSync(String(password), salt, 64).toString('hex')
+  return `${salt}:${hash}`
+}
+
+function verifyPassword(password, stored = '') {
+  const [salt, hash] = String(stored).split(':')
+  if (!salt || !hash) return false
+  const next = passwordHash(password, salt).split(':')[1]
+  return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(next, 'hex'))
+}
+
+function encryptionKey() {
+  return crypto.createHash('sha256').update(AUTH_SECRET).digest()
+}
+
+function encryptJson(value) {
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv('aes-256-gcm', encryptionKey(), iv)
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify(value ?? {}), 'utf8'),
+    cipher.final(),
+  ])
+  const tag = cipher.getAuthTag()
+  return `v1:${iv.toString('base64')}:${tag.toString('base64')}:${encrypted.toString('base64')}`
+}
+
+function decryptJson(payload) {
+  const [version, ivB64, tagB64, dataB64] = String(payload || '').split(':')
+  if (version !== 'v1' || !ivB64 || !tagB64 || !dataB64) return {}
+  const decipher = crypto.createDecipheriv('aes-256-gcm', encryptionKey(), Buffer.from(ivB64, 'base64'))
+  decipher.setAuthTag(Buffer.from(tagB64, 'base64'))
+  const plain = Buffer.concat([
+    decipher.update(Buffer.from(dataB64, 'base64')),
+    decipher.final(),
+  ])
+  return JSON.parse(plain.toString('utf8'))
+}
+
+function parseCookies(req) {
+  const raw = req.headers.cookie || ''
+  return Object.fromEntries(raw.split(';').map((part) => {
+    const at = part.indexOf('=')
+    if (at === -1) return ['', '']
+    return [part.slice(0, at).trim(), decodeURIComponent(part.slice(at + 1).trim())]
+  }).filter(([k]) => k))
+}
+
+function setSessionCookie(res, token) {
+  const maxAge = SESSION_DAYS * 24 * 60 * 60
+  const secure = process.env.NODE_ENV === 'production'
+  res.setHeader('Set-Cookie', `${AUTH_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`)
+}
+
+function clearSessionCookie(res) {
+  res.setHeader('Set-Cookie', `${AUTH_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`)
+}
+
+function publicUser(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name || '',
+    role: row.role || 'user',
+    createdAt: row.created_at,
+  }
+}
+
+function initAuthTables() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL DEFAULT '',
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'user',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at INTEGER NOT NULL,
+      used_at INTEGER,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS user_cloud_data (
+      user_id TEXT PRIMARY KEY,
+      payload TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+  `)
+}
+initAuthTables()
+
+function getSessionUser(req) {
+  const token = parseCookies(req)[AUTH_COOKIE]
+  if (!token) return null
+  const tokenHash = sha256(token)
+  const row = db.prepare(`
+    SELECT users.* FROM sessions
+    JOIN users ON users.id = sessions.user_id
+    WHERE sessions.token_hash = ? AND sessions.expires_at > ?
+    LIMIT 1
+  `).get(tokenHash, now())
+  return row || null
+}
+
+function optionalAuth(req, res, next) {
+  req.user = getSessionUser(req)
+  next()
+}
+
+function requireAuth(req, res, next) {
+  req.user = getSessionUser(req)
+  if (!req.user) return res.status(401).json({ error: 'Требуется вход' })
+  next()
+}
+
+function createSession(res, userId) {
+  const token = crypto.randomBytes(32).toString('base64url')
+  db.prepare('INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(uidAuth(), userId, sha256(token), now() + SESSION_DAYS * 24 * 60 * 60 * 1000, now())
+  setSessionCookie(res, token)
+}
+
+function smtpConfigured() {
+  return Boolean(process.env.SMTP_HOST && process.env.SMTP_PORT && process.env.SMTP_FROM)
+}
+
+async function sendPasswordResetEmail(email, resetUrl) {
+  if (!smtpConfigured()) {
+    throw new Error('SMTP не настроен. Добавьте SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM в Railway Variables.')
+  }
+  const transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT || 587),
+    secure: String(process.env.SMTP_SECURE || '').toLowerCase() === 'true',
+    auth: process.env.SMTP_USER
+      ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS || '' }
+      : undefined,
+  })
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM,
+    to: email,
+    subject: 'Восстановление пароля BrowserAI',
+    text: `Для сброса пароля откройте ссылку:\n\n${resetUrl}\n\nСсылка действует 1 час.`,
+    html: `<p>Для сброса пароля откройте ссылку:</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>Ссылка действует 1 час.</p>`,
+  })
+}
+
+app.get('/api/auth/me', optionalAuth, (req, res) => {
+  res.json({ user: publicUser(req.user) })
+})
+
+app.post('/api/auth/register', (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase()
+  const name = String(req.body?.name || '').trim()
+  const password = String(req.body?.password || '')
+  const registrationSecret = String(req.body?.registrationSecret || '')
+
+  if (!/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: 'Некорректный email' })
+  if (password.length < 8) return res.status(400).json({ error: 'Пароль должен быть минимум 8 символов' })
+
+  const usersCount = db.prepare('SELECT COUNT(*) AS count FROM users').get().count
+  if (usersCount > 0) {
+    const required = process.env.REGISTRATION_SECRET || ''
+    if (!required || registrationSecret !== required) {
+      return res.status(403).json({ error: 'Регистрация закрыта. Первый пользователь уже создан.' })
+    }
+  }
+
+  const id = uidAuth()
+  const role = usersCount === 0 ? 'owner' : 'user'
+  try {
+    db.prepare('INSERT INTO users (id, email, name, password_hash, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(id, email, name, passwordHash(password), role, now(), now())
+    createSession(res, id)
+    const user = db.prepare('SELECT * FROM users WHERE id=?').get(id)
+    res.json({ user: publicUser(user) })
+  } catch (error) {
+    if (String(error?.message || '').includes('UNIQUE')) return res.status(409).json({ error: 'Email уже зарегистрирован' })
+    res.status(500).json({ error: 'Не удалось зарегистрировать пользователя' })
+  }
+})
+
+app.post('/api/auth/login', (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase()
+  const password = String(req.body?.password || '')
+  const user = db.prepare('SELECT * FROM users WHERE email=?').get(email)
+  if (!user || !verifyPassword(password, user.password_hash)) {
+    return res.status(401).json({ error: 'Неверный email или пароль' })
+  }
+  createSession(res, user.id)
+  res.json({ user: publicUser(user) })
+})
+
+app.post('/api/auth/logout', requireAuth, (req, res) => {
+  const token = parseCookies(req)[AUTH_COOKIE]
+  if (token) db.prepare('DELETE FROM sessions WHERE token_hash=?').run(sha256(token))
+  clearSessionCookie(res)
+  res.json({ ok: true })
+})
+
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase()
+  const user = db.prepare('SELECT * FROM users WHERE email=?').get(email)
+  if (!user) return res.json({ ok: true })
+  const token = crypto.randomBytes(32).toString('base64url')
+  db.prepare('INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(uidAuth(), user.id, sha256(token), now() + 60 * 60 * 1000, now())
+  const resetUrl = `${APP_URL}/?reset_token=${encodeURIComponent(token)}`
+  try {
+    await sendPasswordResetEmail(email, resetUrl)
+    res.json({ ok: true })
+  } catch (error) {
+    res.status(503).json({ error: error.message || 'Email-сервис не настроен' })
+  }
+})
+
+app.post('/api/auth/reset-password', (req, res) => {
+  const token = String(req.body?.token || '')
+  const password = String(req.body?.password || '')
+  if (password.length < 8) return res.status(400).json({ error: 'Пароль должен быть минимум 8 символов' })
+  const row = db.prepare('SELECT * FROM password_reset_tokens WHERE token_hash=? AND expires_at>? AND used_at IS NULL').get(sha256(token), now())
+  if (!row) return res.status(400).json({ error: 'Ссылка недействительна или устарела' })
+  db.transaction(() => {
+    db.prepare('UPDATE users SET password_hash=?, updated_at=? WHERE id=?').run(passwordHash(password), now(), row.user_id)
+    db.prepare('UPDATE password_reset_tokens SET used_at=? WHERE id=?').run(now(), row.id)
+    db.prepare('DELETE FROM sessions WHERE user_id=?').run(row.user_id)
+  })()
+  res.json({ ok: true })
+})
+
+app.get('/api/cloud', requireAuth, (req, res) => {
+  const row = db.prepare('SELECT payload, updated_at FROM user_cloud_data WHERE user_id=?').get(req.user.id)
+  res.json({ data: row ? decryptJson(row.payload) : null, updatedAt: row?.updated_at || null })
+})
+
+app.put('/api/cloud', requireAuth, (req, res) => {
+  const data = {
+    settings: req.body?.settings || null,
+    chats: Array.isArray(req.body?.chats) ? req.body.chats : [],
+  }
+  const payload = encryptJson(data)
+  db.prepare(`
+    INSERT INTO user_cloud_data (user_id, payload, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at
+  `).run(req.user.id, payload, now())
+  res.json({ ok: true, updatedAt: now() })
+})
 
 function encKey() {
   return vaultEnabled() ? unlockedKey : null

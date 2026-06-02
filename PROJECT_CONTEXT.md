@@ -23,6 +23,46 @@ BrowserAI is a full-stack app:
   - DB: `/data/browserai.db`
   - workspace: `/data/workspace`
 
+## Auth/cloud-sync status
+
+Auth is implemented with SQLite tables in `server/index.js`:
+
+- `users`
+- `sessions`
+- `password_reset_tokens`
+- `user_cloud_data`
+
+Frontend auth gate: `src/components/AuthGate.jsx`.
+
+Important behavior:
+
+- First registered user becomes `owner`.
+- After the first user exists, registration is closed unless request includes `registrationSecret` equal to Railway env `REGISTRATION_SECRET`.
+- Sessions use HttpOnly cookie `browserai_session`.
+- `user_cloud_data.payload` is encrypted with AES-256-GCM using `AUTH_SECRET`.
+- Synced data currently includes settings/API keys and chats, not full Workspace files.
+- `useSettings` skips legacy global `/api/settings` DB sync when `localStorage['browserai.auth.enabled'] === '1'`; cloud data is saved through `/api/cloud` from `CloudSync` in `App.jsx`.
+- Password reset is real but requires SMTP env vars. Without SMTP it returns a configuration error.
+
+Required Railway variables for production auth:
+
+```text
+AUTH_SECRET=<long random secret>
+APP_URL=https://browserai-production.up.railway.app
+```
+
+Optional for more registrations/password reset:
+
+```text
+REGISTRATION_SECRET=<secret for adding more users>
+SMTP_HOST=...
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=...
+SMTP_PASS=...
+SMTP_FROM=BrowserAI <noreply@example.com>
+```
+
 ## Important fixes already made
 
 1. Express 5 wildcard SPA route:

@@ -41,6 +41,20 @@ export async function ping(timeoutMs = 1500) {
 }
 
 export const backend = {
+  authMe: () => req('/auth/me'),
+  authRegister: (payload) =>
+    req('/auth/register', { method: 'POST', body: JSON.stringify(payload) }),
+  authLogin: (payload) =>
+    req('/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
+  authLogout: () => req('/auth/logout', { method: 'POST' }),
+  authForgotPassword: (email) =>
+    req('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
+  authResetPassword: (token, password) =>
+    req('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, password }) }),
+  getCloud: () => req('/cloud'),
+  saveCloud: (payload) =>
+    req('/cloud', { method: 'PUT', body: JSON.stringify(payload) }),
+
   getSettings: () => req('/settings'),
   saveKey: (key) =>
     req('/keys', { method: 'POST', body: JSON.stringify(key) }),

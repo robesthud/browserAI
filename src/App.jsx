@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Sidebar from './components/Sidebar.jsx'
 import Topbar from './components/Topbar.jsx'
 import Composer from './components/Composer.jsx'
 import Workspace from './components/Workspace.jsx'
 import MessageList from './components/MessageList.jsx'
 import SettingsModal from './components/SettingsModal.jsx'
+import AuthGate from './components/AuthGate.jsx'
 import { IconExpand } from './icons.jsx'
 import {
   getActiveKey,
@@ -14,8 +15,26 @@ import {
 } from './lib/settings.js'
 import { useSettings } from './lib/useSettings.js'
 import { useChats } from './lib/useChats.js'
+import { backend } from './lib/backend.js'
 
-export default function App() {
+function CloudSync({ settings, chats }) {
+  const firstRun = useRef(true)
+
+  useEffect(() => {
+    if (firstRun.current) {
+      firstRun.current = false
+      return undefined
+    }
+    const timer = setTimeout(() => {
+      void backend.saveCloud({ settings, chats }).catch(() => {})
+    }, 700)
+    return () => clearTimeout(timer)
+  }, [settings, chats])
+
+  return null
+}
+
+function BrowserApp({ user, reloadAuth }) {
   const [collapsed, setCollapsed] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth < 768 : false,
   )
@@ -75,6 +94,12 @@ export default function App() {
 
   const toggleSidebar = () => setCollapsed((v) => !v)
   const toggleWorkspace = () => setWorkspaceOpen((v) => !v)
+  const logout = async () => {
+    await backend.saveCloud({ settings, chats }).catch(() => {})
+    await backend.authLogout().catch(() => {})
+    localStorage.removeItem('browserai.auth.enabled')
+    await reloadAuth?.()
+  }
 
   const configured = isConfigured(settings)
   const activeKey = useMemo(() => getActiveKey(settings), [settings])
@@ -85,6 +110,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-graphite-900 text-cream">
+      <CloudSync settings={settings} chats={chats} />
       <Sidebar
         collapsed={collapsed}
         onToggle={toggleSidebar}
@@ -128,6 +154,8 @@ export default function App() {
           workspaceOpen={workspaceOpen}
           onToggleWorkspace={toggleWorkspace}
           onOpenSettings={() => setSettingsOpen(true)}
+          user={user}
+          onLogout={logout}
         />
 
         {hasMessages ? (
@@ -181,5 +209,15 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
       />
     </div>
+  )
+}
+
+export default function App() {
+  return (
+    <AuthGate>
+      {({ user, reloadAuth, renderKey }) => (
+        <BrowserApp key={renderKey} user={user} reloadAuth={reloadAuth} />
+      )}
+    </AuthGate>
   )
 }

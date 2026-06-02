@@ -199,6 +199,37 @@ export NODE_OPTIONS="--max-old-space-size=256"
 npm run build && npm start
 ```
 
+## Регистрация, вход и облачная синхронизация
+
+В проект добавлена полноценная авторизация:
+
+- регистрация по email/паролю;
+- вход/выход через HttpOnly session-cookie;
+- первый зарегистрированный пользователь получает роль `owner`;
+- после создания первого пользователя регистрация закрыта, если не задан и не передан `REGISTRATION_SECRET`;
+- настройки, API-ключи и чаты синхронизируются между браузером на компьютере и Android-приложением;
+- cloud-sync хранится в SQLite в таблице `user_cloud_data` в зашифрованном виде (`AES-256-GCM`, ключ из `AUTH_SECRET`).
+
+Для production обязательно задайте в Railway Variables:
+
+```text
+AUTH_SECRET=длинная_случайная_строка_минимум_32_символа
+APP_URL=https://browserai-production.up.railway.app
+```
+
+Восстановление пароля использует реальные email-сообщения через SMTP. Пока SMTP не настроен, endpoint восстановления вернёт ошибку настройки email-сервиса. Для включения добавьте:
+
+```text
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=...
+SMTP_PASS=...
+SMTP_FROM=BrowserAI <noreply@example.com>
+```
+
+Ссылка восстановления ведёт на `APP_URL/?reset_token=...` и действует 1 час.
+
 ## Менеджер ключей и база данных
 
 - Откройте **«Настройки»** (внизу сайдбара или иконка-шестерёнка в шапке).
@@ -325,7 +356,11 @@ npm run build && npm start
 | `BROWSERAI_DB` | `/data/browserai.db` или `server/browserai.db` | Путь к файлу SQLite |
 | `WORKSPACE_ROOT` | `/data/workspace` или `./workspace` | Корень файлового workspace |
 | `NODE_ENV` | — | `production` для боевого режима |
-| `CORS_ORIGIN` | `http://localhost:5173` | Разрешённый origin для CORS |
+| `CORS_ORIGIN` | `*` если не задан | Разрешённый origin для CORS |
+| `AUTH_SECRET` | dev fallback | Ключ шифрования cloud-sync и секрет auth; в production обязателен |
+| `APP_URL` | Railway domain или localhost | Публичный URL для ссылок восстановления пароля |
+| `REGISTRATION_SECRET` | — | Секрет для регистрации дополнительных пользователей после первого owner |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | — | SMTP-настройки для восстановления пароля |
 
 ## Структура проекта
 

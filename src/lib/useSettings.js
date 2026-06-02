@@ -35,6 +35,7 @@ export function useSettings() {
   const [vault, setVault] = useState({ enabled: false, locked: false })
   const onlineRef = useRef(false)
   const autoRefreshRef = useRef('')
+  const cloudAuth = typeof localStorage !== 'undefined' && localStorage.getItem('browserai.auth.enabled') === '1'
 
   useEffect(() => {
     let cancelled = false
@@ -45,7 +46,7 @@ export function useSettings() {
       onlineRef.current = ok
       setOnline(ok)
 
-      if (!ok) return
+      if (!ok || cloudAuth) return
 
       try {
         const data = await backend.getSettings()
@@ -79,15 +80,15 @@ export function useSettings() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [cloudAuth])
 
   useEffect(() => {
-    if (vault.enabled) return
+    if (vault.enabled && !cloudAuth) return
     saveSettings(settings)
-  }, [settings, vault.enabled])
+  }, [settings, vault.enabled, cloudAuth])
 
   const refresh = useCallback(async () => {
-    if (!onlineRef.current) return
+    if (!onlineRef.current || cloudAuth) return
     try {
       const data = await backend.getSettings()
       if (data.vault) setVault(data.vault)
@@ -95,7 +96,7 @@ export function useSettings() {
     } catch {
       /* ignore */
     }
-  }, [])
+  }, [cloudAuth])
 
   const vaultSetup = useCallback(async (passphrase) => {
     const data = await backend.vaultSetup(passphrase)
@@ -241,7 +242,7 @@ export function useSettings() {
           return
         }
 
-        if (onlineRef.current) {
+        if (onlineRef.current && !cloudAuth) {
           try {
             const data = await backend.saveKey(normalized)
             setSettings((s) => ({
@@ -265,13 +266,13 @@ export function useSettings() {
         /* ignore */
       }
     },
-    [validateKey],
+    [validateKey, cloudAuth],
   )
 
   const saveKey = useCallback(async (key) => {
     const normalized = normalizeKey(key)
 
-    if (onlineRef.current) {
+    if (onlineRef.current && !cloudAuth) {
       try {
         const data = await backend.saveKey(normalized)
         setSettings((s) => ({
@@ -295,10 +296,10 @@ export function useSettings() {
       const activeKeyId = s.activeKeyId ?? normalized.id
       return { ...s, keys, activeKeyId }
     })
-  }, [])
+  }, [cloudAuth])
 
   const deleteKey = useCallback(async (id) => {
-    if (onlineRef.current) {
+    if (onlineRef.current && !cloudAuth) {
       try {
         const data = await backend.deleteKey(id)
         setSettings((s) => ({
@@ -317,11 +318,11 @@ export function useSettings() {
       const activeKeyId = s.activeKeyId === id ? (keys[0]?.id ?? null) : s.activeKeyId
       return { ...s, keys, activeKeyId }
     })
-  }, [])
+  }, [cloudAuth])
 
   const activateKey = useCallback(
     async (id) => {
-      if (onlineRef.current) {
+      if (onlineRef.current && !cloudAuth) {
         try {
           const data = await backend.activateKey(id)
           const keys = (data.keys || []).map(normalizeKey)
@@ -342,7 +343,7 @@ export function useSettings() {
       setSettings((s) => ({ ...s, activeKeyId: id }))
       if (active) void refreshModelsForKey(active)
     },
-    [refreshModelsForKey, settings.keys],
+    [cloudAuth, refreshModelsForKey, settings.keys],
   )
 
   useEffect(() => {
@@ -371,19 +372,19 @@ export function useSettings() {
 
   const setParams = useCallback(async (params) => {
     setSettings((s) => ({ ...s, ...params }))
-    if (onlineRef.current) {
+    if (onlineRef.current && !cloudAuth) {
       try {
         await backend.setParams(params)
       } catch {
         /* ignore */
       }
     }
-  }, [])
+  }, [cloudAuth])
 
   const importKeys = useCallback(async (keys, activeKeyId) => {
     const normalized = keys.map(normalizeKey)
 
-    if (onlineRef.current) {
+    if (onlineRef.current && !cloudAuth) {
       try {
         const data = await backend.importKeys(normalized, activeKeyId)
         setSettings((s) => ({
@@ -402,7 +403,7 @@ export function useSettings() {
       keys: normalized,
       activeKeyId: activeKeyId ?? normalized[0]?.id ?? null,
     }))
-  }, [])
+  }, [cloudAuth])
 
   return {
     settings,

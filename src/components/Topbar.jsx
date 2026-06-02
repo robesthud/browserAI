@@ -116,6 +116,8 @@ export default function Topbar({
   workspaceOpen,
   onToggleWorkspace,
   onOpenSettings,
+  user,
+  onLogout,
 }) {
   return (
     <header className="flex items-center justify-between gap-2 px-3 py-3 md:gap-3 md:px-5 md:py-3.5">
@@ -155,9 +157,16 @@ export default function Topbar({
         <button
           onClick={onOpenSettings}
           className="grid h-9 w-9 place-items-center rounded-lg text-cream-dim transition-colors hover:bg-graphite-800 hover:text-cream"
-          title="Настройки"
+          title={`Настройки${user?.email ? ` · ${user.email}` : ''}`}
         >
           <IconSettings />
+        </button>
+        <button
+          onClick={onLogout}
+          className="hidden rounded-lg border border-white/10 px-2.5 py-2 text-[12px] text-cream-dim transition-colors hover:bg-graphite-800 hover:text-cream sm:block"
+          title="Выйти из аккаунта"
+        >
+          Выйти
         </button>
         <button
           onClick={onToggleWorkspace}
