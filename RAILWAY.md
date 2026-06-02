@@ -3,7 +3,7 @@
 ## Quick start
 
 1. Create a new **Web Service** from this repo.
-2. Keep Railway on **Nixpacks** (the repo already contains `nixpacks.toml`).
+2. Railway is forced to use **Nixpacks** by `railway.toml`; `nixpacks.toml` contains the Node/build commands.
 3. Add a **Volume** and mount it to:
 
 ```text
