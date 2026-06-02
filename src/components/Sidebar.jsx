@@ -22,7 +22,7 @@ export default function Sidebar({
                   transition-[width,transform] duration-300 ease-in-out md:relative md:translate-x-0
                   ${collapsed ? 'w-0 -translate-x-full border-r-0 md:translate-x-0' : 'w-[82vw] max-w-[300px] translate-x-0 md:w-[260px]'}`}
     >
-      <div className="flex h-full w-[82vw] max-w-[300px] flex-col md:w-[260px]">
+      <div className="flex h-full w-[82vw] max-w-[300px] flex-col pt-8 md:w-[260px] md:pt-0">
         {/* верх: кнопка collapse */}
         <div className="flex items-center justify-end px-4 py-3.5">
           <button

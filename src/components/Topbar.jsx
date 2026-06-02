@@ -120,7 +120,7 @@ export default function Topbar({
   onLogout,
 }) {
   return (
-    <header className="flex items-center justify-between gap-2 px-3 py-3 md:gap-3 md:px-5 md:py-3.5">
+    <header className="flex items-center justify-between gap-2 px-3 pb-3 pt-10 md:gap-3 md:px-5 md:py-3.5">
       <div className="min-w-0 flex items-center gap-2 pl-11 md:pl-12">
         <span className="truncate text-[14px] text-cream-soft">{title}</span>
         {aiWorking && <WorkingSpinner />}

@@ -134,8 +134,8 @@ function BrowserApp({ user, reloadAuth }) {
         {collapsed && (
           <button
             onClick={toggleSidebar}
-            className="absolute left-3 top-3.5 z-10 grid h-9 w-9 place-items-center rounded-lg
-                       text-cream-dim transition-colors hover:bg-graphite-800 hover:text-cream"
+            className="absolute left-3 top-10 z-10 grid h-9 w-9 place-items-center rounded-lg
+                       text-cream-dim transition-colors hover:bg-graphite-800 hover:text-cream md:top-3.5"
             title="Развернуть панель"
           >
             <IconExpand />
