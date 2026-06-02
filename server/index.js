@@ -86,7 +86,25 @@ let lastActivity = Date.now()
 
 const app = express()
 app.set('trust proxy', 1)
-app.use(helmet())
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      baseUri: ["'self'"],
+      // Vite legacy builds inject small inline loader scripts. They are required
+      // for older Android System WebView versions that do not support modules.
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrcAttr: ["'none'"],
+      styleSrc: ["'self'", 'https:', "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:'],
+      fontSrc: ["'self'", 'https:', 'data:'],
+      formAction: ["'self'"],
+      frameAncestors: ["'self'"],
+      objectSrc: ["'none'"],
+      upgradeInsecureRequests: [],
+    },
+  },
+}))
 app.use(limiter)
 // Do not hard-code localhost in production: Vite emits crossorigin assets,
 // and a mismatched Access-Control-Allow-Origin header makes browsers block JS/CSS.
