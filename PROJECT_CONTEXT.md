@@ -89,6 +89,7 @@ SMTP_FROM=BrowserAI <noreply@example.com>
    - `MainActivity.java` uses `setUseWideViewPort(false)` and `setLoadWithOverviewMode(false)`.
    - React UI has mobile fixes: sidebar starts collapsed on `<768px`, opens as drawer, and topbar/model picker is compressed/hidden on small screens.
    - Mobile topbar has extra top padding (`pt-10`) and the hamburger button uses `top-10` to avoid Android status-bar overlap in WebView screenshots.
+   - Workspace opens as a full-screen fixed overlay on mobile (`w-screen`, `fixed inset-0`, top padding), but remains a 300px side panel on desktop (`md:w-[300px]`).
 
 ## Android build and release
 

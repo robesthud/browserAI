@@ -166,8 +166,8 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
 
   const nodes = filteredTree?.children || []
   const hasFiles = nodes.length > 0
-  const openWidth = 'w-[300px]'
-  const innerWidth = 'w-[300px]'
+  const openWidth = 'w-screen md:w-[300px]'
+  const innerWidth = 'w-full md:w-[300px]'
 
   const upload = async (fileList, parentPath = '') => {
     if (!fileList?.length) return
@@ -507,11 +507,11 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
 
   return (
     <div
-      className={`h-full shrink-0 overflow-hidden transition-[width] duration-300 ease-in-out ${
-        open ? openWidth : 'w-0'
+      className={`fixed inset-0 z-40 h-full shrink-0 overflow-hidden bg-graphite-900/95 transition-[width] duration-300 ease-in-out md:relative md:inset-auto md:z-auto md:bg-transparent ${
+        open ? openWidth : 'hidden w-0 md:block'
       }`}
     >
-      <div className={`flex h-full flex-col p-3 pl-0 ${innerWidth}`}>
+      <div className={`flex h-full flex-col p-3 pt-10 md:pl-0 md:pt-3 ${innerWidth}`}>
         <div className="flex max-h-full flex-1 flex-col overflow-hidden rounded-xl border border-white/10 bg-graphite-800/40 backdrop-blur-sm">
           <div className="flex items-center justify-between gap-2 border-b border-white/5 px-3 py-2.5">
             <span className="flex items-center gap-2 text-[13px] text-cream">
