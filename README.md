@@ -452,6 +452,45 @@ Android не разрешает полностью тихую установку
 - **DOMPurify** — санитизация Markdown-вывода
 - **Шифрование** — AES-256-GCM для API-ключей
 
+## Документация для разработчиков
+
+Для быстрого входа в проект используйте три файла:
+
+- `README.md` — краткое описание продукта, запуска и инфраструктуры;
+- `DEVELOPER_GUIDE.md` — подробная карта модулей, функций и пользовательских сценариев;
+- `PROJECT_CONTEXT.md` — история важных технических решений, исправлений и деплоя.
+
+### Краткая карта модулей
+
+| Модуль | Для чего нужен | Где смотреть детали |
+|---|---|---|
+| Auth / Account | Регистрация, вход, logout, reset password, сессии | `DEVELOPER_GUIDE.md` → разделы 2–3 |
+| Chats | История чатов, стриминг, summary memory | `DEVELOPER_GUIDE.md` → разделы 4–5 |
+| AI Engine | Работа с OpenAI-compatible API, модели, system prompt, temperature | `DEVELOPER_GUIDE.md` → разделы 6–8 |
+| Web AI | Поиск по интернету и добавление web-context | `DEVELOPER_GUIDE.md` → раздел 9 |
+| Cloud Sync | Синхронизация чатов и настроек между устройствами | `DEVELOPER_GUIDE.md` → раздел 10 |
+| Vault | Шифрование API-ключей мастер-паролем | `DEVELOPER_GUIDE.md` → раздел 11 |
+| Workspace | Файлы, папки, preview, history, upload, archive extraction | `DEVELOPER_GUIDE.md` → разделы 12–13 |
+| Composer Attachments | Загрузка файлов в чат и обработка вложений | `DEVELOPER_GUIDE.md` → раздел 14 |
+| UI Layers | Sidebar, Topbar, Settings, MessageList, Markdown renderer | `DEVELOPER_GUIDE.md` → разделы 15–16 |
+| Android Wrapper | WebView-приложение, загрузка файлов, OTA APK update | `DEVELOPER_GUIDE.md` → раздел 17 |
+
+### Что уже реализовано в продукте
+
+- аккаунтная авторизация и cloud sync;
+- работа с несколькими API-ключами и моделями;
+- чат со streaming-ответами;
+- Web AI для web-context;
+- Workspace с CRUD, preview, history и AI patch/create;
+- vault-шифрование ключей;
+- Android WebView wrapper с OTA-обновлением APK.
+
+### Что читать новому разработчику в первую очередь
+
+1. Этот `README.md` — чтобы понять запуск и окружение.
+2. `DEVELOPER_GUIDE.md` — чтобы понять модули и возможности.
+3. `PROJECT_CONTEXT.md` — чтобы понять историю изменений и деплоя.
+
 ## Лицензия
 
 MIT
