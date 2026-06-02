@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">BrowserAI</string>
+    <!-- Replace this with your Railway URL, for example: https://browserai-production.up.railway.app -->
+    <string name="app_url">https://YOUR-RAILWAY-APP.up.railway.app</string>
+</resources>

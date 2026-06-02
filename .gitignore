@@ -7,3 +7,10 @@ dist/
 server/*.db
 server/*.db-*
 workspace/
+
+# Android
+android-app/.gradle/
+android-app/**/build/
+android-app/local.properties
+*.apk
+*.aab
