@@ -31,12 +31,12 @@ function ModelPicker({ models = [], selectedModel, onSelectModel }) {
   }
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative hidden sm:block">
       <button
         type="button"
         onClick={() => hasModels && setOpen((v) => !v)}
         disabled={!hasModels}
-        className="flex min-w-[220px] max-w-[260px] items-center justify-between gap-2 rounded-lg border border-white/10 bg-graphite-800 px-3 py-2 text-left text-[13px] text-cream transition-colors disabled:opacity-50"
+        className="flex min-w-[160px] max-w-[220px] items-center justify-between gap-2 rounded-lg border border-white/10 bg-graphite-800 px-3 py-2 text-left text-[13px] text-cream transition-colors disabled:opacity-50 md:min-w-[220px] md:max-w-[260px]"
         title={hasModels ? 'Выберите модель' : 'Сначала добавьте и сохраните API-ключ'}
       >
         <span className="truncate">
@@ -118,14 +118,14 @@ export default function Topbar({
   onOpenSettings,
 }) {
   return (
-    <header className="flex items-center justify-between gap-3 px-5 py-3.5">
-      <div className="min-w-0 flex items-center gap-2 pl-12">
+    <header className="flex items-center justify-between gap-2 px-3 py-3 md:gap-3 md:px-5 md:py-3.5">
+      <div className="min-w-0 flex items-center gap-2 pl-11 md:pl-12">
         <span className="truncate text-[14px] text-cream-soft">{title}</span>
         {aiWorking && <WorkingSpinner />}
         {!configured && (
           <button
             onClick={onOpenSettings}
-            className="shrink-0 rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-0.5 text-[11px] text-amber-300 transition-colors hover:bg-amber-400/20"
+            className="hidden shrink-0 rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-0.5 text-[11px] text-amber-300 transition-colors hover:bg-amber-400/20 sm:inline-flex"
             title="Введите API-ключ и выберите модель, чтобы начать чат"
           >
             API не настроен
@@ -133,10 +133,10 @@ export default function Topbar({
         )}
       </div>
 
-      <div className="flex items-center gap-1.5">
+      <div className="flex shrink-0 items-center gap-1 md:gap-1.5">
         <button
           onClick={() => onToggleWebAI?.(!useWebAI)}
-          className={`rounded-lg border px-3 py-2 text-[12px] transition-colors ${
+          className={`rounded-lg border px-2 py-2 text-[11px] transition-colors md:px-3 md:text-[12px] ${
             useWebAI
               ? 'border-cream/30 bg-graphite-700 text-cream'
               : 'border-white/10 bg-graphite-800 text-cream-dim hover:bg-graphite-750 hover:text-cream'

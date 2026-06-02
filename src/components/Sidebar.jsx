@@ -18,11 +18,11 @@ export default function Sidebar({
 }) {
   return (
     <aside
-      className={`flex h-full shrink-0 flex-col overflow-hidden border-r border-white/5 bg-graphite-800
-                  transition-[width] duration-300 ease-in-out
-                  ${collapsed ? 'w-0 border-r-0' : 'w-[260px]'}`}
+      className={`fixed inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col overflow-hidden border-r border-white/5 bg-graphite-800
+                  transition-[width,transform] duration-300 ease-in-out md:relative md:translate-x-0
+                  ${collapsed ? 'w-0 -translate-x-full border-r-0 md:translate-x-0' : 'w-[82vw] max-w-[300px] translate-x-0 md:w-[260px]'}`}
     >
-      <div className="flex h-full w-[260px] flex-col">
+      <div className="flex h-full w-[82vw] max-w-[300px] flex-col md:w-[260px]">
         {/* верх: кнопка collapse */}
         <div className="flex items-center justify-end px-4 py-3.5">
           <button

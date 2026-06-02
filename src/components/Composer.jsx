@@ -171,7 +171,7 @@ export default function Composer({
 
   const wrapperClass = hasMessages
     ? 'w-full border-t border-white/5 bg-graphite-900/80 px-4 py-4 backdrop-blur'
-    : 'flex flex-1 flex-col items-center justify-center px-6'
+    : 'flex flex-1 flex-col items-center justify-center px-4 md:px-6'
 
   const innerClass = hasMessages ? 'mx-auto w-full max-w-2xl' : 'w-full max-w-2xl'
 
@@ -180,7 +180,7 @@ export default function Composer({
       <section className={wrapperClass}>
         <div className={innerClass}>
           {!hasMessages && (
-            <h1 className="mb-8 text-center font-serif text-[44px] font-normal leading-tight text-cream">
+            <h1 className="mb-6 text-center font-serif text-[32px] font-normal leading-tight text-cream sm:text-[38px] md:mb-8 md:text-[44px]">
               Добро пожаловать в чат с AI
             </h1>
           )}

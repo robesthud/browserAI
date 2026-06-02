@@ -16,7 +16,9 @@ import { useSettings } from './lib/useSettings.js'
 import { useChats } from './lib/useChats.js'
 
 export default function App() {
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 768 : false,
+  )
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [workspaceAiBusy, setWorkspaceAiBusy] = useState(false)
@@ -54,6 +56,23 @@ export default function App() {
     stop,
   } = useChats(settings)
 
+  const closeSidebarOnMobile = () => {
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      setCollapsed(true)
+    }
+  }
+
+  const handleNewChat = () => {
+    const id = newChat()
+    closeSidebarOnMobile()
+    return id
+  }
+
+  const handleSelectChat = (id) => {
+    selectChat(id)
+    closeSidebarOnMobile()
+  }
+
   const toggleSidebar = () => setCollapsed((v) => !v)
   const toggleWorkspace = () => setWorkspaceOpen((v) => !v)
 
@@ -69,13 +88,21 @@ export default function App() {
       <Sidebar
         collapsed={collapsed}
         onToggle={toggleSidebar}
-        onNewChat={newChat}
+        onNewChat={handleNewChat}
         chats={chats}
         activeId={activeId}
-        onSelect={selectChat}
+        onSelect={handleSelectChat}
         onDelete={deleteChat}
         onOpenSettings={() => setSettingsOpen(true)}
       />
+
+      {!collapsed && (
+        <button
+          className="fixed inset-0 z-30 bg-black/45 md:hidden"
+          onClick={() => setCollapsed(true)}
+          aria-label="Закрыть меню"
+        />
+      )}
 
       <main className="relative flex min-w-0 flex-1 flex-col">
         {collapsed && (
