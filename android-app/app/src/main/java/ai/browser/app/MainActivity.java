@@ -2,6 +2,7 @@ package ai.browser.app;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.DownloadManager;
 import android.content.Context;
 import android.content.Intent;
@@ -28,9 +29,19 @@ import android.widget.FrameLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 
 public class MainActivity extends Activity {
     private static final int FILE_CHOOSER_REQUEST = 1001;
+    private static final String LATEST_RELEASE_API = "https://api.github.com/repos/robesthud/browserAI/releases/latest";
     private WebView webView;
     private TextView offlineView;
     private ValueCallback<Uri[]> filePathCallback;
@@ -69,6 +80,7 @@ public class MainActivity extends Activity {
         setContentView(root);
         configureWebView();
         loadApp();
+        checkForUpdates();
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -192,6 +204,76 @@ public class MainActivity extends Activity {
                 startActivity(intent);
             }
         });
+    }
+
+    private void checkForUpdates() {
+        new Thread(() -> {
+            HttpURLConnection connection = null;
+            try {
+                URL url = new URL(LATEST_RELEASE_API);
+                connection = (HttpURLConnection) url.openConnection();
+                connection.setConnectTimeout(5000);
+                connection.setReadTimeout(5000);
+                connection.setRequestProperty("Accept", "application/vnd.github+json");
+                connection.setRequestProperty("User-Agent", "BrowserAI-Android");
+
+                int code = connection.getResponseCode();
+                if (code < 200 || code >= 300) return;
+
+                BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+                StringBuilder body = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) body.append(line);
+                reader.close();
+
+                JSONObject json = new JSONObject(body.toString());
+                String tag = json.optString("tag_name", "");
+                String htmlUrl = json.optString("html_url", "https://github.com/robesthud/browserAI/releases/latest");
+                long latestCode = parseReleaseCode(tag);
+                long currentCode = getCurrentVersionCode();
+
+                if (latestCode > currentCode) {
+                    runOnUiThread(() -> showUpdateDialog(htmlUrl, tag));
+                }
+            } catch (Exception ignored) {
+                // Silent by design: updates are optional and must not break app startup.
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
+        }).start();
+    }
+
+    private long parseReleaseCode(String tag) {
+        Matcher matcher = Pattern.compile("android-v(\\d+)").matcher(tag == null ? "" : tag);
+        if (!matcher.find()) return 0;
+        try {
+            return Long.parseLong(matcher.group(1));
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private long getCurrentVersionCode() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                return getPackageManager().getPackageInfo(getPackageName(), 0).getLongVersionCode();
+            }
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionCode;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private void showUpdateDialog(String releaseUrl, String tag) {
+        new AlertDialog.Builder(this)
+                .setTitle("Доступно обновление BrowserAI")
+                .setMessage("Найдена новая версия: " + tag + "\n\nОткройте страницу релиза, скачайте APK и установите его поверх текущей версии.")
+                .setPositiveButton("Скачать", (dialog, which) -> {
+                    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl));
+                    startActivity(intent);
+                })
+                .setNegativeButton("Позже", null)
+                .show();
     }
 
     private void showError(String message) {
