@@ -36,3 +36,4 @@ So on Railway the volume preserves:
 - `PORT` is taken from Railway automatically.
 - If you deploy **without** a mounted volume, the app still runs, but data is ephemeral.
 - For public deployment, put the app behind auth / private access if you store sensitive keys.
+<!-- railway redeploy trigger: legacy-webview -->
