@@ -22,7 +22,6 @@ import { existsSync } from 'node:fs'
 import {
   listKeys,
   getActiveKeyId,
-  getActiveKeyDecrypted,
   upsertKey,
   deleteKey,
   setActiveKey,
@@ -272,6 +271,7 @@ function initAuthTables() {
 
     CREATE INDEX IF NOT EXISTS idx_sms_codes_phone ON sms_codes(phone);
     CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_unique ON users(phone) WHERE phone IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS user_cloud_data (
       user_id TEXT PRIMARY KEY,
@@ -303,7 +303,8 @@ function cleanExpiredSessions() {
   try {
     const ts = now()
     db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(ts)
-    db.prepare('DELETE FROM password_reset_tokens WHERE expires_at < ? AND used_at IS NOT NULL').run(ts)
+    db.prepare('DELETE FROM password_reset_tokens WHERE expires_at < ? OR used_at IS NOT NULL').run(ts)
+    db.prepare('DELETE FROM sms_codes WHERE expires_at < ? OR used_at IS NOT NULL').run(ts)
   } catch (e) {
     console.warn('Session cleanup error:', e.message)
   }
@@ -449,6 +450,11 @@ app.post('/api/auth/register', authLimiter, (req, res) => {
     if (!required || registrationSecret !== required) {
       return res.status(403).json({ error: 'Регистрация закрыта. Первый пользователь уже создан.' })
     }
+  }
+
+  if (phone) {
+    const existingPhone = db.prepare('SELECT id FROM users WHERE phone = ? LIMIT 1').get(phone)
+    if (existingPhone) return res.status(409).json({ error: 'Этот номер уже используется' })
   }
 
   const id = uidAuth()
@@ -766,11 +772,11 @@ function vaultState() {
 }
 
 // ---- Vault ----
-app.get('/api/vault/status', (req, res) => {
+app.get('/api/vault/status', requireAuth, (req, res) => {
   res.json(vaultState())
 })
 
-app.post('/api/vault/setup', (req, res) => {
+app.post('/api/vault/setup', requireAuth, (req, res) => {
   const { passphrase } = req.body || {}
   if (!passphrase || passphrase.length < 4) {
     return res.status(400).json({ error: 'Пароль слишком короткий (мин. 4 символа)' })
@@ -789,7 +795,7 @@ app.post('/api/vault/setup', (req, res) => {
   res.json({ ...vaultState(), keys: listKeys(encKey()), activeKeyId: getActiveKeyId() })
 })
 
-app.post('/api/vault/unlock', (req, res) => {
+app.post('/api/vault/unlock', requireAuth, (req, res) => {
   const { passphrase } = req.body || {}
   if (!vaultEnabled()) return res.status(400).json({ error: 'Хранилище не настроено' })
   const { salt, verifier } = getVault()
@@ -802,12 +808,12 @@ app.post('/api/vault/unlock', (req, res) => {
   res.json({ ...vaultState(), keys: listKeys(encKey()), activeKeyId: getActiveKeyId() })
 })
 
-app.post('/api/vault/lock', (req, res) => {
+app.post('/api/vault/lock', requireAuth, (req, res) => {
   unlockedKey = null
   res.json(vaultState())
 })
 
-app.post('/api/vault/change', (req, res) => {
+app.post('/api/vault/change', requireAuth, (req, res) => {
   if (isLocked()) return res.status(423).json({ error: 'Сначала разблокируйте хранилище' })
   const { passphrase } = req.body || {}
   if (!passphrase || passphrase.length < 4) {
@@ -823,7 +829,7 @@ app.post('/api/vault/change', (req, res) => {
   res.json(vaultState())
 })
 
-app.post('/api/vault/disable', (req, res) => {
+app.post('/api/vault/disable', requireAuth, (req, res) => {
   if (!vaultEnabled()) return res.json(vaultState())
   if (isLocked()) return res.status(423).json({ error: 'Сначала разблокируйте хранилище' })
   reencryptAll(unlockedKey, null)
@@ -835,7 +841,7 @@ app.post('/api/vault/disable', (req, res) => {
 })
 
 // Настроить автоблокировку (минуты, 0 = выкл)
-app.post('/api/vault/autolock', (req, res) => {
+app.post('/api/vault/autolock', requireAuth, (req, res) => {
   const { minutes } = req.body || {}
   setAutoLockMinutes(minutes)
   touch()
@@ -843,7 +849,7 @@ app.post('/api/vault/autolock', (req, res) => {
 })
 
 // ---- Зашифрованный бэкап БД ----
-app.get('/api/vault/backup', (req, res) => {
+app.get('/api/vault/backup', requireAuth, (req, res) => {
   const v = getVault()
   res.json({
     type: 'browserai-backup',
@@ -858,7 +864,7 @@ app.get('/api/vault/backup', (req, res) => {
   })
 })
 
-app.post('/api/vault/restore', (req, res) => {
+app.post('/api/vault/restore', requireAuth, (req, res) => {
   const b = req.body || {}
   if (b.type !== 'browserai-backup' || !Array.isArray(b.keys)) {
     return res.status(400).json({ error: 'Неверный формат бэкапа' })
@@ -896,7 +902,7 @@ function requireUnlocked(req, res, next) {
 
 // ---- Settings (ключи + параметры) ----
 // #2 FIX: защита настроек и ключей — требуем авторизацию
-app.get('/api/settings', optionalAuth, (req, res) => {
+app.get('/api/settings', requireAuth, (req, res) => {
   res.json({
     keys: listKeys(encKey()),
     activeKeyId: getActiveKeyId(),
@@ -905,11 +911,11 @@ app.get('/api/settings', optionalAuth, (req, res) => {
   })
 })
 
-app.get('/api/keys', optionalAuth, (req, res) => {
+app.get('/api/keys', requireAuth, (req, res) => {
   res.json({ keys: listKeys(encKey()), activeKeyId: getActiveKeyId(), vault: vaultState() })
 })
 
-app.post('/api/keys', requireUnlocked, (req, res) => {
+app.post('/api/keys', requireAuth, requireUnlocked, (req, res) => {
   const k = req.body || {}
   if (!k.id) return res.status(400).json({ error: 'id required' })
   upsertKey(
@@ -926,17 +932,17 @@ app.post('/api/keys', requireUnlocked, (req, res) => {
   res.json({ keys: listKeys(encKey()), activeKeyId: getActiveKeyId(), vault: vaultState() })
 })
 
-app.delete('/api/keys/:id', requireUnlocked, (req, res) => {
+app.delete('/api/keys/:id', requireAuth, requireUnlocked, (req, res) => {
   deleteKey(req.params.id)
   res.json({ keys: listKeys(encKey()), activeKeyId: getActiveKeyId(), vault: vaultState() })
 })
 
-app.post('/api/keys/:id/activate', optionalAuth, (req, res) => {
+app.post('/api/keys/:id/activate', requireAuth, (req, res) => {
   setActiveKey(req.params.id)
   res.json({ keys: listKeys(encKey()), activeKeyId: getActiveKeyId(), vault: vaultState() })
 })
 
-app.post('/api/keys/import', requireUnlocked, (req, res) => {
+app.post('/api/keys/import', requireAuth, requireUnlocked, (req, res) => {
   const { keys = [], activeKeyId = null } = req.body || {};
   
   // Валидация: keys должен быть массивом
@@ -972,11 +978,11 @@ app.post('/api/keys/import', requireUnlocked, (req, res) => {
   res.json({ keys: listKeys(encKey()), activeKeyId: getActiveKeyId(), vault: vaultState() });
 })
 
-app.get('/api/keys/export', requireUnlocked, (req, res) => {
+app.get('/api/keys/export', requireAuth, requireUnlocked, (req, res) => {
   res.json({ keys: listKeys(encKey()), activeKeyId: getActiveKeyId() })
 })
 
-app.put('/api/params', optionalAuth, (req, res) => {
+app.put('/api/params', requireAuth, (req, res) => {
   res.json({ params: setParams(req.body || {}) })
 })
 
@@ -1074,9 +1080,8 @@ app.post('/api/validate', async (req, res) => {
 })
 
 // ---- Server Workspace ----
-// #1 FIX: все workspace-эндпоинты требуют авторизации через optionalAuth
-// (при отключённой auth работает без логина, при включённой — требует сессию)
-app.get('/api/workspace/tree', optionalAuth, async (req, res) => {
+// #1 FIX: все workspace-эндпоинты требуют авторизации через requireAuth
+app.get('/api/workspace/tree', requireAuth, async (req, res) => {
   try {
     const showHidden = String(req.query.hidden || '0') === '1'
     const tree = await getWorkspaceTree(showHidden)
@@ -1086,7 +1091,7 @@ app.get('/api/workspace/tree', optionalAuth, async (req, res) => {
   }
 })
 
-app.get('/api/workspace/file', optionalAuth, async (req, res) => {
+app.get('/api/workspace/file', requireAuth, async (req, res) => {
   try {
     const file = await readWorkspaceFile(req.query.path || '')
     res.json(file)
@@ -1095,7 +1100,7 @@ app.get('/api/workspace/file', optionalAuth, async (req, res) => {
   }
 })
 
-app.get('/api/workspace/download', optionalAuth, async (req, res) => {
+app.get('/api/workspace/download', requireAuth, async (req, res) => {
   try {
     const rel = String(req.query.path || '')
     const stat = await statWorkspaceItem(rel)
@@ -1131,7 +1136,7 @@ app.get('/api/workspace/download', optionalAuth, async (req, res) => {
   }
 })
 
-app.post('/api/workspace/folder', optionalAuth, async (req, res) => {
+app.post('/api/workspace/folder', requireAuth, async (req, res) => {
   try {
     const { parentPath = '', name = 'New Folder' } = req.body || {}
     await createFolder(parentPath, name)
@@ -1141,7 +1146,7 @@ app.post('/api/workspace/folder', optionalAuth, async (req, res) => {
   }
 })
 
-app.post('/api/workspace/file', optionalAuth, async (req, res) => {
+app.post('/api/workspace/file', requireAuth, async (req, res) => {
   try {
     const { parentPath = '', name = 'untitled.txt', content = '' } = req.body || {}
     await createFile(parentPath, name, content)
@@ -1151,7 +1156,7 @@ app.post('/api/workspace/file', optionalAuth, async (req, res) => {
   }
 })
 
-app.put('/api/workspace/file', optionalAuth, async (req, res) => {
+app.put('/api/workspace/file', requireAuth, async (req, res) => {
   try {
     const { path, content = '' } = req.body || {}
     if (!path) return res.status(400).json({ error: 'path required' })
@@ -1162,7 +1167,7 @@ app.put('/api/workspace/file', optionalAuth, async (req, res) => {
   }
 })
 
-app.post('/api/workspace/rename', optionalAuth, async (req, res) => {
+app.post('/api/workspace/rename', requireAuth, async (req, res) => {
   try {
     const { path, newName } = req.body || {}
     if (!path || !newName) return res.status(400).json({ error: 'path and newName required' })
@@ -1173,7 +1178,7 @@ app.post('/api/workspace/rename', optionalAuth, async (req, res) => {
   }
 })
 
-app.post('/api/workspace/move', optionalAuth, async (req, res) => {
+app.post('/api/workspace/move', requireAuth, async (req, res) => {
   try {
     const { sourcePath, targetDirPath = '' } = req.body || {}
     if (!sourcePath) return res.status(400).json({ error: 'sourcePath required' })
@@ -1184,7 +1189,7 @@ app.post('/api/workspace/move', optionalAuth, async (req, res) => {
   }
 })
 
-app.delete('/api/workspace/item', optionalAuth, async (req, res) => {
+app.delete('/api/workspace/item', requireAuth, async (req, res) => {
   try {
     const { path } = req.body || {}
     if (!path) return res.status(400).json({ error: 'path required' })
@@ -1195,7 +1200,7 @@ app.delete('/api/workspace/item', optionalAuth, async (req, res) => {
   }
 })
 
-app.post('/api/workspace/upload', optionalAuth, async (req, res) => {
+app.post('/api/workspace/upload', requireAuth, async (req, res) => {
   try {
     const { parentPath = '', files = [] } = req.body || {}
     if (!Array.isArray(files) || files.length === 0) {
@@ -1208,7 +1213,7 @@ app.post('/api/workspace/upload', optionalAuth, async (req, res) => {
   }
 })
 
-app.post('/api/workspace/upload-url', optionalAuth, async (req, res) => {
+app.post('/api/workspace/upload-url', requireAuth, async (req, res) => {
   try {
     const { parentPath = '', url = '' } = req.body || {}
     if (!url) return res.status(400).json({ error: 'url required' })
@@ -1219,7 +1224,7 @@ app.post('/api/workspace/upload-url', optionalAuth, async (req, res) => {
   }
 })
 
-app.get('/api/workspace/search', optionalAuth, async (req, res) => {
+app.get('/api/workspace/search', requireAuth, async (req, res) => {
   try {
     const q = String(req.query.q || '')
     const showHidden = String(req.query.hidden || '0') === '1'
@@ -1230,7 +1235,7 @@ app.get('/api/workspace/search', optionalAuth, async (req, res) => {
   }
 })
 
-app.get('/api/workspace/history', optionalAuth, async (req, res) => {
+app.get('/api/workspace/history', requireAuth, async (req, res) => {
   try {
     const path = String(req.query.path || '')
     if (!path) return res.status(400).json({ error: 'path required' })
@@ -1241,7 +1246,7 @@ app.get('/api/workspace/history', optionalAuth, async (req, res) => {
   }
 })
 
-app.post('/api/workspace/history/restore', optionalAuth, async (req, res) => {
+app.post('/api/workspace/history/restore', requireAuth, async (req, res) => {
   try {
     const { path, revisionId } = req.body || {}
     if (!path || !revisionId) {
