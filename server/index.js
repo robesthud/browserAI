@@ -117,14 +117,14 @@ app.use(helmet({
   },
 }))
 app.use(limiter)
-// #7 FIX: в production CORS разрешён только для явно заданного CORS_ORIGIN.
-// В dev-режиме (NODE_ENV !== 'production') cors() открыт для удобства разработки.
-// Если CORS_ORIGIN не задан в production — запросы с других доменов блокируются.
-const corsOptions = process.env.CORS_ORIGIN
-  ? { origin: process.env.CORS_ORIGIN, credentials: true }
-  : process.env.NODE_ENV === 'production'
-    ? { origin: APP_URL, credentials: true }
-    : { origin: true, credentials: true }
+// #7 FIX: CORS — в production только для своего домена
+// APP_URL объявляется ниже, поэтому читаем из env напрямую здесь
+const _corsOrigin = process.env.CORS_ORIGIN
+  || (process.env.APP_URL ? process.env.APP_URL : null)
+  || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : null)
+const corsOptions = _corsOrigin
+  ? { origin: _corsOrigin, credentials: true }
+  : { origin: true, credentials: true }
 app.use(cors(corsOptions))
 app.use(express.json({ limit: '50mb' }))
 
