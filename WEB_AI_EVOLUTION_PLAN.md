@@ -500,6 +500,547 @@ Web AI начнёт реально экономить токены, а не то
 
 ---
 
+## Детальный план по варианту №2: Web Session Sources (DeepSeek / Gemini / другие)
+
+Этот раздел описывает именно второй путь — использование web-сессий/токенов как дополнительного источника знаний. Это не основной production-путь, а **экспериментальный retrieval-режим**, который можно включать как extra source.
+
+---
+
+### Идея режима
+
+Пользователь подключает к BrowserAI внешний web-источник, в котором уже есть:
+- авторизация;
+- поиск;
+- ответы модели;
+- документация;
+- private knowledge;
+- внутренний UI.
+
+BrowserAI не делает этот источник своей основной моделью. Вместо этого он использует его как **внешний браузерный источник**, чтобы:
+1. задать вопрос через сессию;
+2. получить ответ / код / выдержку;
+3. привести результат к нормализованному retrieval packet;
+4. передать это основной модели BrowserAI;
+5. на основе этого уже редактировать файлы в Workspace.
+
+То есть схема такая:
+
+**User request → session source → normalized snippets/summary → main AI model → patch/create file**
+
+---
+
+### Какие сценарии должен поддерживать session-based режим
+
+#### Сценарий A — «спросить web-модель как дополнительный источник»
+Пример:
+- пользователь пишет: «найди актуальный способ сделать такую кнопку в React»;
+- BrowserAI отправляет этот вопрос в DeepSeek web или Gemini web через сохранённую сессию;
+- получает ответ, snippets и советы;
+- извлекает полезную часть;
+- отдаёт её основной модели BrowserAI;
+- основная модель патчит файл проекта.
+
+#### Сценарий B — «использовать search внутри авторизованного UI»
+Пример:
+- источник — закрытая документация или custom knowledge base;
+- BrowserAI через браузерную сессию открывает поиск, вводит query, переходит по результатам;
+- вытаскивает релевантные code blocks / text chunks;
+- передаёт в patch workflow.
+
+#### Сценарий C — «получить второе мнение от другой модели»
+Пример:
+- основная рабочая модель — через API;
+- session source — Gemini web / DeepSeek web;
+- BrowserAI использует web-модель как дополнительный reviewer / retriever, а не как основной engine.
+
+---
+
+### Что должен уметь session connector
+
+Каждый session connector должен поддерживать единый интерфейс:
+
+- `validate()` — проверить, что сессия жива;
+- `search(query)` — выполнить поиск или задать вопрос;
+- `fetch(query)` — получить результат в raw-формате;
+- `extract(raw)` — вытащить текст, код, ссылки, metadata;
+- `normalize(result)` — привести к retrieval packet;
+- `refresh()` — обновить состояние сессии, если возможно;
+- `disable()` — отключить connector при невалидной сессии.
+
+---
+
+### Какие типы секретов/сессий надо поддержать
+
+Нужно поддержать несколько форматов, потому что разные сервисы авторизуются по-разному:
+
+1. **Cookie set**
+   - импорт cookie в JSON / Netscape format;
+   - привязка к домену;
+   - browser worker загружает cookie в isolated profile.
+
+2. **Bearer token / access token**
+   - если источник работает через API-like headers.
+
+3. **Custom headers**
+   - для нестандартных внутренних систем.
+
+4. **localStorage / sessionStorage payload**
+   - для SPA, где авторизация сидит в storage.
+
+5. **Hybrid auth profile**
+   - cookie + headers + localStorage вместе.
+
+---
+
+### Где и как это хранить
+
+#### Новые таблицы в SQLite
+
+Рекомендуемые таблицы:
+
+- `retrieval_connectors`
+  - `id`
+  - `name`
+  - `type` (`docs`, `github`, `session-web`, `custom-api`)
+  - `provider` (`deepseek-web`, `gemini-web`, `custom-site`)
+  - `enabled`
+  - `priority`
+  - `mode` (`search`, `qa`, `hybrid`)
+  - `created_at`
+  - `updated_at`
+  - `last_validated_at`
+  - `last_status`
+
+- `retrieval_connector_secrets`
+  - `connector_id`
+  - `payload_encrypted`
+  - `payload_version`
+
+- `retrieval_cache`
+  - `connector_id`
+  - `query_hash`
+  - `result_payload`
+  - `created_at`
+  - `expires_at`
+
+- `retrieval_runs`
+  - история вызовов retrieval layer
+  - какие источники использовались
+  - сколько snippet'ов вернулось
+  - сколько символов ушло в модель
+
+#### Шифрование
+
+Все session payload хранить только в зашифрованном виде:
+- через текущий vault;
+- либо через отдельный encrypted storage layer;
+- plaintext cookie/token никогда не хранить открыто в БД.
+
+---
+
+### Browser Worker: обязательная часть
+
+Для session-based сценария `fetch()` недостаточно. Нужен **реальный браузерный runtime**.
+
+#### Стек
+Рекомендуется:
+- **Playwright**
+
+#### Почему именно он
+Потому что нужен функционал:
+- загрузить cookies;
+- загрузить localStorage/sessionStorage;
+- открыть страницу;
+- дождаться SPA-render;
+- вводить query;
+- кликать по результатам;
+- собирать DOM-данные;
+- извлекать code blocks.
+
+#### Базовые возможности browser worker
+- isolated browser context на каждый connector;
+- headless mode;
+- timeout control;
+- safe navigation rules;
+- DOM extraction helpers;
+- screenshots/debug traces по необходимости.
+
+---
+
+### Как должен выглядеть пользовательский flow
+
+#### Этап 1 — Добавление источника
+Пользователь в настройках открывает новый раздел:
+- **Web Sources / Session Sources**
+
+И выбирает:
+- DeepSeek Web
+- Gemini Web
+- Custom Site
+- Other
+
+#### Этап 2 — Импорт сессии
+Пользователь вставляет одно из:
+- cookies;
+- token;
+- browser session JSON;
+- custom headers.
+
+#### Этап 3 — Валидация
+BrowserAI запускает `validate()`:
+- пробует открыть страницу;
+- проверяет, что не разлогинен;
+- проверяет, что можно выполнить test query.
+
+#### Этап 4 — Использование в запросе
+Когда пользователь пишет задачу, orchestrator решает:
+- надо ли использовать session source;
+- какой именно connector вызывать;
+- сколько источников использовать.
+
+#### Этап 5 — Получение ответа из session source
+Browser worker:
+- открывает сайт;
+- выполняет query;
+- ждёт появления результата;
+- извлекает snippets / text / links / metadata.
+
+#### Этап 6 — Нормализация
+Результат приводится к единому формату retrieval packet.
+
+#### Этап 7 — Передача основной модели
+В main AI prompt летит не вся страница и не вся переписка, а только:
+- краткая summary;
+- 1–3 релевантных snippets;
+- source metadata.
+
+#### Этап 8 — Patch/Create file
+Основная модель использует retrieval packet, чтобы:
+- создать файл;
+- изменить файл через patch;
+- объяснить изменения.
+
+---
+
+### Форматы retrieval packet для session source
+
+#### Вариант 1 — если получили ответ модели
+
+```json
+{
+  "sourceType": "session-web-model",
+  "provider": "deepseek-web",
+  "title": "DeepSeek Web Answer",
+  "url": "https://...",
+  "query": "...",
+  "summary": "Краткий вывод ответа",
+  "snippets": [
+    {
+      "kind": "code",
+      "language": "javascript",
+      "content": "..."
+    }
+  ],
+  "notes": ["..."],
+  "retrievedAt": "..."
+}
+```
+
+#### Вариант 2 — если получили документ/страницу
+
+```json
+{
+  "sourceType": "session-web-page",
+  "provider": "custom-site",
+  "title": "Internal Docs Page",
+  "url": "https://...",
+  "summary": "О чём страница",
+  "snippets": [
+    {
+      "kind": "code",
+      "language": "ts",
+      "content": "..."
+    },
+    {
+      "kind": "text",
+      "content": "..."
+    }
+  ]
+}
+```
+
+---
+
+### Ограничения и правила безопасности
+
+#### 1. Session source не должен быть единственным источником
+Использовать его как:
+- optional extra source;
+- fallback;
+- reviewer;
+- private knowledge retriever.
+
+#### 2. По умолчанию read-only
+Никаких действий типа:
+- publish;
+- submit forms;
+- modify account state;
+- execute external destructive actions.
+
+#### 3. Ограничение доменов
+Каждый connector должен быть привязан к allowlist доменов.
+
+#### 4. Timeout и retries
+Нужны строгие лимиты:
+- navigation timeout;
+- action timeout;
+- extraction timeout;
+- retry count.
+
+#### 5. Логи без утечек
+Нельзя логировать:
+- cookie payload;
+- access token;
+- session storage plaintext.
+
+---
+
+## Этапность именно для варианта №2
+
+### Session Stage S0 — Архитектурная подготовка
+Что делаем:
+- закладываем abstraction layer `connector interface`;
+- добавляем в orchestrator понятие `sourceType=session-web`;
+- подготавливаем DB schema под connectors.
+
+Когда делать:
+- параллельно или сразу после базового retrieval interface.
+
+Результат:
+- проект готов принять session sources без переписывания основной логики.
+
+---
+
+### Session Stage S1 — Session Vault и UI управления источниками
+Что делаем:
+- таблицы connectors/secrets/cache/runs;
+- backend CRUD API для connectors;
+- UI для добавления/удаления/включения/выключения connectors;
+- импорт cookie/token/session payload;
+- encrypted storage.
+
+Когда делать:
+- после базового retrieval MVP (после Этапа 1 основной дорожной карты).
+
+Результат:
+- пользователь может подключить session source, но он ещё не используется полноценно.
+
+---
+
+### Session Stage S2 — Browser Worker MVP
+Что делаем:
+- подключаем Playwright;
+- создаём isolated browser contexts;
+- умеем загружать cookie/localStorage;
+- делаем `validateSession()`;
+- делаем debug-mode для проверки коннектора.
+
+Когда делать:
+- сразу после S1.
+
+Результат:
+- BrowserAI может проверить: жив ли DeepSeek/Gemini/custom session source.
+
+---
+
+### Session Stage S3 — Первый адаптер: DeepSeek Web
+Что делаем:
+- описываем provider adapter `deepseek-web`;
+- сценарий: открыть сайт, вставить query, дождаться ответа, забрать результат;
+- extraction:
+  - plain answer;
+  - code blocks;
+  - ссылки/notes при наличии;
+- normalization в retrieval packet.
+
+Когда делать:
+- после S2.
+
+Результат:
+- DeepSeek Web работает как дополнительный источник знаний.
+
+---
+
+### Session Stage S4 — Второй адаптер: Gemini Web
+Что делаем:
+- adapter `gemini-web`;
+- отдельные selectors/flows;
+- extraction под конкретный UI Gemini.
+
+Когда делать:
+- после DeepSeek Web, потому что infrastructure уже будет готова.
+
+Результат:
+- можно выбирать несколько web-model sources.
+
+---
+
+### Session Stage S5 — Generic Custom Site Connector
+Что делаем:
+- generic connector для сайтов, где есть:
+  - login session;
+  - поиск;
+  - контент;
+- source mapping rules:
+  - search URL pattern;
+  - selectors;
+  - snippet extraction rules.
+
+Когда делать:
+- после конкретных adapters, когда станет понятен универсальный abstraction shape.
+
+Результат:
+- пользователи смогут подключать свои сайты/доки.
+
+---
+
+### Session Stage S6 — Orchestrator Integration
+Что делаем:
+- orchestrator решает, когда использовать session source;
+- priority rules;
+- combination с docs/GitHub/local retrieval;
+- budget limits на session results.
+
+Когда делать:
+- после S3/S4, когда хотя бы один session source реально работает.
+
+Результат:
+- session source начинает работать в общем pipeline, а не отдельно.
+
+---
+
+### Session Stage S7 — Token Saving Layer для session sources
+Что делаем:
+- compression;
+- dedupe;
+- snippet-only mode;
+- cache;
+- summary-before-main-model.
+
+Когда делать:
+- после подключения session sources в orchestrator.
+
+Результат:
+- session mode перестаёт быть дорогим и шумным.
+
+---
+
+### Session Stage S8 — Workspace Patch Flow
+Что делаем:
+- добавляем режим:
+  - user asks for change;
+  - system consults session source;
+  - main AI builds patch;
+  - patch applies to workspace.
+
+Когда делать:
+- после S6/S7.
+
+Результат:
+- session source становится не просто поиском, а частью реального dev workflow.
+
+---
+
+## Порядок работ относительно основной дорожной карты
+
+### Правильный порядок
+1. Основной Этап 0 — retrieval architecture foundation
+2. Основной Этап 1 — code-aware retrieval MVP
+3. Session Stage S0
+4. Session Stage S1
+5. Session Stage S2
+6. Session Stage S3 (DeepSeek Web)
+7. Session Stage S4 (Gemini Web)
+8. Основной Этап 3 — token saving
+9. Session Stage S6–S8
+10. Основной Этап 4 — full orchestrator flow
+
+### Почему так
+Потому что session source сам по себе не должен стать «кривой заменой нормального retrieval». Сначала нужна хорошая база поиска и компрессии, потом уже дополнительные web-session источники.
+
+---
+
+## Минимально рабочий экспериментальный вариант
+
+Если нужно сделать именно «костыль, но рабочий» быстро, то минимальный путь такой:
+
+### Быстрый Session MVP
+1. Таблица connectors + encrypted secrets
+2. UI для импорта cookie/token
+3. Playwright worker
+4. Один adapter: `deepseek-web`
+5. Один adapter: `gemini-web`
+6. Вызов session source только вручную или по флагу
+7. Из ответа брать:
+   - summary
+   - code blocks
+8. Передавать это основной модели в AI patch prompt
+
+### Что получим
+- уже можно будет использовать DeepSeek/Gemini web как дополнительный источник;
+- но это ещё не будет оптимально по токенам;
+- token optimization придёт на следующем шаге.
+
+---
+
+## Риски варианта №2
+
+1. сайты меняют UI;
+2. ломаются селекторы;
+3. истекают cookie;
+4. anti-bot может блокировать автоматизацию;
+5. источники могут отвечать нестабильно;
+6. поддержка такого режима дороже, чем обычного docs/GitHub retrieval.
+
+Поэтому этот режим должен быть помечен как:
+- experimental;
+- optional;
+- best-effort.
+
+---
+
+## Когда именно это реально внедрять
+
+### Сразу сейчас не первым номером
+Не стоит начинать проект развития Web AI именно с сессий.
+
+### Реалистичный момент старта
+Начинать вариант №2 стоит **после того, как будет готов code-aware retrieval MVP**:
+- интерфейс источников;
+- docs/GitHub retrieval;
+- snippet extraction;
+- basic compression.
+
+То есть practically:
+- сначала сделать **основу Этапа 1**;
+- потом сразу переходить к **Session S1–S4**.
+
+---
+
+## Что считать готовностью варианта №2
+
+Вариант считается готовым, когда:
+
+1. пользователь может добавить DeepSeek/Gemini session source;
+2. система умеет проверить, что источник жив;
+3. можно выполнить query через этот источник;
+4. можно извлечь code/text fragments;
+5. результат нормализуется в retrieval packet;
+6. main model использует это для patch/create file;
+7. токены не тратятся на сырые ответы целиком.
+
+---
+
 ## Краткое решение по стратегии
 
 **Основа:** стабильный code-aware retrieval.  
