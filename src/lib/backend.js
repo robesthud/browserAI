@@ -51,6 +51,12 @@ export const backend = {
     req('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
   authResetPassword: (token, password) =>
     req('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, password }) }),
+  authSmsSend: (phone) =>
+    req('/auth/sms-send', { method: 'POST', body: JSON.stringify({ phone }) }),
+  authSmsVerify: (phone, code) =>
+    req('/auth/sms-verify', { method: 'POST', body: JSON.stringify({ phone, code }) }),
+  updatePhone: (phone) =>
+    req('/auth/phone', { method: 'PUT', body: JSON.stringify({ phone }) }),
   getCloud: () => req('/cloud'),
   saveCloud: (payload) =>
     req('/cloud', { method: 'PUT', body: JSON.stringify(payload) }),

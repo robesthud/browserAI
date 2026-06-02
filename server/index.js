@@ -223,6 +223,7 @@ function publicUser(row) {
     id: row.id,
     email: row.email,
     name: row.name || '',
+    phone: row.phone || null,
     role: row.role || 'user',
     createdAt: row.created_at,
   }
@@ -234,6 +235,7 @@ function initAuthTables() {
       id TEXT PRIMARY KEY,
       email TEXT NOT NULL UNIQUE,
       name TEXT NOT NULL DEFAULT '',
+      phone TEXT DEFAULT NULL,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'user',
       created_at INTEGER NOT NULL,
@@ -259,6 +261,18 @@ function initAuthTables() {
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS sms_codes (
+      id TEXT PRIMARY KEY,
+      phone TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      used_at INTEGER,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sms_codes_phone ON sms_codes(phone);
+    CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone);
+
     CREATE TABLE IF NOT EXISTS user_cloud_data (
       user_id TEXT PRIMARY KEY,
       payload TEXT NOT NULL,
@@ -273,6 +287,15 @@ function initAuthTables() {
   `)
 }
 initAuthTables()
+
+// Миграция: добавляем phone если столбца ещё нет (для существующих БД)
+try {
+  const cols = db.prepare('PRAGMA table_info(users)').all()
+  if (!cols.some((c) => c.name === 'phone')) {
+    db.exec('ALTER TABLE users ADD COLUMN phone TEXT DEFAULT NULL')
+    console.log('Migration: added phone column to users')
+  }
+} catch { /* ignore */ }
 
 // #20 FIX: периодическая очистка устаревших сессий и токенов сброса пароля
 // Запускается каждый час, чтобы таблица sessions не росла бесконечно
@@ -329,6 +352,55 @@ function validatePassword(password) {
   return null
 }
 
+// ---- Twilio SMS ----
+function twilioConfigured() {
+  return Boolean(
+    process.env.TWILIO_ACCOUNT_SID &&
+    process.env.TWILIO_AUTH_TOKEN &&
+    process.env.TWILIO_PHONE_FROM
+  )
+}
+
+function normalizePhone(raw = '') {
+  // Приводим к формату +7XXXXXXXXXX или +1XXXXXXXXXX
+  const digits = String(raw || '').replace(/\D/g, '')
+  if (!digits) return null
+  if (digits.startsWith('8') && digits.length === 11) return '+7' + digits.slice(1)
+  if (digits.startsWith('7') && digits.length === 11) return '+' + digits
+  if (digits.length >= 10) return '+' + digits
+  return null
+}
+
+async function sendSmsCode(phone, code) {
+  if (!twilioConfigured()) {
+    // В dev-режиме просто логируем код
+    console.log(`[SMS DEV] Phone: ${phone} Code: ${code}`)
+    return
+  }
+  const sid = process.env.TWILIO_ACCOUNT_SID
+  const token = process.env.TWILIO_AUTH_TOKEN
+  const from = process.env.TWILIO_PHONE_FROM
+
+  const body = `BrowserAI: ваш код сброса пароля: ${code}. Действует 10 минут.`
+  const params = new URLSearchParams({ To: phone, From: from, Body: body })
+
+  const response = await fetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: 'Basic ' + Buffer.from(`${sid}:${token}`).toString('base64'),
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    }
+  )
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(`Twilio error: ${err.message || response.status}`)
+  }
+}
+
 function smtpConfigured() {
   return Boolean(process.env.SMTP_HOST && process.env.SMTP_PORT && process.env.SMTP_FROM)
 }
@@ -363,8 +435,11 @@ app.post('/api/auth/register', authLimiter, (req, res) => {
   const name = String(req.body?.name || '').trim()
   const password = String(req.body?.password || '')
   const registrationSecret = String(req.body?.registrationSecret || '')
+  const rawPhone = String(req.body?.phone || '').trim()
+  const phone = rawPhone ? normalizePhone(rawPhone) : null
 
   if (!/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: 'Некорректный email' })
+  if (rawPhone && !phone) return res.status(400).json({ error: 'Некорректный номер телефона' })
   const pwError = validatePassword(password)
   if (pwError) return res.status(400).json({ error: pwError })
 
@@ -379,8 +454,8 @@ app.post('/api/auth/register', authLimiter, (req, res) => {
   const id = uidAuth()
   const role = usersCount === 0 ? 'owner' : 'user'
   try {
-    db.prepare('INSERT INTO users (id, email, name, password_hash, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(id, email, name, passwordHash(password), role, now(), now())
+    db.prepare('INSERT INTO users (id, email, name, phone, password_hash, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, email, name, phone, passwordHash(password), role, now(), now())
     createSession(res, id)
     const user = db.prepare('SELECT * FROM users WHERE id=?').get(id)
     res.json({ user: publicUser(user) })
@@ -405,6 +480,87 @@ app.post('/api/auth/logout', requireAuth, (req, res) => {
   const token = parseCookies(req)[AUTH_COOKIE]
   if (token) db.prepare('DELETE FROM sessions WHERE token_hash=?').run(sha256(token))
   clearSessionCookie(res)
+  res.json({ ok: true })
+})
+
+// ---- SMS сброс пароля ----
+
+// Шаг 1: ввести телефон → получить SMS с кодом
+app.post('/api/auth/sms-send', authLimiter, async (req, res) => {
+  const rawPhone = String(req.body?.phone || '').trim()
+  const phone = normalizePhone(rawPhone)
+  if (!phone) return res.status(400).json({ error: 'Некорректный номер телефона' })
+
+  const user = db.prepare('SELECT id FROM users WHERE phone = ?').get(phone)
+  // Отвечаем одинаково чтобы не раскрывать есть ли пользователь
+  if (!user) {
+    return res.json({ ok: true, message: 'Если номер зарегистрирован, код отправлен' })
+  }
+
+  // Генерируем 6-значный код
+  const code = String(Math.floor(100000 + Math.random() * 900000))
+  const codeHash = sha256(code)
+  const expiresAt = now() + 10 * 60 * 1000 // 10 минут
+
+  // Удаляем старые коды для этого телефона
+  db.prepare('DELETE FROM sms_codes WHERE phone = ?').run(phone)
+  db.prepare('INSERT INTO sms_codes (id, phone, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(uidAuth(), phone, codeHash, expiresAt, now())
+
+  try {
+    await sendSmsCode(phone, code)
+    res.json({ ok: true, message: 'Код отправлен на ваш номер' })
+  } catch (e) {
+    console.error('SMS send error:', e.message)
+    res.status(503).json({ error: 'Не удалось отправить SMS. Попробуйте позже.' })
+  }
+})
+
+// Шаг 2: ввести код из SMS → получить временный токен для смены пароля
+app.post('/api/auth/sms-verify', authLimiter, (req, res) => {
+  const rawPhone = String(req.body?.phone || '').trim()
+  const code = String(req.body?.code || '').trim()
+  const phone = normalizePhone(rawPhone)
+
+  if (!phone || !code) return res.status(400).json({ error: 'Укажите телефон и код' })
+
+  const codeHash = sha256(code)
+  const row = db.prepare(
+    'SELECT * FROM sms_codes WHERE phone = ? AND code_hash = ? AND expires_at > ? AND used_at IS NULL'
+  ).get(phone, codeHash, now())
+
+  if (!row) return res.status(400).json({ error: 'Неверный или устаревший код' })
+
+  // Помечаем код использованным
+  db.prepare('UPDATE sms_codes SET used_at = ? WHERE id = ?').run(now(), row.id)
+
+  // Ищем пользователя
+  const user = db.prepare('SELECT id FROM users WHERE phone = ?').get(phone)
+  if (!user) return res.status(400).json({ error: 'Пользователь не найден' })
+
+  // Создаём временный токен для смены пароля (действует 15 минут)
+  const resetToken = crypto.randomBytes(32).toString('base64url')
+  db.prepare(
+    'INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)'
+  ).run(uidAuth(), user.id, sha256(resetToken), now() + 15 * 60 * 1000, now())
+
+  res.json({ ok: true, resetToken })
+})
+
+// Обновить телефон (когда пользователь залогинен)
+app.put('/api/auth/phone', requireAuth, (req, res) => {
+  const rawPhone = String(req.body?.phone || '').trim()
+  const phone = rawPhone ? normalizePhone(rawPhone) : null
+
+  if (rawPhone && !phone) return res.status(400).json({ error: 'Некорректный номер телефона' })
+
+  // Проверяем что телефон не занят другим пользователем
+  if (phone) {
+    const existing = db.prepare('SELECT id FROM users WHERE phone = ? AND id != ?').get(phone, req.user.id)
+    if (existing) return res.status(409).json({ error: 'Этот номер уже используется' })
+  }
+
+  db.prepare('UPDATE users SET phone = ?, updated_at = ? WHERE id = ?').run(phone, now(), req.user.id)
   res.json({ ok: true })
 })
 

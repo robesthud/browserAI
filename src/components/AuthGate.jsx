@@ -30,12 +30,19 @@ function writeCloudToLocal(data) {
   }
 }
 
+const inputCls = 'w-full rounded-xl border border-white/10 bg-graphite-900 px-4 py-3 text-cream placeholder:text-cream-faint focus:border-cream/30 focus:outline-none'
+
 function AuthPanel({ onAuthenticated }) {
   const resetToken = useMemo(() => new URLSearchParams(window.location.search).get('reset_token') || '', [])
+  // режимы: login | register | forgot | reset | sms-phone | sms-code | sms-reset
   const [mode, setMode] = useState(resetToken ? 'reset' : 'login')
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
+  const [phone, setPhone] = useState('')
   const [password, setPassword] = useState('')
+  const [password2, setPassword2] = useState('')
+  const [smsCode, setSmsCode] = useState('')
+  const [smsResetToken, setSmsResetToken] = useState('')
   const [registrationSecret, setRegistrationSecret] = useState('')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
@@ -52,22 +59,67 @@ function AuthPanel({ onAuthenticated }) {
         await onAuthenticated()
         return
       }
+
       if (mode === 'register') {
-        await backend.authRegister({ email, name, password, registrationSecret })
+        if (password !== password2) { setError('Пароли не совпадают'); return }
+        await backend.authRegister({ email, name, phone, password, registrationSecret })
         await onAuthenticated()
         return
       }
+
       if (mode === 'forgot') {
         await backend.authForgotPassword(email)
-        setMessage('Если email зарегистрирован и SMTP настроен, ссылка восстановления отправлена.')
+        setMessage('Если email зарегистрирован, ссылка восстановления отправлена.')
         return
       }
+
       if (mode === 'reset') {
         await backend.authResetPassword(resetToken, password)
-        setMessage('Пароль изменён. Теперь войдите с новым паролем.')
+        setMessage('Пароль изменён. Теперь войдите.')
         window.history.replaceState({}, '', window.location.pathname)
         setMode('login')
         setPassword('')
+        return
+      }
+
+      // SMS-восстановление: шаг 1 — ввод телефона
+      if (mode === 'sms-phone') {
+        const res = await fetch('/api/auth/sms-send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone }),
+        })
+        const data = await res.json()
+        if (!res.ok) { setError(data.error || 'Ошибка'); return }
+        setMessage('Код отправлен на ваш номер')
+        setMode('sms-code')
+        return
+      }
+
+      // SMS-восстановление: шаг 2 — ввод кода
+      if (mode === 'sms-code') {
+        const res = await fetch('/api/auth/sms-verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone, code: smsCode }),
+        })
+        const data = await res.json()
+        if (!res.ok) { setError(data.error || 'Неверный код'); return }
+        setSmsResetToken(data.resetToken)
+        setMessage('Код подтверждён! Введите новый пароль.')
+        setMode('sms-reset')
+        return
+      }
+
+      // SMS-восстановление: шаг 3 — новый пароль
+      if (mode === 'sms-reset') {
+        if (password !== password2) { setError('Пароли не совпадают'); return }
+        await backend.authResetPassword(smsResetToken, password)
+        setMessage('Пароль изменён! Теперь войдите.')
+        setMode('login')
+        setPassword('')
+        setPassword2('')
+        return
       }
     } catch (e) {
       setError(e.message || 'Ошибка')
@@ -76,82 +128,127 @@ function AuthPanel({ onAuthenticated }) {
     }
   }
 
+  const title = {
+    login: 'Войти',
+    register: 'Регистрация',
+    forgot: 'Сброс по email',
+    reset: 'Новый пароль',
+    'sms-phone': 'Сброс по SMS',
+    'sms-code': 'Введите код',
+    'sms-reset': 'Новый пароль',
+  }[mode] || 'BrowserAI'
+
+  const btnLabel = busy ? 'Подождите…' : {
+    login: 'Войти',
+    register: 'Зарегистрироваться',
+    forgot: 'Отправить ссылку на email',
+    reset: 'Сменить пароль',
+    'sms-phone': 'Получить SMS-код',
+    'sms-code': 'Подтвердить код',
+    'sms-reset': 'Сменить пароль',
+  }[mode]
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-graphite-900 px-4 py-8 text-cream">
       <div className="w-full max-w-md rounded-3xl border border-white/10 bg-graphite-800 p-6 shadow-2xl">
         <div className="mb-6 text-center">
           <div className="text-3xl font-semibold">BrowserAI</div>
-          <div className="mt-2 text-sm text-cream-faint">
-            Войдите, чтобы синхронизировать ключи, настройки и чаты между Android и компьютером.
-          </div>
+          <div className="mt-1 text-[13px] text-cream-faint">{title}</div>
         </div>
 
         <form onSubmit={submit} className="space-y-3">
+          {/* Имя */}
           {mode === 'register' && (
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Имя"
-              className="w-full rounded-xl border border-white/10 bg-graphite-900 px-4 py-3 text-cream placeholder:text-cream-faint focus:border-cream/30 focus:outline-none"
-            />
+            <input value={name} onChange={(e) => setName(e.target.value)}
+              placeholder="Имя" className={inputCls} />
           )}
 
-          {mode !== 'reset' && (
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="Email"
-              required
-              className="w-full rounded-xl border border-white/10 bg-graphite-900 px-4 py-3 text-cream placeholder:text-cream-faint focus:border-cream/30 focus:outline-none"
-            />
+          {/* Email */}
+          {['login', 'register', 'forgot'].includes(mode) && (
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+              placeholder="Email" required className={inputCls} />
           )}
 
-          {mode !== 'forgot' && (
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={mode === 'reset' ? 'Новый пароль' : 'Пароль'}
-              required
-              minLength={8}
-              className="w-full rounded-xl border border-white/10 bg-graphite-900 px-4 py-3 text-cream placeholder:text-cream-faint focus:border-cream/30 focus:outline-none"
-            />
-          )}
-
+          {/* Телефон при регистрации */}
           {mode === 'register' && (
-            <input
-              type="password"
-              value={registrationSecret}
+            <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)}
+              placeholder="Телефон +7... (для сброса пароля по SMS)"
+              className={inputCls} />
+          )}
+
+          {/* Телефон при SMS-сбросе */}
+          {mode === 'sms-phone' && (
+            <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)}
+              placeholder="Номер телефона +7..." required className={inputCls} />
+          )}
+
+          {/* SMS-код */}
+          {mode === 'sms-code' && (
+            <input type="text" inputMode="numeric" maxLength={6}
+              value={smsCode} onChange={(e) => setSmsCode(e.target.value)}
+              placeholder="6-значный код из SMS" required className={inputCls} />
+          )}
+
+          {/* Пароль */}
+          {['login', 'register', 'reset', 'sms-reset'].includes(mode) && (
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+              placeholder={mode === 'login' ? 'Пароль' : 'Новый пароль'}
+              required minLength={10} className={inputCls} />
+          )}
+
+          {/* Подтверждение пароля */}
+          {['register', 'reset', 'sms-reset'].includes(mode) && (
+            <input type="password" value={password2} onChange={(e) => setPassword2(e.target.value)}
+              placeholder="Повторите пароль" required className={inputCls} />
+          )}
+
+          {/* Секрет регистрации */}
+          {mode === 'register' && (
+            <input type="password" value={registrationSecret}
               onChange={(e) => setRegistrationSecret(e.target.value)}
-              placeholder="Секрет регистрации (нужен после первого пользователя)"
-              className="w-full rounded-xl border border-white/10 bg-graphite-900 px-4 py-3 text-cream placeholder:text-cream-faint focus:border-cream/30 focus:outline-none"
-            />
+              placeholder="Секрет регистрации (если не первый пользователь)"
+              className={inputCls} />
           )}
 
-          {error && <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">{error}</div>}
-          {message && <div className="rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">{message}</div>}
+          {error && (
+            <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+              {error}
+            </div>
+          )}
+          {message && (
+            <div className="rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">
+              {message}
+            </div>
+          )}
 
-          <button
-            disabled={busy}
-            className="w-full rounded-xl bg-cream px-4 py-3 font-medium text-graphite-900 transition-opacity disabled:opacity-60"
-          >
-            {busy
-              ? 'Подождите…'
-              : mode === 'login'
-                ? 'Войти'
-                : mode === 'register'
-                  ? 'Зарегистрироваться'
-                  : mode === 'forgot'
-                    ? 'Отправить ссылку'
-                    : 'Сменить пароль'}
+          <button disabled={busy}
+            className="w-full rounded-xl bg-cream px-4 py-3 font-medium text-graphite-900 transition-opacity disabled:opacity-60">
+            {btnLabel}
           </button>
         </form>
 
+        {/* Навигация между режимами */}
         <div className="mt-5 flex flex-wrap justify-center gap-3 text-sm text-cream-dim">
-          {mode !== 'login' && <button onClick={() => setMode('login')} className="hover:text-cream">Войти</button>}
-          {mode !== 'register' && <button onClick={() => setMode('register')} className="hover:text-cream">Регистрация</button>}
-          {mode !== 'forgot' && <button onClick={() => setMode('forgot')} className="hover:text-cream">Забыли пароль?</button>}
+          {mode !== 'login' && (
+            <button onClick={() => { setMode('login'); setError(''); setMessage('') }}
+              className="hover:text-cream">Войти</button>
+          )}
+          {mode !== 'register' && (
+            <button onClick={() => { setMode('register'); setError(''); setMessage('') }}
+              className="hover:text-cream">Регистрация</button>
+          )}
+          {!['forgot', 'sms-phone', 'sms-code', 'sms-reset', 'reset'].includes(mode) && (
+            <>
+              <button onClick={() => { setMode('forgot'); setError(''); setMessage('') }}
+                className="hover:text-cream">Сброс по email</button>
+              <button onClick={() => { setMode('sms-phone'); setError(''); setMessage('') }}
+                className="hover:text-cream">Сброс по SMS</button>
+            </>
+          )}
+          {['forgot', 'sms-phone', 'sms-code', 'sms-reset'].includes(mode) && mode !== 'sms-code' && (
+            <button onClick={() => { setMode('login'); setError(''); setMessage('') }}
+              className="hover:text-cream">← Назад</button>
+          )}
         </div>
       </div>
     </div>
