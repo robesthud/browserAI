@@ -88,7 +88,9 @@ const app = express()
 app.set('trust proxy', 1)
 app.use(helmet())
 app.use(limiter)
-app.use(cors({ origin: process.env.CORS_ORIGIN || 'http://localhost:5173' }))
+// Do not hard-code localhost in production: Vite emits crossorigin assets,
+// and a mismatched Access-Control-Allow-Origin header makes browsers block JS/CSS.
+app.use(process.env.CORS_ORIGIN ? cors({ origin: process.env.CORS_ORIGIN }) : cors())
 app.use(express.json({ limit: '50mb' }))
 
 function encKey() {
