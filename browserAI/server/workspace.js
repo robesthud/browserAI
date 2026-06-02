@@ -1,0 +1,758 @@
+import fs from 'node:fs/promises'
+import fsSync from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
+import crypto from 'node:crypto'
+import dns from 'node:dns/promises'
+import net from 'node:net'
+import AdmZip from 'adm-zip'
+import * as tar from 'tar'
+import ipaddr from 'ipaddr.js'
+
+const DEFAULT_DATA_DIR = '/data'
+const workspaceRoot = path.resolve(
+  process.env.WORKSPACE_ROOT
+    || (fsSync.existsSync(DEFAULT_DATA_DIR)
+      ? path.join(DEFAULT_DATA_DIR, 'workspace')
+      : path.join(process.cwd(), 'workspace')),
+)
+const historyRoot = path.join(workspaceRoot, '.history')
+
+const MAX_HISTORY_REVISIONS = 30
+const MAX_PREVIEW_TEXT_BYTES = 200 * 1024
+const MAX_SEARCH_TEXT_BYTES = 512 * 1024
+
+const TEXT_EXT = new Set([
+  'txt', 'md', 'markdown', 'json', 'js', 'jsx', 'ts', 'tsx', 'css', 'scss',
+  'html', 'htm', 'xml', 'yml', 'yaml', 'csv', 'py', 'java', 'c', 'cpp', 'h',
+  'go', 'rs', 'rb', 'php', 'sh', 'sql', 'env', 'ini', 'toml', 'log', 'vue',
+  'svelte', 'config', 'gitignore', 'editorconfig', 'dockerfile', 'ps1', 'bat',
+])
+
+const IMAGE_EXT_TO_MIME = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  svg: 'image/svg+xml',
+  ico: 'image/x-icon',
+}
+
+const MIME_BY_EXT = {
+  ...IMAGE_EXT_TO_MIME,
+  pdf: 'application/pdf',
+  txt: 'text/plain; charset=utf-8',
+  md: 'text/markdown; charset=utf-8',
+  markdown: 'text/markdown; charset=utf-8',
+  json: 'application/json; charset=utf-8',
+  js: 'text/javascript; charset=utf-8',
+  jsx: 'text/javascript; charset=utf-8',
+  ts: 'text/plain; charset=utf-8',
+  tsx: 'text/plain; charset=utf-8',
+  css: 'text/css; charset=utf-8',
+  html: 'text/html; charset=utf-8',
+  htm: 'text/html; charset=utf-8',
+  xml: 'application/xml; charset=utf-8',
+  yml: 'text/yaml; charset=utf-8',
+  yaml: 'text/yaml; charset=utf-8',
+  csv: 'text/csv; charset=utf-8',
+  py: 'text/x-python; charset=utf-8',
+  sh: 'text/x-shellscript; charset=utf-8',
+  sql: 'text/plain; charset=utf-8',
+}
+
+function isInsideRoot(fullPath, rootPath) {
+  const relative = path.relative(rootPath, fullPath)
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+function normalizeRelativePath(relativePath = '') {
+  const raw = String(relativePath || '').replace(/\\/g, '/')
+  const normalized = path.posix.normalize(raw).replace(/^\/+/, '')
+  if (normalized === '.' || normalized === '') return ''
+  if (normalized === '..' || normalized.startsWith('../')) {
+    throw new Error('Path traversal detected')
+  }
+  return normalized
+}
+
+function safePath(relativePath) {
+  const normalized = normalizeRelativePath(relativePath)
+  const full = path.resolve(workspaceRoot, normalized)
+  if (!isInsideRoot(full, workspaceRoot)) {
+    throw new Error('Path traversal detected')
+  }
+  return full
+}
+
+function safeHistoryPath(relativePath = '') {
+  const normalized = normalizeRelativePath(relativePath)
+  const full = path.resolve(historyRoot, normalized)
+  if (!isInsideRoot(full, historyRoot)) {
+    throw new Error('Path traversal detected in history')
+  }
+  return full
+}
+
+function extOf(name = '') {
+  return String(name).split('.').pop()?.toLowerCase() || ''
+}
+
+function sanitizeReason(reason = 'edit') {
+  return String(reason || 'edit')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'edit'
+}
+
+function fileNameToMime(name = '') {
+  const ext = extOf(name)
+  return MIME_BY_EXT[ext] || 'application/octet-stream'
+}
+
+function isProbablyTextBuffer(buffer) {
+  const slice = buffer.subarray(0, Math.min(buffer.length, 4096))
+  let suspicious = 0
+  for (const byte of slice) {
+    if (byte === 0) return false
+    if (byte < 7 || (byte > 14 && byte < 32)) suspicious += 1
+  }
+  return suspicious < Math.max(8, Math.floor(slice.length * 0.05))
+}
+
+function isTextFileName(name = '') {
+  const lower = String(name || '').toLowerCase()
+  const ext = extOf(lower)
+  if (TEXT_EXT.has(ext)) return true
+  const base = path.basename(lower)
+  return TEXT_EXT.has(base)
+}
+
+function isImageFileName(name = '') {
+  return Boolean(IMAGE_EXT_TO_MIME[extOf(name)])
+}
+
+function isPdfFileName(name = '') {
+  return extOf(name) === 'pdf'
+}
+
+function encodeDataUrl(mime, buffer) {
+  return `data:${mime};base64,${buffer.toString('base64')}`
+}
+
+function revisionFileName(baseName, timestamp, hash, reason) {
+  return `${baseName}.${timestamp}.${hash}.${sanitizeReason(reason)}.rev`
+}
+
+function parseRevisionMeta(baseName, fileName) {
+  const escaped = baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = fileName.match(new RegExp(`^${escaped}\\.(\\d+)\\.([a-f0-9]{8})(?:\\.([a-z0-9_-]+))?\\.rev$`, 'i'))
+  if (!match) return null
+  return {
+    id: fileName,
+    createdAt: Number(match[1]),
+    hash: match[2],
+    reason: match[3] || 'edit',
+  }
+}
+
+async function ensureWorkspaceRoot() {
+  await fs.mkdir(workspaceRoot, { recursive: true })
+  await fs.mkdir(historyRoot, { recursive: true })
+}
+
+async function saveRevisionSnapshot(relPath, content, reason = 'edit') {
+  const normalizedRel = normalizeRelativePath(relPath)
+  if (!normalizedRel) return
+
+  const buffer = Buffer.isBuffer(content)
+    ? content
+    : Buffer.from(String(content ?? ''), 'utf8')
+
+  const baseName = path.basename(normalizedRel)
+  const dirRel = path.dirname(normalizedRel)
+  const revisionDir = safeHistoryPath(dirRel)
+  await fs.mkdir(revisionDir, { recursive: true })
+
+  const timestamp = Date.now()
+  const hash = crypto.createHash('md5').update(buffer).digest('hex').slice(0, 8)
+  const fileName = revisionFileName(baseName, timestamp, hash, reason)
+  const revisionPath = safeHistoryPath(path.join(dirRel, fileName))
+  await fs.writeFile(revisionPath, buffer)
+
+  const entries = await fs.readdir(revisionDir).catch(() => [])
+  const revisions = entries
+    .map((entry) => ({ entry, meta: parseRevisionMeta(baseName, entry) }))
+    .filter((item) => item.meta)
+    .sort((a, b) => b.meta.createdAt - a.meta.createdAt)
+
+  for (const stale of revisions.slice(MAX_HISTORY_REVISIONS)) {
+    await fs.unlink(safeHistoryPath(path.join(dirRel, stale.entry))).catch(() => {})
+  }
+}
+
+async function buildTree(currentPath, currentRel = '', showHidden = false) {
+  const entries = await fs.readdir(currentPath, { withFileTypes: true })
+  const nodes = []
+
+  for (const entry of entries) {
+    if (!showHidden && entry.name.startsWith('.')) continue
+    if (entry.name === '.history') continue
+
+    const rel = currentRel ? path.posix.join(currentRel, entry.name) : entry.name
+    const full = safePath(rel)
+
+    if (entry.isDirectory()) {
+      nodes.push({
+        name: entry.name,
+        path: rel,
+        type: 'dir',
+        children: await buildTree(full, rel, showHidden),
+      })
+      continue
+    }
+
+    const stat = await fs.stat(full)
+    nodes.push({
+      name: entry.name,
+      path: rel,
+      type: 'file',
+      size: stat.size,
+      modifiedAt: stat.mtimeMs,
+    })
+  }
+
+  return nodes.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1
+    return a.name.localeCompare(b.name)
+  })
+}
+
+async function getWorkspaceTree(showHidden = false) {
+  return {
+    name: 'workspace',
+    path: '',
+    type: 'dir',
+    children: await buildTree(workspaceRoot, '', showHidden),
+  }
+}
+
+async function readWorkspaceFile(relPath) {
+  const normalizedRel = normalizeRelativePath(relPath)
+  if (!normalizedRel) throw new Error('path required')
+
+  const full = safePath(normalizedRel)
+  const stat = await fs.stat(full)
+  if (!stat.isFile()) throw new Error('Not a file')
+
+  const name = path.basename(normalizedRel)
+  const mime = fileNameToMime(name)
+  const buffer = await fs.readFile(full)
+
+  const base = {
+    name,
+    path: normalizedRel,
+    size: stat.size,
+    mime,
+    modifiedAt: stat.mtimeMs,
+    truncated: false,
+  }
+
+  if (isImageFileName(name)) {
+    return {
+      ...base,
+      kind: 'image',
+      dataUrl: encodeDataUrl(mime, buffer),
+    }
+  }
+
+  if (isPdfFileName(name)) {
+    return {
+      ...base,
+      kind: 'pdf',
+      dataUrl: encodeDataUrl(mime, buffer),
+    }
+  }
+
+  if (isTextFileName(name) || mime.startsWith('text/') || isProbablyTextBuffer(buffer)) {
+    let textBuffer = buffer
+    let truncated = false
+    if (buffer.length > MAX_PREVIEW_TEXT_BYTES) {
+      textBuffer = buffer.subarray(0, MAX_PREVIEW_TEXT_BYTES)
+      truncated = true
+    }
+    return {
+      ...base,
+      kind: 'text',
+      text: textBuffer.toString('utf8'),
+      truncated,
+    }
+  }
+
+  return {
+    ...base,
+    kind: 'binary',
+  }
+}
+
+async function createFolder(parentRel, name) {
+  const cleanName = path.basename(String(name || '').trim())
+  if (!cleanName) throw new Error('Folder name required')
+  const target = safePath(path.posix.join(normalizeRelativePath(parentRel), cleanName))
+  await fs.mkdir(target, { recursive: true })
+}
+
+async function createFile(parentRel, name, content = '') {
+  const cleanName = path.basename(String(name || '').trim())
+  if (!cleanName) throw new Error('File name required')
+
+  const rel = path.posix.join(normalizeRelativePath(parentRel), cleanName)
+  const full = safePath(rel)
+  await fs.mkdir(path.dirname(full), { recursive: true })
+  await fs.writeFile(full, String(content ?? ''), 'utf8')
+  await saveRevisionSnapshot(rel, String(content ?? ''), 'create')
+}
+
+async function writeFileContent(relPath, content = '') {
+  const normalizedRel = normalizeRelativePath(relPath)
+  if (!normalizedRel) throw new Error('path required')
+
+  const full = safePath(normalizedRel)
+  await fs.mkdir(path.dirname(full), { recursive: true })
+
+  const previous = await fs.readFile(full).catch(() => null)
+  if (previous) {
+    await saveRevisionSnapshot(normalizedRel, previous, 'edit')
+  }
+
+  const nextContent = typeof content === 'string' ? content : String(content ?? '')
+  await fs.writeFile(full, nextContent, 'utf8')
+
+  if (!previous) {
+    await saveRevisionSnapshot(normalizedRel, nextContent, 'create')
+  }
+}
+
+async function renameItem(relPath, newName) {
+  const normalizedRel = normalizeRelativePath(relPath)
+  const cleanName = path.basename(String(newName || '').trim())
+  if (!normalizedRel || !cleanName) throw new Error('path and newName required')
+
+  const oldFull = safePath(normalizedRel)
+  const newRel = path.posix.join(path.posix.dirname(normalizedRel), cleanName)
+  const newFull = safePath(newRel)
+  await fs.rename(oldFull, newFull)
+}
+
+async function moveItem(sourceRel, targetDirRel = '') {
+  const normalizedSource = normalizeRelativePath(sourceRel)
+  const normalizedTargetDir = normalizeRelativePath(targetDirRel)
+  if (!normalizedSource) throw new Error('sourcePath required')
+
+  const sourceFull = safePath(normalizedSource)
+  const targetDirFull = safePath(normalizedTargetDir)
+  await fs.mkdir(targetDirFull, { recursive: true })
+
+  const targetRel = path.posix.join(normalizedTargetDir, path.posix.basename(normalizedSource))
+  const targetFull = safePath(targetRel)
+
+  if (targetFull === sourceFull) return
+  if (isInsideRoot(targetFull, sourceFull)) {
+    throw new Error('Cannot move a folder into itself')
+  }
+
+  await fs.rename(sourceFull, targetFull)
+}
+
+async function deleteItem(relPath) {
+  const normalizedRel = normalizeRelativePath(relPath)
+  if (!normalizedRel) throw new Error('path required')
+
+  const full = safePath(normalizedRel)
+  const stat = await fs.stat(full)
+  if (stat.isDirectory()) {
+    await fs.rm(full, { recursive: true, force: true })
+  } else {
+    await fs.unlink(full)
+  }
+}
+
+function isPrivateIpAddress(address) {
+  if (!net.isIP(address)) return false
+  const parsed = ipaddr.parse(address)
+  return parsed.range() !== 'unicast' || parsed.isLoopback() || parsed.isLinkLocal()
+}
+
+async function assertPublicUrl(url) {
+  let parsed
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new Error('Invalid URL')
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('Only http/https URLs are allowed')
+  }
+
+  const hostname = parsed.hostname
+  if (!hostname || hostname === 'localhost' || hostname.endsWith('.local')) {
+    throw new Error('Access to internal networks is not allowed')
+  }
+
+  if (isPrivateIpAddress(hostname)) {
+    throw new Error('Access to internal networks is not allowed')
+  }
+
+  try {
+    const resolved = await dns.lookup(hostname, { all: true })
+    if (resolved.some((item) => isPrivateIpAddress(item.address))) {
+      throw new Error('Access to internal networks is not allowed')
+    }
+  } catch (error) {
+    if (String(error?.message || '').includes('internal networks')) {
+      throw error
+    }
+    // если DNS не разрешился, оставляем дальнейшую сетевую ошибку fetch
+  }
+
+  return parsed
+}
+
+function detectArchiveType(name = '', contentType = '') {
+  const lower = String(name || '').toLowerCase()
+  const type = String(contentType || '').toLowerCase()
+
+  if (
+    lower.endsWith('.tar.gz') ||
+    lower.endsWith('.tgz') ||
+    type === 'application/gzip' ||
+    type === 'application/x-gzip'
+  ) {
+    return 'tgz'
+  }
+
+  if (
+    lower.endsWith('.tar') ||
+    type === 'application/x-tar' ||
+    type === 'application/tar'
+  ) {
+    return 'tar'
+  }
+
+  if (
+    lower.endsWith('.zip') ||
+    type === 'application/zip' ||
+    type === 'application/x-zip-compressed'
+  ) {
+    return 'zip'
+  }
+
+  return null
+}
+
+function isSafeArchiveEntry(entryName = '') {
+  const raw = String(entryName || '').replace(/\\/g, '/').replace(/^\/+/, '')
+  if (!raw) return false
+  const normalized = path.posix.normalize(raw)
+  if (!normalized || normalized === '.' || normalized === '..') return false
+  if (normalized.startsWith('../')) return false
+  return true
+}
+
+async function writeUploadedFile(targetRel, buffer, reason = 'create') {
+  const full = safePath(targetRel)
+  await fs.mkdir(path.dirname(full), { recursive: true })
+  await fs.writeFile(full, buffer)
+  await saveRevisionSnapshot(targetRel, buffer, reason)
+}
+
+async function extractZipBuffer(parentRel, archiveRel, buffer) {
+  const destRel = path.posix.join(normalizeRelativePath(parentRel), path.posix.dirname(archiveRel))
+  const zip = new AdmZip(buffer)
+  const written = []
+
+  for (const entry of zip.getEntries()) {
+    const rawName = String(entry.entryName || '')
+    if (!isSafeArchiveEntry(rawName)) continue
+
+    const entryRel = path.posix.join(destRel, normalizeRelativePath(rawName))
+    if (entry.isDirectory) {
+      await fs.mkdir(safePath(entryRel), { recursive: true })
+      continue
+    }
+
+    const data = entry.getData()
+    await writeUploadedFile(entryRel, data, 'create')
+    written.push(entryRel)
+  }
+
+  return written
+}
+
+async function extractTarBuffer(parentRel, archiveRel, buffer, archiveType = 'tar') {
+  const destRel = path.posix.join(normalizeRelativePath(parentRel), path.posix.dirname(archiveRel))
+  const destFull = safePath(destRel)
+  await fs.mkdir(destFull, { recursive: true })
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'browserai-archive-'))
+  const ext = archiveType === 'tgz' ? '.tar.gz' : '.tar'
+  const tempFile = path.join(tempDir, `archive${ext}`)
+  await fs.writeFile(tempFile, buffer)
+
+  const extractedFiles = []
+
+  try {
+    const entries = []
+    await tar.list({
+      file: tempFile,
+      onentry: (entry) => {
+        const entryPath = String(entry.path || '')
+        if (!isSafeArchiveEntry(entryPath)) {
+          throw new Error('Archive contains unsafe paths')
+        }
+        if (entry.type !== 'File' && entry.type !== 'Directory') {
+          throw new Error('Archive contains unsupported entry types')
+        }
+        entries.push({ path: normalizeRelativePath(entryPath), type: entry.type })
+      },
+    })
+
+    await tar.extract({
+      file: tempFile,
+      cwd: destFull,
+      strict: true,
+      preservePaths: false,
+      filter: (_entryPath, entry) => entry.type === 'File' || entry.type === 'Directory',
+    })
+
+    for (const entry of entries) {
+      if (entry.type !== 'File') continue
+      const fileRel = path.posix.join(destRel, entry.path)
+      const fileBuffer = await fs.readFile(safePath(fileRel))
+      await saveRevisionSnapshot(fileRel, fileBuffer, 'create')
+      extractedFiles.push(fileRel)
+    }
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {})
+  }
+
+  return extractedFiles
+}
+
+async function uploadFiles(parentRel, files) {
+  const normalizedParent = normalizeRelativePath(parentRel)
+
+  for (const file of files) {
+    const relativeTarget = normalizeRelativePath(file.path || file.name || '')
+    const fileName = path.posix.basename(relativeTarget)
+    const contentBase64 = file.content || file.contentBase64
+    if (!relativeTarget || !fileName || !contentBase64) {
+      throw new Error('Invalid uploaded file payload')
+    }
+
+    const buffer = Buffer.from(contentBase64, 'base64')
+    const archiveType = detectArchiveType(fileName, file.type)
+    if (archiveType === 'zip') {
+      await extractZipBuffer(normalizedParent, relativeTarget, buffer)
+      continue
+    }
+    if (archiveType === 'tar' || archiveType === 'tgz') {
+      await extractTarBuffer(normalizedParent, relativeTarget, buffer, archiveType)
+      continue
+    }
+
+    const targetRel = path.posix.join(normalizedParent, relativeTarget)
+    await writeUploadedFile(targetRel, buffer, 'create')
+  }
+}
+
+function fileNameFromResponse(url, response) {
+  const disposition = response.headers.get('content-disposition') || ''
+  const match = disposition.match(/filename\*?=(?:UTF-8''|"?)([^";]+)/i)
+  if (match?.[1]) {
+    try {
+      return decodeURIComponent(match[1].replace(/"/g, ''))
+    } catch {
+      return match[1].replace(/"/g, '')
+    }
+  }
+
+  const parsed = new URL(url)
+  return path.posix.basename(parsed.pathname) || 'downloaded'
+}
+
+async function uploadFromUrl(parentRel, url) {
+  await assertPublicUrl(url)
+
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; BrowserAI/1.0)',
+    },
+  })
+
+  if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`)
+
+  const buffer = Buffer.from(await response.arrayBuffer())
+  const filename = fileNameFromResponse(url, response)
+  const archiveType = detectArchiveType(filename, response.headers.get('content-type') || '')
+
+  if (archiveType === 'zip') {
+    await extractZipBuffer(parentRel, filename, buffer)
+    return { filename, extracted: true }
+  }
+  if (archiveType === 'tar' || archiveType === 'tgz') {
+    await extractTarBuffer(parentRel, filename, buffer, archiveType)
+    return { filename, extracted: true }
+  }
+
+  const targetRel = path.posix.join(normalizeRelativePath(parentRel), path.posix.basename(filename))
+  await writeUploadedFile(targetRel, buffer, 'create')
+  return { filename, extracted: false }
+}
+
+async function searchWorkspaceContent(query, showHidden = false) {
+  const needle = String(query || '').trim().toLowerCase()
+  if (!needle) return []
+
+  const results = []
+
+  async function searchDir(currentFull, currentRel) {
+    if (results.length >= 100) return
+
+    const entries = await fs.readdir(currentFull, { withFileTypes: true })
+    for (const entry of entries) {
+      if (results.length >= 100) return
+      if (!showHidden && entry.name.startsWith('.')) continue
+      if (entry.name === '.history') continue
+
+      const rel = currentRel ? path.posix.join(currentRel, entry.name) : entry.name
+      const full = safePath(rel)
+
+      if (entry.isDirectory()) {
+        await searchDir(full, rel)
+        continue
+      }
+
+      const stat = await fs.stat(full)
+      if (stat.size > MAX_SEARCH_TEXT_BYTES) continue
+
+      const buffer = await fs.readFile(full).catch(() => null)
+      if (!buffer || !(isTextFileName(entry.name) || isProbablyTextBuffer(buffer))) {
+        continue
+      }
+
+      const text = buffer.toString('utf8')
+      const lines = text.split(/\r?\n/)
+      for (let index = 0; index < lines.length && results.length < 100; index += 1) {
+        const line = lines[index]
+        const lower = line.toLowerCase()
+        const at = lower.indexOf(needle)
+        if (at === -1) continue
+
+        const start = Math.max(0, at - 80)
+        const end = Math.min(line.length, at + needle.length + 80)
+        results.push({
+          path: rel,
+          type: 'file',
+          line: index + 1,
+          snippet: line.slice(start, end).trim(),
+          matches: 1,
+        })
+      }
+    }
+  }
+
+  await searchDir(workspaceRoot, '')
+  return results
+}
+
+async function getFileHistory(relPath) {
+  const normalizedRel = normalizeRelativePath(relPath)
+  if (!normalizedRel) throw new Error('path required')
+
+  const dirRel = path.posix.dirname(normalizedRel)
+  const baseName = path.basename(normalizedRel)
+  const revisionDir = safeHistoryPath(dirRel)
+  const entries = await fs.readdir(revisionDir).catch(() => [])
+
+  const items = []
+  for (const entry of entries) {
+    const meta = parseRevisionMeta(baseName, entry)
+    if (!meta) continue
+
+    const full = safeHistoryPath(path.join(dirRel, entry))
+    const stat = await fs.stat(full).catch(() => null)
+    if (!stat?.isFile()) continue
+
+    items.push({
+      id: meta.id,
+      revisionId: meta.id,
+      createdAt: meta.createdAt,
+      timestamp: meta.createdAt,
+      size: stat.size,
+      reason: meta.reason,
+    })
+  }
+
+  return items.sort((a, b) => b.createdAt - a.createdAt)
+}
+
+async function restoreFileRevision(relPath, revisionId) {
+  const normalizedRel = normalizeRelativePath(relPath)
+  const cleanRevisionId = path.basename(String(revisionId || ''))
+  if (!normalizedRel || !cleanRevisionId) {
+    throw new Error('path and revisionId required')
+  }
+
+  const revisionFull = safeHistoryPath(path.join(path.posix.dirname(normalizedRel), cleanRevisionId))
+  const content = await fs.readFile(revisionFull)
+  const current = await fs.readFile(safePath(normalizedRel)).catch(() => null)
+  if (current) {
+    await saveRevisionSnapshot(normalizedRel, current, 'restore')
+  }
+
+  await fs.mkdir(path.dirname(safePath(normalizedRel)), { recursive: true })
+  await fs.writeFile(safePath(normalizedRel), content)
+}
+
+function streamWorkspaceFile(relPath) {
+  return fsSync.createReadStream(safePath(relPath))
+}
+
+async function statWorkspaceItem(relPath) {
+  const stat = await fs.stat(safePath(relPath))
+  return {
+    isFile: stat.isFile(),
+    isDirectory: stat.isDirectory(),
+    size: stat.size,
+  }
+}
+
+function getDownloadName(relPath) {
+  const normalizedRel = normalizeRelativePath(relPath)
+  return path.basename(normalizedRel || 'workspace')
+}
+
+export {
+  ensureWorkspaceRoot,
+  getWorkspaceTree,
+  readWorkspaceFile,
+  createFolder,
+  createFile,
+  writeFileContent,
+  renameItem,
+  moveItem,
+  deleteItem,
+  uploadFiles,
+  uploadFromUrl,
+  searchWorkspaceContent,
+  getFileHistory,
+  restoreFileRevision,
+  streamWorkspaceFile,
+  statWorkspaceItem,
+  getDownloadName,
+  safePath,
+}

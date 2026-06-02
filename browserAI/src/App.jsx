@@ -1,0 +1,158 @@
+import { useMemo, useState } from 'react'
+import Sidebar from './components/Sidebar.jsx'
+import Topbar from './components/Topbar.jsx'
+import Composer from './components/Composer.jsx'
+import Workspace from './components/Workspace.jsx'
+import MessageList from './components/MessageList.jsx'
+import SettingsModal from './components/SettingsModal.jsx'
+import { IconExpand } from './icons.jsx'
+import {
+  getActiveKey,
+  getAvailableModels,
+  getSelectedModel,
+  isConfigured,
+} from './lib/settings.js'
+import { useSettings } from './lib/useSettings.js'
+import { useChats } from './lib/useChats.js'
+
+export default function App() {
+  const [collapsed, setCollapsed] = useState(false)
+  const [workspaceOpen, setWorkspaceOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [workspaceAiBusy, setWorkspaceAiBusy] = useState(false)
+
+  const {
+    settings,
+    online,
+    vault,
+    saveKey,
+    deleteKey,
+    activateKey,
+    setActiveModel,
+    setParams,
+    importKeys,
+    validateKey,
+    vaultSetup,
+    vaultUnlock,
+    vaultLock,
+    vaultChange,
+    vaultDisable,
+    vaultAutolock,
+    vaultBackup,
+    vaultRestore,
+  } = useSettings()
+
+  const {
+    chats,
+    activeChat,
+    activeId,
+    isStreaming,
+    newChat,
+    selectChat,
+    deleteChat,
+    sendMessage,
+    stop,
+  } = useChats(settings)
+
+  const toggleSidebar = () => setCollapsed((v) => !v)
+  const toggleWorkspace = () => setWorkspaceOpen((v) => !v)
+
+  const configured = isConfigured(settings)
+  const activeKey = useMemo(() => getActiveKey(settings), [settings])
+  const availableModels = useMemo(() => getAvailableModels(activeKey), [activeKey])
+  const selectedModel = getSelectedModel(activeKey)
+  const messages = activeChat?.messages ?? []
+  const hasMessages = messages.length > 0
+
+  return (
+    <div className="flex h-screen w-full overflow-hidden bg-graphite-900 text-cream">
+      <Sidebar
+        collapsed={collapsed}
+        onToggle={toggleSidebar}
+        onNewChat={newChat}
+        chats={chats}
+        activeId={activeId}
+        onSelect={selectChat}
+        onDelete={deleteChat}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
+
+      <main className="relative flex min-w-0 flex-1 flex-col">
+        {collapsed && (
+          <button
+            onClick={toggleSidebar}
+            className="absolute left-3 top-3.5 z-10 grid h-9 w-9 place-items-center rounded-lg
+                       text-cream-dim transition-colors hover:bg-graphite-800 hover:text-cream"
+            title="Развернуть панель"
+          >
+            <IconExpand />
+          </button>
+        )}
+
+        <Topbar
+          title={activeChat?.title ?? 'BrowserAI'}
+          configured={configured}
+          aiWorking={isStreaming || workspaceAiBusy}
+          useWebAI={settings.useWebAI}
+          onToggleWebAI={(next) => setParams({ useWebAI: next })}
+          models={availableModels}
+          selectedModel={selectedModel}
+          onSelectModel={setActiveModel}
+          workspaceOpen={workspaceOpen}
+          onToggleWorkspace={toggleWorkspace}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
+
+        {hasMessages ? (
+          <>
+            <MessageList messages={messages} />
+            <Composer
+              hasMessages
+              isStreaming={isStreaming}
+              onSend={sendMessage}
+              onStop={stop}
+            />
+          </>
+        ) : (
+          <Composer
+            hasMessages={false}
+            isStreaming={isStreaming}
+            onSend={sendMessage}
+            onStop={stop}
+          />
+        )}
+      </main>
+
+      <Workspace
+        open={workspaceOpen}
+        onClose={toggleWorkspace}
+        settings={settings}
+        onSendToChat={sendMessage}
+        onAiBusyChange={setWorkspaceAiBusy}
+      />
+
+      <SettingsModal
+        key={settingsOpen ? 'open' : 'closed'}
+        open={settingsOpen}
+        settings={settings}
+        online={online}
+        vault={vault}
+        onSaveKey={saveKey}
+        onDeleteKey={deleteKey}
+        onActivateKey={activateKey}
+        onSetParams={setParams}
+        onImportKeys={importKeys}
+        onValidateKey={validateKey}
+        onVaultSetup={vaultSetup}
+        onVaultUnlock={vaultUnlock}
+        onVaultLock={vaultLock}
+        onVaultChange={vaultChange}
+        onVaultDisable={vaultDisable}
+        onVaultAutolock={vaultAutolock}
+        onVaultBackup={vaultBackup}
+        onVaultRestore={vaultRestore}
+        onClose={() => setSettingsOpen(false)}
+      />
+    </div>
+  )
+}

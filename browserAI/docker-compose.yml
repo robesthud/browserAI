@@ -1,0 +1,18 @@
+# Запуск всего приложения одной командой:  docker compose up --build
+# Откройте http://localhost:8787
+
+services:
+  browserai:
+    build: .
+    container_name: browserai
+    ports:
+      - "8787:8787"
+    environment:
+      - PORT=8787
+      - BROWSERAI_DB=/data/browserai.db
+    volumes:
+      - browserai-data:/data   # сюда сохраняется SQLite-БД (ключи переживают перезапуск)
+    restart: unless-stopped
+
+volumes:
+  browserai-data:

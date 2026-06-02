@@ -1,0 +1,11 @@
+node_modules
+dist
+.git
+.gitignore
+preview.html
+server/*.db
+server/*.db-shm
+server/*.db-wal
+*.log
+.DS_Store
+BrowserAI.*.zip

@@ -1,0 +1,130 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: #24262b;
+  color: #e6e8ec;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* тонкий скроллбар в сайдбаре */
+.thin-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: rgba(230,234,240,0.14);
+  border-radius: 9999px;
+}
+.thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---- Markdown ---- */
+.md > *:first-child {
+  margin-top: 0;
+}
+.md > *:last-child {
+  margin-bottom: 0;
+}
+.md-p {
+  margin: 0.5rem 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.md-h {
+  margin: 0.9rem 0 0.5rem;
+  font-weight: 600;
+  color: #e6e8ec;
+  line-height: 1.3;
+}
+.md-h1 {
+  font-size: 1.4rem;
+}
+.md-h2 {
+  font-size: 1.2rem;
+}
+.md-h3 {
+  font-size: 1.05rem;
+}
+.md-h4 {
+  font-size: 0.95rem;
+}
+.md-list {
+  margin: 0.5rem 0;
+  padding-left: 1.4rem;
+}
+.md-list.md-list {
+  list-style: disc;
+}
+ol.md-list {
+  list-style: decimal;
+}
+.md-list li {
+  margin: 0.2rem 0;
+}
+.md-code {
+  background: rgba(230,234,240,0.10);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.86em;
+  color: #f2f4f7;
+}
+.md-pre {
+  margin: 0.6rem 0;
+  background: #1e2025;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.6rem;
+  overflow: hidden;
+}
+.md-pre-head {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.7rem;
+  color: #a6abb5;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.md-pre code {
+  display: block;
+  padding: 0.75rem;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: #e6e8ec;
+  white-space: pre;
+}
+.md-link {
+  color: #9cc0ff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md-link:hover {
+  color: #bcd4ff;
+}
+
+/* ---- Code preview highlighting ---- */
+.code-block .code-keyword {
+  color: #c084fc;
+}
+.code-block .code-string {
+  color: #86efac;
+}
+.code-block .code-number {
+  color: #fbbf24;
+}
+.code-block .code-comment {
+  color: #94a3b8;
+}
+.code-block .code-tag {
+  color: #7dd3fc;
+}
