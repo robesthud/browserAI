@@ -7,8 +7,27 @@ const AUTH_FLAG = 'browserai.auth.enabled'
 
 function writeCloudToLocal(data) {
   if (!data) return
-  if (data.settings) localStorage.setItem(SETTINGS_KEY, JSON.stringify(data.settings))
-  if (Array.isArray(data.chats)) localStorage.setItem(CHATS_KEY, JSON.stringify(data.chats))
+  // Восстанавливаем настройки пользователя (системный промпт, температура и т.д.)
+  // Ключи API приходят отдельно через /api/settings и не хранятся в cloud напрямую
+  if (data.settings) {
+    try {
+      const existing = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')
+      // Мержим: параметры генерации из cloud, но не затираем ключи если они уже есть
+      const merged = {
+        ...existing,
+        ...data.settings,
+        // Ключи придут отдельно из /api/settings, не перезатираем
+        keys: existing.keys?.length > 0 ? existing.keys : (data.settings.keys || []),
+      }
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged))
+    } catch {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(data.settings))
+    }
+  }
+  // Восстанавливаем историю чатов
+  if (Array.isArray(data.chats)) {
+    localStorage.setItem(CHATS_KEY, JSON.stringify(data.chats))
+  }
 }
 
 function AuthPanel({ onAuthenticated }) {

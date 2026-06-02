@@ -17,26 +17,40 @@ import { useSettings } from './lib/useSettings.js'
 import { useChats } from './lib/useChats.js'
 import { backend } from './lib/backend.js'
 
+// CloudSync работает только когда пользователь залогинен через аккаунт.
+// Сохраняет чаты + настройки (без ключей — ключи идут через /api/keys отдельно).
 function CloudSync({ settings, chats }) {
   const firstRun = useRef(true)
+  const isLoggedIn = typeof localStorage !== 'undefined'
+    && localStorage.getItem('browserai.auth.enabled') === '1'
 
-  // #16 FIX: не синхронизируем пока хоть одно сообщение находится в pending-состоянии
-  // (т.е. идёт стриминг). Это исключает шквал запросов на каждый токен.
+  // Не синхронизируем пока идёт стриминг
   const hasPending = chats.some((chat) =>
     chat.messages.some((m) => m.pending === true),
   )
 
   useEffect(() => {
+    if (!isLoggedIn) return undefined
     if (firstRun.current) {
       firstRun.current = false
       return undefined
     }
     if (hasPending) return undefined
     const timer = setTimeout(() => {
-      void backend.saveCloud({ settings, chats }).catch(() => {})
-    }, 1500) // увеличен debounce до 1500мс для дополнительной защиты
+      // Сохраняем настройки (без ключей — они в /api/keys) + все чаты
+      const settingsToSave = {
+        systemPrompt: settings.systemPrompt,
+        temperature: settings.temperature,
+        stream: settings.stream,
+        useWebAI: settings.useWebAI,
+        activeKeyId: settings.activeKeyId,
+        // Ключи тоже сохраняем в cloud как резервная копия
+        keys: settings.keys,
+      }
+      void backend.saveCloud({ settings: settingsToSave, chats }).catch(() => {})
+    }, 1500)
     return () => clearTimeout(timer)
-  }, [settings, chats, hasPending])
+  }, [settings, chats, hasPending, isLoggedIn])
 
   return null
 }
