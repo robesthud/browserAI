@@ -293,18 +293,20 @@ public class MainActivity extends Activity {
     }
 
     private void showUpdateDialog(String apkUrl, String releaseUrl, String tag) {
+        // Авто-обновление: сразу скачиваем без диалога если APK URL доступен
+        if (apkUrl != null && !apkUrl.isEmpty()) {
+            downloadAndInstallApk(apkUrl);
+            return;
+        }
+        // Fallback: если нет прямой ссылки на APK — открываем страницу релиза
         new AlertDialog.Builder(this)
                 .setTitle("Доступно обновление BrowserAI")
-                .setMessage("Найдена новая версия: " + tag + "\n\nНажмите «Обновить», приложение само скачает APK и откроет установщик Android.")
+                .setMessage("Версия " + tag + " доступна. Нажмите «Обновить» для перехода на страницу скачивания.")
                 .setPositiveButton("Обновить", (dialog, which) -> {
-                    if (apkUrl == null || apkUrl.isEmpty()) {
-                        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl));
-                        startActivity(intent);
-                        return;
-                    }
-                    downloadAndInstallApk(apkUrl);
+                    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl));
+                    startActivity(intent);
                 })
-                .setNegativeButton("Позже", null)
+                .setCancelable(false)
                 .show();
     }
 

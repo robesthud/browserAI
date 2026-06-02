@@ -1,0 +1,107 @@
+name: Monthly Auto Release
+
+# Автоматический релиз каждое 1-е число месяца в 09:00 UTC
+# Также можно запустить вручную через Actions → Run workflow
+on:
+  schedule:
+    - cron: '0 9 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish monthly APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Restore signing key from secret
+        run: |
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android-app/app/debug.keystore
+          else
+            keytool -genkeypair -v \
+              -keystore android-app/app/debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=BrowserAI,C=US"
+          fi
+
+      - name: Set version from date
+        working-directory: android-app
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          from datetime import datetime
+
+          now = datetime.utcnow()
+          # versionCode: YYYYMMDD как число, например 20260601
+          version_code = int(now.strftime('%Y%m%d'))
+          # versionName: 2026.6.1
+          version_name = f"{now.year}.{now.month}.{now.day}"
+
+          p = Path('app/build.gradle')
+          s = p.read_text()
+          s = re.sub(r'versionCode\s+\d+', f'versionCode {version_code}', s)
+          s = re.sub(r"versionName\s+'[^']+'", f"versionName '{version_name}'", s)
+          p.write_text(s)
+          print(f"Version: {version_name} ({version_code})")
+          PY
+
+      - name: Build release APK
+        working-directory: android-app
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Get version info
+        id: version
+        run: |
+          VERSION=$(date -u +"%Y.%-m.%-d")
+          TAG="android-v$(date -u +"%Y%m%d")"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Rename APK
+        run: |
+          mkdir -p release
+          cp android-app/app/build/outputs/apk/release/app-release.apk \
+             release/BrowserAI-${{ steps.version.outputs.version }}.apk
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Удаляем старый тег если существует (перезапись ежемесячного релиза)
+          gh release delete ${{ steps.version.outputs.tag }} --yes 2>/dev/null || true
+
+          gh release create ${{ steps.version.outputs.tag }} \
+            release/BrowserAI-${{ steps.version.outputs.version }}.apk \
+            --title "BrowserAI Android ${{ steps.version.outputs.version }}" \
+            --notes "Ежемесячный автоматический релиз ${{ steps.version.outputs.version }}.
+
+Установи APK на Android устройство для получения последних обновлений.
+
+Что нового: актуальная версия сервера и безопасности." \
+            --latest
