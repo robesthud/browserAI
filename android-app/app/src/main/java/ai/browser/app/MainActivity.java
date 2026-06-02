@@ -17,6 +17,9 @@ import android.webkit.DownloadListener;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.ConsoleMessage;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -80,6 +83,12 @@ public class MainActivity extends Activity {
         settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+        settings.setJavaScriptCanOpenWindowsAutomatically(true);
+        settings.setSupportMultipleWindows(true);
+        settings.setTextZoom(100);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             settings.setSafeBrowsingEnabled(true);
         }
@@ -88,6 +97,10 @@ public class MainActivity extends Activity {
         cookieManager.setAcceptCookie(true);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             cookieManager.setAcceptThirdPartyCookies(webView, true);
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+            WebView.setWebContentsDebuggingEnabled(true);
         }
 
         webView.setWebViewClient(new WebViewClient() {
@@ -109,10 +122,39 @@ public class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 offlineView.setVisibility(View.GONE);
                 webView.setVisibility(View.VISIBLE);
+                view.postDelayed(() -> view.evaluateJavascript(
+                        "Boolean(document.getElementById('root') && document.getElementById('root').children.length)",
+                        value -> {
+                            if (!"true".equals(value)) {
+                                showError("Интерфейс не запустился. Обновите Android System WebView/Chrome или нажмите назад и откройте снова.");
+                            }
+                        }
+                ), 5000);
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && request.isForMainFrame()) {
+                    showError("Ошибка загрузки: " + error.getDescription());
+                }
+            }
+
+            @Override
+            public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse errorResponse) {
+                super.onReceivedHttpError(view, request, errorResponse);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && request.isForMainFrame()) {
+                    showError("HTTP ошибка: " + errorResponse.getStatusCode());
+                }
             }
         });
 
         webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
+                return super.onConsoleMessage(consoleMessage);
+            }
+
             @Override
             public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
                 if (MainActivity.this.filePathCallback != null) {
@@ -152,6 +194,12 @@ public class MainActivity extends Activity {
         });
     }
 
+    private void showError(String message) {
+        offlineView.setText("BrowserAI\n\n" + message + "\n\nURL: " + appUrl);
+        offlineView.setVisibility(View.VISIBLE);
+        webView.setVisibility(View.GONE);
+    }
+
     private boolean isSameHost(String url) {
         try {
             Uri app = Uri.parse(appUrl);
@@ -164,15 +212,12 @@ public class MainActivity extends Activity {
 
     private void loadApp() {
         if (appUrl.contains("YOUR-RAILWAY-APP")) {
-            offlineView.setText("BrowserAI\n\nВ android-app/app/src/main/res/values/strings.xml нужно заменить app_url на Railway URL.");
-            offlineView.setVisibility(View.VISIBLE);
-            webView.setVisibility(View.GONE);
+            showError("В android-app/app/src/main/res/values/strings.xml нужно заменить app_url на Railway URL.");
             return;
         }
 
         if (!isOnline()) {
-            offlineView.setVisibility(View.VISIBLE);
-            webView.setVisibility(View.GONE);
+            showError("Нет подключения к интернету.");
             return;
         }
 
