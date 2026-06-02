@@ -27,6 +27,13 @@ android {
         debug {
             signingConfig signingConfigs.browserAiDebug
         }
+        // #14 FIX: release-сборка использует тот же стабильный keystore из CI
+        // В production следует заменить на production-keystore через secrets
+        release {
+            signingConfig signingConfigs.browserAiDebug
+            minifyEnabled false
+            shrinkResources false
+        }
     }
 }
 

@@ -5,8 +5,13 @@
 const KEY = 'browserai.settings.v2'
 const OLD_KEY = 'browserai.settings.v1'
 
+// #18 FIX: используем crypto.randomUUID() — гарантирует уникальность без коллизий
 export function uid() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  // Fallback для старых окружений
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
 }
 
 // Общие параметры генерации (не зависят от конкретного ключа)

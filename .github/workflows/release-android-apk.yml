@@ -29,15 +29,12 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
-      - name: Restore stable debug signing key
-        uses: actions/cache@v4
-        with:
-          path: android-app/app/debug.keystore
-          key: browserai-android-debug-keystore-v1
-
-      - name: Create stable debug signing key if missing
+      # #23 FIX: keystore из зашифрованного GitHub Secret, не из cache
+      - name: Restore signing key from secret
         run: |
-          if [ ! -f android-app/app/debug.keystore ]; then
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android-app/app/debug.keystore
+          else
             keytool -genkeypair -v \
               -keystore android-app/app/debug.keystore \
               -storepass android \
@@ -63,14 +60,15 @@ jobs:
           p.write_text(s)
           PY
 
+      # #14 FIX: используем assembleRelease вместо assembleDebug для production APK
       - name: Build release APK
         working-directory: android-app
-        run: gradle assembleDebug --no-daemon --stacktrace
+        run: gradle assembleRelease --no-daemon --stacktrace
 
       - name: Rename APK
         run: |
           mkdir -p release
-          cp android-app/app/build/outputs/apk/debug/app-debug.apk release/BrowserAI-${{ github.run_number }}.apk
+          cp android-app/app/build/outputs/apk/release/app-release.apk release/BrowserAI-${{ github.run_number }}.apk
 
       - name: Create GitHub Release
         env:

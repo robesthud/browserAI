@@ -79,21 +79,61 @@ async function searchWeb(query, limit = 5) {
   }
 }
 
-async function fetchWebPage(url) {
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (compatible; BrowserAI/1.0)',
-    },
-  })
+// #13 FIX: проверяем URL перед fetch, чтобы исключить SSRF-атаки через fetchWebPage
+import { isIP as isIp } from 'is-ip'
+import ipaddr from 'ipaddr.js'
 
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`)
+function isPrivateIp(address) {
+  if (!isIp(address)) return false
+  try {
+    const addr = ipaddr.parse(address)
+    return addr.range() !== 'unicast' || addr.isLoopback() || addr.isLinkLocal()
+  } catch {
+    return true
   }
+}
 
-  const html = await response.text()
-  return {
-    url,
-    content: stripHtml(html),
+function assertPublicWebUrl(rawUrl) {
+  let parsed
+  try {
+    parsed = new URL(rawUrl)
+  } catch {
+    throw new Error('Invalid URL')
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('Only http/https URLs are allowed')
+  }
+  const host = parsed.hostname
+  if (host === 'localhost' || host.endsWith('.local') || isPrivateIp(host)) {
+    throw new Error('Access to internal networks is not allowed')
+  }
+}
+
+async function fetchWebPage(url) {
+  assertPublicWebUrl(url)
+
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 10_000)
+
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; BrowserAI/1.0)',
+      },
+    })
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`)
+    }
+
+    const html = await response.text()
+    return {
+      url,
+      content: stripHtml(html),
+    }
+  } finally {
+    clearTimeout(timeout)
   }
 }
 

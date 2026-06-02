@@ -129,10 +129,10 @@ function toHtml(md) {
     i++
   }
 
-  // не закрытый блок кода
+  // #22 FIX: незакрытый code-блок отображается с визуальным предупреждением
   if (inCode) {
     out.push(
-      `<pre class="md-pre"><code>${escapeHtml(codeBuf.join('\n'))}</code></pre>`,
+      `<pre class="md-pre md-pre--unclosed"><div class="md-pre-head">${escapeHtml(codeLang || 'code')} ⚠ незакрытый блок</div><code>${escapeHtml(codeBuf.join('\n'))}</code></pre>`,
     )
   }
   flushList()

@@ -267,6 +267,7 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
     setAiBusy(true)
     setError('')
     try {
+      // #19 FIX: удалён несуществующий параметр agentMode
       const response = await sendChat({
         settings: ensureAiAvailable(),
         messages: [
@@ -278,7 +279,6 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
               `Инструкция: ${instruction}`,
           },
         ],
-        agentMode: false,
       })
       await workspaceApi.saveFile(path, stripCodeFence(response))
       await refresh()
@@ -303,6 +303,7 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
     setError('')
     try {
       const response = await sendChat({
+        // #19 FIX: удалён несуществующий параметр agentMode
         settings: ensureAiAvailable(),
         messages: [
           {
@@ -319,7 +320,6 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
               `Текущее содержимое файла:\n\n${source.text}`,
           },
         ],
-        agentMode: false,
       })
 
       const patches = parsePatchResponse(response)

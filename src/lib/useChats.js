@@ -42,6 +42,7 @@ function buildContextWindow(history, memorySummary = '') {
 }
 
 export function useChats(settings) {
+  // #9 FIX: вычисляем normalizedChats один раз — избегаем двойного чтения localStorage
   const normalizedChats = () =>
     loadChats().map((chat) => ({
       ...chat,
@@ -49,10 +50,14 @@ export function useChats(settings) {
       summarizedUntil: chat.summarizedUntil || 0,
     }))
 
-  const [chats, setChats] = useState(() => normalizedChats())
+  const [chats, setChats] = useState(() => {
+    const initial = normalizedChats()
+    return initial
+  })
   const [activeId, setActiveId] = useState(() => {
-    const first = normalizedChats()[0]
-    return first ? first.id : null
+    // Читаем localStorage только один раз — напрямую из того же вызова
+    const initial = loadChats()
+    return initial.length > 0 ? initial[0].id : null
   })
   const [isStreaming, setIsStreaming] = useState(false)
   const abortRef = useRef(null)
@@ -221,7 +226,10 @@ export function useChats(settings) {
             patchAssistant({ content: acc, pending: false })
           },
         })
-        patchAssistant({ content: acc, pending: false })
+        // #10 FIX: обновляем только если acc непустой, чтобы не затирать
+        // контент, уже отрисованный через onToken при стриминге
+        if (acc) patchAssistant({ content: acc, pending: false })
+        else patchAssistant({ pending: false })
       } catch (err) {
         if (err.name === 'AbortError') {
           patchAssistant({ pending: false, stopped: true })

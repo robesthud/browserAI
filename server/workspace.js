@@ -22,6 +22,40 @@ const MAX_HISTORY_REVISIONS = 30
 const MAX_PREVIEW_TEXT_BYTES = 200 * 1024
 const MAX_SEARCH_TEXT_BYTES = 512 * 1024
 
+// #12 FIX: квота на общий размер workspace — по умолчанию 500 МБ, настраивается через WORKSPACE_QUOTA_MB
+const WORKSPACE_QUOTA_BYTES = (Number(process.env.WORKSPACE_QUOTA_MB) || 500) * 1024 * 1024
+const MAX_SINGLE_FILE_BYTES = (Number(process.env.WORKSPACE_MAX_FILE_MB) || 50) * 1024 * 1024
+
+async function getWorkspaceSizeBytes(dir = workspaceRoot) {
+  let total = 0
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true })
+    for (const entry of entries) {
+      if (entry.name === '.history') continue
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        total += await getWorkspaceSizeBytes(full)
+      } else {
+        const stat = await fs.stat(full).catch(() => null)
+        if (stat) total += stat.size
+      }
+    }
+  } catch {
+    /* ignore read errors */
+  }
+  return total
+}
+
+async function assertQuota(additionalBytes = 0) {
+  if (additionalBytes > MAX_SINGLE_FILE_BYTES) {
+    throw new Error(`Файл слишком большой: максимум ${Math.round(MAX_SINGLE_FILE_BYTES / 1024 / 1024)} МБ`)
+  }
+  const used = await getWorkspaceSizeBytes()
+  if (used + additionalBytes > WORKSPACE_QUOTA_BYTES) {
+    throw new Error(`Превышена квота workspace: максимум ${Math.round(WORKSPACE_QUOTA_BYTES / 1024 / 1024)} МБ`)
+  }
+}
+
 const TEXT_EXT = new Set([
   'txt', 'md', 'markdown', 'json', 'js', 'jsx', 'ts', 'tsx', 'css', 'scss',
   'html', 'htm', 'xml', 'yml', 'yaml', 'csv', 'py', 'java', 'c', 'cpp', 'h',
@@ -323,11 +357,17 @@ async function writeFileContent(relPath, content = '') {
   await fs.mkdir(path.dirname(full), { recursive: true })
 
   const previous = await fs.readFile(full).catch(() => null)
+  const nextContent = typeof content === 'string' ? content : String(content ?? '')
+  const newBytes = Buffer.byteLength(nextContent, 'utf8')
+  const oldBytes = previous ? previous.length : 0
+
+  // #12 FIX: проверяем квоту — учитываем только прирост относительно старого файла
+  await assertQuota(Math.max(0, newBytes - oldBytes))
+
   if (previous) {
     await saveRevisionSnapshot(normalizedRel, previous, 'edit')
   }
 
-  const nextContent = typeof content === 'string' ? content : String(content ?? '')
   await fs.writeFile(full, nextContent, 'utf8')
 
   if (!previous) {
@@ -463,6 +503,8 @@ function isSafeArchiveEntry(entryName = '') {
 }
 
 async function writeUploadedFile(targetRel, buffer, reason = 'create') {
+  // #12 FIX: проверяем квоту перед записью загруженного файла
+  await assertQuota(buffer.length)
   const full = safePath(targetRel)
   await fs.mkdir(path.dirname(full), { recursive: true })
   await fs.writeFile(full, buffer)

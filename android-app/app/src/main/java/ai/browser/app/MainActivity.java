@@ -42,6 +42,7 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import javax.net.ssl.HttpsURLConnection;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -307,27 +308,47 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    // #15 FIX: загрузка APK только по HTTPS; добавлен лимит размера (100 МБ);
+    // добавлена проверка что URL начинается с https:// перед открытием соединения
+    private static final long MAX_APK_BYTES = 100L * 1024 * 1024; // 100 МБ
+
     private void downloadAndInstallApk(String apkUrl) {
+        if (apkUrl == null || !apkUrl.startsWith("https://")) {
+            Toast.makeText(this, "Небезопасный URL обновления — загрузка отменена", Toast.LENGTH_LONG).show();
+            return;
+        }
         Toast.makeText(this, "Скачиваю обновление…", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
-            HttpURLConnection connection = null;
+            HttpsURLConnection connection = null;
             try {
                 URL url = new URL(apkUrl);
-                connection = (HttpURLConnection) url.openConnection();
+                // Используем HttpsURLConnection — гарантирует TLS-верификацию по умолчанию
+                connection = (HttpsURLConnection) url.openConnection();
                 connection.setConnectTimeout(15000);
                 connection.setReadTimeout(30000);
                 connection.setRequestProperty("User-Agent", "BrowserAI-Android");
                 int code = connection.getResponseCode();
                 if (code < 200 || code >= 300) throw new Exception("HTTP " + code);
 
+                long contentLength = connection.getContentLengthLong();
+                if (contentLength > MAX_APK_BYTES) {
+                    throw new Exception("APK слишком большой: " + contentLength + " байт");
+                }
+
                 File dir = new File(getCacheDir(), "updates");
                 if (!dir.exists() && !dir.mkdirs()) throw new Exception("Cannot create update cache");
                 File apk = new File(dir, "BrowserAI-update.apk");
 
-                try (InputStream input = connection.getInputStream(); FileOutputStream output = new FileOutputStream(apk)) {
+                try (InputStream input = connection.getInputStream();
+                     FileOutputStream output = new FileOutputStream(apk)) {
                     byte[] buffer = new byte[8192];
                     int read;
+                    long totalRead = 0;
                     while ((read = input.read(buffer)) != -1) {
+                        totalRead += read;
+                        if (totalRead > MAX_APK_BYTES) {
+                            throw new Exception("APK превысил допустимый размер при скачивании");
+                        }
                         output.write(buffer, 0, read);
                     }
                     output.flush();
@@ -335,7 +356,8 @@ public class MainActivity extends Activity {
 
                 runOnUiThread(() -> installApk(apk));
             } catch (Exception error) {
-                runOnUiThread(() -> Toast.makeText(this, "Не удалось скачать обновление: " + error.getMessage(), Toast.LENGTH_LONG).show());
+                runOnUiThread(() -> Toast.makeText(this,
+                    "Не удалось скачать обновление: " + error.getMessage(), Toast.LENGTH_LONG).show());
             } finally {
                 if (connection != null) connection.disconnect();
             }

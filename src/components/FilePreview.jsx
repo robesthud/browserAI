@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import DOMPurify from 'dompurify'
 import { IconClose, IconDownload } from '../icons.jsx'
 import { formatWorkspaceSize } from '../lib/workspace.js'
 import Markdown from '../lib/markdown.jsx'
@@ -63,10 +64,15 @@ export default function FilePreview({
   const isMarkdown = isText && (ext === 'md' || ext === 'markdown')
   const isCode = isText && CODE_EXT.has(ext) && !isMarkdown
 
-  const highlighted = useMemo(
-    () => (isCode ? highlightCode(file?.text, ext) : ''),
-    [ext, file?.text, isCode],
-  )
+  // #8 FIX: пропускаем результат highlightCode через DOMPurify перед вставкой в DOM
+  const highlighted = useMemo(() => {
+    if (!isCode) return ''
+    const raw = highlightCode(file?.text, ext)
+    return DOMPurify.sanitize(raw, {
+      ALLOWED_TAGS: ['span'],
+      ALLOWED_ATTR: ['class'],
+    })
+  }, [ext, file?.text, isCode])
 
   if (!file) return null
 

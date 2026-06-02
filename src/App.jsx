@@ -20,16 +20,23 @@ import { backend } from './lib/backend.js'
 function CloudSync({ settings, chats }) {
   const firstRun = useRef(true)
 
+  // #16 FIX: не синхронизируем пока хоть одно сообщение находится в pending-состоянии
+  // (т.е. идёт стриминг). Это исключает шквал запросов на каждый токен.
+  const hasPending = chats.some((chat) =>
+    chat.messages.some((m) => m.pending === true),
+  )
+
   useEffect(() => {
     if (firstRun.current) {
       firstRun.current = false
       return undefined
     }
+    if (hasPending) return undefined
     const timer = setTimeout(() => {
       void backend.saveCloud({ settings, chats }).catch(() => {})
-    }, 700)
+    }, 1500) // увеличен debounce до 1500мс для дополнительной защиты
     return () => clearTimeout(timer)
-  }, [settings, chats])
+  }, [settings, chats, hasPending])
 
   return null
 }

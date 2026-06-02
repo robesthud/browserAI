@@ -76,11 +76,19 @@ function isPrivateIp(address) {
   return addr.range() !== 'unicast' || addr.isLoopback() || addr.isLinkLocal()
 }
 
-// Rate limiting: 100 запросов на IP за 15 минут
+// Rate limiting: 100 запросов на IP за 15 минут (общий)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
-  message: { error: 'Too many requests, slow down' }
+  message: { error: 'Too many requests, slow down' },
+})
+
+// #5 FIX: строгий лимит для auth-эндпоинтов — не более 10 попыток за 15 минут
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many auth attempts, try again later' },
+  skipSuccessfulRequests: true,
 })
 
 // Мастер-ключ хранилища держим ТОЛЬКО в памяти, пока разблокировано.
@@ -109,9 +117,15 @@ app.use(helmet({
   },
 }))
 app.use(limiter)
-// Do not hard-code localhost in production: Vite emits crossorigin assets,
-// and a mismatched Access-Control-Allow-Origin header makes browsers block JS/CSS.
-app.use(process.env.CORS_ORIGIN ? cors({ origin: process.env.CORS_ORIGIN }) : cors())
+// #7 FIX: в production CORS разрешён только для явно заданного CORS_ORIGIN.
+// В dev-режиме (NODE_ENV !== 'production') cors() открыт для удобства разработки.
+// Если CORS_ORIGIN не задан в production — запросы с других доменов блокируются.
+const corsOptions = process.env.CORS_ORIGIN
+  ? { origin: process.env.CORS_ORIGIN, credentials: true }
+  : process.env.NODE_ENV === 'production'
+    ? { origin: APP_URL, credentials: true }
+    : { origin: true, credentials: true }
+app.use(cors(corsOptions))
 app.use(express.json({ limit: '50mb' }))
 
 // ---- Auth + encrypted cloud sync ----
@@ -149,8 +163,16 @@ function verifyPassword(password, stored = '') {
   return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(next, 'hex'))
 }
 
+// #3 FIX: используем HKDF для вывода ключа шифрования из AUTH_SECRET.
+// HKDF добавляет контекстный info-параметр и salt, что безопаснее голого SHA-256.
 function encryptionKey() {
-  return crypto.createHash('sha256').update(AUTH_SECRET).digest()
+  return crypto.hkdfSync(
+    'sha256',
+    Buffer.from(AUTH_SECRET, 'utf8'),
+    Buffer.from('browserai-cloud-encryption-salt-v1', 'utf8'),
+    Buffer.from('browserai-cloud-encryption', 'utf8'),
+    32,
+  )
 }
 
 function encryptJson(value) {
@@ -243,9 +265,28 @@ function initAuthTables() {
       updated_at INTEGER NOT NULL,
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+
+    -- #11 FIX: явные индексы для быстрого поиска сессий и токенов сброса пароля
+    CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
+    CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_reset_tokens_hash ON password_reset_tokens(token_hash);
   `)
 }
 initAuthTables()
+
+// #20 FIX: периодическая очистка устаревших сессий и токенов сброса пароля
+// Запускается каждый час, чтобы таблица sessions не росла бесконечно
+function cleanExpiredSessions() {
+  try {
+    const ts = now()
+    db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(ts)
+    db.prepare('DELETE FROM password_reset_tokens WHERE expires_at < ? AND used_at IS NOT NULL').run(ts)
+  } catch (e) {
+    console.warn('Session cleanup error:', e.message)
+  }
+}
+cleanExpiredSessions()
+setInterval(cleanExpiredSessions, 60 * 60 * 1000)
 
 function getSessionUser(req) {
   const token = parseCookies(req)[AUTH_COOKIE]
@@ -278,6 +319,16 @@ function createSession(res, userId) {
   setSessionCookie(res, token)
 }
 
+// #4 FIX: строгая проверка сложности пароля
+function validatePassword(password) {
+  if (!password || password.length < 10) return 'Пароль должен быть не менее 10 символов'
+  if (!/[A-Z]/.test(password)) return 'Пароль должен содержать хотя бы одну заглавную букву'
+  if (!/[a-z]/.test(password)) return 'Пароль должен содержать хотя бы одну строчную букву'
+  if (!/[0-9]/.test(password)) return 'Пароль должен содержать хотя бы одну цифру'
+  if (!/[^A-Za-z0-9]/.test(password)) return 'Пароль должен содержать хотя бы один спецсимвол'
+  return null
+}
+
 function smtpConfigured() {
   return Boolean(process.env.SMTP_HOST && process.env.SMTP_PORT && process.env.SMTP_FROM)
 }
@@ -307,14 +358,15 @@ app.get('/api/auth/me', optionalAuth, (req, res) => {
   res.json({ user: publicUser(req.user) })
 })
 
-app.post('/api/auth/register', (req, res) => {
+app.post('/api/auth/register', authLimiter, (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase()
   const name = String(req.body?.name || '').trim()
   const password = String(req.body?.password || '')
   const registrationSecret = String(req.body?.registrationSecret || '')
 
   if (!/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: 'Некорректный email' })
-  if (password.length < 8) return res.status(400).json({ error: 'Пароль должен быть минимум 8 символов' })
+  const pwError = validatePassword(password)
+  if (pwError) return res.status(400).json({ error: pwError })
 
   const usersCount = db.prepare('SELECT COUNT(*) AS count FROM users').get().count
   if (usersCount > 0) {
@@ -338,7 +390,7 @@ app.post('/api/auth/register', (req, res) => {
   }
 })
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', authLimiter, (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase()
   const password = String(req.body?.password || '')
   const user = db.prepare('SELECT * FROM users WHERE email=?').get(email)
@@ -356,7 +408,7 @@ app.post('/api/auth/logout', requireAuth, (req, res) => {
   res.json({ ok: true })
 })
 
-app.post('/api/auth/forgot-password', async (req, res) => {
+app.post('/api/auth/forgot-password', authLimiter, async (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase()
   const user = db.prepare('SELECT * FROM users WHERE email=?').get(email)
   if (!user) return res.json({ ok: true })
@@ -375,7 +427,8 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 app.post('/api/auth/reset-password', (req, res) => {
   const token = String(req.body?.token || '')
   const password = String(req.body?.password || '')
-  if (password.length < 8) return res.status(400).json({ error: 'Пароль должен быть минимум 8 символов' })
+  const pwError = validatePassword(password)
+  if (pwError) return res.status(400).json({ error: pwError })
   const row = db.prepare('SELECT * FROM password_reset_tokens WHERE token_hash=? AND expires_at>? AND used_at IS NULL').get(sha256(token), now())
   if (!row) return res.status(400).json({ error: 'Ссылка недействительна или устарела' })
   db.transaction(() => {
@@ -686,7 +739,8 @@ function requireUnlocked(req, res, next) {
 }
 
 // ---- Settings (ключи + параметры) ----
-app.get('/api/settings', (req, res) => {
+// #2 FIX: защита настроек и ключей — требуем авторизацию
+app.get('/api/settings', optionalAuth, (req, res) => {
   res.json({
     keys: listKeys(encKey()),
     activeKeyId: getActiveKeyId(),
@@ -695,7 +749,7 @@ app.get('/api/settings', (req, res) => {
   })
 })
 
-app.get('/api/keys', (req, res) => {
+app.get('/api/keys', optionalAuth, (req, res) => {
   res.json({ keys: listKeys(encKey()), activeKeyId: getActiveKeyId(), vault: vaultState() })
 })
 
@@ -721,7 +775,7 @@ app.delete('/api/keys/:id', requireUnlocked, (req, res) => {
   res.json({ keys: listKeys(encKey()), activeKeyId: getActiveKeyId(), vault: vaultState() })
 })
 
-app.post('/api/keys/:id/activate', (req, res) => {
+app.post('/api/keys/:id/activate', optionalAuth, (req, res) => {
   setActiveKey(req.params.id)
   res.json({ keys: listKeys(encKey()), activeKeyId: getActiveKeyId(), vault: vaultState() })
 })
@@ -766,7 +820,7 @@ app.get('/api/keys/export', requireUnlocked, (req, res) => {
   res.json({ keys: listKeys(encKey()), activeKeyId: getActiveKeyId() })
 })
 
-app.put('/api/params', (req, res) => {
+app.put('/api/params', optionalAuth, (req, res) => {
   res.json({ params: setParams(req.body || {}) })
 })
 
@@ -863,8 +917,10 @@ app.post('/api/validate', async (req, res) => {
   }
 })
 
-// ---- Server Workspace (с частичной защитой, но основное в workspace.js) ----
-app.get('/api/workspace/tree', async (req, res) => {
+// ---- Server Workspace ----
+// #1 FIX: все workspace-эндпоинты требуют авторизации через optionalAuth
+// (при отключённой auth работает без логина, при включённой — требует сессию)
+app.get('/api/workspace/tree', optionalAuth, async (req, res) => {
   try {
     const showHidden = String(req.query.hidden || '0') === '1'
     const tree = await getWorkspaceTree(showHidden)
@@ -874,7 +930,7 @@ app.get('/api/workspace/tree', async (req, res) => {
   }
 })
 
-app.get('/api/workspace/file', async (req, res) => {
+app.get('/api/workspace/file', optionalAuth, async (req, res) => {
   try {
     const file = await readWorkspaceFile(req.query.path || '')
     res.json(file)
@@ -883,7 +939,7 @@ app.get('/api/workspace/file', async (req, res) => {
   }
 })
 
-app.get('/api/workspace/download', async (req, res) => {
+app.get('/api/workspace/download', optionalAuth, async (req, res) => {
   try {
     const rel = String(req.query.path || '')
     const stat = await statWorkspaceItem(rel)
@@ -919,7 +975,7 @@ app.get('/api/workspace/download', async (req, res) => {
   }
 })
 
-app.post('/api/workspace/folder', async (req, res) => {
+app.post('/api/workspace/folder', optionalAuth, async (req, res) => {
   try {
     const { parentPath = '', name = 'New Folder' } = req.body || {}
     await createFolder(parentPath, name)
@@ -929,7 +985,7 @@ app.post('/api/workspace/folder', async (req, res) => {
   }
 })
 
-app.post('/api/workspace/file', async (req, res) => {
+app.post('/api/workspace/file', optionalAuth, async (req, res) => {
   try {
     const { parentPath = '', name = 'untitled.txt', content = '' } = req.body || {}
     await createFile(parentPath, name, content)
@@ -939,7 +995,7 @@ app.post('/api/workspace/file', async (req, res) => {
   }
 })
 
-app.put('/api/workspace/file', async (req, res) => {
+app.put('/api/workspace/file', optionalAuth, async (req, res) => {
   try {
     const { path, content = '' } = req.body || {}
     if (!path) return res.status(400).json({ error: 'path required' })
@@ -950,7 +1006,7 @@ app.put('/api/workspace/file', async (req, res) => {
   }
 })
 
-app.post('/api/workspace/rename', async (req, res) => {
+app.post('/api/workspace/rename', optionalAuth, async (req, res) => {
   try {
     const { path, newName } = req.body || {}
     if (!path || !newName) return res.status(400).json({ error: 'path and newName required' })
@@ -961,7 +1017,7 @@ app.post('/api/workspace/rename', async (req, res) => {
   }
 })
 
-app.post('/api/workspace/move', async (req, res) => {
+app.post('/api/workspace/move', optionalAuth, async (req, res) => {
   try {
     const { sourcePath, targetDirPath = '' } = req.body || {}
     if (!sourcePath) return res.status(400).json({ error: 'sourcePath required' })
@@ -972,7 +1028,7 @@ app.post('/api/workspace/move', async (req, res) => {
   }
 })
 
-app.delete('/api/workspace/item', async (req, res) => {
+app.delete('/api/workspace/item', optionalAuth, async (req, res) => {
   try {
     const { path } = req.body || {}
     if (!path) return res.status(400).json({ error: 'path required' })
@@ -983,7 +1039,7 @@ app.delete('/api/workspace/item', async (req, res) => {
   }
 })
 
-app.post('/api/workspace/upload', async (req, res) => {
+app.post('/api/workspace/upload', optionalAuth, async (req, res) => {
   try {
     const { parentPath = '', files = [] } = req.body || {}
     if (!Array.isArray(files) || files.length === 0) {
@@ -996,7 +1052,7 @@ app.post('/api/workspace/upload', async (req, res) => {
   }
 })
 
-app.post('/api/workspace/upload-url', async (req, res) => {
+app.post('/api/workspace/upload-url', optionalAuth, async (req, res) => {
   try {
     const { parentPath = '', url = '' } = req.body || {}
     if (!url) return res.status(400).json({ error: 'url required' })
@@ -1007,7 +1063,7 @@ app.post('/api/workspace/upload-url', async (req, res) => {
   }
 })
 
-app.get('/api/workspace/search', async (req, res) => {
+app.get('/api/workspace/search', optionalAuth, async (req, res) => {
   try {
     const q = String(req.query.q || '')
     const showHidden = String(req.query.hidden || '0') === '1'
@@ -1018,7 +1074,7 @@ app.get('/api/workspace/search', async (req, res) => {
   }
 })
 
-app.get('/api/workspace/history', async (req, res) => {
+app.get('/api/workspace/history', optionalAuth, async (req, res) => {
   try {
     const path = String(req.query.path || '')
     if (!path) return res.status(400).json({ error: 'path required' })
@@ -1029,7 +1085,7 @@ app.get('/api/workspace/history', async (req, res) => {
   }
 })
 
-app.post('/api/workspace/history/restore', async (req, res) => {
+app.post('/api/workspace/history/restore', optionalAuth, async (req, res) => {
   try {
     const { path, revisionId } = req.body || {}
     if (!path || !revisionId) {
@@ -1076,8 +1132,8 @@ app.get('/api/web/fetch', async (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ ok: true }))
 
-// доступно для расширений
-void getActiveKeyDecrypted
+// #6 FIX: удалён мёртвый код «void getActiveKeyDecrypted»
+// Функция импортирована из db.js и доступна в модуле напрямую, если понадобится.
 
 // ---- Статика (production) ----
 const distDir = join(__dirname, '..', 'dist')

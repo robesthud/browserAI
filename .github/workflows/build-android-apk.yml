@@ -31,15 +31,16 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
-      - name: Restore stable debug signing key
-        uses: actions/cache@v4
-        with:
-          path: android-app/app/debug.keystore
-          key: browserai-android-debug-keystore-v1
-
-      - name: Create stable debug signing key if missing
+      # #23 FIX: keystore восстанавливается из зашифрованного GitHub Secret (KEYSTORE_BASE64),
+      # а не из публичного cache. Добавьте KEYSTORE_BASE64 в Settings → Secrets → Actions.
+      # Генерация: base64 -w 0 android-app/app/debug.keystore | pbcopy
+      - name: Restore signing key from secret
         run: |
-          if [ ! -f android-app/app/debug.keystore ]; then
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android-app/app/debug.keystore
+            echo "Keystore restored from secret"
+          else
+            echo "KEYSTORE_BASE64 secret not set — generating a new debug keystore (not stable across runs)"
             keytool -genkeypair -v \
               -keystore android-app/app/debug.keystore \
               -storepass android \

@@ -10,6 +10,8 @@ services:
     environment:
       - PORT=8787
       - BROWSERAI_DB=/data/browserai.db
+      # #21 FIX: явно задаём WORKSPACE_ROOT, чтобы путь не зависел от ENV в Dockerfile
+      - WORKSPACE_ROOT=/data/workspace
     volumes:
       - browserai-data:/data   # сюда сохраняется SQLite-БД (ключи переживают перезапуск)
     restart: unless-stopped

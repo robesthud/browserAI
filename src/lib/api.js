@@ -246,10 +246,19 @@ async function buildWebContext(settings, messages) {
     const results = Array.isArray(search?.results) ? search.results.slice(0, 3) : []
     if (results.length === 0) return ''
 
+    // #17 FIX: каждый webFetch ограничен таймаутом 8 секунд через Promise.race
+    const withTimeout = (promise, ms) =>
+      Promise.race([
+        promise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('webFetch timeout')), ms),
+        ),
+      ])
+
     const pages = await Promise.all(
       results.map(async (result) => {
         try {
-          const page = await backend.webFetch(result.url)
+          const page = await withTimeout(backend.webFetch(result.url), 8000)
           return {
             title: result.title || result.url,
             url: result.url,
