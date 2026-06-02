@@ -23,6 +23,7 @@ function cleanModels(models) {
 }
 
 export function normalizeKey(key = {}) {
+  key = key || {}
   const availableModels = cleanModels(key.availableModels)
   const fallbackModel = String(key.model || '').trim()
   const model =
