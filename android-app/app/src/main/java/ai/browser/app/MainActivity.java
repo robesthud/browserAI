@@ -12,6 +12,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.provider.Settings;
 import android.view.View;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
@@ -29,8 +30,14 @@ import android.widget.FrameLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.core.content.FileProvider;
+
+import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
@@ -231,11 +238,12 @@ public class MainActivity extends Activity {
                 JSONObject json = new JSONObject(body.toString());
                 String tag = json.optString("tag_name", "");
                 String htmlUrl = json.optString("html_url", "https://github.com/robesthud/browserAI/releases/latest");
+                String apkUrl = findApkAssetUrl(json);
                 long latestCode = parseReleaseCode(tag);
                 long currentCode = getCurrentVersionCode();
 
                 if (latestCode > currentCode) {
-                    runOnUiThread(() -> showUpdateDialog(htmlUrl, tag));
+                    runOnUiThread(() -> showUpdateDialog(apkUrl, htmlUrl, tag));
                 }
             } catch (Exception ignored) {
                 // Silent by design: updates are optional and must not break app startup.
@@ -266,16 +274,93 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void showUpdateDialog(String releaseUrl, String tag) {
+    private String findApkAssetUrl(JSONObject releaseJson) {
+        try {
+            JSONArray assets = releaseJson.optJSONArray("assets");
+            if (assets == null) return "";
+            for (int i = 0; i < assets.length(); i++) {
+                JSONObject asset = assets.optJSONObject(i);
+                if (asset == null) continue;
+                String name = asset.optString("name", "").toLowerCase();
+                String url = asset.optString("browser_download_url", "");
+                if (name.endsWith(".apk") && !url.isEmpty()) return url;
+            }
+        } catch (Exception ignored) {
+            // fallback below
+        }
+        return "";
+    }
+
+    private void showUpdateDialog(String apkUrl, String releaseUrl, String tag) {
         new AlertDialog.Builder(this)
                 .setTitle("Доступно обновление BrowserAI")
-                .setMessage("Найдена новая версия: " + tag + "\n\nОткройте страницу релиза, скачайте APK и установите его поверх текущей версии.")
-                .setPositiveButton("Скачать", (dialog, which) -> {
-                    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl));
-                    startActivity(intent);
+                .setMessage("Найдена новая версия: " + tag + "\n\nНажмите «Обновить», приложение само скачает APK и откроет установщик Android.")
+                .setPositiveButton("Обновить", (dialog, which) -> {
+                    if (apkUrl == null || apkUrl.isEmpty()) {
+                        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl));
+                        startActivity(intent);
+                        return;
+                    }
+                    downloadAndInstallApk(apkUrl);
                 })
                 .setNegativeButton("Позже", null)
                 .show();
+    }
+
+    private void downloadAndInstallApk(String apkUrl) {
+        Toast.makeText(this, "Скачиваю обновление…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            HttpURLConnection connection = null;
+            try {
+                URL url = new URL(apkUrl);
+                connection = (HttpURLConnection) url.openConnection();
+                connection.setConnectTimeout(15000);
+                connection.setReadTimeout(30000);
+                connection.setRequestProperty("User-Agent", "BrowserAI-Android");
+                int code = connection.getResponseCode();
+                if (code < 200 || code >= 300) throw new Exception("HTTP " + code);
+
+                File dir = new File(getCacheDir(), "updates");
+                if (!dir.exists() && !dir.mkdirs()) throw new Exception("Cannot create update cache");
+                File apk = new File(dir, "BrowserAI-update.apk");
+
+                try (InputStream input = connection.getInputStream(); FileOutputStream output = new FileOutputStream(apk)) {
+                    byte[] buffer = new byte[8192];
+                    int read;
+                    while ((read = input.read(buffer)) != -1) {
+                        output.write(buffer, 0, read);
+                    }
+                    output.flush();
+                }
+
+                runOnUiThread(() -> installApk(apk));
+            } catch (Exception error) {
+                runOnUiThread(() -> Toast.makeText(this, "Не удалось скачать обновление: " + error.getMessage(), Toast.LENGTH_LONG).show());
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
+        }).start();
+    }
+
+    private void installApk(File apk) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !getPackageManager().canRequestPackageInstalls()) {
+                Toast.makeText(this, "Разрешите установку из этого приложения, затем нажмите обновление ещё раз", Toast.LENGTH_LONG).show();
+                Intent settingsIntent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:" + getPackageName()));
+                startActivity(settingsIntent);
+                return;
+            }
+
+            Uri apkUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", apk);
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception error) {
+            Toast.makeText(this, "Не удалось открыть установщик: " + error.getMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 
     private void showError(String message) {

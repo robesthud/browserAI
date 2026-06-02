@@ -6,6 +6,15 @@ android {
     namespace 'ai.browser.app'
     compileSdk 35
 
+    signingConfigs {
+        browserAiDebug {
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+
     defaultConfig {
         applicationId 'ai.browser.app'
         minSdk 24
@@ -13,4 +22,15 @@ android {
         versionCode 1
         versionName '1.0.0'
     }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.browserAiDebug
+        }
+    }
+}
+
+
+dependencies {
+    implementation 'androidx.core:core:1.13.1'
 }

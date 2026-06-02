@@ -135,7 +135,8 @@ Expected:
 
 - The app is a WebView wrapper around the Railway web app. Backend still runs on Railway.
 - Web UI updates over the air after Railway redeploy; APK updates are needed only when `android-app/` native wrapper code changes.
-- Android cannot silently install APK updates outside Google Play; the app opens GitHub Release and user installs manually.
+- Android cannot silently install APK updates outside Google Play. Current native updater checks GitHub Releases, downloads the APK inside the app, then opens the Android package installer. User still must approve installation.
+- Direct in-app APK update requires the new APK to be signed with the same key as the installed APK. Workflows now create/cache `android-app/app/debug.keystore` with key `browserai-android-debug-keystore-v1`. After this change the user should install one APK manually from `Release Android APK`; future releases can be updated from the in-app dialog.
 
 ## Recent debugging notes
 
