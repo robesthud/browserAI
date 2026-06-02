@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import legacy from '@vitejs/plugin-legacy';
 
 export default defineConfig({
   base: '/',
@@ -9,5 +10,12 @@ export default defineConfig({
     target: 'es2015',
     cssTarget: 'chrome61',
   },
-  plugins: [react()],
+  plugins: [
+    react(),
+    legacy({
+      targets: ['Android >= 7', 'Chrome >= 61'],
+      modernPolyfills: true,
+      renderLegacyChunks: true,
+    }),
+  ],
 });
