@@ -65,7 +65,7 @@ import {
   safePath,
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
-import { buildSessionHeaders, getSiteProfile, applyBodyDefaults } from './stealthHeaders.js'
+import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, isSessionUrl, buildProbeBody } from './stealthHeaders.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 8787
@@ -1044,40 +1044,51 @@ app.put('/api/params', requireAuth, (req, res) => {
   res.json({ params: setParams(body) })
 })
 
-// ---- Проверка валидности ключа (исправлена от SSRF) ----
+// ---- Проверка валидности ключа ----
+// Для всех сессионных токенов (cookie/custom/bearer-JWT) — stealthHeaders + probe /chat/completions
+// Для обычных API-ключей — /models + probe /chat/completions
 app.post('/api/validate', requireAuth, async (req, res) => {
-  const { baseUrl, apiKey, model, authType = 'bearer', authHeader = '' } = req.body || {}
+  const {
+    baseUrl, apiKey, model,
+    authType = 'bearer',
+    authHeader = '',
+    extraHeaders = {},
+  } = req.body || {}
+
   if (!baseUrl || !apiKey) {
     return res.json({ ok: false, message: 'Укажите Base URL и ключ', models: [], preferredModel: '' })
   }
 
-  // Для сессионных токенов не проверяем /models — просто пробуем chat completion
-  if (authType === 'cookie' || authType === 'custom') {
-    const root = String(baseUrl).replace(/\/$/, '')
-    let hostname
-    try { hostname = new URL(baseUrl).hostname } catch { return res.json({ ok: false, message: 'Invalid URL' }) }
-    if (isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) {
-      return res.json({ ok: false, message: 'Access to internal networks is not allowed' })
-    }
-    // Формируем заголовок авторизации по типу
-    const stealthH = buildSessionHeaders({ baseUrl, apiKey, authType, authHeader })
-    const profile = getSiteProfile(baseUrl)
-    // Для probe используем stream:true если сайт этого ожидает, иначе false
-    const probeStream = profile.bodyDefaults?.stream === true
-    const probeBody = applyBodyDefaults({
-      model: model || 'deepseek_chat',
-      messages: [{ role: 'user', content: 'Привет' }],
-      max_tokens: 5,
-      stream: probeStream,
-    }, baseUrl)
+  // SSRF-защита
+  let hostname
+  try { hostname = new URL(baseUrl).hostname } catch {
+    return res.json({ ok: false, message: 'Неверный URL', models: [], preferredModel: '' })
+  }
+  if (isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) {
+    return res.json({ ok: false, message: 'Доступ к внутренней сети запрещён', models: [], preferredModel: '' })
+  }
+
+  const root = String(baseUrl).replace(/\/$/, '')
+  const profile = getSiteProfile(baseUrl)
+
+  // ── Сессионный токен (cookie, custom заголовок, или bearer-JWT с известного сайта) ──
+  // Признак сессии: authType !== bearer ИЛИ это известный веб-сайт (isBearerSession)
+  const isSession = authType === 'cookie' || authType === 'custom' || profile.isBearerSession
+
+  if (isSession) {
+    const stealthH = buildSessionHeaders({ baseUrl, apiKey, authType, authHeader, extraHeaders })
+    const probeBody = buildProbeBody(baseUrl, model)
+
     try {
       const r = await fetch(`${root}/chat/completions`, {
         method: 'POST',
         headers: stealthH,
         body: JSON.stringify(probeBody),
+        signal: AbortSignal.timeout(15000),
       })
+
+      // 200, 400 (неверная модель/параметр) — токен принят сервером
       if (r.ok || r.status === 400) {
-        // 400 тоже ок — значит сервер ответил (неверная модель, но токен принят)
         return res.json({
           ok: true,
           message: `Сессионный токен принят (${r.status})`,
@@ -1085,26 +1096,35 @@ app.post('/api/validate', requireAuth, async (req, res) => {
           preferredModel: model || '',
         })
       }
-      return res.json({ ok: false, message: `Токен отклонён (${r.status})`, models: [], preferredModel: '' })
+      if (r.status === 401 || r.status === 403) {
+        return res.json({
+          ok: false,
+          message: `Токен отклонён (${r.status}) — обнови токен в браузере`,
+          models: [],
+          preferredModel: '',
+        })
+      }
+      if (r.status === 429) {
+        return res.json({
+          ok: false,
+          message: 'Слишком много запросов (429) — подожди немного',
+          models: [],
+          preferredModel: '',
+        })
+      }
+      return res.json({
+        ok: false,
+        message: `Сервер ответил ${r.status}`,
+        models: [],
+        preferredModel: '',
+      })
     } catch (e) {
-      return res.json({ ok: false, message: 'Не удалось проверить: ' + (e.message || 'сеть'), models: [], preferredModel: '' })
+      const msg = e?.name === 'TimeoutError' ? 'Таймаут (15s) — сайт не ответил' : (e.message || 'Ошибка сети')
+      return res.json({ ok: false, message: msg, models: [], preferredModel: '' })
     }
   }
 
-  // Блокировка private IP и localhost
-  let hostname
-  try {
-    const url = new URL(baseUrl)
-    hostname = url.hostname
-  } catch {
-    return res.json({ ok: false, message: 'Invalid URL' })
-  }
-  if (isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) {
-    return res.json({ ok: false, message: 'Access to internal networks is not allowed' })
-  }
-
-  const root = String(baseUrl).replace(/\/$/, '')
-
+  // ── Обычный API-ключ (bearer, официальный провайдер) ──
   try {
     const modelsResult = await fetchModels(baseUrl, apiKey, model)
     if (modelsResult.ok) {
@@ -1121,59 +1141,38 @@ app.post('/api/validate', requireAuth, async (req, res) => {
       return res.json({
         ok: false,
         message: `Ключ отклонён (${modelsResult.status})`,
-        models: modelsResult.models || [],
+        models: [],
         preferredModel: '',
       })
     }
-  } catch {
-    /* пробуем chat ниже */
-  }
+  } catch { /* пробуем chat ниже */ }
 
+  // Fallback — probe через /chat/completions
   try {
+    const stealthH = buildSessionHeaders({ baseUrl, apiKey, authType: 'bearer', authHeader: '', extraHeaders })
     const r = await fetch(`${root}/chat/completions`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
+      headers: stealthH,
       body: JSON.stringify({
-        model: model || 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 1,
-        stream: false,
+        model:     model || 'gpt-4o-mini',
+        messages:  [{ role: 'user', content: 'Hi' }],
+        max_tokens: 5,
+        stream:    false,
       }),
+      signal: AbortSignal.timeout(15000),
     })
     if (r.ok) {
-      return res.json({
-        ok: true,
-        message: 'Ключ валиден',
-        models: model ? [model] : [],
-        preferredModel: model || '',
-      })
+      return res.json({ ok: true, message: 'Ключ валиден', models: model ? [model] : [], preferredModel: model || '' })
     }
     if (r.status === 401 || r.status === 403) {
       return res.json({ ok: false, message: `Ключ отклонён (${r.status})`, models: [], preferredModel: '' })
     }
     let detail = ''
-    try {
-      const j = await r.json()
-      detail = j?.error?.message || ''
-    } catch {
-      /* ignore */
-    }
-    return res.json({
-      ok: false,
-      message: `Ошибка ${r.status}${detail ? ': ' + detail : ''}`,
-      models: [],
-      preferredModel: '',
-    })
+    try { detail = (await r.json())?.error?.message || '' } catch { /* ignore */ }
+    return res.json({ ok: false, message: `Ошибка ${r.status}${detail ? ': ' + detail : ''}`, models: [], preferredModel: '' })
   } catch (e) {
-    return res.json({
-      ok: false,
-      message: 'Не удалось проверить: ' + (e.message || 'сеть'),
-      models: [],
-      preferredModel: '',
-    })
+    const msg = e?.name === 'TimeoutError' ? 'Таймаут — сервер не ответил' : ('Ошибка: ' + (e.message || 'сеть'))
+    return res.json({ ok: false, message: msg, models: [], preferredModel: '' })
   }
 })
 

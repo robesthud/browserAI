@@ -1,101 +1,177 @@
 /**
- * stealthHeaders.js — набор браузерных заголовков для имитации реального браузера
- * при запросах к сессионным токенам (DeepSeek Web, Grok Web, Claude Web и т.д.)
+ * stealthHeaders.js — браузерная маскировка для сессионных запросов.
  *
- * Без этих заголовков Node.js fetch легко детектируется как бот:
- * - нет User-Agent → Cloudflare блокирует
- * - нет Origin/Referer → сайт видит внешний клиент
- * - нет Accept-* → аномальный HTTP-профиль
+ * Без этих заголовков Node.js fetch детектируется как бот:
+ *  - нет User-Agent → Cloudflare/WAF блокирует
+ *  - нет Origin/Referer → сайт видит внешний клиент
+ *  - нет Accept-* → аномальный HTTP-профиль
+ *  - нет x-app-version → «чужой» клиент для DeepSeek/Grok
  */
 
-// Реалистичные User-Agent строки (актуальные браузеры)
+// ─── User-Agent pool ────────────────────────────────────────────────────────
+// Актуальные Chrome 131 / Firefox 132 / Safari 17 на Win/Mac/Linux
 const USER_AGENTS = [
+  // Chrome 131 Windows
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  // Chrome 131 Mac
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  // Chrome 130 Windows
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+  // Chrome 131 Linux
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  // Safari 17.6 Mac
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15',
+  // Firefox 132 Windows
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0',
+  // Chrome 131 Android (для мобильных сессий)
+  'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 Mobile Safari/537.36',
 ]
 
-// Возвращает случайный User-Agent (чтобы не было одного fingerprint)
+/** Случайный User-Agent из пула */
 export function randomUserAgent() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
 }
 
-/**
- * Базовые браузерные заголовки — общие для всех сессионных запросов.
- * Добавляем их ко всем запросам через сессионный токен.
- */
+// ─── Базовые браузерные заголовки ───────────────────────────────────────────
 export function baseBrowserHeaders(origin = '') {
-  const ua = randomUserAgent()
   return {
-    'User-Agent': ua,
-    'Accept': 'application/json, text/event-stream, */*',
+    'User-Agent':      randomUserAgent(),
+    'Accept':          'application/json, text/event-stream, */*',
     'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept-Encoding': 'gzip, deflate, br, zstd',
     ...(origin ? { 'Origin': origin, 'Referer': origin + '/' } : {}),
-    'Sec-Fetch-Site': origin ? 'same-origin' : 'cross-site',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Dest': 'empty',
-    'Connection': 'keep-alive',
+    'Sec-Fetch-Site':  origin ? 'same-origin' : 'cross-site',
+    'Sec-Fetch-Mode':  'cors',
+    'Sec-Fetch-Dest':  'empty',
+    'Cache-Control':   'no-cache',
+    'Pragma':          'no-cache',
   }
 }
 
-/**
- * Профили конкретных сайтов — точные заголовки как у реального браузера на этом сайте.
- * Определяем по hostname из baseUrl.
- */
+// ─── Профили сайтов ──────────────────────────────────────────────────────────
+// Каждый профиль описывает:
+//  origin       — домен, с которого браузер делает запрос
+//  extra        — кастомные заголовки конкретного сайта
+//  bodyDefaults — дефолты тела запроса (temperature, stream)
+//  isBearerSession — это сессионный bearer-токен (не API-ключ)
+//                    → validate должен идти напрямую в /chat, минуя /models
 const SITE_PROFILES = {
+
+  // ── DeepSeek Chat ──────────────────────────────────────────────────────────
   'chat.deepseek.com': {
     origin: 'https://chat.deepseek.com',
     extra: {
-      'x-app-version': '20241129',
-      'x-client-locale': 'ru_RU',
+      'x-app-version':    '20241129',
+      'x-client-locale':  'ru_RU',
+      'x-requested-with': 'XMLHttpRequest',
     },
-    // DeepSeek ожидает эти значения в body
-    bodyDefaults: {
-      temperature: 1.0,
-      stream: true,
-    },
-    // Не нужно проверять через /models — сразу probe chat
-    skipModelsProbe: true,
+    bodyDefaults:     { temperature: 1.0, stream: true },
+    isBearerSession:  true,   // JWT токен из Authorization: Bearer eyJ...
+    skipModelsProbe:  true,
   },
+
+  // ── Grok (xAI) ─────────────────────────────────────────────────────────────
   'grok.com': {
     origin: 'https://grok.com',
     extra: {
       'x-requested-with': 'XMLHttpRequest',
     },
-    bodyDefaults: {
-      temperature: 0.7,
-      stream: true,
-    },
-    skipModelsProbe: true,
+    bodyDefaults:     { temperature: 0.7, stream: true },
+    isBearerSession:  true,
+    skipModelsProbe:  true,
   },
+
+  // ── Claude (Anthropic) ─────────────────────────────────────────────────────
   'claude.ai': {
     origin: 'https://claude.ai',
     extra: {
       'anthropic-client-version': '0.10.0',
+      'anthropic-client-platform': 'web',
     },
-    bodyDefaults: {
-      stream: true,
-    },
-    skipModelsProbe: true,
+    bodyDefaults:     { stream: true },
+    isBearerSession:  false,  // Использует Cookie
+    skipModelsProbe:  true,
   },
-  // Дефолтный профиль для неизвестных сайтов
+
+  // ── Gemini AI (Google AI Studio / gemini.google.com) ──────────────────────
+  'gemini.google.com': {
+    origin: 'https://gemini.google.com',
+    extra: {
+      'x-goog-api-client': 'gl-js/ fire/0.0.0',
+      'x-user-agent':      'grpc-web-javascript/0.1',
+    },
+    bodyDefaults:     { stream: true },
+    isBearerSession:  false,  // Cookie-based
+    skipModelsProbe:  true,
+  },
+
+  // ── Google AI Studio ───────────────────────────────────────────────────────
+  'aistudio.google.com': {
+    origin: 'https://aistudio.google.com',
+    extra: {
+      'x-goog-api-client': 'gl-js/ fire/0.0.0',
+    },
+    bodyDefaults:     { stream: true },
+    isBearerSession:  false,
+    skipModelsProbe:  true,
+  },
+
+  // ── ChatGPT Web (openai.com) ───────────────────────────────────────────────
+  'chatgpt.com': {
+    origin: 'https://chatgpt.com',
+    extra: {
+      'openai-sentinel-chat-requirements-token': '',  // заполняется из сессии
+      'openai-conversation-id': '',
+    },
+    bodyDefaults:     { stream: true },
+    isBearerSession:  true,   // Bearer токен из Authorization
+    skipModelsProbe:  true,
+  },
+
+  // ── Mistral AI ─────────────────────────────────────────────────────────────
+  'chat.mistral.ai': {
+    origin: 'https://chat.mistral.ai',
+    extra: {
+      'x-requested-with': 'XMLHttpRequest',
+    },
+    bodyDefaults:     { stream: true },
+    isBearerSession:  true,
+    skipModelsProbe:  true,
+  },
+
+  // ── Qwen (Alibaba) ─────────────────────────────────────────────────────────
+  'tongyi.aliyun.com': {
+    origin: 'https://tongyi.aliyun.com',
+    extra: {
+      'bx-v': '2.2.3',
+    },
+    bodyDefaults:     { stream: true },
+    isBearerSession:  false,
+    skipModelsProbe:  true,
+  },
+
+  // ── Perplexity AI ──────────────────────────────────────────────────────────
+  'www.perplexity.ai': {
+    origin: 'https://www.perplexity.ai',
+    extra: {
+      'x-requested-with': 'XMLHttpRequest',
+    },
+    bodyDefaults:     { stream: true },
+    isBearerSession:  true,
+    skipModelsProbe:  true,
+  },
+
+  // ── Дефолтный профиль ─────────────────────────────────────────────────────
   _default: {
-    origin: '',
-    extra: {},
-    bodyDefaults: {},
+    origin:          '',
+    extra:           {},
+    bodyDefaults:    { stream: true },
+    isBearerSession: false,
     skipModelsProbe: true,
   },
 }
 
-/**
- * Возвращает профиль сайта по baseUrl.
- * @param {string} baseUrl
- * @returns {{ origin, extra, bodyDefaults, skipModelsProbe }}
- */
+/** Возвращает профиль сайта по baseUrl */
 export function getSiteProfile(baseUrl) {
   let hostname = ''
   try {
@@ -104,30 +180,29 @@ export function getSiteProfile(baseUrl) {
     return SITE_PROFILES._default
   }
 
-  // Точное совпадение
   if (SITE_PROFILES[hostname]) return SITE_PROFILES[hostname]
 
-  // Совпадение по суффиксу домена (deepseek.com → chat.deepseek.com)
+  // Совпадение по суффиксу (api.deepseek.com → не сессионный, chat.deepseek.com → да)
   for (const key of Object.keys(SITE_PROFILES)) {
-    if (key !== '_default' && hostname.endsWith(key)) return SITE_PROFILES[key]
+    if (key !== '_default' && (hostname === key || hostname.endsWith('.' + key))) {
+      return SITE_PROFILES[key]
+    }
   }
 
   return SITE_PROFILES._default
 }
 
 /**
- * Собирает полный набор заголовков для сессионного запроса:
- * - базовые браузерные
- * - специфичные для сайта
- * - заголовок авторизации пользователя
- * - кастомные заголовки пользователя (extraHeaders)
- *
- * @param {object} params
- * @param {string} params.baseUrl
- * @param {string} params.apiKey
- * @param {string} params.authType   'bearer' | 'cookie' | 'custom'
- * @param {string} params.authHeader  название заголовка для custom
- * @param {object} params.extraHeaders  доп. заголовки от пользователя
+ * Проверяет, является ли baseUrl сессионным (не API-ключ, а веб-токен).
+ * Используется в validate чтобы пропустить probe /models.
+ */
+export function isSessionUrl(baseUrl) {
+  return getSiteProfile(baseUrl).skipModelsProbe === true
+}
+
+/**
+ * Собирает полный набор заголовков для запроса:
+ * base → site-extra → auth → extraHeaders пользователя
  */
 export function buildSessionHeaders({
   baseUrl,
@@ -148,21 +223,18 @@ export function buildSessionHeaders({
         authH = { 'Cookie': key }
         break
       case 'custom':
-        if (authHeader.trim()) {
-          authH = { [authHeader.trim()]: key }
-        } else {
-          authH = { 'Authorization': key }
-        }
+        authH = authHeader.trim()
+          ? { [authHeader.trim()]: key }
+          : { 'Authorization': key }
         break
       case 'bearer':
       default:
-        // Если токен уже начинается с 'Bearer ' — не дублируем
+        // Не дублируем «Bearer » если токен уже начинается с него
         authH = { 'Authorization': key.startsWith('Bearer ') ? key : `Bearer ${key}` }
         break
     }
   }
 
-  // Итоговые заголовки (приоритет: extraHeaders > auth > site-specific > base)
   return {
     'Content-Type': 'application/json',
     ...base,
@@ -173,33 +245,46 @@ export function buildSessionHeaders({
 }
 
 /**
- * Очищает пользовательские extraHeaders:
- * - убирает опасные (Host, Content-Length, Transfer-Encoding)
- * - ограничивает длину
+ * Фильтрует пользовательские extraHeaders:
+ * удаляет технически опасные, ограничивает длину.
  */
 export function sanitizeExtraHeaders(raw = {}) {
   if (!raw || typeof raw !== 'object') return {}
-  const FORBIDDEN = new Set(['host', 'content-length', 'transfer-encoding', 'connection'])
+  const FORBIDDEN = new Set([
+    'host', 'content-length', 'transfer-encoding',
+    'connection', 'upgrade', 'http2-settings',
+  ])
   const result = {}
   for (const [k, v] of Object.entries(raw)) {
     const key = String(k || '').trim()
     if (!key || key.length > 100) continue
     if (FORBIDDEN.has(key.toLowerCase())) continue
     const val = String(v || '').trim()
-    if (val.length > 2000) continue
+    if (!val || val.length > 4096) continue
     result[key] = val
   }
   return result
 }
 
 /**
- * Применяет дефолты из профиля сайта к body запроса.
- * Пользовательские значения имеют приоритет над дефолтами сайта.
+ * Применяет дефолты тела запроса из профиля сайта.
+ * Значения пользователя имеют приоритет.
  */
 export function applyBodyDefaults(body = {}, baseUrl = '') {
   const profile = getSiteProfile(baseUrl)
-  return {
-    ...profile.bodyDefaults,
-    ...body,
-  }
+  return { ...profile.bodyDefaults, ...body }
+}
+
+/**
+ * Формирует probe-тело для validate — реалистичное, не «ping».
+ * Короткий но натуральный запрос.
+ */
+export function buildProbeBody(baseUrl, model) {
+  const profile = getSiteProfile(baseUrl)
+  return applyBodyDefaults({
+    model:    model || 'gpt-4o-mini',
+    messages: [{ role: 'user', content: 'Hi' }],
+    max_tokens: 5,
+    stream:   false, // probe всегда non-stream для простоты парсинга ответа
+  }, baseUrl)
 }

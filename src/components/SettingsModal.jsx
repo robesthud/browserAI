@@ -36,10 +36,45 @@ const PROVIDER_PRESETS = [
   {
     id: 'gemini',
     group: 'api',
-    label: 'Gemini',
-    name: 'Gemini',
+    label: 'Gemini API',
+    name: 'Gemini API',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     authType: 'bearer',
+    hint: 'Ключ: console.cloud.google.com → APIs → Gemini API → Credentials',
+  },
+  {
+    id: 'mistral-api',
+    group: 'api',
+    label: 'Mistral API',
+    name: 'Mistral API',
+    baseUrl: 'https://api.mistral.ai/v1',
+    authType: 'bearer',
+  },
+  {
+    id: 'groq',
+    group: 'api',
+    label: 'Groq',
+    name: 'Groq',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    authType: 'bearer',
+    hint: 'Ключ: console.groq.com → API Keys (бесплатный tier доступен)',
+  },
+  {
+    id: 'together',
+    group: 'api',
+    label: 'Together AI',
+    name: 'Together AI',
+    baseUrl: 'https://api.together.xyz/v1',
+    authType: 'bearer',
+  },
+  {
+    id: 'openrouter',
+    group: 'api',
+    label: 'OpenRouter',
+    name: 'OpenRouter',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    authType: 'bearer',
+    hint: 'openrouter.ai — доступ к 100+ моделям через один ключ',
   },
   // --- Сессионные токены (веб-интерфейс) ---
   {
@@ -75,6 +110,50 @@ const PROVIDER_PRESETS = [
     authHeader: 'Cookie',
     extraHeaders: { 'Referer': 'https://claude.ai/', 'Origin': 'https://claude.ai' },
     hint: 'F12 → Network → любой запрос к /api → скопируй весь заголовок Cookie',
+  },
+  {
+    id: 'gemini-web',
+    group: 'web',
+    label: '🍪 Gemini Web',
+    name: 'Gemini Web (сессия)',
+    baseUrl: 'https://gemini.google.com/api',
+    model: 'gemini-2.0-flash',
+    authType: 'custom',
+    authHeader: 'Cookie',
+    extraHeaders: {
+      'Referer': 'https://gemini.google.com/',
+      'Origin': 'https://gemini.google.com',
+      'x-goog-api-client': 'gl-js/ fire/0.0.0',
+    },
+    hint: 'F12 → Network → запрос к /api → вкладка Headers → скопируй весь заголовок Cookie\n\nТакже можно попробовать AI Studio:\nBase URL: https://aistudio.google.com/api/v1\nТокен: заголовок x-goog-api-key или Cookie',
+  },
+  {
+    id: 'chatgpt-web',
+    group: 'web',
+    label: '🍪 ChatGPT Web',
+    name: 'ChatGPT Web (сессия)',
+    baseUrl: 'https://chatgpt.com/backend-api',
+    model: 'gpt-4o',
+    authType: 'bearer',
+    extraHeaders: {
+      'Referer': 'https://chatgpt.com/',
+      'Origin': 'https://chatgpt.com',
+    },
+    hint: 'F12 → Network → запрос к /backend-api/conversation → заголовок Authorization\n\nТокен начинается с eyJ... (JWT)',
+  },
+  {
+    id: 'mistral-web',
+    group: 'web',
+    label: '🍪 Mistral Web',
+    name: 'Mistral Chat (сессия)',
+    baseUrl: 'https://chat.mistral.ai/api',
+    model: 'mistral-large-latest',
+    authType: 'bearer',
+    extraHeaders: {
+      'Referer': 'https://chat.mistral.ai/',
+      'Origin': 'https://chat.mistral.ai',
+    },
+    hint: 'F12 → Network → запрос к /api → заголовок Authorization',
   },
   // --- Локальные мосты ---
   {
@@ -513,6 +592,9 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
               { label: 'DeepSeek', headers: { 'Referer': 'https://chat.deepseek.com/', 'Origin': 'https://chat.deepseek.com', 'x-app-version': '20241129' } },
               { label: 'Grok', headers: { 'Referer': 'https://grok.com/', 'Origin': 'https://grok.com' } },
               { label: 'Claude', headers: { 'Referer': 'https://claude.ai/', 'Origin': 'https://claude.ai' } },
+              { label: 'Gemini', headers: { 'Referer': 'https://gemini.google.com/', 'Origin': 'https://gemini.google.com', 'x-goog-api-client': 'gl-js/ fire/0.0.0' } },
+              { label: 'ChatGPT', headers: { 'Referer': 'https://chatgpt.com/', 'Origin': 'https://chatgpt.com' } },
+              { label: 'Mistral', headers: { 'Referer': 'https://chat.mistral.ai/', 'Origin': 'https://chat.mistral.ai' } },
             ].map((tpl) => (
               <button
                 key={tpl.label}
