@@ -432,11 +432,11 @@ app.get('/api/auth/me', optionalAuth, (req, res) => {
 })
 
 app.post('/api/auth/register', authLimiter, (req, res) => {
-  const email = String(req.body?.email || '').trim().toLowerCase()
-  const name = String(req.body?.name || '').trim()
+  const email = String(req.body?.email || '').trim().toLowerCase().slice(0, 254)
+  const name = String(req.body?.name || '').trim().slice(0, 100)
   const password = String(req.body?.password || '')
   const registrationSecret = String(req.body?.registrationSecret || '')
-  const rawPhone = String(req.body?.phone || '').trim()
+  const rawPhone = String(req.body?.phone || '').trim().slice(0, 20)
   const phone = rawPhone ? normalizePhone(rawPhone) : null
 
   if (!/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: 'Некорректный email' })
@@ -586,7 +586,7 @@ app.post('/api/auth/forgot-password', authLimiter, async (req, res) => {
   }
 })
 
-app.post('/api/auth/reset-password', (req, res) => {
+app.post('/api/auth/reset-password', authLimiter, (req, res) => {
   const token = String(req.body?.token || '')
   const password = String(req.body?.password || '')
   const pwError = validatePassword(password)
@@ -607,10 +607,29 @@ app.get('/api/cloud', requireAuth, (req, res) => {
 })
 
 app.put('/api/cloud', requireAuth, (req, res) => {
+  // Лимит: не более 500 чатов, не более 200 сообщений на чат
+  const MAX_CHATS = 500
+  const MAX_MESSAGES_PER_CHAT = 200
+  let chats = Array.isArray(req.body?.chats) ? req.body.chats : []
+  if (chats.length > MAX_CHATS) chats = chats.slice(0, MAX_CHATS)
+  chats = chats.map((c) => ({
+    ...c,
+    messages: Array.isArray(c.messages)
+      ? c.messages.slice(0, MAX_MESSAGES_PER_CHAT)
+      : [],
+  }))
+
   const data = {
     settings: req.body?.settings || null,
-    chats: Array.isArray(req.body?.chats) ? req.body.chats : [],
+    chats,
   }
+
+  // Лимит на итоговый размер payload: 5 МБ
+  const raw = JSON.stringify(data)
+  if (raw.length > 5 * 1024 * 1024) {
+    return res.status(413).json({ error: 'Cloud payload слишком большой (макс. 5 МБ)' })
+  }
+
   const payload = encryptJson(data)
   db.prepare(`
     INSERT INTO user_cloud_data (user_id, payload, updated_at) VALUES (?, ?, ?)
@@ -917,18 +936,16 @@ app.get('/api/keys', requireAuth, (req, res) => {
 
 app.post('/api/keys', requireAuth, requireUnlocked, (req, res) => {
   const k = req.body || {}
-  if (!k.id) return res.status(400).json({ error: 'id required' })
-  upsertKey(
-    {
-      id: k.id,
-      name: k.name || '',
-      baseUrl: k.baseUrl || '',
-      apiKey: k.apiKey || '',
-      model: k.model || '',
-      availableModels: Array.isArray(k.availableModels) ? k.availableModels : [],
-    },
-    encKey(),
-  )
+  if (!k.id || typeof k.id !== 'string') return res.status(400).json({ error: 'id required' })
+  // Лимиты на длину полей ключа
+  const name = String(k.name || '').slice(0, 100)
+  const baseUrl = String(k.baseUrl || '').slice(0, 500)
+  const apiKey = String(k.apiKey || '').slice(0, 500)
+  const model = String(k.model || '').slice(0, 200)
+  const availableModels = Array.isArray(k.availableModels)
+    ? k.availableModels.slice(0, 200).map((m) => String(m || '').slice(0, 200))
+    : []
+  upsertKey({ id: k.id.slice(0, 100), name, baseUrl, apiKey, model, availableModels }, encKey())
   res.json({ keys: listKeys(encKey()), activeKeyId: getActiveKeyId(), vault: vaultState() })
 })
 
@@ -991,6 +1008,10 @@ app.put('/api/params', requireAuth, (req, res) => {
       return res.status(400).json({ error: 'temperature должен быть от 0 до 2' })
     }
     body.temperature = t
+  }
+  // Лимит на длину systemPrompt: 8000 символов
+  if (body.systemPrompt !== undefined) {
+    body.systemPrompt = String(body.systemPrompt || '').slice(0, 8000)
   }
   res.json({ params: setParams(body) })
 })
@@ -1148,6 +1169,7 @@ app.get('/api/workspace/download', requireAuth, async (req, res) => {
 app.post('/api/workspace/folder', requireAuth, async (req, res) => {
   try {
     const { parentPath = '', name = 'New Folder' } = req.body || {}
+    if (String(name).length > 255) return res.status(400).json({ error: 'Имя папки слишком длинное (макс. 255)' })
     await createFolder(parentPath, name)
     res.json({ ok: true })
   } catch (e) {
@@ -1158,6 +1180,7 @@ app.post('/api/workspace/folder', requireAuth, async (req, res) => {
 app.post('/api/workspace/file', requireAuth, async (req, res) => {
   try {
     const { parentPath = '', name = 'untitled.txt', content = '' } = req.body || {}
+    if (String(name).length > 255) return res.status(400).json({ error: 'Имя файла слишком длинное (макс. 255)' })
     await createFile(parentPath, name, content)
     res.json({ ok: true })
   } catch (e) {
