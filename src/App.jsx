@@ -16,6 +16,7 @@ import {
 import { useSettings } from './lib/useSettings.js'
 import { useChats } from './lib/useChats.js'
 import { backend } from './lib/backend.js'
+import { pickBestModel } from './lib/autoModel.js'
 
 // CloudSync работает только когда пользователь залогинен через аккаунт.
 // Сохраняет чаты + настройки (без ключей — ключи идут через /api/keys отдельно).
@@ -62,6 +63,9 @@ function BrowserApp({ user, reloadAuth }) {
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [workspaceAiBusy, setWorkspaceAiBusy] = useState(false)
+  // Авторежим выбора модели
+  const [autoMode, setAutoMode] = useState(false)
+  const [autoModelHint, setAutoModelHint] = useState('')
 
   const {
     settings,
@@ -129,6 +133,22 @@ function BrowserApp({ user, reloadAuth }) {
   const messages = activeChat?.messages ?? []
   const hasMessages = messages.length > 0
 
+  // Обёртка sendMessage с авторежимом
+  const handleSendMessage = async (text, attachments = []) => {
+    if (autoMode && availableModels.length > 1 && text) {
+      const { model, reason, changed } = pickBestModel(text, availableModels, selectedModel)
+      if (changed) {
+        await setActiveModel(model)
+        setAutoModelHint(reason)
+        // Сбрасываем подсказку через 4 секунды
+        setTimeout(() => setAutoModelHint(''), 4000)
+      } else {
+        setAutoModelHint('')
+      }
+    }
+    return sendMessage(text, attachments)
+  }
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-graphite-900 text-cream">
       <CloudSync settings={settings} chats={chats} />
@@ -172,6 +192,12 @@ function BrowserApp({ user, reloadAuth }) {
           models={availableModels}
           selectedModel={selectedModel}
           onSelectModel={setActiveModel}
+          autoMode={autoMode}
+          onToggleAuto={() => {
+            setAutoMode((v) => !v)
+            setAutoModelHint('')
+          }}
+          autoModelHint={autoModelHint}
           workspaceOpen={workspaceOpen}
           onToggleWorkspace={toggleWorkspace}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -185,7 +211,7 @@ function BrowserApp({ user, reloadAuth }) {
             <Composer
               hasMessages
               isStreaming={isStreaming}
-              onSend={sendMessage}
+              onSend={handleSendMessage}
               onStop={stop}
             />
           </>
@@ -193,7 +219,7 @@ function BrowserApp({ user, reloadAuth }) {
           <Composer
             hasMessages={false}
             isStreaming={isStreaming}
-            onSend={sendMessage}
+            onSend={handleSendMessage}
             onStop={stop}
           />
         )}
@@ -203,7 +229,7 @@ function BrowserApp({ user, reloadAuth }) {
         open={workspaceOpen}
         onClose={toggleWorkspace}
         settings={settings}
-        onSendToChat={sendMessage}
+        onSendToChat={handleSendMessage}
         onAiBusyChange={setWorkspaceAiBusy}
       />
 
