@@ -194,14 +194,6 @@ public class MainActivity extends Activity {
             }
 
             @Override
-            public void onProgressChanged(WebView view, int newProgress) {
-                if (progressBar != null) {
-                    progressBar.setProgress(newProgress);
-                    progressBar.setVisibility(newProgress == 100 ? View.GONE : View.VISIBLE);
-                }
-            }
-
-            @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 super.onReceivedError(view, request, error);
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && request.isForMainFrame()) {
