@@ -44,7 +44,7 @@ export default function Sidebar({
             <span className="text-cream">
               <IconNewChat />
             </span>
-            <span>New Chat</span>
+            <span>Новый чат</span>
           </button>
         </div>
 
@@ -78,7 +78,7 @@ export default function Sidebar({
                     <button
                       onClick={(e) => {
                         e.stopPropagation()
-                        onDelete(c.id)
+                        if (window.confirm(`Удалить чат «${c.title}»?`)) onDelete(c.id)
                       }}
                       className="absolute right-1.5 top-1/2 -translate-y-1/2 grid h-6 w-6 place-items-center rounded-md
                                  text-cream-faint opacity-0 transition-opacity hover:bg-graphite-700 hover:text-cream

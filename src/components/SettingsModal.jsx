@@ -765,7 +765,9 @@ export default function SettingsModal({
                     active={active?.id === k.id}
                     onSelect={() => onActivateKey(k.id)}
                     onEdit={() => setEditing({ key: { ...k } })}
-                    onDelete={() => onDeleteKey(k.id)}
+                    onDelete={() => {
+                      if (window.confirm(`Удалить ключ «${k.name || 'Без имени'}»?`)) onDeleteKey(k.id)
+                    }}
                   />
                 ))}
               </div>

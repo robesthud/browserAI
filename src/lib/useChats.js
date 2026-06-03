@@ -61,10 +61,13 @@ export function useChats(settings) {
   })
   const [isStreaming, setIsStreaming] = useState(false)
   const abortRef = useRef(null)
+  const saveTimeoutRef = useRef(null)
 
-  // Персистентность
+  // Персистентность с дебаунсом — не пишем localStorage на каждый токен стриминга
   useEffect(() => {
-    saveChats(chats)
+    clearTimeout(saveTimeoutRef.current)
+    saveTimeoutRef.current = setTimeout(() => saveChats(chats), 800)
+    return () => clearTimeout(saveTimeoutRef.current)
   }, [chats])
 
   const activeChat = chats.find((c) => c.id === activeId) || null

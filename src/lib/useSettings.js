@@ -232,7 +232,7 @@ export function useSettings() {
       } catch {
         /* ignore */
       }
-    }, 20 * 1000)
+    }, 60 * 1000)
 
     return () => clearInterval(id)
   }, [online, vault.enabled])

@@ -3,25 +3,39 @@
 // через ping(); если бэкенд недоступен — вызывающий код переходит на localStorage.
 
 const BASE = '/api'
+const DEFAULT_TIMEOUT_MS = 12000
 
 async function req(path, options = {}) {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  })
-  const contentType = res.headers.get('content-type') || ''
+  // Если снаружи уже передан signal (например, из validateKey) — используем его,
+  // иначе ставим дефолтный таймаут 12 секунд чтобы не зависать при спящем Railway
+  const hasExternalSignal = Boolean(options.signal)
+  const controller = hasExternalSignal ? null : new AbortController()
+  const timer = controller
+    ? setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
+    : null
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`API ${res.status}: ${text}`)
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      headers: { 'Content-Type': 'application/json' },
+      ...options,
+      signal: hasExternalSignal ? options.signal : controller.signal,
+    })
+    const contentType = res.headers.get('content-type') || ''
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new Error(`API ${res.status}: ${text}`)
+    }
+
+    if (!contentType.includes('application/json')) {
+      const text = await res.text().catch(() => '')
+      throw new Error(`API returned non-JSON response for ${path}: ${text.slice(0, 200)}`)
+    }
+
+    return res.json()
+  } finally {
+    if (timer) clearTimeout(timer)
   }
-
-  if (!contentType.includes('application/json')) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`API returned non-JSON response for ${path}: ${text.slice(0, 200)}`)
-  }
-
-  return res.json()
 }
 
 export async function ping(timeoutMs = 1500) {

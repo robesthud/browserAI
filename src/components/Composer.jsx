@@ -146,7 +146,11 @@ export default function Composer({
     onSend(t, attachments)
     setText('')
     setAttachments([])
-    if (taRef.current) taRef.current.style.height = 'auto'
+    // requestAnimationFrame — ждём пока React обновит DOM после setText('')
+    // прежде чем сбрасывать высоту, иначе textarea может остаться растянутой
+    requestAnimationFrame(() => {
+      if (taRef.current) taRef.current.style.height = 'auto'
+    })
   }
 
   const onKeyDown = (e) => {
@@ -229,7 +233,7 @@ export default function Composer({
               onChange={autoGrow}
               onKeyDown={onKeyDown}
               rows={1}
-              placeholder="Ask anything…"
+              placeholder="Спросите что угодно…"
               className="block w-full resize-none border-0 bg-transparent px-2 pb-3 pt-1 text-[15px]
                          text-cream placeholder:text-cream-faint focus:outline-none focus:ring-0"
             />
@@ -244,7 +248,7 @@ export default function Composer({
                            disabled:opacity-50"
                 >
                   <IconPaperclip />
-                  <span>{busyFiles ? 'Чтение…' : 'Add files'}</span>
+                  <span>{busyFiles ? 'Чтение…' : 'Прикрепить файлы'}</span>
                 </button>
 
                 <button

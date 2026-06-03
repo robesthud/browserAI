@@ -3,15 +3,11 @@
 // { id, title, createdAt, updatedAt, summary, summarizedUntil,
 //   messages: [{ id, role, content, attachments?, error? }] }
 
-const KEY = 'browserai.chats.v1'
+import { uid } from './uid.js'
 
-// #18 FIX: crypto.randomUUID() вместо Date.now + Math.random
-export function uid() {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
-}
+export { uid }
+
+const KEY = 'browserai.chats.v1'
 
 export function loadChats() {
   try {
@@ -27,8 +23,17 @@ export function loadChats() {
 export function saveChats(chats) {
   try {
     localStorage.setItem(KEY, JSON.stringify(chats))
-  } catch {
-    // ignore
+  } catch (e) {
+    if (e?.name === 'QuotaExceededError') {
+      // localStorage переполнен — удаляем самые старые чаты (кроме последних 5) и пробуем снова
+      console.warn('localStorage QuotaExceededError — обрезаем старые чаты')
+      try {
+        const trimmed = chats.slice(0, 5)
+        localStorage.setItem(KEY, JSON.stringify(trimmed))
+      } catch {
+        // совсем не можем сохранить — молча продолжаем
+      }
+    }
   }
 }
 
@@ -45,9 +50,14 @@ export function createChat() {
   }
 }
 
-// Заголовок чата из первого сообщения пользователя
+// Заголовок чата из первого сообщения пользователя.
+// Обрезаем по последнему пробелу чтобы не резать слова посередине.
 export function deriveTitle(text) {
   if (!text) return 'Новый чат'
   const clean = text.replace(/\s+/g, ' ').trim()
-  return clean.length > 40 ? clean.slice(0, 40) + '…' : clean || 'Новый чат'
+  if (!clean) return 'Новый чат'
+  if (clean.length <= 40) return clean
+  const cut = clean.slice(0, 40)
+  const lastSpace = cut.lastIndexOf(' ')
+  return (lastSpace > 20 ? cut.slice(0, lastSpace) : cut) + '…'
 }

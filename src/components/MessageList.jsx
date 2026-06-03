@@ -70,7 +70,7 @@ function Message({ m }) {
           <span className="text-[13px] font-medium text-cream">
             {isUser ? 'Вы' : 'Ассистент'}
           </span>
-          {!isUser && m.content && !m.pending && <CopyButton text={m.content} />}
+          {m.content && !m.pending && <CopyButton text={m.content} />}
         </div>
 
         {isUser ? (
@@ -88,7 +88,7 @@ function Message({ m }) {
               <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-cream/70 align-middle" />
             )}
             {m.stopped && !m.content && (
-              <span className="text-cream-faint">Остановлено.</span>
+              <span className="italic text-cream-faint">— генерация остановлена</span>
             )}
           </div>
         )}
@@ -101,9 +101,16 @@ function Message({ m }) {
 
 export default function MessageList({ messages }) {
   const bottomRef = useRef(null)
+  const prevLenRef = useRef(messages.length)
 
+  // Скроллим вниз только когда появляется новое сообщение,
+  // но НЕ при переключении чата из сайдбара (там длина может не меняться)
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const prevLen = prevLenRef.current
+    prevLenRef.current = messages.length
+    if (messages.length > prevLen) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
   }, [messages])
 
   return (
