@@ -307,25 +307,6 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
     if (preset.hint) alert(`💡 Как получить токен:\n\n${preset.hint}`)
   }
 
-  // Применяет результат валидации к форме и возвращает обновлённую форму
-  const applyValidationResult = (r) => {
-    let updatedForm = null
-    setForm((f) => {
-      const models = (r.ok && Array.isArray(r.models) && r.models.length > 0) ? r.models : f.availableModels || []
-      const preferredModel =
-        (r.preferredModel && models.includes(r.preferredModel) && r.preferredModel) ||
-        (models.includes(f.model) ? f.model : null) ||
-        models[0] || f.model || ''
-      updatedForm = {
-        ...f,
-        availableModels: models.length > 0 ? models : (f.model ? [f.model] : []),
-        model: preferredModel,
-      }
-      return updatedForm
-    })
-    return updatedForm
-  }
-
   // Проверка + автосохранение: после успешной валидации сразу сохраняет ключ
   const check = async () => {
     setChecking(true)
@@ -339,10 +320,24 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
         authHeader: form.authHeader || '',
       })
       setResult(r)
-      const updated = applyValidationResult(r)
+
+      // Обновляем форму на основе результата валидации
+      const models = (r.ok && Array.isArray(r.models) && r.models.length > 0) ? r.models : []
+      const preferredModel =
+        (r.preferredModel && models.includes(r.preferredModel) && r.preferredModel) ||
+        (models.length > 0 && models.includes(form.model) ? form.model : null) ||
+        models[0] || form.model || ''
+
+      const updatedForm = {
+        ...form,
+        availableModels: models.length > 0 ? models : (form.model ? [form.model] : []),
+        model: preferredModel,
+      }
+      setForm(updatedForm)
+
       // Автосохранение при успешной проверке
-      if (r.ok && updated && updated.apiKey?.trim() && updated.baseUrl?.trim() && updated.model?.trim()) {
-        onSave(updated)
+      if (r.ok && updatedForm.apiKey?.trim() && updatedForm.baseUrl?.trim() && updatedForm.model?.trim()) {
+        onSave(updatedForm)
       }
     } finally {
       setChecking(false)
@@ -383,10 +378,21 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
         )
         if (controller.signal.aborted) return
         setResult(r)
-        const updated = applyValidationResult(r)
-        // Автосохранение при успешной авто-валидации
-        if (r.ok && updated && updated.apiKey?.trim() && updated.baseUrl?.trim() && updated.model?.trim()) {
-          onSave(updated)
+
+        // Обновляем форму синхронно
+        const models = (r.ok && Array.isArray(r.models) && r.models.length > 0) ? r.models : []
+        if (models.length > 0) {
+          const preferred = r.preferredModel || models[0]
+          const updatedForm = {
+            ...form,
+            availableModels: models,
+            model: models.includes(preferred) ? preferred : models[0],
+          }
+          setForm(updatedForm)
+          // Автосохранение при успешной авто-валидации
+          if (r.ok && updatedForm.apiKey?.trim() && updatedForm.baseUrl?.trim() && updatedForm.model?.trim()) {
+            onSave(updatedForm)
+          }
         }
       } catch {
         /* ignore auto-fetch errors */
