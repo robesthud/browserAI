@@ -67,6 +67,16 @@ const PROVIDER_PRESETS = [
     authHeader: 'Cookie',
     hint: 'F12 → Network → любой запрос к /api → скопируй весь заголовок Cookie',
   },
+  // --- Локальные мосты (запускаются на устройстве) ---
+  {
+    id: 'arena-bridge',
+    label: '🌉 Arena.ai Bridge',
+    name: 'Arena.ai (через LMArenaBridge)',
+    baseUrl: 'http://localhost:8000/api/v1',
+    model: '',
+    authType: 'bearer',
+    hint: `Arena.ai требует локальный прокси LMArenaBridge.\n\n1. Получи токен:\n   F12 → Application → Cookies → arena.ai\n   Скопируй куку arena-auth-prod-v1 (начинается с base64-)\n\n2. Установи прокси на устройстве (Termux/PC):\n   git clone https://github.com/CloudWaddie/LMArenaBridge\n   cd LMArenaBridge\n   pip install -r requirements.txt\n   echo '{"auth_token":"ТВОЙ_ТОКЕН"}' > config.json\n   python -m src.main\n\n3. Прокси запустится на localhost:8000\n   Base URL уже заполнен — просто нажми Проверить`,
+  },
   {
     id: 'custom-web',
     label: '🔧 Свой сайт',
