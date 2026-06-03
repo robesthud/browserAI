@@ -225,7 +225,8 @@ public class MainActivity extends Activity {
             }
 
             // FIX: обработка SSL-ошибок с понятным сообщением
-            @Override
+            // @Override убран — метод удалён из WebViewClient в SDK 35
+            @SuppressWarnings("deprecation")
             public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
                 progressBar.setVisibility(View.GONE);
                 String reason;
