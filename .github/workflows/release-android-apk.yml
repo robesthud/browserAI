@@ -1,14 +1,27 @@
 name: Release Android APK
 
 on:
+  # ── Автозапуск: при push в android-app/ или MainActivity.java ──────────────
+  push:
+    branches: [main]
+    paths:
+      - 'android-app/**'
+      - '.github/workflows/release-android-apk.yml'
+
+  # ── Ручной запуск из вкладки Actions ────────────────────────────────────────
   workflow_dispatch:
+    inputs:
+      release_notes:
+        description: 'Что нового в этой версии (для описания релиза)'
+        required: false
+        default: 'Исправления ошибок и улучшения стабильности.'
 
 permissions:
   contents: write
 
 jobs:
   release:
-    name: Build and publish APK release
+    name: Build and publish APK
     runs-on: ubuntu-latest
 
     steps:
@@ -29,11 +42,12 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
-      # #23 FIX: keystore из зашифрованного GitHub Secret, не из cache
-      - name: Restore signing key from secret
+      # Keystore из GitHub Secret (стабильный между сборками)
+      - name: Restore signing keystore
         run: |
           if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
             echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android-app/app/debug.keystore
+            echo "✅ Keystore из Secret"
           else
             keytool -genkeypair -v \
               -keystore android-app/app/debug.keystore \
@@ -43,10 +57,12 @@ jobs:
               -keyalg RSA \
               -keysize 2048 \
               -validity 10000 \
-              -dname "CN=Android Debug,O=BrowserAI,C=US"
+              -dname "CN=BrowserAI,O=BrowserAI,C=RU"
+            echo "⚠️  Keystore сгенерирован — сохрани KEYSTORE_BASE64 в Secrets для стабильного подписи"
           fi
 
-      - name: Set release version
+      # versionCode = GITHUB_RUN_NUMBER (уникален, монотонно растёт)
+      - name: Set version from run number
         working-directory: android-app
         run: |
           python3 - <<'PY'
@@ -58,23 +74,74 @@ jobs:
           s = re.sub(r'versionCode\s+\d+', f'versionCode {run_number}', s)
           s = re.sub(r"versionName\s+'[^']+'", f"versionName '1.0.{run_number}'", s)
           p.write_text(s)
+          print(f"versionCode = {run_number}")
           PY
 
-      # #14 FIX: используем assembleRelease вместо assembleDebug для production APK
       - name: Build release APK
         working-directory: android-app
         run: gradle assembleRelease --no-daemon --stacktrace
 
-      - name: Rename APK
+      # Переименовываем APK — имя используется в /api/app-version как прямая ссылка
+      - name: Prepare APK for release
         run: |
           mkdir -p release
-          cp android-app/app/build/outputs/apk/release/app-release.apk release/BrowserAI-${{ github.run_number }}.apk
+          cp android-app/app/build/outputs/apk/release/app-release.apk \
+             release/BrowserAI-latest.apk
+          echo "APK_SIZE=$(du -sh release/BrowserAI-latest.apk | cut -f1)" >> $GITHUB_ENV
+          echo "VERSION_CODE=${{ github.run_number }}" >> $GITHUB_ENV
 
+      # Получаем release notes: из input (ручной) или из git commit message
+      - name: Get release notes
+        id: notes
+        run: |
+          if [ -n "${{ github.event.inputs.release_notes }}" ]; then
+            NOTES="${{ github.event.inputs.release_notes }}"
+          else
+            NOTES=$(git log -1 --pretty=%B android-app/ | head -5)
+            if [ -z "$NOTES" ]; then
+              NOTES="Автосборка при изменении android-app/"
+            fi
+          fi
+          echo "notes=${NOTES}" >> $GITHUB_OUTPUT
+
+      # Создаём GitHub Release с именем BrowserAI-latest.apk
+      # Имя файла постоянное — ссылка в /api/app-version всегда актуальна
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create android-v${{ github.run_number }} \
-            release/BrowserAI-${{ github.run_number }}.apk \
-            --title "BrowserAI Android v${{ github.run_number }}" \
-            --notes "Android APK build ${{ github.run_number }}. Install this APK on your Android device."
+          RELEASE_TAG="android-v${{ github.run_number }}"
+          RELEASE_TITLE="BrowserAI Android v${{ github.run_number }} (${{ env.APK_SIZE }})"
+          RELEASE_BODY="## BrowserAI Android ${{ github.run_number }}
+
+          **Размер:** ${{ env.APK_SIZE }}
+          **versionCode:** ${{ env.VERSION_CODE }}
+
+          ### Что нового
+          ${{ steps.notes.outputs.notes }}
+
+          ### Установка
+          1. Скачай \`BrowserAI-latest.apk\`
+          2. Открой файл на Android → Установить
+          3. Разреши установку из неизвестных источников если появится запрос
+
+          > Приложение автоматически проверяет обновления при запуске."
+
+          gh release create "$RELEASE_TAG" \
+            release/BrowserAI-latest.apk \
+            --title "$RELEASE_TITLE" \
+            --notes "$RELEASE_BODY"
+
+      # Выводим итог
+      - name: Summary
+        run: |
+          echo "## ✅ APK собран и опубликован" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag:** android-v${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **versionCode:** ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Размер:** ${{ env.APK_SIZE }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Скачать:** https://github.com/robesthud/browserAI/releases/latest/download/BrowserAI-latest.apk" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Следующий шаг" >> $GITHUB_STEP_SUMMARY
+          echo "Обнови \`APP_NATIVE_VERSION=${{ github.run_number }}\` в Railway Variables" >> $GITHUB_STEP_SUMMARY
+          echo "чтобы старые APK получили уведомление об обновлении." >> $GITHUB_STEP_SUMMARY

@@ -1417,6 +1417,49 @@ app.get('/api/web/fetch', requireAuth, async (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ ok: true }))
 
+// ── Версия нативного APK ─────────────────────────────────────────────────────
+// Публичный эндпоинт — Android-приложение проверяет его при старте.
+// Возвращает минимальный требуемый versionCode и ссылку на APK.
+// Если APK пользователя >= minNativeVersion — обновление не нужно.
+//
+// Как обновить: просто измени APP_NATIVE_VERSION в Railway Variables.
+// Например: APP_NATIVE_VERSION=4
+// Все установленные приложения с versionCode < 4 получат уведомление.
+app.get('/api/app-version', (req, res) => {
+  // Минимальный нативный versionCode — задаётся через переменную окружения
+  // или хардкодится здесь. При пересборке APK — увеличь это число.
+  const minNativeVersion = parseInt(process.env.APP_NATIVE_VERSION || '3', 10)
+
+  // Ссылка на последний APK — можно задать через переменную или использовать GitHub
+  const apkUrl = process.env.APP_APK_URL
+    || 'https://github.com/robesthud/browserAI/releases/latest/download/BrowserAI-latest.apk'
+
+  // Ссылка на страницу релиза для fallback
+  const releaseUrl = process.env.APP_RELEASE_URL
+    || 'https://github.com/robesthud/browserAI/releases/latest'
+
+  // Краткое описание что нового в этом APK
+  const releaseNotes = process.env.APP_RELEASE_NOTES
+    || 'Исправления ошибок и улучшения стабильности.'
+
+  res.json({
+    // Версия нативной оболочки (Java-код)
+    minNativeVersion,
+    // Прямая ссылка на APK-файл
+    apkUrl,
+    // Страница релиза (fallback если нет прямой ссылки)
+    releaseUrl,
+    // Что нового
+    releaseNotes,
+    // Версия веб-приложения (для инфо)
+    webVersion: process.env.npm_package_version || '1.0.12',
+    // Timestamp последнего деплоя
+    deployedAt: process.env.RAILWAY_DEPLOYMENT_ID
+      ? new Date().toISOString()
+      : null,
+  })
+})
+
 // Удаление своего аккаунта (залогиненный пользователь)
 app.delete('/api/auth/account', requireAuth, (req, res) => {
   const userId = req.user.id
