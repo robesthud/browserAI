@@ -66,7 +66,7 @@ import {
   safePath,
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
-import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, isSessionUrl, buildProbeBody } from './stealthHeaders.js'
+import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, isSessionUrl, buildProbeBody, getChatUrl } from './stealthHeaders.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 8787
@@ -1112,7 +1112,7 @@ app.post('/api/validate', requireAuth, async (req, res) => {
           stream:   false,
         }, baseUrl)
 
-        const probeTarget = `${root}/chat/completions`
+        const probeTarget = getChatUrl(baseUrl)
         let r
         if (useValProxy) {
           r = await fetch(valProxyUrl, {
@@ -1515,7 +1515,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   const root = String(baseUrl).replace(/\/$/, '')
   const stealthH = buildSessionHeaders({ baseUrl, apiKey, authType, authHeader, extraHeaders })
   const body = applyBodyDefaults({ model, messages, temperature, stream }, baseUrl)
-  const targetUrl = `${root}/chat/completions`
+  const targetUrl = getChatUrl(baseUrl)
 
   // Определяем, нужно ли проксировать через Cloudflare Workers
   // Для сессионных токенов (веб-интерфейсы) — да, если CF_PROXY_URL задан
@@ -1666,7 +1666,7 @@ app.get('/api/debug/chat-test', requireAuth, async (req, res) => {
     const t0 = Date.now()
     const dbgProxyUrl = process.env.CF_PROXY_URL || ''
     const dbgProxySecret = process.env.CF_PROXY_SECRET || ''
-    const targetUrl = `${root}/chat/completions`
+    const targetUrl = getChatUrl(baseUrl)
 
     let upstream
     if (dbgProxyUrl) {

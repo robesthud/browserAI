@@ -68,6 +68,8 @@ const SITE_PROFILES = {
     bodyDefaults:     { temperature: 1.0, stream: true },
     isBearerSession:  true,
     skipModelsProbe:  true,
+    // DeepSeek Chat использует /chat/completion (без 's') вместо стандартного /chat/completions
+    chatEndpoint:     '/chat/completion',
     // Модели-кандидаты для перебора при validate
     modelCandidates:  ['deepseek_chat', 'deepseek-chat', 'DeepThink', 'deepseek-reasoner'],
   },
@@ -279,6 +281,17 @@ export function sanitizeExtraHeaders(raw = {}) {
 export function applyBodyDefaults(body = {}, baseUrl = '') {
   const profile = getSiteProfile(baseUrl)
   return { ...profile.bodyDefaults, ...body }
+}
+
+/**
+ * Возвращает URL для chat endpoint, учитывая особенности провайдера.
+ * DeepSeek использует /chat/completion вместо /chat/completions.
+ */
+export function getChatUrl(baseUrl) {
+  const profile = getSiteProfile(baseUrl)
+  const root = String(baseUrl || '').replace(/\/$/, '')
+  const endpoint = profile.chatEndpoint || '/chat/completions'
+  return `${root}${endpoint}`
 }
 
 /**
