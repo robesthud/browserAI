@@ -983,11 +983,20 @@ app.get('/api/keys/export', requireAuth, requireUnlocked, (req, res) => {
 })
 
 app.put('/api/params', requireAuth, (req, res) => {
-  res.json({ params: setParams(req.body || {}) })
+  const body = req.body || {}
+  // Валидация temperature: допустимый диапазон 0..2 (как у OpenAI API)
+  if (body.temperature !== undefined) {
+    const t = Number(body.temperature)
+    if (Number.isNaN(t) || t < 0 || t > 2) {
+      return res.status(400).json({ error: 'temperature должен быть от 0 до 2' })
+    }
+    body.temperature = t
+  }
+  res.json({ params: setParams(body) })
 })
 
 // ---- Проверка валидности ключа (исправлена от SSRF) ----
-app.post('/api/validate', async (req, res) => {
+app.post('/api/validate', requireAuth, async (req, res) => {
   const { baseUrl, apiKey, model } = req.body || {}
   if (!baseUrl || !apiKey) {
     return res.json({ ok: false, message: 'Укажите Base URL и ключ', models: [], preferredModel: '' })
@@ -1259,7 +1268,7 @@ app.post('/api/workspace/history/restore', requireAuth, async (req, res) => {
   }
 })
 
-app.get('/api/web/search', async (req, res) => {
+app.get('/api/web/search', requireAuth, async (req, res) => {
   try {
     const query = String(req.query.q || '')
     const limit = Math.min(10, Math.max(1, parseInt(req.query.limit || '5', 10) || 5))
@@ -1270,7 +1279,7 @@ app.get('/api/web/search', async (req, res) => {
   }
 })
 
-app.get('/api/web/fetch', async (req, res) => {
+app.get('/api/web/fetch', requireAuth, async (req, res) => {
   try {
     const url = String(req.query.url || '')
     // Дополнительная защита от SSRF
