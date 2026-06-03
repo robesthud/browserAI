@@ -117,23 +117,40 @@ function buildProviderMessages({ settings, messages, memorySummary = '', webCont
   return providerMessages
 }
 
-// Строит заголовки авторизации в зависимости от типа
-function buildAuthHeaders(apiKey, authType = 'bearer', authHeader = '') {
+// Строит заголовки для запроса к провайдеру
+function buildAuthHeaders(apiKey, authType = 'bearer', authHeader = '', extraHeaders = {}) {
   const key = String(apiKey || '').trim()
   if (!key) return {}
 
+  let authH = {}
   switch (authType) {
     case 'cookie':
-      // Cookie сессия — токен идёт в Cookie, не в Authorization
-      return { Cookie: key }
+      authH = { Cookie: key }
+      break
     case 'custom':
-      // Кастомный заголовок — пользователь сам задаёт название
-      if (authHeader.trim()) return { [authHeader.trim()]: key }
-      return { Authorization: key }
+      if (authHeader.trim()) authH = { [authHeader.trim()]: key }
+      else authH = { Authorization: key }
+      break
     case 'bearer':
     default:
-      return { Authorization: `Bearer ${key}` }
+      authH = { Authorization: key.startsWith('Bearer ') ? key : `Bearer ${key}` }
+      break
   }
+  // Для сессионных токенов добавляем Accept-Language
+  const browserLike = (authType === 'cookie' || authType === 'custom') ? {
+    'Accept': 'application/json, text/event-stream, */*',
+    'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8',
+  } : {}
+  // extraHeaders от пользователя
+  const safe = {}
+  if (extraHeaders && typeof extraHeaders === 'object') {
+    const FORBIDDEN = new Set(['host', 'content-length', 'transfer-encoding'])
+    for (const [hk, hv] of Object.entries(extraHeaders)) {
+      if (!hk || FORBIDDEN.has(hk.toLowerCase())) continue
+      safe[hk] = String(hv || '')
+    }
+  }
+  return { ...browserLike, ...authH, ...safe }
 }
 
 // Извлечение значения по пути вида "choices.0.message.content"
@@ -192,6 +209,7 @@ async function requestChat({
   apiKey,
   authType = 'bearer',
   authHeader = '',
+  extraHeaders = {},
   model,
   messages,
   temperature = 0.7,
@@ -202,7 +220,7 @@ async function requestChat({
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...buildAuthHeaders(apiKey, authType, authHeader),
+      ...buildAuthHeaders(apiKey, authType, authHeader, extraHeaders),
     },
     body: JSON.stringify({
       model,
@@ -226,6 +244,7 @@ export async function streamChat({
   apiKey,
   authType = 'bearer',
   authHeader = '',
+  extraHeaders = {},
   responsePath = '',
   model,
   messages,
@@ -238,6 +257,7 @@ export async function streamChat({
     apiKey,
     authType,
     authHeader,
+    extraHeaders,
     model,
     messages,
     temperature,
@@ -291,6 +311,7 @@ async function requestChatText({
   apiKey,
   authType = 'bearer',
   authHeader = '',
+  extraHeaders = {},
   responsePath = '',
   model,
   messages,
@@ -302,6 +323,7 @@ async function requestChatText({
     apiKey,
     authType,
     authHeader,
+    extraHeaders,
     model,
     messages,
     temperature,
@@ -389,6 +411,7 @@ export async function sendChat({
   const authType = settings?.authType || 'bearer'
   const authHeader = settings?.authHeader || ''
   const responsePath = settings?.responsePath || ''
+  const extraHeaders = settings?.extraHeaders || {}
 
   if (!baseUrl || !apiKey || !model) {
     throw new Error('Сначала настрой API-ключ и выбери модель')
@@ -410,6 +433,7 @@ export async function sendChat({
       apiKey,
       authType,
       authHeader,
+      extraHeaders,
       responsePath,
       model,
       messages: providerMessages,
@@ -424,6 +448,7 @@ export async function sendChat({
     apiKey,
     authType,
     authHeader,
+    extraHeaders,
     responsePath,
     model,
     messages: providerMessages,

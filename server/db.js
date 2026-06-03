@@ -52,6 +52,9 @@ try {
   if (!cols.includes('response_path')) {
     db.exec(`ALTER TABLE keys ADD COLUMN response_path TEXT NOT NULL DEFAULT ''`)
   }
+  if (!cols.includes('extra_headers')) {
+    db.exec(`ALTER TABLE keys ADD COLUMN extra_headers TEXT NOT NULL DEFAULT '{}'`)
+  }
 } catch {
   /* ignore */
 }
@@ -138,6 +141,14 @@ export function getVault() {
 }
 
 // ---- keys ----
+function parseExtraHeaders(raw) {
+  try {
+    const parsed = JSON.parse(raw || '{}')
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
+  } catch { /* ignore */ }
+  return {}
+}
+
 function rowToKey(r, encKey) {
   let apiKey = r.api_key
   let locked = false
@@ -171,6 +182,8 @@ function rowToKey(r, encKey) {
     authType: r.auth_type || 'bearer',
     authHeader: r.auth_header || '',
     responsePath: r.response_path || '',
+    extraHeaders: parseExtraHeaders(r.extra_headers),
+    extraHeaders: parseExtraHeaders(r.extra_headers),
     active: Boolean(r.is_active),
     encrypted: Boolean(r.enc),
     locked,
@@ -208,13 +221,17 @@ export function upsertKey(key, encKey = null) {
   const authType = ['bearer', 'cookie', 'custom'].includes(key.authType) ? key.authType : 'bearer'
   const authHeader = String(key.authHeader || '').trim()
   const responsePath = String(key.responsePath || '').trim()
+  const extraHeaders = JSON.stringify(
+    (key.extraHeaders && typeof key.extraHeaders === 'object' && !Array.isArray(key.extraHeaders))
+      ? key.extraHeaders : {}
+  )
 
   const exists = db.prepare('SELECT id FROM keys WHERE id = ?').get(key.id)
   if (exists) {
     db.prepare(
       `UPDATE keys
        SET name=?, base_url=?, api_key=?, model=?, available_models=?,
-           enc=?, auth_type=?, auth_header=?, response_path=?, updated_at=?
+           enc=?, auth_type=?, auth_header=?, response_path=?, extra_headers=?, updated_at=?
        WHERE id=?`,
     ).run(
       key.name,
@@ -226,6 +243,7 @@ export function upsertKey(key, encKey = null) {
       authType,
       authHeader,
       responsePath,
+      extraHeaders,
       now,
       key.id,
     )
@@ -233,8 +251,8 @@ export function upsertKey(key, encKey = null) {
     db.prepare(
       `INSERT INTO keys
          (id, name, base_url, api_key, model, available_models,
-          is_active, enc, auth_type, auth_header, response_path, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
+          is_active, enc, auth_type, auth_header, response_path, extra_headers, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       key.id,
       key.name,
@@ -246,6 +264,7 @@ export function upsertKey(key, encKey = null) {
       authType,
       authHeader,
       responsePath,
+      extraHeaders,
       now,
       now,
     )
@@ -280,13 +299,17 @@ export function replaceKeys(keys, activeKeyId, encKey = null) {
     const ins = db.prepare(
       `INSERT INTO keys
          (id, name, base_url, api_key, model, available_models,
-          is_active, enc, auth_type, auth_header, response_path, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          is_active, enc, auth_type, auth_header, response_path, extra_headers, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     for (const k of items) {
       const model = String(k.model || '').trim()
       const stored = useEnc ? encrypt(k.apiKey || '', encKey) : k.apiKey || ''
       const authType = ['bearer', 'cookie', 'custom'].includes(k.authType) ? k.authType : 'bearer'
+      const extraH = JSON.stringify(
+        (k.extraHeaders && typeof k.extraHeaders === 'object' && !Array.isArray(k.extraHeaders))
+          ? k.extraHeaders : {}
+      )
       ins.run(
         k.id,
         k.name || '',
@@ -299,6 +322,7 @@ export function replaceKeys(keys, activeKeyId, encKey = null) {
         authType,
         String(k.authHeader || '').trim(),
         String(k.responsePath || '').trim(),
+        extraH,
         k.createdAt || now,
         now,
       )
@@ -365,6 +389,8 @@ export function dumpRawKeys() {
     authType: r.auth_type || 'bearer',
     authHeader: r.auth_header || '',
     responsePath: r.response_path || '',
+    extraHeaders: parseExtraHeaders(r.extra_headers),
+    extraHeaders: parseExtraHeaders(r.extra_headers),
     isActive: r.is_active,
     enc: r.enc,
     createdAt: r.created_at,
@@ -379,13 +405,17 @@ export function restoreRawKeys(rows) {
     const ins = db.prepare(
       `INSERT INTO keys
          (id, name, base_url, api_key, model, available_models,
-          is_active, enc, auth_type, auth_header, response_path, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          is_active, enc, auth_type, auth_header, response_path, extra_headers, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     const now = Date.now()
     for (const k of items) {
       const model = String(k.model || '').trim()
       const authType = ['bearer', 'cookie', 'custom'].includes(k.authType) ? k.authType : 'bearer'
+      const extraH = JSON.stringify(
+        (k.extraHeaders && typeof k.extraHeaders === 'object' && !Array.isArray(k.extraHeaders))
+          ? k.extraHeaders : {}
+      )
       ins.run(
         k.id,
         k.name || '',
@@ -398,6 +428,7 @@ export function restoreRawKeys(rows) {
         authType,
         String(k.authHeader || '').trim(),
         String(k.responsePath || '').trim(),
+        extraH,
         k.createdAt || now,
         k.updatedAt || now,
       )

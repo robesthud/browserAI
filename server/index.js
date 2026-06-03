@@ -65,6 +65,7 @@ import {
   safePath,
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
+import { buildSessionHeaders, getSiteProfile, applyBodyDefaults } from './stealthHeaders.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 8787
@@ -955,9 +956,19 @@ app.post('/api/keys', requireAuth, requireUnlocked, (req, res) => {
   const authType = ['bearer', 'cookie', 'custom'].includes(k.authType) ? k.authType : 'bearer'
   const authHeader = String(k.authHeader || '').slice(0, 200)
   const responsePath = String(k.responsePath || '').slice(0, 200)
+  // extraHeaders: объект доп. заголовков { 'Referer': '...', 'x-app-version': '...' }
+  const rawExtra = k.extraHeaders
+  const extraHeaders = (rawExtra && typeof rawExtra === 'object' && !Array.isArray(rawExtra))
+    ? Object.fromEntries(
+        Object.entries(rawExtra)
+          .filter(([hk]) => !['host','content-length','transfer-encoding'].includes(String(hk).toLowerCase()))
+          .map(([hk, hv]) => [String(hk).slice(0, 100), String(hv).slice(0, 500)])
+          .slice(0, 20)
+      )
+    : {}
 
   upsertKey(
-    { id: k.id.slice(0, 100), name, baseUrl, apiKey, model, availableModels, authType, authHeader, responsePath },
+    { id: k.id.slice(0, 100), name, baseUrl, apiKey, model, availableModels, authType, authHeader, responsePath, extraHeaders },
     encKey()
   )
   res.json({ keys: listKeys(encKey()), activeKeyId: getActiveKeyId(), vault: vaultState() })
@@ -1049,19 +1060,21 @@ app.post('/api/validate', requireAuth, async (req, res) => {
       return res.json({ ok: false, message: 'Access to internal networks is not allowed' })
     }
     // Формируем заголовок авторизации по типу
-    const authHeaders = authType === 'cookie'
-      ? { Cookie: apiKey }
-      : authHeader.trim() ? { [authHeader.trim()]: apiKey } : { Authorization: apiKey }
+    const stealthH = buildSessionHeaders({ baseUrl, apiKey, authType, authHeader })
+    const profile = getSiteProfile(baseUrl)
+    // Для probe используем stream:true если сайт этого ожидает, иначе false
+    const probeStream = profile.bodyDefaults?.stream === true
+    const probeBody = applyBodyDefaults({
+      model: model || 'deepseek_chat',
+      messages: [{ role: 'user', content: 'Привет' }],
+      max_tokens: 5,
+      stream: probeStream,
+    }, baseUrl)
     try {
       const r = await fetch(`${root}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({
-          model: model || 'deepseek_chat',
-          messages: [{ role: 'user', content: 'ping' }],
-          max_tokens: 1,
-          stream: false,
-        }),
+        headers: stealthH,
+        body: JSON.stringify(probeBody),
       })
       if (r.ok || r.status === 400) {
         // 400 тоже ок — значит сервер ответил (неверная модель, но токен принят)

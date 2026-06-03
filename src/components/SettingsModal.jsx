@@ -50,6 +50,7 @@ const PROVIDER_PRESETS = [
     baseUrl: 'https://chat.deepseek.com/api/v0',
     model: 'deepseek_chat',
     authType: 'bearer',
+    extraHeaders: { 'Referer': 'https://chat.deepseek.com/', 'Origin': 'https://chat.deepseek.com', 'x-app-version': '20241129' },
     hint: 'F12 → Network → запрос к /chat/completion → заголовок Authorization',
   },
   {
@@ -60,6 +61,7 @@ const PROVIDER_PRESETS = [
     baseUrl: 'https://grok.com/api',
     model: 'grok-3',
     authType: 'bearer',
+    extraHeaders: { 'Referer': 'https://grok.com/', 'Origin': 'https://grok.com' },
     hint: 'F12 → Network → запрос к /chat → заголовок Authorization',
   },
   {
@@ -71,6 +73,7 @@ const PROVIDER_PRESETS = [
     model: 'claude-3-5-sonnet-20241022',
     authType: 'custom',
     authHeader: 'Cookie',
+    extraHeaders: { 'Referer': 'https://claude.ai/', 'Origin': 'https://claude.ai' },
     hint: 'F12 → Network → любой запрос к /api → скопируй весь заголовок Cookie',
   },
   // --- Локальные мосты ---
@@ -218,6 +221,8 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
       authType: preset.authType || 'bearer',
       // Сбрасываем authHeader только если пресет явно его задаёт
       authHeader: preset.authHeader !== undefined ? preset.authHeader : f.authHeader,
+      // extraHeaders из пресета (если заданы)
+      extraHeaders: preset.extraHeaders !== undefined ? preset.extraHeaders : (f.extraHeaders || {}),
     }))
     setResult(null)
     if (preset.hint) alert(`💡 Как получить токен:\n\n${preset.hint}`)
@@ -466,6 +471,67 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
             placeholder="choices.0.message.content"
           />
         </Field>
+      )}
+
+      {/* Доп. заголовки — для защиты от бана при сессионных токенах */}
+      {(form.authType === 'cookie' || form.authType === 'custom') && (
+        <div className="rounded-xl border border-white/5 bg-graphite-900/40 p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[12px] font-medium text-cream-soft">Дополнительные заголовки</span>
+            <span className="text-[11px] text-cream-faint">анти-бан</span>
+          </div>
+          <div className="text-[11px] text-cream-faint leading-relaxed">
+            Добавь заголовки которые браузер отправляет автоматически — это снижает риск блокировки.
+            Формат: <span className="font-mono bg-black/20 px-1 rounded">Заголовок: Значение</span> (каждый с новой строки)
+          </div>
+          <textarea
+            className={`${inputCls} resize-none font-mono text-[12px]`}
+            rows={4}
+            placeholder={"Referer: https://chat.deepseek.com/\nOrigin: https://chat.deepseek.com\nx-app-version: 20241129"}
+            value={
+              Object.entries(form.extraHeaders || {})
+                .map(([k, v]) => `${k}: ${v}`)
+                .join('\n')
+            }
+            onChange={(e) => {
+              const lines = e.target.value.split('\n')
+              const parsed = {}
+              for (const line of lines) {
+                const idx = line.indexOf(':')
+                if (idx < 1) continue
+                const k = line.slice(0, idx).trim()
+                const v = line.slice(idx + 1).trim()
+                if (k && v) parsed[k] = v
+              }
+              setForm((f) => ({ ...f, extraHeaders: parsed }))
+            }}
+          />
+          {/* Быстрые шаблоны для популярных сайтов */}
+          <div className="flex flex-wrap gap-1.5">
+            <span className="text-[11px] text-cream-faint mr-1">Шаблоны:</span>
+            {[
+              { label: 'DeepSeek', headers: { 'Referer': 'https://chat.deepseek.com/', 'Origin': 'https://chat.deepseek.com', 'x-app-version': '20241129' } },
+              { label: 'Grok', headers: { 'Referer': 'https://grok.com/', 'Origin': 'https://grok.com' } },
+              { label: 'Claude', headers: { 'Referer': 'https://claude.ai/', 'Origin': 'https://claude.ai' } },
+            ].map((tpl) => (
+              <button
+                key={tpl.label}
+                type="button"
+                onClick={() => setForm((f) => ({ ...f, extraHeaders: { ...f.extraHeaders, ...tpl.headers } }))}
+                className="rounded-lg border border-white/10 bg-graphite-800/60 px-2 py-0.5 text-[11px] text-cream-faint transition-colors hover:border-white/20 hover:text-cream-soft"
+              >
+                {tpl.label}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => setForm((f) => ({ ...f, extraHeaders: {} }))}
+              className="rounded-lg border border-red-500/20 px-2 py-0.5 text-[11px] text-red-400/70 transition-colors hover:border-red-400/40 hover:text-red-300"
+            >
+              Очистить
+            </button>
+          </div>
+        </div>
       )}
 
       {result && (
