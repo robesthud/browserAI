@@ -16,23 +16,46 @@ const inputCls =
   'w-full rounded-lg border border-white/10 bg-graphite-900 px-3 py-2 text-[13px] text-cream placeholder:text-cream-faint focus:border-cream/30 focus:outline-none'
 
 const PROVIDER_PRESETS = [
+  // --- Официальные API (Bearer токен) ---
   {
     id: 'openai',
     label: 'OpenAI',
     name: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
+    authType: 'bearer',
   },
   {
-    id: 'deepseek',
-    label: 'DeepSeek',
-    name: 'DeepSeek',
+    id: 'deepseek-api',
+    label: 'DeepSeek API',
+    name: 'DeepSeek API',
     baseUrl: 'https://api.deepseek.com/v1',
+    authType: 'bearer',
   },
   {
     id: 'gemini',
     label: 'Gemini',
     name: 'Gemini',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    authType: 'bearer',
+  },
+  // --- Сессионные токены (веб-интерфейс) ---
+  {
+    id: 'deepseek-web',
+    label: '🍪 DeepSeek Web',
+    name: 'DeepSeek Web (сессия)',
+    baseUrl: 'https://chat.deepseek.com/api/v0',
+    model: 'deepseek_chat',
+    authType: 'bearer',
+    hint: 'F12 → Network → запрос к /chat/completion → заголовок Authorization',
+  },
+  {
+    id: 'grok-web',
+    label: '🍪 Grok Web',
+    name: 'Grok Web (сессия)',
+    baseUrl: 'https://grok.com/api',
+    model: 'grok-3',
+    authType: 'bearer',
+    hint: 'F12 → Network → запрос к /chat → заголовок Authorization',
   },
 ]
 
@@ -139,6 +162,7 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
       if (field === 'baseUrl' || field === 'apiKey') {
         next.availableModels = []
         next.model = ''
+        // authType НЕ сбрасываем — пользователь мог специально выбрать cookie
       }
       return next
     })
@@ -151,9 +175,12 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
       name: f.name || preset.name,
       baseUrl: preset.baseUrl,
       availableModels: [],
-      model: '',
+      model: preset.model || '',
+      authType: preset.authType || 'bearer',
+      authHeader: preset.authHeader || '',
     }))
     setResult(null)
+    if (preset.hint) alert(`💡 Как получить токен:\n\n${preset.hint}`)
   }
 
   const check = async () => {
@@ -232,9 +259,9 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
   return (
     <div className="space-y-3 rounded-xl border border-white/10 bg-graphite-900/60 p-3">
       <div>
-        <div className="mb-2 text-[12px] text-cream-faint">Быстрый выбор провайдера</div>
+        <div className="mb-2 text-[12px] text-cream-faint">Официальные API</div>
         <div className="flex flex-wrap gap-2">
-          {PROVIDER_PRESETS.map((preset) => (
+          {PROVIDER_PRESETS.filter((p) => !p.id.endsWith('-web')).map((preset) => (
             <button
               key={preset.id}
               type="button"
@@ -244,6 +271,22 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
               {preset.label}
             </button>
           ))}
+        </div>
+        <div className="mt-2 mb-1 text-[12px] text-cream-faint">Сессионные токены (веб-интерфейс)</div>
+        <div className="flex flex-wrap gap-2">
+          {PROVIDER_PRESETS.filter((p) => p.id.endsWith('-web')).map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              onClick={() => applyPreset(preset)}
+              className="rounded-lg border border-amber-400/20 bg-amber-400/5 px-2.5 py-1.5 text-[12px] text-amber-300 transition-colors hover:border-amber-400/40 hover:bg-amber-400/10"
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+        <div className="mt-1.5 text-[11px] text-cream-faint">
+          Сессионные токены бесплатны, но протухают через несколько дней.
         </div>
       </div>
 
@@ -263,9 +306,45 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
           placeholder="https://api.openai.com/v1"
         />
       </Field>
+      {/* Тип авторизации */}
+      <Field label="Тип авторизации">
+        <select
+          className={inputCls}
+          value={form.authType || 'bearer'}
+          onChange={(e) => setForm((f) => ({ ...f, authType: e.target.value }))}
+        >
+          <option value="bearer">Bearer Token (стандартный API)</option>
+          <option value="cookie">Cookie сессии (веб-интерфейс)</option>
+          <option value="custom">Кастомный заголовок</option>
+        </select>
+      </Field>
+
+      {form.authType === 'custom' && (
+        <Field label="Имя заголовка" hint="Напр. X-Auth-Token, Authorization, Api-Key">
+          <input
+            className={inputCls}
+            value={form.authHeader || ''}
+            onChange={(e) => setForm((f) => ({ ...f, authHeader: e.target.value }))}
+            placeholder="X-Auth-Token"
+          />
+        </Field>
+      )}
+
       <SecretField
-        label="API-ключ"
-        hint="Хранится в БД на сервере (или локально, если сервер недоступен)."
+        label={
+          form.authType === 'cookie'
+            ? 'Cookie сессии'
+            : form.authType === 'custom'
+            ? 'Значение токена'
+            : 'API-ключ'
+        }
+        hint={
+          form.authType === 'cookie'
+            ? 'Вставь Cookie из браузера (F12 → Network → заголовок Cookie)'
+            : form.authType === 'custom'
+            ? 'Значение которое подставится в кастомный заголовок'
+            : 'Хранится в БД на сервере (или локально, если сервер недоступен).'
+        }
         value={form.apiKey}
         onChange={set('apiKey')}
       />

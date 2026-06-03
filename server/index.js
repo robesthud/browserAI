@@ -1027,9 +1027,47 @@ app.put('/api/params', requireAuth, (req, res) => {
 
 // ---- Проверка валидности ключа (исправлена от SSRF) ----
 app.post('/api/validate', requireAuth, async (req, res) => {
-  const { baseUrl, apiKey, model } = req.body || {}
+  const { baseUrl, apiKey, model, authType = 'bearer', authHeader = '' } = req.body || {}
   if (!baseUrl || !apiKey) {
     return res.json({ ok: false, message: 'Укажите Base URL и ключ', models: [], preferredModel: '' })
+  }
+
+  // Для сессионных токенов не проверяем /models — просто пробуем chat completion
+  if (authType === 'cookie' || authType === 'custom') {
+    const root = String(baseUrl).replace(/\/$/, '')
+    let hostname
+    try { hostname = new URL(baseUrl).hostname } catch { return res.json({ ok: false, message: 'Invalid URL' }) }
+    if (isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) {
+      return res.json({ ok: false, message: 'Access to internal networks is not allowed' })
+    }
+    // Формируем заголовок авторизации по типу
+    const authHeaders = authType === 'cookie'
+      ? { Cookie: apiKey }
+      : authHeader.trim() ? { [authHeader.trim()]: apiKey } : { Authorization: apiKey }
+    try {
+      const r = await fetch(`${root}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({
+          model: model || 'deepseek_chat',
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 1,
+          stream: false,
+        }),
+      })
+      if (r.ok || r.status === 400) {
+        // 400 тоже ок — значит сервер ответил (неверная модель, но токен принят)
+        return res.json({
+          ok: true,
+          message: `Сессионный токен принят (${r.status})`,
+          models: model ? [model] : [],
+          preferredModel: model || '',
+        })
+      }
+      return res.json({ ok: false, message: `Токен отклонён (${r.status})`, models: [], preferredModel: '' })
+    } catch (e) {
+      return res.json({ ok: false, message: 'Не удалось проверить: ' + (e.message || 'сеть'), models: [], preferredModel: '' })
+    }
   }
 
   // Блокировка private IP и localhost

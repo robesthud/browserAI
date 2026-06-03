@@ -117,9 +117,59 @@ function buildProviderMessages({ settings, messages, memorySummary = '', webCont
   return providerMessages
 }
 
+// Строит заголовки авторизации в зависимости от типа
+function buildAuthHeaders(apiKey, authType = 'bearer', authHeader = '') {
+  const key = String(apiKey || '').trim()
+  if (!key) return {}
+
+  switch (authType) {
+    case 'cookie':
+      // Cookie сессия — токен идёт в Cookie, не в Authorization
+      return { Cookie: key }
+    case 'custom':
+      // Кастомный заголовок — пользователь сам задаёт название
+      if (authHeader.trim()) return { [authHeader.trim()]: key }
+      return { Authorization: key }
+    case 'bearer':
+    default:
+      return { Authorization: `Bearer ${key}` }
+  }
+}
+
+// Адаптер парсинга — пробуем разные форматы ответа
+function extractTextFromResponse(payload) {
+  if (!payload || typeof payload !== 'object') return ''
+
+  // Стандартный OpenAI формат: choices[0].message.content
+  const choice = payload.choices?.[0]
+  if (choice) {
+    const direct = extractTextParts(choice.message?.content)
+    if (direct) return direct
+    const delta = extractTextParts(choice.delta?.content)
+    if (delta) return delta
+  }
+
+  // DeepSeek Web API формат: choices[0].message.content (тот же, но проверяем)
+  // Также может быть: response / answer / text / output / result
+  for (const field of ['response', 'answer', 'text', 'output', 'result', 'content']) {
+    if (typeof payload[field] === 'string' && payload[field]) return payload[field]
+  }
+
+  // Вложенный: data.response, data.content, data.text
+  if (payload.data && typeof payload.data === 'object') {
+    for (const field of ['response', 'content', 'text', 'answer', 'message']) {
+      if (typeof payload.data[field] === 'string' && payload.data[field]) return payload.data[field]
+    }
+  }
+
+  return ''
+}
+
 async function requestChat({
   baseUrl,
   apiKey,
+  authType = 'bearer',
+  authHeader = '',
   model,
   messages,
   temperature = 0.7,
@@ -130,7 +180,7 @@ async function requestChat({
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
+      ...buildAuthHeaders(apiKey, authType, authHeader),
     },
     body: JSON.stringify({
       model,
@@ -152,6 +202,8 @@ async function requestChat({
 export async function streamChat({
   baseUrl,
   apiKey,
+  authType = 'bearer',
+  authHeader = '',
   model,
   messages,
   temperature = 0.7,
@@ -161,6 +213,8 @@ export async function streamChat({
   const response = await requestChat({
     baseUrl,
     apiKey,
+    authType,
+    authHeader,
     model,
     messages,
     temperature,
@@ -198,7 +252,7 @@ export async function streamChat({
           continue
         }
 
-        const chunk = extractAssistantText(parsed)
+        const chunk = extractAssistantText(parsed) || extractTextFromResponse(parsed)
         if (!chunk) continue
         acc += chunk
         onChunk?.(chunk)
@@ -212,6 +266,8 @@ export async function streamChat({
 async function requestChatText({
   baseUrl,
   apiKey,
+  authType = 'bearer',
+  authHeader = '',
   model,
   messages,
   temperature = 0.7,
@@ -220,6 +276,8 @@ async function requestChatText({
   const response = await requestChat({
     baseUrl,
     apiKey,
+    authType,
+    authHeader,
     model,
     messages,
     temperature,
@@ -228,7 +286,8 @@ async function requestChatText({
   })
 
   const payload = await response.json()
-  return extractAssistantText(payload)
+  // Пробуем OpenAI-парсер, затем универсальный адаптер
+  return extractAssistantText(payload) || extractTextFromResponse(payload)
 }
 
 async function buildWebContext(settings, messages) {
@@ -303,6 +362,8 @@ export async function sendChat({
   const apiKey = String(settings?.apiKey || '')
   const model = String(settings?.model || '')
   const temperature = Number(settings?.temperature ?? 0.7)
+  const authType = settings?.authType || 'bearer'
+  const authHeader = settings?.authHeader || ''
 
   if (!baseUrl || !apiKey || !model) {
     throw new Error('Сначала настрой API-ключ и выбери модель')
@@ -322,6 +383,8 @@ export async function sendChat({
     return streamChat({
       baseUrl,
       apiKey,
+      authType,
+      authHeader,
       model,
       messages: providerMessages,
       temperature,
@@ -333,6 +396,8 @@ export async function sendChat({
   return requestChatText({
     baseUrl,
     apiKey,
+    authType,
+    authHeader,
     model,
     messages: providerMessages,
     temperature,
