@@ -18,6 +18,7 @@ import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
 import android.net.http.SslError;
 import android.webkit.SslErrorHandler;
+// SslError из android.net.http, SslErrorHandler из android.webkit — совместимо с SDK 24-34
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
