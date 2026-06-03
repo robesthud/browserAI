@@ -16,6 +16,7 @@ import android.provider.Settings;
 import android.view.View;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
+import android.webkit.SslErrorHandler;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -26,7 +27,9 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.SslError;
 import android.widget.FrameLayout;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -49,9 +52,14 @@ import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
     private static final int FILE_CHOOSER_REQUEST = 1001;
-    private static final String LATEST_RELEASE_API = "https://api.github.com/repos/robesthud/browserAI/releases/latest";
+    private static final String LATEST_RELEASE_API =
+            "https://api.github.com/repos/robesthud/browserAI/releases/latest";
+    // FIX: макс размер APK 150 МБ
+    private static final long MAX_APK_BYTES = 150L * 1024 * 1024;
+
     private WebView webView;
     private TextView offlineView;
+    private ProgressBar progressBar;
     private ValueCallback<Uri[]> filePathCallback;
     private String appUrl;
 
@@ -66,6 +74,7 @@ public class MainActivity extends Activity {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(0xFF24262B);
 
+        // WebView
         webView = new WebView(this);
         webView.setBackgroundColor(0xFF24262B);
         root.addView(webView, new FrameLayout.LayoutParams(
@@ -73,12 +82,22 @@ public class MainActivity extends Activity {
                 FrameLayout.LayoutParams.MATCH_PARENT
         ));
 
+        // FIX: ProgressBar — показываем пока страница грузится
+        progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progressBar.setMax(100);
+        progressBar.setProgressTintList(android.content.res.ColorStateList.valueOf(0xFFE6E8EC));
+        progressBar.setIndeterminate(false);
+        FrameLayout.LayoutParams pbParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, 6);
+        pbParams.gravity = android.view.Gravity.TOP;
+        root.addView(progressBar, pbParams);
+
+        // Offline / error view
         offlineView = new TextView(this);
-        offlineView.setText("BrowserAI\n\nНет подключения или приложение Railway ещё не доступно.\nПроверьте интернет и URL backend.");
         offlineView.setTextColor(0xFFE6E8EC);
         offlineView.setTextSize(16);
         offlineView.setGravity(android.view.Gravity.CENTER);
-        offlineView.setPadding(40, 40, 40, 40);
+        offlineView.setPadding(48, 48, 48, 48);
         offlineView.setVisibility(View.GONE);
         root.addView(offlineView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -97,8 +116,7 @@ public class MainActivity extends Activity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
-        // Let the HTML viewport follow the real phone width. Wide viewport forces
-        // desktop layout and makes the React UI look squeezed on Android.
+        // Правильный мобильный viewport — НЕ форсируем desktop
         settings.setLoadWithOverviewMode(false);
         settings.setUseWideViewPort(false);
         settings.setMediaPlaybackRequiresUserGesture(false);
@@ -108,6 +126,7 @@ public class MainActivity extends Activity {
         settings.setJavaScriptCanOpenWindowsAutomatically(true);
         settings.setSupportMultipleWindows(true);
         settings.setTextZoom(100);
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         }
@@ -115,14 +134,16 @@ public class MainActivity extends Activity {
             settings.setSafeBrowsingEnabled(true);
         }
 
+        // Cookies — разрешаем включая third-party (нужно для Railway + сессий)
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             cookieManager.setAcceptThirdPartyCookies(webView, true);
         }
 
+        // FIX: WebView отладка ТОЛЬКО в debug-сборке (защита от ADB-перехвата сессий)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-            WebView.setWebContentsDebuggingEnabled(true);
+            WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
         }
 
         webView.setWebViewClient(new WebViewClient() {
@@ -130,72 +151,135 @@ public class MainActivity extends Activity {
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
                 String url = uri.toString();
-
+                // Внутренние ссылки открываем в WebView, внешние — в браузере
                 if (isSameHost(url) || url.startsWith("about:")) {
                     return false;
                 }
-
-                Intent intent = new Intent(Intent.ACTION_VIEW, uri);
-                startActivity(intent);
+                try {
+                    Intent intent = new Intent(Intent.ACTION_VIEW, uri);
+                    startActivity(intent);
+                } catch (Exception ignored) { /* нет браузера */ }
                 return true;
             }
 
             @Override
+            public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                // FIX: показываем прогресс-бар при начале загрузки
+                progressBar.setVisibility(View.VISIBLE);
+                progressBar.setProgress(10);
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
+                // FIX: скрываем прогресс-бар
+                progressBar.setProgress(100);
+                progressBar.setVisibility(View.GONE);
                 offlineView.setVisibility(View.GONE);
                 webView.setVisibility(View.VISIBLE);
+
+                // Проверяем что React-приложение реально смонтировалось (через 5с)
                 view.postDelayed(() -> view.evaluateJavascript(
                         "Boolean(document.getElementById('root') && document.getElementById('root').children.length)",
                         value -> {
                             if (!"true".equals(value)) {
-                                showError("Интерфейс не запустился. Обновите Android System WebView/Chrome или нажмите назад и откройте снова.");
+                                showError("Интерфейс не запустился.\n\nОбновите Android System WebView в Google Play или нажмите назад и попробуйте снова.");
                             }
                         }
                 ), 5000);
             }
 
             @Override
-            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-                super.onReceivedError(view, request, error);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && request.isForMainFrame()) {
-                    showError("Ошибка загрузки: " + error.getDescription());
+            public void onProgressChanged(WebView view, int newProgress) {
+                if (progressBar != null) {
+                    progressBar.setProgress(newProgress);
+                    progressBar.setVisibility(newProgress == 100 ? View.GONE : View.VISIBLE);
                 }
             }
 
             @Override
-            public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse errorResponse) {
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && request.isForMainFrame()) {
+                    progressBar.setVisibility(View.GONE);
+                    showError("Ошибка загрузки: " + error.getDescription()
+                            + "\n\nПроверьте интернет-соединение.");
+                }
+            }
+
+            @Override
+            public void onReceivedHttpError(WebView view, WebResourceRequest request,
+                                            WebResourceResponse errorResponse) {
                 super.onReceivedHttpError(view, request, errorResponse);
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && request.isForMainFrame()) {
-                    showError("HTTP ошибка: " + errorResponse.getStatusCode());
+                    progressBar.setVisibility(View.GONE);
+                    int code = errorResponse.getStatusCode();
+                    if (code >= 500) {
+                        showError("Сервер временно недоступен (HTTP " + code + ").\n\nПодождите немного и обновите страницу.");
+                    }
                 }
+            }
+
+            // FIX: обработка SSL-ошибок с понятным сообщением
+            @Override
+            public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
+                progressBar.setVisibility(View.GONE);
+                String reason;
+                switch (error.getPrimaryError()) {
+                    case SslError.SSL_EXPIRED:    reason = "Сертификат сайта истёк"; break;
+                    case SslError.SSL_UNTRUSTED:  reason = "Сертификат не доверенный"; break;
+                    case SslError.SSL_IDMISMATCH: reason = "Домен не совпадает с сертификатом"; break;
+                    default: reason = "SSL-ошибка " + error.getPrimaryError(); break;
+                }
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Ошибка безопасности")
+                        .setMessage(reason + "\n\nПодключение небезопасно. Продолжить всё равно?")
+                        .setPositiveButton("Продолжить", (d, w) -> handler.proceed())
+                        .setNegativeButton("Отмена", (d, w) -> {
+                            handler.cancel();
+                            showError("Загрузка отменена: " + reason);
+                        })
+                        .setCancelable(false)
+                        .show();
             }
         });
 
+        // FIX: прогресс WebChromeClient тоже обновляет progressBar
         webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onProgressChanged(WebView view, int newProgress) {
+                if (progressBar != null) {
+                    progressBar.setProgress(newProgress);
+                    progressBar.setVisibility(newProgress == 100 ? View.GONE : View.VISIBLE);
+                }
+            }
+
             @Override
             public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
                 return super.onConsoleMessage(consoleMessage);
             }
 
             @Override
-            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
+            public boolean onShowFileChooser(WebView webView,
+                                             ValueCallback<Uri[]> filePathCallback,
+                                             FileChooserParams fileChooserParams) {
                 if (MainActivity.this.filePathCallback != null) {
                     MainActivity.this.filePathCallback.onReceiveValue(null);
                 }
                 MainActivity.this.filePathCallback = filePathCallback;
-
                 Intent intent = fileChooserParams.createIntent();
                 try {
                     startActivityForResult(intent, FILE_CHOOSER_REQUEST);
                 } catch (Exception e) {
                     MainActivity.this.filePathCallback = null;
-                    Toast.makeText(MainActivity.this, "Не удалось открыть выбор файла", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(MainActivity.this, "Не удалось открыть выбор файла",
+                            Toast.LENGTH_SHORT).show();
                     return false;
                 }
                 return true;
             }
         });
 
+        // Загрузка файлов через DownloadManager
         webView.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
             try {
                 DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
@@ -203,18 +287,25 @@ public class MainActivity extends Activity {
                 request.addRequestHeader("User-Agent", userAgent);
                 request.setTitle(URLUtil.guessFileName(url, contentDisposition, mimeType));
                 request.setDescription("BrowserAI download");
-                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                request.setNotificationVisibility(
+                        DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
                 request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,
                         URLUtil.guessFileName(url, contentDisposition, mimeType));
                 DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-                dm.enqueue(request);
-                Toast.makeText(this, "Файл скачивается", Toast.LENGTH_SHORT).show();
+                if (dm != null) {
+                    dm.enqueue(request);
+                    Toast.makeText(this, "Файл скачивается…", Toast.LENGTH_SHORT).show();
+                }
             } catch (Exception e) {
-                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                startActivity(intent);
+                try {
+                    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                    startActivity(intent);
+                } catch (Exception ignored) { /* нет браузера */ }
             }
         });
     }
+
+    // ── OTA обновления ───────────────────────────────────────────────────────
 
     private void checkForUpdates() {
         new Thread(() -> {
@@ -222,32 +313,39 @@ public class MainActivity extends Activity {
             try {
                 URL url = new URL(LATEST_RELEASE_API);
                 connection = (HttpURLConnection) url.openConnection();
-                connection.setConnectTimeout(5000);
-                connection.setReadTimeout(5000);
+                connection.setConnectTimeout(6000);
+                connection.setReadTimeout(6000);
                 connection.setRequestProperty("Accept", "application/vnd.github+json");
                 connection.setRequestProperty("User-Agent", "BrowserAI-Android");
 
                 int code = connection.getResponseCode();
                 if (code < 200 || code >= 300) return;
 
-                BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+                BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(connection.getInputStream()));
                 StringBuilder body = new StringBuilder();
                 String line;
                 while ((line = reader.readLine()) != null) body.append(line);
                 reader.close();
 
-                JSONObject json = new JSONObject(body.toString());
-                String tag = json.optString("tag_name", "");
-                String htmlUrl = json.optString("html_url", "https://github.com/robesthud/browserAI/releases/latest");
-                String apkUrl = findApkAssetUrl(json);
-                long latestCode = parseReleaseCode(tag);
-                long currentCode = getCurrentVersionCode();
+                JSONObject json    = new JSONObject(body.toString());
+                String tag         = json.optString("tag_name", "");
+                String releaseUrl  = json.optString("html_url",
+                        "https://github.com/robesthud/browserAI/releases/latest");
+                String apkUrl      = findApkAssetUrl(json);
+                String releaseNotes = json.optString("body", "").trim();
+                long latestCode    = parseReleaseCode(tag);
+                long currentCode   = getCurrentVersionCode();
 
                 if (latestCode > currentCode) {
-                    runOnUiThread(() -> showUpdateDialog(apkUrl, htmlUrl, tag));
+                    final String finalTag    = tag;
+                    final String finalApkUrl = apkUrl;
+                    final String finalUrl    = releaseUrl;
+                    final String finalNotes  = releaseNotes;
+                    runOnUiThread(() -> showUpdateDialog(finalApkUrl, finalUrl, finalTag, finalNotes));
                 }
             } catch (Exception ignored) {
-                // Silent by design: updates are optional and must not break app startup.
+                // Silent: обновления опциональны, не должны ломать запуск
             } finally {
                 if (connection != null) connection.disconnect();
             }
@@ -255,24 +353,17 @@ public class MainActivity extends Activity {
     }
 
     private long parseReleaseCode(String tag) {
-        Matcher matcher = Pattern.compile("android-v(\\d+)").matcher(tag == null ? "" : tag);
-        if (!matcher.find()) return 0;
-        try {
-            return Long.parseLong(matcher.group(1));
-        } catch (Exception e) {
-            return 0;
-        }
+        Matcher m = Pattern.compile("android-v(\\d+)").matcher(tag == null ? "" : tag);
+        if (!m.find()) return 0;
+        try { return Long.parseLong(m.group(1)); } catch (Exception e) { return 0; }
     }
 
     private long getCurrentVersionCode() {
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
                 return getPackageManager().getPackageInfo(getPackageName(), 0).getLongVersionCode();
-            }
             return getPackageManager().getPackageInfo(getPackageName(), 0).versionCode;
-        } catch (Exception e) {
-            return 0;
-        }
+        } catch (Exception e) { return 0; }
     }
 
     private String findApkAssetUrl(JSONObject releaseJson) {
@@ -283,59 +374,62 @@ public class MainActivity extends Activity {
                 JSONObject asset = assets.optJSONObject(i);
                 if (asset == null) continue;
                 String name = asset.optString("name", "").toLowerCase();
-                String url = asset.optString("browser_download_url", "");
+                String url  = asset.optString("browser_download_url", "");
                 if (name.endsWith(".apk") && !url.isEmpty()) return url;
             }
-        } catch (Exception ignored) {
-            // fallback below
-        }
+        } catch (Exception ignored) { }
         return "";
     }
 
-    private void showUpdateDialog(String apkUrl, String releaseUrl, String tag) {
-        // Авто-обновление: сразу скачиваем без диалога если APK URL доступен
-        if (apkUrl != null && !apkUrl.isEmpty()) {
-            downloadAndInstallApk(apkUrl);
-            return;
-        }
-        // Fallback: если нет прямой ссылки на APK — открываем страницу релиза
+    // FIX: ВСЕГДА показываем диалог с подтверждением перед скачиванием APK
+    private void showUpdateDialog(String apkUrl, String releaseUrl, String tag, String notes) {
+        String notesPart = (notes != null && !notes.isEmpty())
+                ? "\n\nЧто нового:\n" + notes.substring(0, Math.min(notes.length(), 300))
+                  + (notes.length() > 300 ? "…" : "")
+                : "";
+
         new AlertDialog.Builder(this)
                 .setTitle("Доступно обновление BrowserAI")
-                .setMessage("Версия " + tag + " доступна. Нажмите «Обновить» для перехода на страницу скачивания.")
+                .setMessage("Версия " + tag + " готова к установке." + notesPart
+                        + "\n\nСкачать и установить?")
                 .setPositiveButton("Обновить", (dialog, which) -> {
-                    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl));
-                    startActivity(intent);
+                    if (apkUrl != null && !apkUrl.isEmpty()) {
+                        downloadAndInstallApk(apkUrl);
+                    } else {
+                        // Нет прямой ссылки — открываем страницу релиза в браузере
+                        try {
+                            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl)));
+                        } catch (Exception ignored) { }
+                    }
                 })
-                .setCancelable(false)
+                .setNegativeButton("Позже", null)
+                .setCancelable(true)
                 .show();
     }
 
-    // #15 FIX: загрузка APK только по HTTPS; добавлен лимит размера (100 МБ);
-    // добавлена проверка что URL начинается с https:// перед открытием соединения
-    private static final long MAX_APK_BYTES = 100L * 1024 * 1024; // 100 МБ
-
     private void downloadAndInstallApk(String apkUrl) {
         if (apkUrl == null || !apkUrl.startsWith("https://")) {
-            Toast.makeText(this, "Небезопасный URL обновления — загрузка отменена", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Небезопасный URL обновления — загрузка отменена",
+                    Toast.LENGTH_LONG).show();
             return;
         }
         Toast.makeText(this, "Скачиваю обновление…", Toast.LENGTH_SHORT).show();
+
         new Thread(() -> {
             HttpsURLConnection connection = null;
             try {
                 URL url = new URL(apkUrl);
-                // Используем HttpsURLConnection — гарантирует TLS-верификацию по умолчанию
                 connection = (HttpsURLConnection) url.openConnection();
                 connection.setConnectTimeout(15000);
                 connection.setReadTimeout(30000);
                 connection.setRequestProperty("User-Agent", "BrowserAI-Android");
+
                 int code = connection.getResponseCode();
                 if (code < 200 || code >= 300) throw new Exception("HTTP " + code);
 
                 long contentLength = connection.getContentLengthLong();
-                if (contentLength > MAX_APK_BYTES) {
+                if (contentLength > MAX_APK_BYTES)
                     throw new Exception("APK слишком большой: " + contentLength + " байт");
-                }
 
                 File dir = new File(getCacheDir(), "updates");
                 if (!dir.exists() && !dir.mkdirs()) throw new Exception("Cannot create update cache");
@@ -348,18 +442,17 @@ public class MainActivity extends Activity {
                     long totalRead = 0;
                     while ((read = input.read(buffer)) != -1) {
                         totalRead += read;
-                        if (totalRead > MAX_APK_BYTES) {
+                        if (totalRead > MAX_APK_BYTES)
                             throw new Exception("APK превысил допустимый размер при скачивании");
-                        }
                         output.write(buffer, 0, read);
                     }
                     output.flush();
                 }
-
                 runOnUiThread(() -> installApk(apk));
             } catch (Exception error) {
                 runOnUiThread(() -> Toast.makeText(this,
-                    "Не удалось скачать обновление: " + error.getMessage(), Toast.LENGTH_LONG).show());
+                        "Не удалось скачать обновление: " + error.getMessage(),
+                        Toast.LENGTH_LONG).show());
             } finally {
                 if (connection != null) connection.disconnect();
             }
@@ -368,52 +461,54 @@ public class MainActivity extends Activity {
 
     private void installApk(File apk) {
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !getPackageManager().canRequestPackageInstalls()) {
-                Toast.makeText(this, "Разрешите установку из этого приложения, затем нажмите обновление ещё раз", Toast.LENGTH_LONG).show();
-                Intent settingsIntent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                        Uri.parse("package:" + getPackageName()));
-                startActivity(settingsIntent);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                    && !getPackageManager().canRequestPackageInstalls()) {
+                Toast.makeText(this,
+                        "Разрешите установку из неизвестных источников, затем попробуйте снова",
+                        Toast.LENGTH_LONG).show();
+                startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:" + getPackageName())));
                 return;
             }
-
-            Uri apkUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", apk);
+            Uri apkUri = FileProvider.getUriForFile(
+                    this, getPackageName() + ".fileprovider", apk);
             Intent intent = new Intent(Intent.ACTION_VIEW);
             intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(intent);
         } catch (Exception error) {
-            Toast.makeText(this, "Не удалось открыть установщик: " + error.getMessage(), Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Не удалось открыть установщик: " + error.getMessage(),
+                    Toast.LENGTH_LONG).show();
         }
     }
+
+    // ── Вспомогательные методы ───────────────────────────────────────────────
 
     private void showError(String message) {
         offlineView.setText("BrowserAI\n\n" + message + "\n\nURL: " + appUrl);
         offlineView.setVisibility(View.VISIBLE);
         webView.setVisibility(View.GONE);
+        progressBar.setVisibility(View.GONE);
     }
 
     private boolean isSameHost(String url) {
         try {
-            Uri app = Uri.parse(appUrl);
+            Uri app    = Uri.parse(appUrl);
             Uri target = Uri.parse(url);
             return app.getHost() != null && app.getHost().equalsIgnoreCase(target.getHost());
-        } catch (Exception e) {
-            return false;
-        }
+        } catch (Exception e) { return false; }
     }
 
     private void loadApp() {
-        if (appUrl.contains("YOUR-RAILWAY-APP")) {
-            showError("В android-app/app/src/main/res/values/strings.xml нужно заменить app_url на Railway URL.");
+        if (appUrl == null || appUrl.contains("YOUR-RAILWAY-APP")) {
+            showError("В android-app/app/src/main/res/values/strings.xml\nнужно заменить app_url на Railway URL.");
             return;
         }
-
         if (!isOnline()) {
-            showError("Нет подключения к интернету.");
+            showError("Нет подключения к интернету.\n\nПроверьте WiFi или мобильный интернет.");
             return;
         }
-
         webView.loadUrl(appUrl);
     }
 
@@ -421,8 +516,8 @@ public class MainActivity extends Activity {
         ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
         if (cm == null) return true;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            NetworkCapabilities capabilities = cm.getNetworkCapabilities(cm.getActiveNetwork());
-            return capabilities != null && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+            NetworkCapabilities caps = cm.getNetworkCapabilities(cm.getActiveNetwork());
+            return caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
         }
         return true;
     }
@@ -450,11 +545,17 @@ public class MainActivity extends Activity {
                     results[i] = data.getClipData().getItemAt(i).getUri();
                 }
             } else if (data.getData() != null) {
-                results = new Uri[]{data.getData()};
+                results = new Uri[]{ data.getData() };
             }
         }
-
         filePathCallback.onReceiveValue(results);
         filePathCallback = null;
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // Сохраняем cookies при уходе из приложения
+        CookieManager.getInstance().flush();
     }
 }
