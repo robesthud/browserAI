@@ -76,10 +76,11 @@ function isPrivateIp(address) {
   return addr.range() !== 'unicast' || addr.isLoopback() || addr.isLinkLocal()
 }
 
-// Rate limiting: 100 запросов на IP за 15 минут (общий)
+// Rate limiting: 300 запросов на IP за 15 минут (общий)
+// Увеличен с 100 до 300 т.к. чат-запросы теперь тоже идут через сервер
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 300,
   message: { error: 'Too many requests, slow down' },
 })
 
@@ -1412,6 +1413,107 @@ app.get('/api/web/fetch', requireAuth, async (req, res) => {
     res.json(page)
   } catch (e) {
     res.status(400).json({ error: e.message || 'Не удалось загрузить web page' })
+  }
+})
+
+// ---- Серверный прокси для чат-запросов (/api/chat) ----
+// Решает проблему CORS: фронтенд шлёт запрос на свой сервер,
+// сервер проксирует его к провайдеру (DeepSeek, Grok и т.д.) с stealthHeaders.
+// Поддерживает как streaming (SSE), так и обычные JSON-ответы.
+app.post('/api/chat', requireAuth, requireUnlocked, async (req, res) => {
+  const {
+    baseUrl,
+    apiKey,
+    authType = 'bearer',
+    authHeader = '',
+    extraHeaders = {},
+    model,
+    messages,
+    temperature = 0.7,
+    stream = false,
+  } = req.body || {}
+
+  if (!baseUrl || !apiKey || !model) {
+    return res.status(400).json({ error: 'baseUrl, apiKey и model обязательны' })
+  }
+
+  // SSRF-защита
+  let hostname
+  try { hostname = new URL(baseUrl).hostname } catch {
+    return res.status(400).json({ error: 'Неверный URL' })
+  }
+  if (isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) {
+    return res.status(403).json({ error: 'Доступ к внутренней сети запрещён' })
+  }
+
+  const root = String(baseUrl).replace(/\/$/, '')
+  const stealthH = buildSessionHeaders({ baseUrl, apiKey, authType, authHeader, extraHeaders })
+  const body = applyBodyDefaults({ model, messages, temperature, stream }, baseUrl)
+
+  try {
+    const upstream = await fetch(`${root}/chat/completions`, {
+      method: 'POST',
+      headers: stealthH,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120000), // 2 минуты таймаут
+    })
+
+    if (!upstream.ok) {
+      const errText = await upstream.text().catch(() => '')
+      return res.status(upstream.status).json({
+        error: `Провайдер ответил ${upstream.status}: ${errText.slice(0, 500)}`,
+      })
+    }
+
+    if (stream) {
+      // SSE — стримим ответ клиенту как есть
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+      res.setHeader('Cache-Control', 'no-cache')
+      res.setHeader('Connection', 'keep-alive')
+      res.setHeader('X-Accel-Buffering', 'no')
+      res.flushHeaders()
+
+      const reader = upstream.body?.getReader()
+      if (!reader) {
+        res.end()
+        return
+      }
+
+      // Если клиент отключился — отменяем чтение upstream
+      req.on('close', () => {
+        reader.cancel().catch(() => {})
+      })
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          res.write(value)
+        }
+      } catch (e) {
+        // Если клиент отключился — не считаем это ошибкой
+        if (!res.destroyed) {
+          console.warn('Chat proxy stream error:', e.message)
+        }
+      } finally {
+        res.end()
+      }
+    } else {
+      // Обычный JSON-ответ — пробрасываем как есть
+      const contentType = upstream.headers.get('content-type') || 'application/json'
+      res.setHeader('Content-Type', contentType)
+      const data = await upstream.text()
+      res.send(data)
+    }
+  } catch (e) {
+    const msg = e?.name === 'TimeoutError'
+      ? 'Таймаут — провайдер не ответил за 2 минуты'
+      : (e.message || 'Ошибка сети')
+    if (!res.headersSent) {
+      res.status(502).json({ error: msg })
+    } else {
+      res.end()
+    }
   }
 })
 

@@ -216,13 +216,19 @@ async function requestChat({
   stream = false,
   signal,
 }) {
-  const response = await fetch(`${normalizeBaseUrl(baseUrl)}/chat/completions`, {
+  // Все запросы идут через серверный прокси /api/chat
+  // Это решает проблему CORS и позволяет использовать stealthHeaders на сервере
+  const response = await fetch('/api/chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...buildAuthHeaders(apiKey, authType, authHeader, extraHeaders),
     },
     body: JSON.stringify({
+      baseUrl: normalizeBaseUrl(baseUrl),
+      apiKey,
+      authType,
+      authHeader,
+      extraHeaders,
       model,
       messages,
       temperature,
