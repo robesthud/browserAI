@@ -44,8 +44,9 @@ export function normalizeKey(key = {}) {
         : model
           ? [model]
           : [],
-    authType: key.authType || 'bearer',   // 'bearer' | 'cookie' | 'custom'
-    authHeader: key.authHeader || '',      // кастомный заголовок, напр. "X-Auth-Token"
+    authType: key.authType || 'bearer',     // 'bearer' | 'cookie' | 'custom'
+    authHeader: key.authHeader || '',       // кастомный заголовок, напр. "X-Auth-Token"
+    responsePath: key.responsePath || '',   // путь к тексту в JSON ответе, напр. "choices.0.message.content"
     createdAt: key.createdAt || Date.now(),
     updatedAt: key.updatedAt || Date.now(),
     active: Boolean(key.active),
@@ -171,6 +172,7 @@ export function resolveActive(settings) {
     model: getSelectedModel(k),
     authType: k?.authType || 'bearer',
     authHeader: k?.authHeader || '',
+    responsePath: k?.responsePath || '',
     systemPrompt: settings?.systemPrompt ?? DEFAULT_PARAMS.systemPrompt,
     temperature: settings?.temperature ?? DEFAULT_PARAMS.temperature,
     stream: settings?.stream ?? DEFAULT_PARAMS.stream,

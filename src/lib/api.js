@@ -136,9 +136,27 @@ function buildAuthHeaders(apiKey, authType = 'bearer', authHeader = '') {
   }
 }
 
+// Извлечение значения по пути вида "choices.0.message.content"
+function getByPath(obj, path) {
+  if (!path || !obj) return ''
+  const parts = String(path).split('.')
+  let cur = obj
+  for (const part of parts) {
+    if (cur == null) return ''
+    cur = cur[part]
+  }
+  return typeof cur === 'string' ? cur : ''
+}
+
 // Адаптер парсинга — пробуем разные форматы ответа
-function extractTextFromResponse(payload) {
+function extractTextFromResponse(payload, responsePath = '') {
   if (!payload || typeof payload !== 'object') return ''
+
+  // Если пользователь указал кастомный путь — используем его первым
+  if (responsePath) {
+    const byPath = getByPath(payload, responsePath)
+    if (byPath) return byPath
+  }
 
   // Стандартный OpenAI формат: choices[0].message.content
   const choice = payload.choices?.[0]
@@ -149,8 +167,7 @@ function extractTextFromResponse(payload) {
     if (delta) return delta
   }
 
-  // DeepSeek Web API формат: choices[0].message.content (тот же, но проверяем)
-  // Также может быть: response / answer / text / output / result
+  // Также может быть: response / answer / text / output / result / content
   for (const field of ['response', 'answer', 'text', 'output', 'result', 'content']) {
     if (typeof payload[field] === 'string' && payload[field]) return payload[field]
   }
@@ -160,6 +177,11 @@ function extractTextFromResponse(payload) {
     for (const field of ['response', 'content', 'text', 'answer', 'message']) {
       if (typeof payload.data[field] === 'string' && payload.data[field]) return payload.data[field]
     }
+  }
+
+  // message.content напрямую
+  if (payload.message && typeof payload.message === 'object') {
+    if (typeof payload.message.content === 'string') return payload.message.content
   }
 
   return ''
@@ -204,6 +226,7 @@ export async function streamChat({
   apiKey,
   authType = 'bearer',
   authHeader = '',
+  responsePath = '',
   model,
   messages,
   temperature = 0.7,
@@ -252,7 +275,7 @@ export async function streamChat({
           continue
         }
 
-        const chunk = extractAssistantText(parsed) || extractTextFromResponse(parsed)
+        const chunk = extractAssistantText(parsed) || extractTextFromResponse(parsed, responsePath)
         if (!chunk) continue
         acc += chunk
         onChunk?.(chunk)
@@ -268,6 +291,7 @@ async function requestChatText({
   apiKey,
   authType = 'bearer',
   authHeader = '',
+  responsePath = '',
   model,
   messages,
   temperature = 0.7,
@@ -286,8 +310,8 @@ async function requestChatText({
   })
 
   const payload = await response.json()
-  // Пробуем OpenAI-парсер, затем универсальный адаптер
-  return extractAssistantText(payload) || extractTextFromResponse(payload)
+  // Пробуем OpenAI-парсер, затем универсальный адаптер с кастомным путём
+  return extractAssistantText(payload) || extractTextFromResponse(payload, responsePath)
 }
 
 async function buildWebContext(settings, messages) {
@@ -364,6 +388,7 @@ export async function sendChat({
   const temperature = Number(settings?.temperature ?? 0.7)
   const authType = settings?.authType || 'bearer'
   const authHeader = settings?.authHeader || ''
+  const responsePath = settings?.responsePath || ''
 
   if (!baseUrl || !apiKey || !model) {
     throw new Error('Сначала настрой API-ключ и выбери модель')
@@ -385,6 +410,7 @@ export async function sendChat({
       apiKey,
       authType,
       authHeader,
+      responsePath,
       model,
       messages: providerMessages,
       temperature,
@@ -398,6 +424,7 @@ export async function sendChat({
     apiKey,
     authType,
     authHeader,
+    responsePath,
     model,
     messages: providerMessages,
     temperature,

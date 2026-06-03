@@ -57,6 +57,25 @@ const PROVIDER_PRESETS = [
     authType: 'bearer',
     hint: 'F12 → Network → запрос к /chat → заголовок Authorization',
   },
+  {
+    id: 'claude-web',
+    label: '🍪 Claude Web',
+    name: 'Claude Web (сессия)',
+    baseUrl: 'https://claude.ai/api',
+    model: 'claude-3-5-sonnet-20241022',
+    authType: 'custom',
+    authHeader: 'Cookie',
+    hint: 'F12 → Network → любой запрос к /api → скопируй весь заголовок Cookie',
+  },
+  {
+    id: 'custom-web',
+    label: '🔧 Свой сайт',
+    name: 'Кастомный сайт',
+    baseUrl: '',
+    model: '',
+    authType: 'bearer',
+    hint: 'F12 → Network → найди запрос к AI → скопируй URL и заголовок авторизации',
+  },
 ]
 
 function Field({ label, hint, children }) {
@@ -285,8 +304,14 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
             </button>
           ))}
         </div>
-        <div className="mt-1.5 text-[11px] text-cream-faint">
-          Сессионные токены бесплатны, но протухают через несколько дней.
+        <div className="mt-2 rounded-lg border border-amber-400/15 bg-amber-400/5 px-3 py-2 text-[11px] text-amber-200/80 space-y-1">
+          <div className="font-medium text-amber-300">💡 Как получить токен с любого сайта:</div>
+          <div>1. Открой сайт и залогинься</div>
+          <div>2. Нажми <span className="font-mono bg-black/20 px-1 rounded">F12</span> → вкладка <span className="font-mono bg-black/20 px-1 rounded">Network</span></div>
+          <div>3. Отправь сообщение в чате сайта</div>
+          <div>4. Найди запрос к API (обычно <span className="font-mono bg-black/20 px-1 rounded">/chat</span> или <span className="font-mono bg-black/20 px-1 rounded">/completion</span>)</div>
+          <div>5. Вкладка <span className="font-mono bg-black/20 px-1 rounded">Headers</span> → скопируй <span className="font-mono bg-black/20 px-1 rounded">Authorization</span> или <span className="font-mono bg-black/20 px-1 rounded">Cookie</span></div>
+          <div className="text-amber-300/70 pt-0.5">⚠ Токены протухают через дни/недели. При ошибке 401 — обнови.</div>
         </div>
       </div>
 
@@ -375,6 +400,21 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
           />
         )}
       </Field>
+
+      {/* Путь к тексту в ответе — для нестандартных API */}
+      {(form.authType === 'cookie' || form.authType === 'custom') && (
+        <Field
+          label="Путь к ответу в JSON (необязательно)"
+          hint='Оставь пустым — приложение само попробует стандартные пути. Или укажи вручную, напр: choices.0.message.content'
+        >
+          <input
+            className={inputCls}
+            value={form.responsePath || ''}
+            onChange={(e) => setForm((f) => ({ ...f, responsePath: e.target.value }))}
+            placeholder="choices.0.message.content"
+          />
+        </Field>
+      )}
 
       {result && (
         <div
