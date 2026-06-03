@@ -245,16 +245,17 @@ export default function Composer({
                   disabled={busyFiles}
                   className="flex items-center gap-2 rounded-full border border-white/10 px-3.5 py-2 text-[13px]
                            text-cream-soft transition-colors hover:border-white/20 hover:bg-graphite-750 hover:text-cream
-                           disabled:opacity-50"
+                           disabled:opacity-50 whitespace-nowrap"
                 >
                   <IconPaperclip />
-                  <span>{busyFiles ? 'Чтение…' : 'Прикрепить файлы'}</span>
+                  <span>{busyFiles ? 'Чтение…' : 'Файлы'}</span>
                 </button>
 
                 <button
                   onClick={() => setWorkspacePickerOpen(true)}
                   className="flex items-center gap-2 rounded-full border border-white/10 px-3.5 py-2 text-[13px]
-                           text-cream-soft transition-colors hover:border-white/20 hover:bg-graphite-750 hover:text-cream"
+                           text-cream-soft transition-colors hover:border-white/20 hover:bg-graphite-750 hover:text-cream
+                           whitespace-nowrap"
                 >
                   <IconFolder />
                   <span>Workspace</span>

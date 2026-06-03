@@ -1420,7 +1420,7 @@ app.get('/api/web/fetch', requireAuth, async (req, res) => {
 // Решает проблему CORS: фронтенд шлёт запрос на свой сервер,
 // сервер проксирует его к провайдеру (DeepSeek, Grok и т.д.) с stealthHeaders.
 // Поддерживает как streaming (SSE), так и обычные JSON-ответы.
-app.post('/api/chat', requireAuth, requireUnlocked, async (req, res) => {
+app.post('/api/chat', requireAuth, async (req, res) => {
   const {
     baseUrl,
     apiKey,
@@ -1460,10 +1460,12 @@ app.post('/api/chat', requireAuth, requireUnlocked, async (req, res) => {
 
     if (!upstream.ok) {
       const errText = await upstream.text().catch(() => '')
+      console.warn(`[chat proxy] upstream ${upstream.status} for ${root}: ${errText.slice(0, 200)}`)
       return res.status(upstream.status).json({
         error: `Провайдер ответил ${upstream.status}: ${errText.slice(0, 500)}`,
       })
     }
+    console.log(`[chat proxy] upstream OK ${upstream.status} stream=${stream} model=${model}`)
 
     if (stream) {
       // SSE — стримим ответ клиенту как есть

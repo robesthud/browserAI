@@ -31,16 +31,14 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
-      # #23 FIX: keystore восстанавливается из зашифрованного GitHub Secret (KEYSTORE_BASE64),
-      # а не из публичного cache. Добавьте KEYSTORE_BASE64 в Settings → Secrets → Actions.
-      # Генерация: base64 -w 0 android-app/app/debug.keystore | pbcopy
-      - name: Restore signing key from secret
+      # Keystore лежит в репо (android-app/app/debug.keystore) — стабильная подпись между сборками.
+      # Для production замените на production keystore через GitHub Secrets.
+      - name: Verify signing key exists
         run: |
-          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android-app/app/debug.keystore
-            echo "Keystore restored from secret"
+          if [ -f "android-app/app/debug.keystore" ]; then
+            echo "✓ Keystore found in repo"
           else
-            echo "KEYSTORE_BASE64 secret not set — generating a new debug keystore (not stable across runs)"
+            echo "Keystore not found — generating (first build)"
             keytool -genkeypair -v \
               -keystore android-app/app/debug.keystore \
               -storepass android \
