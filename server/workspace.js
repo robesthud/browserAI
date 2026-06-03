@@ -104,6 +104,8 @@ function isInsideRoot(fullPath, rootPath) {
 
 function normalizeRelativePath(relativePath = '') {
   const raw = String(relativePath || '').replace(/\\/g, '/')
+  // Отбрасываем null bytes — они вызывают information disclosure через сообщение Node.js
+  if (raw.includes('\0')) throw new Error('Invalid path: null bytes not allowed')
   const normalized = path.posix.normalize(raw).replace(/^\/+/, '')
   if (normalized === '.' || normalized === '') return ''
   if (normalized === '..' || normalized.startsWith('../')) {

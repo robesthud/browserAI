@@ -603,7 +603,13 @@ app.post('/api/auth/reset-password', authLimiter, (req, res) => {
 
 app.get('/api/cloud', requireAuth, (req, res) => {
   const row = db.prepare('SELECT payload, updated_at FROM user_cloud_data WHERE user_id=?').get(req.user.id)
-  res.json({ data: row ? decryptJson(row.payload) : null, updatedAt: row?.updated_at || null })
+  if (!row) return res.json({ data: null, updatedAt: null })
+  try {
+    res.json({ data: decryptJson(row.payload), updatedAt: row.updated_at || null })
+  } catch {
+    // Данные в БД испорчены или зашифрованы другим ключом — возвращаем пусто
+    res.json({ data: null, updatedAt: row.updated_at || null })
+  }
 })
 
 app.put('/api/cloud', requireAuth, (req, res) => {
@@ -1000,7 +1006,7 @@ app.get('/api/keys/export', requireAuth, requireUnlocked, (req, res) => {
 })
 
 app.put('/api/params', requireAuth, (req, res) => {
-  const body = req.body || {}
+  const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}
   // Валидация temperature: допустимый диапазон 0..2 (как у OpenAI API)
   if (body.temperature !== undefined) {
     const t = Number(body.temperature)
@@ -1009,6 +1015,9 @@ app.put('/api/params', requireAuth, (req, res) => {
     }
     body.temperature = t
   }
+  // Принудительно приводим булевые поля к boolean
+  if (body.stream !== undefined) body.stream = Boolean(body.stream)
+  if (body.useWebAI !== undefined) body.useWebAI = Boolean(body.useWebAI)
   // Лимит на длину systemPrompt: 8000 символов
   if (body.systemPrompt !== undefined) {
     body.systemPrompt = String(body.systemPrompt || '').slice(0, 8000)
@@ -1133,14 +1142,22 @@ app.get('/api/workspace/file', requireAuth, async (req, res) => {
 app.get('/api/workspace/download', requireAuth, async (req, res) => {
   try {
     const rel = String(req.query.path || '')
+    // Запрещаем скачивание корня workspace целиком — потенциальный DoS
+    if (!rel || rel === '.' || rel === '/') {
+      return res.status(400).json({ error: 'Укажите конкретный файл или папку для скачивания' })
+    }
     const stat = await statWorkspaceItem(rel)
 
     if (stat.isDirectory) {
       const folderFull = safePath(rel)
-      const folderName = path.basename(rel) || 'workspace'
+      const folderName = path.basename(rel) || 'folder'
       const zip = new AdmZip()
       zip.addLocalFolder(folderFull, folderName)
       const buffer = zip.toBuffer()
+      // Лимит: не отдаём ZIP больше 200 МБ
+      if (buffer.length > 200 * 1024 * 1024) {
+        return res.status(413).json({ error: 'Папка слишком большая для скачивания (макс. 200 МБ)' })
+      }
       res.setHeader(
         'Content-Disposition',
         `attachment; filename="${encodeURIComponent(folderName)}.zip"`,
@@ -1156,7 +1173,12 @@ app.get('/api/workspace/download', requireAuth, async (req, res) => {
         `attachment; filename="${encodeURIComponent(getDownloadName(rel))}"`,
       )
       res.setHeader('Content-Type', 'application/octet-stream')
-      streamWorkspaceFile(rel).pipe(res)
+      const stream = streamWorkspaceFile(rel)
+      stream.on('error', (err) => {
+        if (!res.headersSent) res.status(500).json({ error: 'Ошибка при чтении файла' })
+        else res.destroy(err)
+      })
+      stream.pipe(res)
       return
     }
 
@@ -1168,9 +1190,14 @@ app.get('/api/workspace/download', requireAuth, async (req, res) => {
 
 app.post('/api/workspace/folder', requireAuth, async (req, res) => {
   try {
-    const { parentPath = '', name = 'New Folder' } = req.body || {}
-    if (String(name).length > 255) return res.status(400).json({ error: 'Имя папки слишком длинное (макс. 255)' })
-    await createFolder(parentPath, name)
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Тело запроса должно быть объектом JSON' })
+    }
+    const { parentPath = '', name = 'New Folder' } = req.body
+    const cleanName = String(name).trim()
+    if (!cleanName || cleanName === '.' || cleanName === '..') return res.status(400).json({ error: 'Недопустимое имя папки' })
+    if (cleanName.length > 255) return res.status(400).json({ error: 'Имя папки слишком длинное (макс. 255)' })
+    await createFolder(parentPath, cleanName)
     res.json({ ok: true })
   } catch (e) {
     res.status(400).json({ error: e.message || 'Не удалось создать папку' })
@@ -1179,9 +1206,14 @@ app.post('/api/workspace/folder', requireAuth, async (req, res) => {
 
 app.post('/api/workspace/file', requireAuth, async (req, res) => {
   try {
-    const { parentPath = '', name = 'untitled.txt', content = '' } = req.body || {}
-    if (String(name).length > 255) return res.status(400).json({ error: 'Имя файла слишком длинное (макс. 255)' })
-    await createFile(parentPath, name, content)
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Тело запроса должно быть объектом JSON' })
+    }
+    const { parentPath = '', name = 'untitled.txt', content = '' } = req.body
+    const cleanName = String(name).trim()
+    if (!cleanName || cleanName === '.' || cleanName === '..') return res.status(400).json({ error: 'Недопустимое имя файла' })
+    if (cleanName.length > 255) return res.status(400).json({ error: 'Имя файла слишком длинное (макс. 255)' })
+    await createFile(parentPath, cleanName, content)
     res.json({ ok: true })
   } catch (e) {
     res.status(400).json({ error: e.message || 'Не удалось создать файл' })
