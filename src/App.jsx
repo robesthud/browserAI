@@ -6,6 +6,7 @@ import Workspace from './components/Workspace.jsx'
 import MessageList from './components/MessageList.jsx'
 import SettingsModal from './components/SettingsModal.jsx'
 import AuthGate from './components/AuthGate.jsx'
+import ModelBar from './components/ModelBar.jsx'
 import { IconExpand } from './icons.jsx'
 import {
   getActiveKey,
@@ -63,9 +64,24 @@ function BrowserApp({ user, reloadAuth }) {
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [workspaceAiBusy, setWorkspaceAiBusy] = useState(false)
+
   // Авторежим выбора модели
-  const [autoMode, setAutoMode] = useState(false)
-  const [autoModelHint, setAutoModelHint] = useState('')
+  const [autoMode, setAutoMode] = useState(() => {
+    try {
+      return localStorage.getItem('browserai.autoMode') === '1'
+    } catch {
+      return false
+    }
+  })
+  // Подсказка об авторежиме { reason, taskType, icon } | null
+  const [autoHint, setAutoHint] = useState(null)
+
+  // Сохраняем autoMode в localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('browserai.autoMode', autoMode ? '1' : '0')
+    } catch {}
+  }, [autoMode])
 
   const {
     settings,
@@ -133,20 +149,35 @@ function BrowserApp({ user, reloadAuth }) {
   const messages = activeChat?.messages ?? []
   const hasMessages = messages.length > 0
 
+  // При смене чата — сбрасываем подсказку
+  useEffect(() => {
+    setAutoHint(null)
+  }, [activeId])
+
   // Обёртка sendMessage с авторежимом
   const handleSendMessage = async (text, attachments = []) => {
-    if (autoMode && availableModels.length > 1 && text) {
-      const { model, reason, changed } = pickBestModel(text, availableModels, selectedModel)
-      if (changed) {
-        await setActiveModel(model)
-        setAutoModelHint(reason)
-        // Сбрасываем подсказку через 4 секунды
-        setTimeout(() => setAutoModelHint(''), 4000)
+    if (autoMode && availableModels.length > 1 && text?.trim()) {
+      const result = pickBestModel(text, availableModels, selectedModel)
+      if (result.changed) {
+        // Переключаем модель ДО отправки
+        await setActiveModel(result.model)
+        setAutoHint({
+          reason: result.reason,
+          taskType: result.taskType,
+          icon: result.icon,
+        })
+        // Сбрасываем подсказку через 5 секунд
+        setTimeout(() => setAutoHint(null), 5000)
       } else {
-        setAutoModelHint('')
+        setAutoHint(null)
       }
     }
     return sendMessage(text, attachments)
+  }
+
+  const handleToggleAuto = () => {
+    setAutoMode((v) => !v)
+    setAutoHint(null)
   }
 
   return (
@@ -193,11 +224,8 @@ function BrowserApp({ user, reloadAuth }) {
           selectedModel={selectedModel}
           onSelectModel={setActiveModel}
           autoMode={autoMode}
-          onToggleAuto={() => {
-            setAutoMode((v) => !v)
-            setAutoModelHint('')
-          }}
-          autoModelHint={autoModelHint}
+          onToggleAuto={handleToggleAuto}
+          autoModelHint={autoHint ? `${autoHint.icon || ''} ${autoHint.reason}` : ''}
           workspaceOpen={workspaceOpen}
           onToggleWorkspace={toggleWorkspace}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -208,6 +236,17 @@ function BrowserApp({ user, reloadAuth }) {
         {hasMessages ? (
           <>
             <MessageList messages={messages} />
+            {/* ModelBar над полем ввода (когда есть сообщения) */}
+            {availableModels.length > 0 && (
+              <ModelBar
+                models={availableModels}
+                selectedModel={selectedModel}
+                autoMode={autoMode}
+                autoHint={autoHint}
+                onSelectModel={setActiveModel}
+                onToggleAuto={handleToggleAuto}
+              />
+            )}
             <Composer
               hasMessages
               isStreaming={isStreaming}
@@ -216,12 +255,29 @@ function BrowserApp({ user, reloadAuth }) {
             />
           </>
         ) : (
-          <Composer
-            hasMessages={false}
-            isStreaming={isStreaming}
-            onSend={handleSendMessage}
-            onStop={stop}
-          />
+          <>
+            <Composer
+              hasMessages={false}
+              isStreaming={isStreaming}
+              onSend={handleSendMessage}
+              onStop={stop}
+            />
+            {/* ModelBar под полем ввода на стартовом экране */}
+            {availableModels.length > 0 && (
+              <div className="flex justify-center pb-4">
+                <div className="w-full max-w-2xl px-4">
+                  <ModelBar
+                    models={availableModels}
+                    selectedModel={selectedModel}
+                    autoMode={autoMode}
+                    autoHint={autoHint}
+                    onSelectModel={setActiveModel}
+                    onToggleAuto={handleToggleAuto}
+                  />
+                </div>
+              </div>
+            )}
+          </>
         )}
       </main>
 
