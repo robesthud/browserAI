@@ -174,7 +174,7 @@ export default function Composer({
   }
 
   const wrapperClass = hasMessages
-    ? 'w-full border-t border-white/5 bg-graphite-900/80 px-4 py-4 backdrop-blur'
+    ? 'w-full border-t border-white/5 bg-graphite-900/80 px-4 pt-4 pb-4 backdrop-blur pb-safe'
     : 'flex flex-1 flex-col items-center justify-center px-4 md:px-6'
 
   const innerClass = hasMessages ? 'mx-auto w-full max-w-2xl' : 'w-full max-w-2xl'

@@ -37,7 +37,20 @@ function CopyButton({ text }) {
     <button
       onClick={async () => {
         try {
-          await navigator.clipboard.writeText(text)
+          // Clipboard API: работает на HTTPS и в современных WebView
+          // Fallback через execCommand для старых Android WebView
+          try {
+            await navigator.clipboard.writeText(text)
+          } catch {
+            const ta = document.createElement('textarea')
+            ta.value = text
+            ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0'
+            document.body.appendChild(ta)
+            ta.focus()
+            ta.select()
+            document.execCommand('copy')
+            ta.remove()
+          }
           setDone(true)
           setTimeout(() => setDone(false), 1200)
         } catch {

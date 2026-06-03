@@ -426,7 +426,18 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
       }
 
       if (action === 'copy-path') {
-        await navigator.clipboard.writeText(node?.path || '')
+        const textToCopy = node?.path || ''
+        try {
+          await navigator.clipboard.writeText(textToCopy)
+        } catch {
+          const ta = document.createElement('textarea')
+          ta.value = textToCopy
+          ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0'
+          document.body.appendChild(ta)
+          ta.focus(); ta.select()
+          document.execCommand('copy')
+          ta.remove()
+        }
         return
       }
 

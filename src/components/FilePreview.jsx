@@ -196,11 +196,23 @@ export default function FilePreview({
                   className="mx-auto max-h-full max-w-full rounded-lg object-contain"
                 />
               ) : isPdf ? (
-                <iframe
-                  title={file.name}
-                  src={file.dataUrl}
-                  className="h-full w-full rounded-lg border border-white/10 bg-white"
-                />
+                <div className="flex h-full flex-col items-center justify-center gap-4">
+                  {/* Встроенный просмотр PDF — работает в Chrome, но не во всех WebView */}
+                  <iframe
+                    title={file.name}
+                    src={file.dataUrl}
+                    className="h-full w-full rounded-lg border border-white/10 bg-white"
+                    onError={(e) => { e.target.style.display='none' }}
+                  />
+                  {/* Fallback кнопка для Android WebView где PDF не рендерится */}
+                  <a
+                    href={file.dataUrl}
+                    download={file.name}
+                    className="rounded-xl border border-white/20 bg-graphite-750 px-4 py-2 text-[13px] text-cream-soft hover:bg-graphite-700 hover:text-cream transition-colors"
+                  >
+                    ⬇ Скачать PDF
+                  </a>
+                </div>
               ) : isMarkdown && !editing ? (
                 <div className="rounded-xl border border-white/5 bg-graphite-900/40 p-4">
                   <Markdown text={file.text} />

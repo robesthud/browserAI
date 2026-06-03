@@ -195,9 +195,15 @@ export function useSettings() {
     a.href = url
     a.download = `browserai-backup-${stamp}.json`
     document.body.appendChild(a)
-    a.click()
-    a.remove()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    // Android WebView: a.click() с download не работает → window.location
+    if (/Android/i.test(navigator.userAgent) && !/Chrome\/[7-9]\d|Chrome\/1\d\d/i.test(navigator.userAgent)) {
+      window.location.href = url
+      setTimeout(() => URL.revokeObjectURL(url), 5000)
+    } else {
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    }
   }, [])
 
   const vaultRestore = useCallback(async (backup) => {

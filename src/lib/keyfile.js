@@ -27,9 +27,15 @@ export function exportKeysToFile(settings) {
   a.href = url
   a.download = `browserai-keys-${stamp}.json`
   document.body.appendChild(a)
-  a.click()
-  a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
+  // На Android WebView a.click() с download не работает — используем window.location
+  if (/Android/i.test(navigator.userAgent) && !/Chrome/i.test(navigator.userAgent)) {
+    window.location.href = url
+    setTimeout(() => URL.revokeObjectURL(url), 5000)
+  } else {
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
 }
 
 export function importKeysFromFile(file) {

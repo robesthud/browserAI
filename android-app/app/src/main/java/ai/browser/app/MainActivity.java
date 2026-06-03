@@ -27,6 +27,8 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.GeolocationPermissions;
+import android.webkit.PermissionRequest;
 import android.webkit.SslError;
 import android.widget.FrameLayout;
 import android.widget.ProgressBar;
@@ -125,6 +127,7 @@ public class MainActivity extends Activity {
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
         settings.setJavaScriptCanOpenWindowsAutomatically(true);
         settings.setSupportMultipleWindows(true);
+        // Разрешаем открытие новых окон — нужно для target="_blank" ссылок из Markdown
         settings.setTextZoom(100);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -241,6 +244,17 @@ public class MainActivity extends Activity {
                         .setCancelable(false)
                         .show();
             }
+
+            // Обработка краша WebView процесса (OOM или внутренняя ошибка)
+            @Override
+            public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
+                runOnUiThread(() -> {
+                    webView.destroy();
+                    webView = null;
+                    showError("WebView упал (нехватка памяти?).\n\nПерезапустите приложение.");
+                });
+                return true; // true = мы обработали краш, приложение не падает
+            }
         });
 
         // FIX: прогресс WebChromeClient тоже обновляет progressBar
@@ -253,9 +267,71 @@ public class MainActivity extends Activity {
                 }
             }
 
+            // Перехватываем target="_blank" — открываем ссылку в браузере, не в новом WebView
+            @Override
+            public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, android.os.Message resultMsg) {
+                WebView.HitTestResult result = view.getHitTestResult();
+                String url = result != null ? result.getExtra() : null;
+                if (url != null && !url.isEmpty()) {
+                    try {
+                        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                        startActivity(intent);
+                    } catch (Exception ignored) { }
+                    return false;
+                }
+                // Если URL неизвестен — пробуем через транспортный WebView
+                WebView transport = new WebView(MainActivity.this);
+                transport.setWebViewClient(new WebViewClient() {
+                    @Override
+                    public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
+                        try {
+                            startActivity(new Intent(Intent.ACTION_VIEW, req.getUrl()));
+                        } catch (Exception ignored) { }
+                        return true;
+                    }
+                });
+                WebView.WebViewTransport wvt = (WebView.WebViewTransport) resultMsg.obj;
+                wvt.setWebView(transport);
+                resultMsg.sendToTarget();
+                return true;
+            }
+
             @Override
             public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
                 return super.onConsoleMessage(consoleMessage);
+            }
+
+            // Разрешения для микрофона/камеры (нужны если добавить voice input)
+            @Override
+            public void onPermissionRequest(PermissionRequest request) {
+                // Показываем диалог пользователю — он должен явно разрешить
+                String[] resources = request.getResources();
+                StringBuilder sb = new StringBuilder("Сайт запрашивает доступ к:\n");
+                for (String r : resources) {
+                    if (r.equals(PermissionRequest.RESOURCE_AUDIO_CAPTURE)) sb.append("• Микрофон\n");
+                    if (r.equals(PermissionRequest.RESOURCE_VIDEO_CAPTURE)) sb.append("• Камера\n");
+                    if (r.equals(PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID)) sb.append("• Защищённые медиа\n");
+                }
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Запрос разрешения")
+                        .setMessage(sb.toString())
+                        .setPositiveButton("Разрешить", (d, w) -> request.grant(resources))
+                        .setNegativeButton("Отклонить", (d, w) -> request.deny())
+                        .setCancelable(false)
+                        .show();
+            }
+
+            // Геолокация для Web AI (если включена)
+            @Override
+            public void onGeolocationPermissionsShowPrompt(String origin,
+                    GeolocationPermissions.Callback callback) {
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Геолокация")
+                        .setMessage("Сайт " + origin + " хочет узнать ваше местоположение для Web AI.")
+                        .setPositiveButton("Разрешить", (d, w) -> callback.invoke(origin, true, false))
+                        .setNegativeButton("Отклонить", (d, w) -> callback.invoke(origin, false, false))
+                        .setCancelable(false)
+                        .show();
             }
 
             @Override

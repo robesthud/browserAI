@@ -35,8 +35,10 @@ android {
         // В production следует заменить на production-keystore через secrets
         release {
             signingConfig signingConfigs.browserAiDebug
-            minifyEnabled false
-            shrinkResources false
+            // R8 минификация — уменьшает APK ~вдвое
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
 }
