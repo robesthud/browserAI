@@ -1098,6 +1098,11 @@ app.post('/api/validate', requireAuth, async (req, res) => {
     let tokenRejected = false
     let lastStatus = 0
 
+    // Используем CF прокси если доступен (решает гео-блокировку)
+    const valProxyUrl = process.env.CF_PROXY_URL || ''
+    const valProxySecret = process.env.CF_PROXY_SECRET || ''
+    const useValProxy = Boolean(valProxyUrl)
+
     for (const candidateModel of candidates) {
       try {
         const probeBody = applyBodyDefaults({
@@ -1107,12 +1112,26 @@ app.post('/api/validate', requireAuth, async (req, res) => {
           stream:   false,
         }, baseUrl)
 
-        const r = await fetch(`${root}/chat/completions`, {
-          method: 'POST',
-          headers: stealthH,
-          body: JSON.stringify(probeBody),
-          signal: AbortSignal.timeout(10000),
-        })
+        const probeTarget = `${root}/chat/completions`
+        let r
+        if (useValProxy) {
+          r = await fetch(valProxyUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(valProxySecret ? { 'X-Proxy-Key': valProxySecret } : {}),
+            },
+            body: JSON.stringify({ targetUrl: probeTarget, headers: stealthH, body: probeBody }),
+            signal: AbortSignal.timeout(10000),
+          })
+        } else {
+          r = await fetch(probeTarget, {
+            method: 'POST',
+            headers: stealthH,
+            body: JSON.stringify(probeBody),
+            signal: AbortSignal.timeout(10000),
+          })
+        }
         lastStatus = r.status
 
         if (r.status === 401 || r.status === 403) {
@@ -1496,14 +1515,45 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   const root = String(baseUrl).replace(/\/$/, '')
   const stealthH = buildSessionHeaders({ baseUrl, apiKey, authType, authHeader, extraHeaders })
   const body = applyBodyDefaults({ model, messages, temperature, stream }, baseUrl)
+  const targetUrl = `${root}/chat/completions`
+
+  // Определяем, нужно ли проксировать через Cloudflare Workers
+  // Для сессионных токенов (веб-интерфейсы) — да, если CF_PROXY_URL задан
+  const profile = getSiteProfile(baseUrl)
+  const isSession = authType === 'cookie' || authType === 'custom' || profile.isBearerSession
+  const cfProxyUrl = process.env.CF_PROXY_URL || ''
+  const cfProxySecret = process.env.CF_PROXY_SECRET || ''
+  const useProxy = isSession && cfProxyUrl
 
   try {
-    const upstream = await fetch(`${root}/chat/completions`, {
-      method: 'POST',
-      headers: stealthH,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120000), // 2 минуты таймаут
-    })
+    let upstream
+
+    if (useProxy) {
+      // Через Cloudflare Workers прокси
+      console.log(`[chat proxy] via CF Workers → ${targetUrl} model=${model}`)
+      upstream = await fetch(cfProxyUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(cfProxySecret ? { 'X-Proxy-Key': cfProxySecret } : {}),
+        },
+        body: JSON.stringify({
+          targetUrl,
+          headers: stealthH,
+          body,
+        }),
+        signal: AbortSignal.timeout(120000),
+      })
+    } else {
+      // Прямой запрос к провайдеру
+      console.log(`[chat proxy] direct → ${targetUrl} model=${model}`)
+      upstream = await fetch(targetUrl, {
+        method: 'POST',
+        headers: stealthH,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(120000),
+      })
+    }
 
     if (!upstream.ok) {
       const errText = await upstream.text().catch(() => '')
@@ -1614,12 +1664,29 @@ app.get('/api/debug/chat-test', requireAuth, async (req, res) => {
     }, key.baseUrl)
 
     const t0 = Date.now()
-    const upstream = await fetch(`${root}/chat/completions`, {
-      method: 'POST',
-      headers: stealthH,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(30000),
-    })
+    const dbgProxyUrl = process.env.CF_PROXY_URL || ''
+    const dbgProxySecret = process.env.CF_PROXY_SECRET || ''
+    const targetUrl = `${root}/chat/completions`
+
+    let upstream
+    if (dbgProxyUrl) {
+      upstream = await fetch(dbgProxyUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(dbgProxySecret ? { 'X-Proxy-Key': dbgProxySecret } : {}),
+        },
+        body: JSON.stringify({ targetUrl, headers: stealthH, body }),
+        signal: AbortSignal.timeout(30000),
+      })
+    } else {
+      upstream = await fetch(targetUrl, {
+        method: 'POST',
+        headers: stealthH,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30000),
+      })
+    }
     const elapsed = Date.now() - t0
 
     const ct = upstream.headers.get('content-type') || ''

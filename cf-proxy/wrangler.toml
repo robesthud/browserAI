@@ -1,0 +1,7 @@
+name = "browserai-proxy"
+main = "worker.js"
+compatibility_date = "2024-12-01"
+
+# Секретный ключ — добавьте через: npx wrangler secret put PROXY_SECRET
+# [vars]
+# PROXY_SECRET = "" # задаётся через wrangler secret
