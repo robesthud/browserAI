@@ -1666,7 +1666,7 @@ app.get('/api/debug/chat-test', requireAuth, async (req, res) => {
     const t0 = Date.now()
     const dbgProxyUrl = process.env.CF_PROXY_URL || ''
     const dbgProxySecret = process.env.CF_PROXY_SECRET || ''
-    const targetUrl = getChatUrl(baseUrl)
+    const targetUrl = getChatUrl(key.baseUrl)
 
     let upstream
     if (dbgProxyUrl) {
