@@ -85,8 +85,14 @@ const PROVIDER_PRESETS = [
     baseUrl: 'https://chat.deepseek.com/api/v0',
     model: 'deepseek_chat',
     authType: 'bearer',
-    extraHeaders: { 'Referer': 'https://chat.deepseek.com/', 'Origin': 'https://chat.deepseek.com', 'x-app-version': '20241129' },
-    hint: 'F12 → Network → запрос к /chat/completion → заголовок Authorization',
+    extraHeaders: {
+      'Referer': 'https://chat.deepseek.com/',
+      'Origin': 'https://chat.deepseek.com',
+      'x-app-version': '20241129.1',
+      'x-client-platform': 'web',
+      'x-client-version': '1.0.0-always',
+    },
+    hint: 'DeepSeek Web Experimental. Нужен Bearer-токен из localStorage: userToken.value. Cookie можно добавить ниже в «Дополнительные заголовки» строкой Cookie: ...',
   },
   {
     id: 'grok-web',
@@ -605,7 +611,7 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
           <div className="flex flex-wrap gap-1.5">
             <span className="text-[11px] text-cream-faint mr-1">Шаблоны:</span>
             {[
-              { label: 'DeepSeek', headers: { 'Referer': 'https://chat.deepseek.com/', 'Origin': 'https://chat.deepseek.com', 'x-app-version': '20241129' } },
+              { label: 'DeepSeek', headers: { 'Referer': 'https://chat.deepseek.com/', 'Origin': 'https://chat.deepseek.com', 'x-app-version': '20241129.1', 'x-client-platform': 'web', 'x-client-version': '1.0.0-always' } },
               { label: 'Grok', headers: { 'Referer': 'https://grok.com/', 'Origin': 'https://grok.com' } },
               { label: 'Claude', headers: { 'Referer': 'https://claude.ai/', 'Origin': 'https://claude.ai' } },
               { label: 'Gemini', headers: { 'Referer': 'https://gemini.google.com/', 'Origin': 'https://gemini.google.com', 'x-goog-api-client': 'gl-js/ fire/0.0.0' } },

@@ -67,6 +67,7 @@ import {
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, isSessionUrl, buildProbeBody, getChatUrl } from './stealthHeaders.js'
+import { isDeepSeekWebUrl, handleDeepSeekWebChat, validateDeepSeekWebKey } from './deepseekWeb.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 8787
@@ -1075,6 +1076,13 @@ app.post('/api/validate', requireAuth, async (req, res) => {
   const root = String(baseUrl).replace(/\/$/, '')
   const profile = getSiteProfile(baseUrl)
 
+  // ── DeepSeek Web Experimental: это не OpenAI-compatible API.
+  // Проверяем через создание chat_session, а не через /chat/completions.
+  if (isDeepSeekWebUrl(baseUrl)) {
+    const result = await validateDeepSeekWebKey({ baseUrl, apiKey, authType, authHeader, extraHeaders, model })
+    return res.json(result)
+  }
+
   // ── Сессионный токен (cookie, custom заголовок, или bearer-JWT с известного сайта) ──
   // Признак сессии: authType !== bearer ИЛИ это известный веб-сайт (isBearerSession)
   const isSession = authType === 'cookie' || authType === 'custom' || profile.isBearerSession
@@ -1510,6 +1518,12 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   }
   if (isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) {
     return res.status(403).json({ error: 'Доступ к внутренней сети запрещён' })
+  }
+
+  // DeepSeek Web Experimental использует собственные endpoints/body/POW,
+  // поэтому обрабатываем его отдельным адаптером.
+  if (isDeepSeekWebUrl(baseUrl)) {
+    return handleDeepSeekWebChat({ reqBody: req.body || {}, res })
   }
 
   const root = String(baseUrl).replace(/\/$/, '')
