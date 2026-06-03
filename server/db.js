@@ -19,35 +19,46 @@ db.pragma('journal_mode = WAL')
 // Таблица ключей (enc = 1 → api_key хранится в зашифрованном виде)
 db.exec(`
   CREATE TABLE IF NOT EXISTS keys (
-    id        TEXT PRIMARY KEY,
-    name      TEXT NOT NULL DEFAULT '',
-    base_url  TEXT NOT NULL DEFAULT '',
-    api_key   TEXT NOT NULL DEFAULT '',
-    model     TEXT NOT NULL DEFAULT '',
+    id               TEXT PRIMARY KEY,
+    name             TEXT NOT NULL DEFAULT '',
+    base_url         TEXT NOT NULL DEFAULT '',
+    api_key          TEXT NOT NULL DEFAULT '',
+    model            TEXT NOT NULL DEFAULT '',
     available_models TEXT NOT NULL DEFAULT '[]',
-    is_active INTEGER NOT NULL DEFAULT 0,
-    enc       INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    is_active        INTEGER NOT NULL DEFAULT 0,
+    enc              INTEGER NOT NULL DEFAULT 0,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL
   );
 `)
 
-// Миграции старых БД
+// Миграции старых БД — добавляем недостающие колонки без пересоздания таблицы
 try {
-  const cols = db.prepare(`PRAGMA table_info(keys)`).all()
-  if (!cols.some((c) => c.name === 'enc')) {
+  const cols = db.prepare(`PRAGMA table_info(keys)`).all().map((c) => c.name)
+
+  if (!cols.includes('enc')) {
     db.exec(`ALTER TABLE keys ADD COLUMN enc INTEGER NOT NULL DEFAULT 0`)
   }
-  if (!cols.some((c) => c.name === 'available_models')) {
+  if (!cols.includes('available_models')) {
     db.exec(`ALTER TABLE keys ADD COLUMN available_models TEXT NOT NULL DEFAULT '[]'`)
+  }
+  // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: добавляем колонки для типа авторизации
+  if (!cols.includes('auth_type')) {
+    db.exec(`ALTER TABLE keys ADD COLUMN auth_type TEXT NOT NULL DEFAULT 'bearer'`)
+  }
+  if (!cols.includes('auth_header')) {
+    db.exec(`ALTER TABLE keys ADD COLUMN auth_header TEXT NOT NULL DEFAULT ''`)
+  }
+  if (!cols.includes('response_path')) {
+    db.exec(`ALTER TABLE keys ADD COLUMN response_path TEXT NOT NULL DEFAULT ''`)
   }
 } catch {
   /* ignore */
 }
 
 try {
-  const cols = db.prepare(`PRAGMA table_info(params)`).all()
-  if (!cols.some((c) => c.name === 'use_web_ai')) {
+  const cols = db.prepare(`PRAGMA table_info(params)`).all().map((c) => c.name)
+  if (!cols.includes('use_web_ai')) {
     db.exec(`ALTER TABLE params ADD COLUMN use_web_ai INTEGER NOT NULL DEFAULT 0`)
   }
 } catch {
@@ -156,6 +167,10 @@ function rowToKey(r, encKey) {
     apiKey,
     model,
     availableModels,
+    // Поля авторизации — теперь сохраняются и возвращаются
+    authType: r.auth_type || 'bearer',
+    authHeader: r.auth_header || '',
+    responsePath: r.response_path || '',
     active: Boolean(r.is_active),
     encrypted: Boolean(r.enc),
     locked,
@@ -189,11 +204,17 @@ export function upsertKey(key, encKey = null) {
   const encFlag = useEnc ? 1 : 0
   const model = String(key.model || '').trim()
   const availableModels = stringifyModels(key.availableModels, model)
+  // Нормализуем authType — только допустимые значения
+  const authType = ['bearer', 'cookie', 'custom'].includes(key.authType) ? key.authType : 'bearer'
+  const authHeader = String(key.authHeader || '').trim()
+  const responsePath = String(key.responsePath || '').trim()
+
   const exists = db.prepare('SELECT id FROM keys WHERE id = ?').get(key.id)
   if (exists) {
     db.prepare(
       `UPDATE keys
-       SET name=?, base_url=?, api_key=?, model=?, available_models=?, enc=?, updated_at=?
+       SET name=?, base_url=?, api_key=?, model=?, available_models=?,
+           enc=?, auth_type=?, auth_header=?, response_path=?, updated_at=?
        WHERE id=?`,
     ).run(
       key.name,
@@ -202,13 +223,18 @@ export function upsertKey(key, encKey = null) {
       model,
       availableModels,
       encFlag,
+      authType,
+      authHeader,
+      responsePath,
       now,
       key.id,
     )
   } else {
     db.prepare(
-      `INSERT INTO keys (id, name, base_url, api_key, model, available_models, is_active, enc, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+      `INSERT INTO keys
+         (id, name, base_url, api_key, model, available_models,
+          is_active, enc, auth_type, auth_header, response_path, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
     ).run(
       key.id,
       key.name,
@@ -217,6 +243,9 @@ export function upsertKey(key, encKey = null) {
       model,
       availableModels,
       encFlag,
+      authType,
+      authHeader,
+      responsePath,
       now,
       now,
     )
@@ -249,12 +278,15 @@ export function replaceKeys(keys, activeKeyId, encKey = null) {
   const tx = db.transaction((items, activeId) => {
     db.prepare('DELETE FROM keys').run()
     const ins = db.prepare(
-      `INSERT INTO keys (id, name, base_url, api_key, model, available_models, is_active, enc, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO keys
+         (id, name, base_url, api_key, model, available_models,
+          is_active, enc, auth_type, auth_header, response_path, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     for (const k of items) {
       const model = String(k.model || '').trim()
       const stored = useEnc ? encrypt(k.apiKey || '', encKey) : k.apiKey || ''
+      const authType = ['bearer', 'cookie', 'custom'].includes(k.authType) ? k.authType : 'bearer'
       ins.run(
         k.id,
         k.name || '',
@@ -264,6 +296,9 @@ export function replaceKeys(keys, activeKeyId, encKey = null) {
         stringifyModels(k.availableModels, model),
         k.id === activeId ? 1 : 0,
         useEnc ? 1 : 0,
+        authType,
+        String(k.authHeader || '').trim(),
+        String(k.responsePath || '').trim(),
         k.createdAt || now,
         now,
       )
@@ -327,6 +362,9 @@ export function dumpRawKeys() {
     apiKey: r.api_key, // если enc=1 — это шифртекст
     model: r.model,
     availableModels: parseModels(r.available_models, r.model),
+    authType: r.auth_type || 'bearer',
+    authHeader: r.auth_header || '',
+    responsePath: r.response_path || '',
     isActive: r.is_active,
     enc: r.enc,
     createdAt: r.created_at,
@@ -339,12 +377,15 @@ export function restoreRawKeys(rows) {
   const tx = db.transaction((items) => {
     db.prepare('DELETE FROM keys').run()
     const ins = db.prepare(
-      `INSERT INTO keys (id, name, base_url, api_key, model, available_models, is_active, enc, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO keys
+         (id, name, base_url, api_key, model, available_models,
+          is_active, enc, auth_type, auth_header, response_path, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     const now = Date.now()
     for (const k of items) {
       const model = String(k.model || '').trim()
+      const authType = ['bearer', 'cookie', 'custom'].includes(k.authType) ? k.authType : 'bearer'
       ins.run(
         k.id,
         k.name || '',
@@ -354,6 +395,9 @@ export function restoreRawKeys(rows) {
         stringifyModels(k.availableModels, model),
         k.isActive ? 1 : 0,
         k.enc ? 1 : 0,
+        authType,
+        String(k.authHeader || '').trim(),
+        String(k.responsePath || '').trim(),
         k.createdAt || now,
         k.updatedAt || now,
       )

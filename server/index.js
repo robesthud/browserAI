@@ -946,12 +946,20 @@ app.post('/api/keys', requireAuth, requireUnlocked, (req, res) => {
   // Лимиты на длину полей ключа
   const name = String(k.name || '').slice(0, 100)
   const baseUrl = String(k.baseUrl || '').slice(0, 500)
-  const apiKey = String(k.apiKey || '').slice(0, 500)
+  const apiKey = String(k.apiKey || '').slice(0, 2000)  // токены могут быть длинными
   const model = String(k.model || '').slice(0, 200)
   const availableModels = Array.isArray(k.availableModels)
     ? k.availableModels.slice(0, 200).map((m) => String(m || '').slice(0, 200))
     : []
-  upsertKey({ id: k.id.slice(0, 100), name, baseUrl, apiKey, model, availableModels }, encKey())
+  // ИСПРАВЛЕНО: сохраняем authType, authHeader, responsePath
+  const authType = ['bearer', 'cookie', 'custom'].includes(k.authType) ? k.authType : 'bearer'
+  const authHeader = String(k.authHeader || '').slice(0, 200)
+  const responsePath = String(k.responsePath || '').slice(0, 200)
+
+  upsertKey(
+    { id: k.id.slice(0, 100), name, baseUrl, apiKey, model, availableModels, authType, authHeader, responsePath },
+    encKey()
+  )
   res.json({ keys: listKeys(encKey()), activeKeyId: getActiveKeyId(), vault: vaultState() })
 })
 
