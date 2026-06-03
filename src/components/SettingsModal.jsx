@@ -278,42 +278,69 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
   const [form, setForm] = useState(initial)
   const [checking, setChecking] = useState(false)
   const [result, setResult] = useState(null)
+  const [advanced, setAdvanced] = useState(false)
   const modelRef = useRef(initial.model || '')
+
+  const inferName = (f) => {
+    const preset = PROVIDER_PRESETS.find((p) => p.baseUrl === f.baseUrl)
+    if (preset?.name) return preset.name
+    try { return new URL(f.baseUrl).hostname.replace(/^www\./, '') }
+    catch { return f.name || 'AI-провайдер' }
+  }
+
+  const prepareForSave = (f) => ({
+    ...f,
+    name: f.name?.trim() || inferName(f),
+    model: f.model || f.availableModels?.[0] || '',
+  })
 
   const set = (field) => (e) => {
     const value = e.target.value
     setForm((f) => {
       const next = { ...f, [field]: value }
-      // При смене baseUrl или apiKey сбрасываем список моделей
-      if (field === 'baseUrl' || field === 'apiKey') {
+      // При смене URL сбрасываем список моделей. При вводе токена модель из пресета сохраняем.
+      if (field === 'baseUrl') {
         next.availableModels = []
         next.model = ''
-        // authType НЕ сбрасываем — пользователь мог специально выбрать cookie/custom
       }
       return next
     })
     setResult(null)
   }
 
-  // БАГ 7 ИСПРАВЛЕН: authHeader сбрасываем только если пресет явно его задаёт
   const applyPreset = (preset) => {
     setForm((f) => ({
       ...f,
-      name: f.name || preset.name,
+      name: preset.name || f.name,
       baseUrl: preset.baseUrl,
       availableModels: [],
       model: preset.model || '',
       authType: preset.authType || 'bearer',
-      // Сбрасываем authHeader только если пресет явно его задаёт
       authHeader: preset.authHeader !== undefined ? preset.authHeader : f.authHeader,
-      // extraHeaders из пресета (если заданы)
       extraHeaders: preset.extraHeaders !== undefined ? preset.extraHeaders : (f.extraHeaders || {}),
     }))
-    setResult(null)
-    if (preset.hint) alert(`💡 Как получить токен:\n\n${preset.hint}`)
+    setResult(preset.hint ? { ok: true, message: preset.hint } : null)
   }
 
-  // Проверка + автосохранение: после успешной валидации сразу сохраняет ключ
+  const applyValidationResult = (r, sourceForm = form) => {
+    const models = (r.ok && Array.isArray(r.models) && r.models.length > 0) ? r.models : []
+    const preferredModel =
+      (r.preferredModel && models.includes(r.preferredModel) && r.preferredModel) ||
+      (models.length > 0 && models.includes(sourceForm.model) ? sourceForm.model : null) ||
+      models[0] || sourceForm.model || ''
+
+    const updatedForm = prepareForSave({
+      ...sourceForm,
+      availableModels: models.length > 0 ? models : (preferredModel ? [preferredModel] : []),
+      model: preferredModel,
+    })
+    setForm(updatedForm)
+
+    if (r.ok && updatedForm.apiKey?.trim() && updatedForm.baseUrl?.trim() && updatedForm.model?.trim()) {
+      onSave(updatedForm)
+    }
+  }
+
   const check = async () => {
     setChecking(true)
     setResult(null)
@@ -324,27 +351,10 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
         model: form.model,
         authType: form.authType || 'bearer',
         authHeader: form.authHeader || '',
+        extraHeaders: form.extraHeaders || {},
       })
       setResult(r)
-
-      // Обновляем форму на основе результата валидации
-      const models = (r.ok && Array.isArray(r.models) && r.models.length > 0) ? r.models : []
-      const preferredModel =
-        (r.preferredModel && models.includes(r.preferredModel) && r.preferredModel) ||
-        (models.length > 0 && models.includes(form.model) ? form.model : null) ||
-        models[0] || form.model || ''
-
-      const updatedForm = {
-        ...form,
-        availableModels: models.length > 0 ? models : (form.model ? [form.model] : []),
-        model: preferredModel,
-      }
-      setForm(updatedForm)
-
-      // Автосохранение при успешной проверке
-      if (r.ok && updatedForm.apiKey?.trim() && updatedForm.baseUrl?.trim() && updatedForm.model?.trim()) {
-        onSave(updatedForm)
-      }
+      applyValidationResult(r)
     } finally {
       setChecking(false)
     }
@@ -359,47 +369,29 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
     modelRef.current = form.model || ''
   }, [form.model])
 
-  // Авто-валидация при вводе ключа/URL
-  // Для сессионных токенов (cookie/custom) тоже запускаем, но только если модель уже указана
   useEffect(() => {
-    const isSession = form.authType === 'cookie' || form.authType === 'custom'
     const hasCredentials = form.baseUrl.trim() && form.apiKey.trim()
     if (!hasCredentials) return undefined
-    // Для сессионных — нужна модель (из пресета). Без модели валидация бесполезна.
-    if (isSession && !modelRef.current) return undefined
 
     const controller = new AbortController()
     const timer = setTimeout(async () => {
       setChecking(true)
       try {
+        const snapshot = { ...form }
         const r = await onValidate(
           {
-            baseUrl: form.baseUrl,
-            apiKey: form.apiKey,
-            model: modelRef.current,
-            authType: form.authType || 'bearer',
-            authHeader: form.authHeader || '',
+            baseUrl: snapshot.baseUrl,
+            apiKey: snapshot.apiKey,
+            model: modelRef.current || snapshot.model,
+            authType: snapshot.authType || 'bearer',
+            authHeader: snapshot.authHeader || '',
+            extraHeaders: snapshot.extraHeaders || {},
           },
           controller.signal,
         )
         if (controller.signal.aborted) return
         setResult(r)
-
-        // Обновляем форму синхронно
-        const models = (r.ok && Array.isArray(r.models) && r.models.length > 0) ? r.models : []
-        if (models.length > 0) {
-          const preferred = r.preferredModel || models[0]
-          const updatedForm = {
-            ...form,
-            availableModels: models,
-            model: models.includes(preferred) ? preferred : models[0],
-          }
-          setForm(updatedForm)
-          // Автосохранение при успешной авто-валидации
-          if (r.ok && updatedForm.apiKey?.trim() && updatedForm.baseUrl?.trim() && updatedForm.model?.trim()) {
-            onSave(updatedForm)
-          }
-        }
+        if (r.ok) applyValidationResult(r, snapshot)
       } catch {
         /* ignore auto-fetch errors */
       } finally {
@@ -412,228 +404,183 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
       clearTimeout(timer)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.baseUrl, form.apiKey, form.authType, onValidate])
+  }, [form.baseUrl, form.apiKey, form.authType, form.authHeader, form.extraHeaders, onValidate])
+
+  const providerGroups = [
+    { title: 'API', group: 'api', cls: 'border-white/10 text-cream-soft hover:border-white/20 hover:bg-graphite-750 hover:text-cream' },
+    { title: 'Web-сессии', group: 'web', cls: 'border-amber-400/20 bg-amber-400/5 text-amber-300 hover:border-amber-400/40 hover:bg-amber-400/10' },
+    { title: 'Другое', group: 'local', cls: 'border-blue-400/20 bg-blue-400/5 text-blue-300 hover:border-blue-400/40 hover:bg-blue-400/10' },
+  ]
 
   return (
     <div className="space-y-3 rounded-xl border border-white/10 bg-graphite-900/60 p-3">
-      {/* БАГ 5 ИСПРАВЛЕН: правильная фильтрация пресетов по group */}
-      <div>
-        <div className="mb-2 text-[12px] text-cream-faint">Официальные API</div>
-        <div className="flex flex-wrap gap-2">
-          {PROVIDER_PRESETS.filter((p) => p.group === 'api').map((preset) => (
-            <button
-              key={preset.id}
-              type="button"
-              onClick={() => applyPreset(preset)}
-              className="rounded-lg border border-white/10 px-2.5 py-1.5 text-[12px] text-cream-soft transition-colors hover:border-white/20 hover:bg-graphite-750 hover:text-cream"
-            >
-              {preset.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="mt-2 mb-1 text-[12px] text-cream-faint">Сессионные токены (веб-интерфейс)</div>
-        <div className="flex flex-wrap gap-2">
-          {PROVIDER_PRESETS.filter((p) => p.group === 'web').map((preset) => (
-            <button
-              key={preset.id}
-              type="button"
-              onClick={() => applyPreset(preset)}
-              className="rounded-lg border border-amber-400/20 bg-amber-400/5 px-2.5 py-1.5 text-[12px] text-amber-300 transition-colors hover:border-amber-400/40 hover:bg-amber-400/10"
-            >
-              {preset.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="mt-2 mb-1 text-[12px] text-cream-faint">Локальные и кастомные</div>
-        <div className="flex flex-wrap gap-2">
-          {PROVIDER_PRESETS.filter((p) => p.group === 'local').map((preset) => (
-            <button
-              key={preset.id}
-              type="button"
-              onClick={() => applyPreset(preset)}
-              className="rounded-lg border border-blue-400/20 bg-blue-400/5 px-2.5 py-1.5 text-[12px] text-blue-300 transition-colors hover:border-blue-400/40 hover:bg-blue-400/10"
-            >
-              {preset.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Инструкция по сессионным токенам */}
-        <div className="mt-2 rounded-lg border border-amber-400/15 bg-amber-400/5 px-3 py-2 text-[11px] text-amber-200/80 space-y-1">
-          <div className="font-medium text-amber-300">💡 Как получить токен с любого сайта:</div>
-          <div>1. Открой сайт и залогинься</div>
-          <div>2. Нажми <span className="font-mono bg-black/20 px-1 rounded">F12</span> → вкладка <span className="font-mono bg-black/20 px-1 rounded">Network</span></div>
-          <div>3. Отправь сообщение в чате сайта</div>
-          <div>4. Найди запрос к API (обычно <span className="font-mono bg-black/20 px-1 rounded">/chat</span> или <span className="font-mono bg-black/20 px-1 rounded">/completion</span>)</div>
-          <div>5. Вкладка <span className="font-mono bg-black/20 px-1 rounded">Headers</span> → скопируй <span className="font-mono bg-black/20 px-1 rounded">Authorization</span> или <span className="font-mono bg-black/20 px-1 rounded">Cookie</span></div>
-          <div className="text-amber-300/70 pt-0.5">⚠ Токены протухают через дни/недели. При ошибке 401 — обнови.</div>
-        </div>
+      <div className="space-y-2">
+        {providerGroups.map((group) => (
+          <div key={group.group}>
+            <div className="mb-1 text-[11px] text-cream-faint">{group.title}</div>
+            <div className="flex flex-wrap gap-1.5">
+              {PROVIDER_PRESETS.filter((p) => p.group === group.group).map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => applyPreset(preset)}
+                  className={`rounded-lg border px-2.5 py-1.5 text-[12px] transition-colors ${group.cls}`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
 
-      <Field label="Имя ключа" hint="Чтобы различать ключи в списке">
-        <input
-          className={inputCls}
-          value={form.name}
-          onChange={set('name')}
-          placeholder="Напр. OpenAI личный, Рабочий, Локальный…"
-        />
-      </Field>
-      <Field label="Base URL">
-        <input
-          className={inputCls}
-          value={form.baseUrl}
-          onChange={set('baseUrl')}
-          placeholder="https://api.openai.com/v1"
-        />
-      </Field>
-
-      {/* Тип авторизации */}
-      <Field label="Тип авторизации">
-        <select
-          className={inputCls}
-          value={form.authType || 'bearer'}
-          onChange={(e) => setForm((f) => ({ ...f, authType: e.target.value }))}
-        >
-          <option value="bearer">Bearer Token (стандартный API)</option>
-          <option value="cookie">Cookie сессии (веб-интерфейс)</option>
-          <option value="custom">Кастомный заголовок</option>
-        </select>
-      </Field>
-
-      {form.authType === 'custom' && (
-        <Field label="Имя заголовка" hint="Напр. X-Auth-Token, Authorization, Api-Key">
-          <input
-            className={inputCls}
-            value={form.authHeader || ''}
-            onChange={(e) => setForm((f) => ({ ...f, authHeader: e.target.value }))}
-            placeholder="X-Auth-Token"
-          />
-        </Field>
-      )}
-
       <SecretField
-        label={
-          form.authType === 'cookie'
-            ? 'Cookie сессии'
-            : form.authType === 'custom'
-            ? 'Значение токена'
-            : 'API-ключ'
-        }
-        hint={
-          form.authType === 'cookie'
-            ? 'Вставь Cookie из браузера (F12 → Network → заголовок Cookie)'
-            : form.authType === 'custom'
-            ? 'Значение которое подставится в кастомный заголовок'
-            : 'Хранится в БД на сервере (или локально, если сервер недоступен).'
-        }
+        label={form.authType === 'cookie' ? 'Cookie / сессия' : 'Токен / API-ключ'}
+        hint={form.baseUrl.includes('chat.deepseek.com')
+          ? 'Для DeepSeek Web нужен Bearer userToken. Cookie можно добавить ниже в «Дополнительно».'
+          : 'Вставь ключ — модели подтянутся автоматически после проверки.'}
         value={form.apiKey}
         onChange={set('apiKey')}
       />
 
-      {/* Выбор модели — дропдаун если список получен, иначе текстовый ввод */}
-      <Field
-        label="Модель"
-        hint={form.availableModels?.length
-          ? `Доступно моделей: ${form.availableModels.length}`
-          : 'Введите вручную или нажмите «Проверить» для автозагрузки списка'}
-      >
-        {form.availableModels?.length > 0 ? (
+      {form.availableModels?.length > 0 ? (
+        <Field label="Модель" hint={`Найдено моделей: ${form.availableModels.length}`}>
           <select
             className={inputCls}
-            value={form.model}
+            value={form.model || form.availableModels[0]}
             onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
           >
             {form.availableModels.map((m) => (
               <option key={m} value={m}>{m}</option>
             ))}
           </select>
-        ) : (
-          <input
-            className={inputCls}
-            value={form.model}
-            onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
-            placeholder="gpt-4o, claude-3-5-sonnet, gemini-2.0-flash…"
-          />
-        )}
-      </Field>
-
-      {/* Путь к тексту в ответе — для нестандартных API */}
-      {(form.authType === 'cookie' || form.authType === 'custom') && (
-        <Field
-          label="Путь к ответу в JSON (необязательно)"
-          hint='Оставь пустым — приложение само попробует стандартные пути. Или укажи вручную, напр: choices.0.message.content'
-        >
-          <input
-            className={inputCls}
-            value={form.responsePath || ''}
-            onChange={(e) => setForm((f) => ({ ...f, responsePath: e.target.value }))}
-            placeholder="choices.0.message.content"
-          />
         </Field>
+      ) : (
+        <div className="rounded-lg border border-white/5 bg-graphite-900/40 px-3 py-2 text-[12px] text-cream-faint">
+          {checking
+            ? 'Проверяю ключ и загружаю модели…'
+            : form.model
+              ? `Модель по умолчанию: ${form.model}`
+              : 'Модели появятся автоматически после проверки ключа.'}
+        </div>
       )}
 
-      {/* Доп. заголовки — для защиты от бана при сессионных токенах */}
-      {(form.authType === 'cookie' || form.authType === 'custom') && (
-        <div className="rounded-xl border border-white/5 bg-graphite-900/40 p-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[12px] font-medium text-cream-soft">Дополнительные заголовки</span>
-            <span className="text-[11px] text-cream-faint">анти-бан</span>
-          </div>
-          <div className="text-[11px] text-cream-faint leading-relaxed">
-            Добавь заголовки которые браузер отправляет автоматически — это снижает риск блокировки.
-            Формат: <span className="font-mono bg-black/20 px-1 rounded">Заголовок: Значение</span> (каждый с новой строки)
-          </div>
-          <textarea
-            className={`${inputCls} resize-none font-mono text-[12px]`}
-            rows={4}
-            placeholder={"Referer: https://chat.deepseek.com/\nOrigin: https://chat.deepseek.com\nx-app-version: 20241129"}
-            value={
-              Object.entries(form.extraHeaders || {})
-                .map(([k, v]) => `${k}: ${v}`)
-                .join('\n')
-            }
-            onChange={(e) => {
-              const lines = e.target.value.split('\n')
-              const parsed = {}
-              for (const line of lines) {
-                const idx = line.indexOf(':')
-                if (idx < 1) continue
-                const k = line.slice(0, idx).trim()
-                const v = line.slice(idx + 1).trim()
-                if (k && v) parsed[k] = v
-              }
-              setForm((f) => ({ ...f, extraHeaders: parsed }))
-            }}
-          />
-          {/* Быстрые шаблоны для популярных сайтов */}
-          <div className="flex flex-wrap gap-1.5">
-            <span className="text-[11px] text-cream-faint mr-1">Шаблоны:</span>
-            {[
-              { label: 'DeepSeek', headers: { 'Referer': 'https://chat.deepseek.com/', 'Origin': 'https://chat.deepseek.com', 'x-app-version': '20241129.1', 'x-client-platform': 'web', 'x-client-version': '1.0.0-always' } },
-              { label: 'Grok', headers: { 'Referer': 'https://grok.com/', 'Origin': 'https://grok.com' } },
-              { label: 'Claude', headers: { 'Referer': 'https://claude.ai/', 'Origin': 'https://claude.ai' } },
-              { label: 'Gemini', headers: { 'Referer': 'https://gemini.google.com/', 'Origin': 'https://gemini.google.com', 'x-goog-api-client': 'gl-js/ fire/0.0.0' } },
-              { label: 'ChatGPT', headers: { 'Referer': 'https://chatgpt.com/', 'Origin': 'https://chatgpt.com' } },
-              { label: 'Mistral', headers: { 'Referer': 'https://chat.mistral.ai/', 'Origin': 'https://chat.mistral.ai' } },
-            ].map((tpl) => (
-              <button
-                key={tpl.label}
-                type="button"
-                onClick={() => setForm((f) => ({ ...f, extraHeaders: { ...f.extraHeaders, ...tpl.headers } }))}
-                className="rounded-lg border border-white/10 bg-graphite-800/60 px-2 py-0.5 text-[11px] text-cream-faint transition-colors hover:border-white/20 hover:text-cream-soft"
-              >
-                {tpl.label}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => setForm((f) => ({ ...f, extraHeaders: {} }))}
-              className="rounded-lg border border-red-500/20 px-2 py-0.5 text-[11px] text-red-400/70 transition-colors hover:border-red-400/40 hover:text-red-300"
+      <button
+        type="button"
+        onClick={() => setAdvanced((v) => !v)}
+        className="w-full rounded-lg border border-white/10 px-3 py-1.5 text-left text-[12px] text-cream-faint transition-colors hover:bg-graphite-750 hover:text-cream-soft"
+      >
+        {advanced ? '▾' : '▸'} Дополнительно: URL, тип авторизации, заголовки
+      </button>
+
+      {advanced && (
+        <div className="space-y-3 rounded-xl border border-white/5 bg-graphite-900/40 p-3">
+          <Field label="Base URL">
+            <input
+              className={inputCls}
+              value={form.baseUrl}
+              onChange={set('baseUrl')}
+              placeholder="https://api.openai.com/v1"
+            />
+          </Field>
+
+          <Field label="Тип авторизации">
+            <select
+              className={inputCls}
+              value={form.authType || 'bearer'}
+              onChange={(e) => setForm((f) => ({ ...f, authType: e.target.value }))}
             >
-              Очистить
-            </button>
+              <option value="bearer">Bearer Token</option>
+              <option value="cookie">Cookie сессии</option>
+              <option value="custom">Кастомный заголовок</option>
+            </select>
+          </Field>
+
+          {form.authType === 'custom' && (
+            <Field label="Имя заголовка" hint="Напр. X-Auth-Token, Authorization, Api-Key">
+              <input
+                className={inputCls}
+                value={form.authHeader || ''}
+                onChange={(e) => setForm((f) => ({ ...f, authHeader: e.target.value }))}
+                placeholder="X-Auth-Token"
+              />
+            </Field>
+          )}
+
+          <Field label="Модель вручную" hint="Только если автозагрузка моделей не сработала">
+            <input
+              className={inputCls}
+              value={form.model || ''}
+              onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
+              placeholder="Оставь пустым для авто"
+            />
+          </Field>
+
+          {(form.authType === 'cookie' || form.authType === 'custom') && (
+            <Field
+              label="Путь к ответу в JSON"
+              hint='Обычно не нужен. Пример: choices.0.message.content'
+            >
+              <input
+                className={inputCls}
+                value={form.responsePath || ''}
+                onChange={(e) => setForm((f) => ({ ...f, responsePath: e.target.value }))}
+                placeholder="choices.0.message.content"
+              />
+            </Field>
+          )}
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] font-medium text-cream-soft">Дополнительные заголовки</span>
+              <button
+                type="button"
+                onClick={() => setForm((f) => ({ ...f, extraHeaders: {} }))}
+                className="rounded-lg border border-red-500/20 px-2 py-0.5 text-[11px] text-red-400/70 transition-colors hover:border-red-400/40 hover:text-red-300"
+              >
+                Очистить
+              </button>
+            </div>
+            <textarea
+              className={`${inputCls} resize-none font-mono text-[12px]`}
+              rows={4}
+              placeholder={"Cookie: name=value; name2=value2\nReferer: https://chat.deepseek.com/"}
+              value={
+                Object.entries(form.extraHeaders || {})
+                  .map(([k, v]) => `${k}: ${v}`)
+                  .join('\n')
+              }
+              onChange={(e) => {
+                const parsed = {}
+                for (const line of e.target.value.split('\n')) {
+                  const idx = line.indexOf(':')
+                  if (idx < 1) continue
+                  const k = line.slice(0, idx).trim()
+                  const v = line.slice(idx + 1).trim()
+                  if (k && v) parsed[k] = v
+                }
+                setForm((f) => ({ ...f, extraHeaders: parsed }))
+              }}
+            />
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { label: 'DeepSeek', headers: { 'Referer': 'https://chat.deepseek.com/', 'Origin': 'https://chat.deepseek.com', 'x-app-version': '20241129.1', 'x-client-platform': 'web', 'x-client-version': '1.0.0-always' } },
+                { label: 'Grok', headers: { 'Referer': 'https://grok.com/', 'Origin': 'https://grok.com' } },
+                { label: 'Claude', headers: { 'Referer': 'https://claude.ai/', 'Origin': 'https://claude.ai' } },
+                { label: 'Gemini', headers: { 'Referer': 'https://gemini.google.com/', 'Origin': 'https://gemini.google.com', 'x-goog-api-client': 'gl-js/ fire/0.0.0' } },
+                { label: 'ChatGPT', headers: { 'Referer': 'https://chatgpt.com/', 'Origin': 'https://chatgpt.com' } },
+                { label: 'Mistral', headers: { 'Referer': 'https://chat.mistral.ai/', 'Origin': 'https://chat.mistral.ai' } },
+              ].map((tpl) => (
+                <button
+                  key={tpl.label}
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, extraHeaders: { ...f.extraHeaders, ...tpl.headers } }))}
+                  className="rounded-lg border border-white/10 bg-graphite-800/60 px-2 py-0.5 text-[11px] text-cream-faint transition-colors hover:border-white/20 hover:text-cream-soft"
+                >
+                  {tpl.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -659,13 +606,13 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
         </div>
       )}
 
-      <div className="flex items-center justify-between pt-1">
+      <div className="flex items-center justify-between gap-2 pt-1">
         <button
           onClick={check}
           disabled={checking || !form.apiKey.trim() || !form.baseUrl.trim()}
           className="rounded-lg border border-white/10 px-3 py-1.5 text-[12px] text-cream-soft transition-colors hover:border-white/20 hover:bg-graphite-750 hover:text-cream disabled:opacity-50"
         >
-          {checking ? 'Загрузка…' : 'Проверить / обновить модели'}
+          {checking ? 'Проверяю…' : 'Проверить'}
         </button>
         <div className="flex gap-2">
           <button
@@ -675,7 +622,7 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
             Отмена
           </button>
           <button
-            onClick={() => canSave && onSave(form)}
+            onClick={() => canSave && onSave(prepareForSave(form))}
             disabled={!canSave}
             className="rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-graphite-900 transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-40 disabled:hover:scale-100"
           >
