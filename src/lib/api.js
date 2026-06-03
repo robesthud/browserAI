@@ -220,6 +220,7 @@ async function requestChat({
   // Это решает проблему CORS и позволяет использовать stealthHeaders на сервере
   const response = await fetch('/api/chat', {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
     },

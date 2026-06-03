@@ -36,6 +36,7 @@ import {
   delMeta,
   dumpRawKeys,
   restoreRawKeys,
+  getActiveKeyDecrypted,
 } from './db.js'
 import db from './db.js'
 import {
@@ -1511,7 +1512,18 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         error: `Провайдер ответил ${upstream.status}: ${errText.slice(0, 500)}`,
       })
     }
-    console.log(`[chat proxy] upstream OK ${upstream.status} stream=${stream} model=${model}`)
+
+    // Проверяем Content-Type — если HTML вместо JSON/SSE, значит провайдер вернул страницу (captcha, redirect, etc.)
+    const upstreamCT = (upstream.headers.get('content-type') || '').toLowerCase()
+    console.log(`[chat proxy] upstream OK ${upstream.status} stream=${stream} model=${model} ct=${upstreamCT}`)
+
+    if (upstreamCT.includes('text/html')) {
+      const htmlSnippet = await upstream.text().catch(() => '')
+      console.warn(`[chat proxy] received HTML instead of JSON from ${root}: ${htmlSnippet.slice(0, 200)}`)
+      return res.status(502).json({
+        error: `Провайдер вернул HTML вместо JSON — возможно, токен устарел, требуется капча или смена IP. Обнови токен.`,
+      })
+    }
 
     if (stream) {
       // SSE — стримим ответ клиенту как есть
@@ -1566,6 +1578,70 @@ app.post('/api/chat', requireAuth, async (req, res) => {
 })
 
 app.get('/api/health', (req, res) => res.json({ ok: true }))
+
+// ── Временный диагностический эндпоинт ──────────────────────────────────────
+// Берёт активный ключ, шлёт тестовый запрос к провайдеру и показывает что вернулось
+app.get('/api/debug/chat-test', requireAuth, async (req, res) => {
+  try {
+    const key = getActiveKeyDecrypted(encKey())
+    if (!key) return res.json({ error: 'Нет активного ключа', key: null })
+
+    const info = {
+      keyName: key.name,
+      baseUrl: key.baseUrl,
+      model: key.model,
+      authType: key.authType,
+      availableModels: key.availableModels,
+      hasApiKey: Boolean(key.apiKey),
+      apiKeyLength: key.apiKey?.length || 0,
+      apiKeyPrefix: key.apiKey?.slice(0, 20) + '...',
+      extraHeaders: key.extraHeaders,
+    }
+
+    const root = String(key.baseUrl || '').replace(/\/$/, '')
+    const stealthH = buildSessionHeaders({
+      baseUrl: key.baseUrl,
+      apiKey: key.apiKey,
+      authType: key.authType,
+      authHeader: key.authHeader,
+      extraHeaders: key.extraHeaders,
+    })
+    const body = applyBodyDefaults({
+      model: key.model,
+      messages: [{ role: 'user', content: 'Скажи коротко: привет' }],
+      max_tokens: 20,
+      stream: false,
+    }, key.baseUrl)
+
+    const t0 = Date.now()
+    const upstream = await fetch(`${root}/chat/completions`, {
+      method: 'POST',
+      headers: stealthH,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30000),
+    })
+    const elapsed = Date.now() - t0
+
+    const ct = upstream.headers.get('content-type') || ''
+    const rawText = await upstream.text().catch(() => '')
+
+    res.json({
+      keyInfo: info,
+      requestBody: body,
+      upstream: {
+        status: upstream.status,
+        contentType: ct,
+        elapsed: elapsed + 'ms',
+        bodyLength: rawText.length,
+        bodySnippet: rawText.slice(0, 1000),
+      },
+    })
+  } catch (e) {
+    res.json({ error: e.message || 'Ошибка', stack: e.stack?.split('\n').slice(0, 3) })
+  }
+})
+
+
 
 // ── Версия нативного APK ─────────────────────────────────────────────────────
 // Публичный эндпоинт — Android-приложение проверяет его при старте.
