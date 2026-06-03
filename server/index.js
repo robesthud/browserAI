@@ -68,6 +68,7 @@ import {
 import { searchWeb, fetchWebPage } from './web.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, isSessionUrl, buildProbeBody, getChatUrl } from './stealthHeaders.js'
 import { isDeepSeekWebUrl, handleDeepSeekWebChat, validateDeepSeekWebKey } from './deepseekWeb.js'
+import { isArenaEnabled, isArenaUrl, handleArenaChat, getArenaModels, validateArenaSession, ensureStarted as ensureArenaStarted } from './arenaAdapter.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 8787
@@ -1526,6 +1527,20 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     return handleDeepSeekWebChat({ reqBody: req.body || {}, res })
   }
 
+  // Arena.ai — встроенный адаптер с Playwright (headless Chrome).
+  // Автоматически проходит Cloudflare, reCAPTCHA, обновляет токены.
+  if (isArenaEnabled() && isArenaUrl(baseUrl)) {
+    try {
+      return await handleArenaChat({ model, messages, stream, temperature }, res)
+    } catch (e) {
+      console.error('[arena-adapter] error:', e.message)
+      if (!res.headersSent) {
+        return res.status(502).json({ error: `Arena.ai: ${e.message}` })
+      }
+      return res.end()
+    }
+  }
+
   const root = String(baseUrl).replace(/\/$/, '')
   const stealthH = buildSessionHeaders({ baseUrl, apiKey, authType, authHeader, extraHeaders })
   const body = applyBodyDefaults({ model, messages, temperature, stream }, baseUrl)
@@ -1638,6 +1653,32 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     } else {
       res.end()
     }
+  }
+})
+
+// ── Arena.ai встроенный адаптер ──────────────────────────────────────────────
+// OpenAI-совместимые эндпоинты для Arena.ai (models, validate, status)
+app.get('/api/arena/models', requireAuth, async (req, res) => {
+  if (!isArenaEnabled()) {
+    return res.status(503).json({ error: 'Arena.ai адаптер не включён. Задайте ARENA_REFRESH_TOKEN.' })
+  }
+  try {
+    const models = await getArenaModels()
+    res.json(models)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.get('/api/arena/status', requireAuth, async (req, res) => {
+  if (!isArenaEnabled()) {
+    return res.json({ enabled: false, message: 'ARENA_REFRESH_TOKEN не задан' })
+  }
+  try {
+    const result = await validateArenaSession()
+    res.json({ enabled: true, ...result })
+  } catch (e) {
+    res.json({ enabled: true, ok: false, message: e.message })
   }
 })
 
@@ -1798,4 +1839,15 @@ try {
 
 app.listen(PORT, () => {
   console.log(`BrowserAI API + SQLite + Workspace на http://localhost:${PORT}`)
+
+  // Запускаем Arena.ai адаптер в фоне (если настроен)
+  if (isArenaEnabled()) {
+    console.log('[arena-adapter] ARENA_REFRESH_TOKEN задан — запускаю Playwright...')
+    ensureArenaStarted().then(() => {
+      console.log('[arena-adapter] ✅ Arena.ai адаптер готов')
+    }).catch((e) => {
+      console.warn('[arena-adapter] ⚠ Не удалось запустить:', e.message)
+      console.warn('[arena-adapter] Arena.ai будет недоступен. Проверьте ARENA_REFRESH_TOKEN.')
+    })
+  }
 })

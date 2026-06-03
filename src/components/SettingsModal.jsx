@@ -163,6 +163,16 @@ const PROVIDER_PRESETS = [
   },
   // --- Локальные мосты ---
   {
+    id: 'arena-builtin',
+    group: 'api',
+    label: '🏟 Arena.ai',
+    name: 'Arena.ai (встроенный)',
+    baseUrl: 'https://arena.ai',
+    model: 'gemini-2.5-flash',
+    authType: 'bearer',
+    hint: `Arena.ai — бесплатный доступ к 600+ моделям (GPT-5, Claude Opus, Gemini, Grok и др.).\n\nНастройка:\n1. На сервере задайте переменную ARENA_REFRESH_TOKEN\n   (refresh_token из cookie arena-auth-prod-v1 на arena.ai)\n2. Введите любой ключ-заглушку (напр. "arena")\n3. Модели загрузятся автоматически\n\nВсё работает через встроенный Playwright — без внешних прокси и userscript.`,
+  },
+  {
     id: 'arena-bridge',
     group: 'local',
     label: '🌉 Arena.ai Bridge',
@@ -170,7 +180,7 @@ const PROVIDER_PRESETS = [
     baseUrl: 'http://localhost:8000/api/v1',
     model: '',
     authType: 'bearer',
-    hint: `Arena.ai требует локальный прокси LMArenaBridge.\n\n1. Получи токен:\n   F12 → Application → Cookies → arena.ai\n   Скопируй куку arena-auth-prod-v1 (начинается с base64-)\n\n2. Установи прокси на устройстве (Termux/PC):\n   git clone https://github.com/CloudWaddie/LMArenaBridge\n   cd LMArenaBridge\n   pip install -r requirements.txt\n   echo '{"auth_token":"ТВОЙ_ТОКЕН"}' > config.json\n   python -m src.main\n\n3. Прокси запустится на localhost:8000\n   Base URL уже заполнен — просто нажми Проверить`,
+    hint: `Arena.ai через внешний LMArenaBridge прокси.\n\nИспользуйте встроенный Arena.ai (вкладка API) если он доступен.\n\nДля ручной настройки:\n1. Получи токен: F12 → Cookies → arena-auth-prod-v1\n2. Установи LMArenaBridge\n3. Base URL: http://localhost:8000/api/v1`,
   },
   {
     id: 'custom-web',

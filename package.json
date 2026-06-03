@@ -1,7 +1,7 @@
 {
   "name": "browserai",
   "private": true,
-  "version": "1.0.12",
+  "version": "1.0.13",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -23,6 +23,7 @@
     "ipaddr.js": "^2.2.0",
     "is-ip": "^5.0.1",
     "nodemailer": "^8.0.10",
+    "playwright-core": "^1.49.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "tar": "^7.5.16",

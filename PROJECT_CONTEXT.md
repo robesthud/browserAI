@@ -1,6 +1,29 @@
 # BrowserAI project context for future AI agents
 
-Last updated: 2026-06-02.
+Last updated: 2026-06-04.
+
+## Arena.ai Built-in Adapter
+
+BrowserAI v1.0.13 includes a built-in Arena.ai adapter (`server/arenaAdapter.js`) that:
+- Uses Playwright (headless Chromium) to bypass Cloudflare and get reCAPTCHA v3 tokens
+- Automatically refreshes Supabase access_token via refresh_token
+- Sends requests directly to Arena.ai `/nextjs-api/stream/create-evaluation`
+- Converts Arena.ai SSE responses to OpenAI-compatible format
+
+Required env var: `ARENA_REFRESH_TOKEN` (Supabase refresh token from arena-auth-prod-v1 cookie).
+
+Arena.ai API endpoints discovered:
+- `POST /nextjs-api/stream/create-evaluation` — create new chat (requires reCAPTCHA v3)
+- `POST /nextjs-api/stream/post-to-evaluation/{id}` — continue existing chat
+- `POST /nextjs-api/stream/stop/{id}/messages/{msgId}` — stop generation
+- `POST /nextjs-api/stream/rerun/{id}` — rerun
+- `GET /api/me` — current user info (works with cookie auth, no CF challenge)
+
+Mode enum: `direct` | `battle` | `side-by-side` | `direct-battle`
+Modality enum: `auto` | `chat` | `webdev` | `search` | `image` | `p2l` | `video` | `audio`
+
+Auth: cookie `arena-auth-prod-v1` containing base64-encoded Supabase session JSON.
+Supabase project: `huogzoeqzcrdvkwtvodi.supabase.co`
 
 ## Current production URLs
 
