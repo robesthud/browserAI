@@ -155,24 +155,29 @@ function BrowserApp({ user, reloadAuth }) {
   }, [activeId])
 
   // Обёртка sendMessage с авторежимом
+  // БАГ 3 ИСПРАВЛЕН: передаём выбранную модель напрямую в sendMessage (overrideModel),
+  // не ждём пока React обновит settings — это устраняет гонку данных
   const handleSendMessage = async (text, attachments = []) => {
+    let overrideModel = null
+
     if (autoMode && availableModels.length > 1 && text?.trim()) {
       const result = pickBestModel(text, availableModels, selectedModel)
       if (result.changed) {
-        // Переключаем модель ДО отправки
-        await setActiveModel(result.model)
+        overrideModel = result.model
+        // Обновляем настройки в фоне (без await — не блокируем отправку)
+        setActiveModel(result.model).catch(() => {})
         setAutoHint({
           reason: result.reason,
           taskType: result.taskType,
           icon: result.icon,
         })
-        // Сбрасываем подсказку через 5 секунд
         setTimeout(() => setAutoHint(null), 5000)
       } else {
         setAutoHint(null)
       }
     }
-    return sendMessage(text, attachments)
+
+    return sendMessage(text, attachments, overrideModel)
   }
 
   const handleToggleAuto = () => {
@@ -220,11 +225,7 @@ function BrowserApp({ user, reloadAuth }) {
           aiWorking={isStreaming || workspaceAiBusy}
           useWebAI={settings.useWebAI}
           onToggleWebAI={(next) => setParams({ useWebAI: next })}
-          models={availableModels}
-          selectedModel={selectedModel}
-          onSelectModel={setActiveModel}
           autoMode={autoMode}
-          onToggleAuto={handleToggleAuto}
           autoModelHint={autoHint ? `${autoHint.icon || ''} ${autoHint.reason}` : ''}
           workspaceOpen={workspaceOpen}
           onToggleWorkspace={toggleWorkspace}
@@ -236,7 +237,7 @@ function BrowserApp({ user, reloadAuth }) {
         {hasMessages ? (
           <>
             <MessageList messages={messages} />
-            {/* ModelBar над полем ввода (когда есть сообщения) */}
+            {/* ModelBar над полем ввода (когда есть сообщения) — дропдаун открывается вверх */}
             {availableModels.length > 0 && (
               <ModelBar
                 models={availableModels}
@@ -245,6 +246,7 @@ function BrowserApp({ user, reloadAuth }) {
                 autoHint={autoHint}
                 onSelectModel={setActiveModel}
                 onToggleAuto={handleToggleAuto}
+                dropUp={true}
               />
             )}
             <Composer
@@ -262,7 +264,7 @@ function BrowserApp({ user, reloadAuth }) {
               onSend={handleSendMessage}
               onStop={stop}
             />
-            {/* ModelBar под полем ввода на стартовом экране */}
+            {/* ModelBar под полем ввода на стартовом экране — дропдаун открывается вниз */}
             {availableModels.length > 0 && (
               <div className="flex justify-center pb-4">
                 <div className="w-full max-w-2xl px-4">
@@ -273,6 +275,7 @@ function BrowserApp({ user, reloadAuth }) {
                     autoHint={autoHint}
                     onSelectModel={setActiveModel}
                     onToggleAuto={handleToggleAuto}
+                    dropUp={false}
                   />
                 </div>
               </div>

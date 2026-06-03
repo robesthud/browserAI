@@ -19,6 +19,7 @@ const PROVIDER_PRESETS = [
   // --- Официальные API (Bearer токен) ---
   {
     id: 'openai',
+    group: 'api',
     label: 'OpenAI',
     name: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
@@ -26,6 +27,7 @@ const PROVIDER_PRESETS = [
   },
   {
     id: 'deepseek-api',
+    group: 'api',
     label: 'DeepSeek API',
     name: 'DeepSeek API',
     baseUrl: 'https://api.deepseek.com/v1',
@@ -33,6 +35,7 @@ const PROVIDER_PRESETS = [
   },
   {
     id: 'gemini',
+    group: 'api',
     label: 'Gemini',
     name: 'Gemini',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
@@ -41,6 +44,7 @@ const PROVIDER_PRESETS = [
   // --- Сессионные токены (веб-интерфейс) ---
   {
     id: 'deepseek-web',
+    group: 'web',
     label: '🍪 DeepSeek Web',
     name: 'DeepSeek Web (сессия)',
     baseUrl: 'https://chat.deepseek.com/api/v0',
@@ -50,6 +54,7 @@ const PROVIDER_PRESETS = [
   },
   {
     id: 'grok-web',
+    group: 'web',
     label: '🍪 Grok Web',
     name: 'Grok Web (сессия)',
     baseUrl: 'https://grok.com/api',
@@ -59,6 +64,7 @@ const PROVIDER_PRESETS = [
   },
   {
     id: 'claude-web',
+    group: 'web',
     label: '🍪 Claude Web',
     name: 'Claude Web (сессия)',
     baseUrl: 'https://claude.ai/api',
@@ -67,9 +73,10 @@ const PROVIDER_PRESETS = [
     authHeader: 'Cookie',
     hint: 'F12 → Network → любой запрос к /api → скопируй весь заголовок Cookie',
   },
-  // --- Локальные мосты (запускаются на устройстве) ---
+  // --- Локальные мосты ---
   {
     id: 'arena-bridge',
+    group: 'local',
     label: '🌉 Arena.ai Bridge',
     name: 'Arena.ai (через LMArenaBridge)',
     baseUrl: 'http://localhost:8000/api/v1',
@@ -79,6 +86,7 @@ const PROVIDER_PRESETS = [
   },
   {
     id: 'custom-web',
+    group: 'local',
     label: '🔧 Свой сайт',
     name: 'Кастомный сайт',
     baseUrl: '',
@@ -188,16 +196,18 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
     const value = e.target.value
     setForm((f) => {
       const next = { ...f, [field]: value }
+      // При смене baseUrl или apiKey сбрасываем список моделей
       if (field === 'baseUrl' || field === 'apiKey') {
         next.availableModels = []
         next.model = ''
-        // authType НЕ сбрасываем — пользователь мог специально выбрать cookie
+        // authType НЕ сбрасываем — пользователь мог специально выбрать cookie/custom
       }
       return next
     })
     setResult(null)
   }
 
+  // БАГ 7 ИСПРАВЛЕН: authHeader сбрасываем только если пресет явно его задаёт
   const applyPreset = (preset) => {
     setForm((f) => ({
       ...f,
@@ -206,12 +216,14 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
       availableModels: [],
       model: preset.model || '',
       authType: preset.authType || 'bearer',
-      authHeader: preset.authHeader || '',
+      // Сбрасываем authHeader только если пресет явно его задаёт
+      authHeader: preset.authHeader !== undefined ? preset.authHeader : f.authHeader,
     }))
     setResult(null)
     if (preset.hint) alert(`💡 Как получить токен:\n\n${preset.hint}`)
   }
 
+  // БАГ 1 ИСПРАВЛЕН: передаём authType и authHeader в validate
   const check = async () => {
     setChecking(true)
     setResult(null)
@@ -220,6 +232,8 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
         baseUrl: form.baseUrl,
         apiKey: form.apiKey,
         model: form.model,
+        authType: form.authType || 'bearer',
+        authHeader: form.authHeader || '',
       })
       setResult(r)
       if (r.ok && Array.isArray(r.models) && r.models.length > 0) {
@@ -245,7 +259,13 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
     modelRef.current = form.model || ''
   }, [form.model])
 
+  // БАГ 2 ИСПРАВЛЕН: auto-validate тоже передаёт authType/authHeader
+  // Для сессионных токенов (cookie/custom) не запускаем авто-валидацию —
+  // она бесполезна без модели и мешает UX
   useEffect(() => {
+    const isSession = form.authType === 'cookie' || form.authType === 'custom'
+    if (isSession) return undefined
+
     const hasCredentials = form.baseUrl.trim() && form.apiKey.trim()
     if (!hasCredentials) return undefined
 
@@ -258,6 +278,8 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
             baseUrl: form.baseUrl,
             apiKey: form.apiKey,
             model: modelRef.current,
+            authType: form.authType || 'bearer',
+            authHeader: form.authHeader || '',
           },
           controller.signal,
         )
@@ -283,14 +305,16 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
       controller.abort()
       clearTimeout(timer)
     }
-  }, [form.baseUrl, form.apiKey, onValidate])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.baseUrl, form.apiKey, form.authType, onValidate])
 
   return (
     <div className="space-y-3 rounded-xl border border-white/10 bg-graphite-900/60 p-3">
+      {/* БАГ 5 ИСПРАВЛЕН: правильная фильтрация пресетов по group */}
       <div>
         <div className="mb-2 text-[12px] text-cream-faint">Официальные API</div>
         <div className="flex flex-wrap gap-2">
-          {PROVIDER_PRESETS.filter((p) => !p.id.endsWith('-web')).map((preset) => (
+          {PROVIDER_PRESETS.filter((p) => p.group === 'api').map((preset) => (
             <button
               key={preset.id}
               type="button"
@@ -301,9 +325,10 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
             </button>
           ))}
         </div>
+
         <div className="mt-2 mb-1 text-[12px] text-cream-faint">Сессионные токены (веб-интерфейс)</div>
         <div className="flex flex-wrap gap-2">
-          {PROVIDER_PRESETS.filter((p) => p.id.endsWith('-web')).map((preset) => (
+          {PROVIDER_PRESETS.filter((p) => p.group === 'web').map((preset) => (
             <button
               key={preset.id}
               type="button"
@@ -314,6 +339,22 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
             </button>
           ))}
         </div>
+
+        <div className="mt-2 mb-1 text-[12px] text-cream-faint">Локальные и кастомные</div>
+        <div className="flex flex-wrap gap-2">
+          {PROVIDER_PRESETS.filter((p) => p.group === 'local').map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              onClick={() => applyPreset(preset)}
+              className="rounded-lg border border-blue-400/20 bg-blue-400/5 px-2.5 py-1.5 text-[12px] text-blue-300 transition-colors hover:border-blue-400/40 hover:bg-blue-400/10"
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Инструкция по сессионным токенам */}
         <div className="mt-2 rounded-lg border border-amber-400/15 bg-amber-400/5 px-3 py-2 text-[11px] text-amber-200/80 space-y-1">
           <div className="font-medium text-amber-300">💡 Как получить токен с любого сайта:</div>
           <div>1. Открой сайт и залогинься</div>
@@ -341,6 +382,7 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
           placeholder="https://api.openai.com/v1"
         />
       </Field>
+
       {/* Тип авторизации */}
       <Field label="Тип авторизации">
         <select
@@ -458,16 +500,16 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
         <div className="flex gap-2">
           <button
             onClick={onCancel}
-            className="rounded-lg px-3 py-1.5 text-[12px] text-cream-soft transition-colors hover:bg-graphite-750"
+            className="rounded-lg border border-white/10 px-3 py-1.5 text-[12px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream"
           >
             Отмена
           </button>
           <button
-            onClick={() => onSave(form)}
+            onClick={() => canSave && onSave(form)}
             disabled={!canSave}
             className="rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-graphite-900 transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-40 disabled:hover:scale-100"
           >
-            Сохранить ключ
+            Сохранить
           </button>
         </div>
       </div>
@@ -475,283 +517,185 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
   )
 }
 
-// Экран разблокировки (когда хранилище зашифровано и закрыто)
+// ---- Vault (шифрование ключей) ----
+
 function UnlockScreen({ onUnlock }) {
   const [pass, setPass] = useState('')
-  const [err, setErr] = useState('')
-  const [busy, setBusy] = useState(false)
-  const submit = async () => {
-    setBusy(true)
-    setErr('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const unlock = async () => {
+    if (!pass) return
+    setLoading(true)
+    setError('')
     try {
       await onUnlock(pass)
     } catch (e) {
-      setErr(e.message || 'Не удалось разблокировать')
+      setError(e.message || 'Неверный пароль')
     } finally {
-      setBusy(false)
+      setLoading(false)
     }
   }
+
   return (
-    <div className="space-y-3 rounded-xl border border-amber-400/20 bg-amber-400/5 p-4">
-      <div className="flex items-center gap-2 text-[13px] text-cream">
-        <IconLock /> Хранилище ключей зашифровано
-      </div>
-      <p className="text-[12px] text-cream-faint">
-        Введите мастер-пароль, чтобы расшифровать API-ключи.
-      </p>
+    <div className="space-y-3 py-4 text-center">
+      <div className="text-[32px]">🔒</div>
+      <div className="text-[14px] text-cream">Хранилище заблокировано</div>
+      <div className="text-[12px] text-cream-faint">Введите мастер-пароль для разблокировки</div>
       <input
-        className={inputCls}
         type="password"
-        value={pass}
-        onChange={(e) => {
-          setPass(e.target.value)
-          setErr('')
-        }}
-        onKeyDown={(e) => e.key === 'Enter' && submit()}
+        className={inputCls + ' text-center'}
         placeholder="Мастер-пароль"
+        value={pass}
+        onChange={(e) => setPass(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && unlock()}
         autoFocus
       />
-      {err && <div className="text-[12px] text-red-300">⚠ {err}</div>}
+      {error && <div className="text-[12px] text-red-300">{error}</div>}
       <button
-        onClick={submit}
-        disabled={busy || !pass}
-        className="flex w-full items-center justify-center gap-2 rounded-lg bg-cream px-4 py-2 text-[13px] font-medium text-graphite-900 transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-40"
+        onClick={unlock}
+        disabled={loading || !pass}
+        className="w-full rounded-lg bg-cream px-4 py-2 text-[13px] font-medium text-graphite-900 transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-40"
       >
-        <IconUnlock /> {busy ? 'Разблокировка…' : 'Разблокировать'}
+        {loading ? 'Проверка…' : 'Разблокировать'}
       </button>
     </div>
   )
 }
 
-// Секция управления шифрованием
-function VaultSection({
-  vault,
-  onSetup,
-  onLock,
-  onChange,
-  onDisable,
-  onAutolock,
-  onBackup,
-  onRestore,
-}) {
-  const [mode, setMode] = useState(null) // null | 'setup' | 'change'
+function VaultSection({ vault, onSetup, onLock, onChange, onDisable, onAutolock, onBackup, onRestore }) {
   const [pass, setPass] = useState('')
-  const [pass2, setPass2] = useState('')
-  const [err, setErr] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [restoreMsg, setRestoreMsg] = useState(null)
-  const restoreRef = useRef(null)
+  const [newPass, setNewPass] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [msg, setMsg] = useState(null)
+  const fileRef = useRef(null)
 
-  const reset = () => {
-    setMode(null)
-    setPass('')
-    setPass2('')
-    setErr('')
+  const wrap = async (fn) => {
+    setLoading(true)
+    setMsg(null)
+    try {
+      await fn()
+      setMsg({ ok: true, text: 'Готово' })
+      setPass('')
+      setNewPass('')
+    } catch (e) {
+      setMsg({ ok: false, text: e.message || 'Ошибка' })
+    } finally {
+      setLoading(false)
+    }
   }
 
   const handleRestore = async (file) => {
     if (!file) return
-    setRestoreMsg(null)
     try {
       const text = await file.text()
       const backup = JSON.parse(text)
-      if (backup.type !== 'browserai-backup')
-        throw new Error('Это не файл бэкапа BrowserAI')
-      if (
-        !confirm(
-          'Восстановить из бэкапа? Текущие ключи и параметры будут заменены.',
-        )
-      )
-        return
-      await onRestore(backup)
-      setRestoreMsg({
-        ok: true,
-        text: backup.encrypted
-          ? 'Восстановлено. Введите мастер-пароль для разблокировки.'
-          : 'Бэкап восстановлен.',
-      })
+      await wrap(() => onRestore(backup))
     } catch (e) {
-      setRestoreMsg({ ok: false, text: e.message || 'Ошибка восстановления' })
+      setMsg({ ok: false, text: e.message || 'Ошибка восстановления' })
     }
   }
-
-  const submit = async () => {
-    if (pass.length < 4) return setErr('Минимум 4 символа')
-    if (pass !== pass2) return setErr('Пароли не совпадают')
-    setBusy(true)
-    setErr('')
-    try {
-      if (mode === 'setup') await onSetup(pass)
-      else await onChange(pass)
-      reset()
-    } catch (e) {
-      setErr(e.message || 'Ошибка')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const btn =
-    'rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-cream-soft transition-colors hover:border-white/20 hover:bg-graphite-750 hover:text-cream'
 
   return (
-    <section className="space-y-2 border-t border-white/5 pt-4">
-      <div className="flex items-center justify-between">
-        <h3 className="flex items-center gap-2 text-[13px] font-medium text-cream">
-          {vault.enabled ? <IconLock /> : <IconUnlock />} Шифрование ключей
-        </h3>
-        <span
-          className={`rounded-full px-2 py-0.5 text-[10px] ${
-            vault.enabled
-              ? 'bg-green-500/15 text-green-300'
-              : 'bg-graphite-700 text-cream-faint'
-          }`}
-        >
-          {vault.enabled ? 'включено' : 'выключено'}
-        </span>
-      </div>
+    <section className="space-y-3 border-t border-white/5 pt-4">
+      <h3 className="text-[13px] font-medium text-cream">
+        🔐 Шифрование ключей
+      </h3>
 
-      {!mode && (
-        <>
-          <p className="text-[11px] text-cream-faint">
-            {vault.enabled
-              ? 'Ключи в БД зашифрованы мастер-паролем (AES-256-GCM). При перезапуске сервера потребуется разблокировка.'
-              : 'Включите, чтобы хранить API-ключи в БД в зашифрованном виде под мастер-паролем.'}
+      {!vault.enabled ? (
+        <div className="space-y-2">
+          <p className="text-[12px] text-cream-faint">
+            Мастер-пароль шифрует ваши API-ключи в БД (AES-256-GCM). Без пароля — ключи в открытом виде.
           </p>
-          <div className="flex flex-wrap gap-1.5">
-            {!vault.enabled ? (
-              <button onClick={() => setMode('setup')} className={btn}>
-                Включить шифрование
-              </button>
-            ) : (
-              <>
-                <button onClick={() => setMode('change')} className={btn}>
-                  Сменить пароль
-                </button>
-                <button onClick={onLock} className={btn}>
-                  Заблокировать сейчас
-                </button>
-                <button
-                  onClick={() => {
-                    if (
-                      confirm(
-                        'Отключить шифрование? Ключи будут расшифрованы и сохранены в БД в открытом виде.',
-                      )
-                    )
-                      onDisable()
-                  }}
-                  className="rounded-lg border border-red-500/20 px-2.5 py-1 text-[11px] text-red-300 transition-colors hover:bg-red-500/10"
-                >
-                  Отключить
-                </button>
-              </>
-            )}
-          </div>
-
-          {/* Автоблокировка по бездействию (только когда включено) */}
-          {vault.enabled && (
-            <label className="mt-2 flex items-center justify-between gap-2">
-              <span className="text-[12px] text-cream-soft">
-                Автоблокировка при бездействии
-              </span>
-              <select
-                value={vault.autoLockMinutes ?? 0}
-                onChange={(e) => onAutolock(parseInt(e.target.value, 10))}
-                className="rounded-lg border border-white/10 bg-graphite-900 px-2 py-1 text-[12px] text-cream focus:border-cream/30 focus:outline-none"
-              >
-                <option value={0}>Выключена</option>
-                <option value={5}>5 минут</option>
-                <option value={15}>15 минут</option>
-                <option value={30}>30 минут</option>
-                <option value={60}>1 час</option>
-              </select>
-            </label>
-          )}
-
-          {/* Зашифрованный бэкап БД */}
-          <div className="mt-2 border-t border-white/5 pt-2">
-            <div className="mb-1 text-[11px] text-cream-faint">
-              Бэкап базы данных (ключи + параметры
-              {vault.enabled ? ', в зашифрованном виде' : ''})
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              <button onClick={onBackup} className={btn}>
-                <span className="inline-flex items-center gap-1">
-                  <IconDownload /> Экспорт бэкапа
-                </span>
-              </button>
-              <button onClick={() => restoreRef.current?.click()} className={btn}>
-                <span className="inline-flex items-center gap-1">
-                  <IconUpload /> Восстановить бэкап
-                </span>
-              </button>
-              <input
-                ref={restoreRef}
-                type="file"
-                accept="application/json,.json"
-                hidden
-                onChange={(e) => {
-                  handleRestore(e.target.files?.[0])
-                  e.target.value = ''
-                }}
-              />
-            </div>
-            {restoreMsg && (
-              <div
-                className={`mt-2 rounded-lg px-3 py-2 text-[12px] ${
-                  restoreMsg.ok
-                    ? 'border border-green-500/30 bg-green-500/10 text-green-300'
-                    : 'border border-red-500/30 bg-red-500/10 text-red-300'
-                }`}
-              >
-                {restoreMsg.text}
-              </div>
-            )}
-          </div>
-        </>
-      )}
-
-      {mode && (
-        <div className="space-y-2 rounded-xl border border-white/10 bg-graphite-900/60 p-3">
           <input
-            className={inputCls}
             type="password"
+            className={inputCls}
+            placeholder="Новый мастер-пароль (мин. 10 символов)"
             value={pass}
-            onChange={(e) => {
-              setPass(e.target.value)
-              setErr('')
-            }}
-            placeholder={mode === 'setup' ? 'Новый мастер-пароль' : 'Новый пароль'}
-            autoFocus
+            onChange={(e) => setPass(e.target.value)}
           />
-          <input
-            className={inputCls}
-            type="password"
-            value={pass2}
-            onChange={(e) => {
-              setPass2(e.target.value)
-              setErr('')
-            }}
-            onKeyDown={(e) => e.key === 'Enter' && submit()}
-            placeholder="Повторите пароль"
-          />
-          {err && <div className="text-[12px] text-red-300">⚠ {err}</div>}
-          <p className="text-[11px] text-cream-faint">
-            ⚠️ Пароль нельзя восстановить — забыв его, вы потеряете доступ к
-            ключам.
-          </p>
-          <div className="flex justify-end gap-2">
-            <button onClick={reset} className={btn}>
-              Отмена
+          <button
+            onClick={() => wrap(() => onSetup(pass))}
+            disabled={loading || !pass}
+            className="w-full rounded-lg border border-white/10 px-3 py-1.5 text-[12px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream disabled:opacity-50"
+          >
+            Включить шифрование
+          </button>
+        </div>
+      ) : vault.locked ? (
+        <UnlockScreen onUnlock={async (p) => { await onSetup(p) }} />
+      ) : (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 rounded-lg border border-green-500/20 bg-green-500/10 px-3 py-2">
+            <span className="text-green-400">🔓</span>
+            <span className="text-[12px] text-green-300">Хранилище разблокировано</span>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => wrap(onLock)}
+              disabled={loading}
+              className="flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1.5 text-[11px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream disabled:opacity-50"
+            >
+              <IconLock /> Заблокировать
             </button>
             <button
-              onClick={submit}
-              disabled={busy}
-              className="rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-graphite-900 transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-40"
+              onClick={onBackup}
+              disabled={loading}
+              className="flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1.5 text-[11px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream disabled:opacity-50"
             >
-              {busy ? 'Сохранение…' : 'Сохранить'}
+              <IconDownload /> Бэкап
             </button>
+            <button
+              onClick={() => fileRef.current?.click()}
+              disabled={loading}
+              className="flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1.5 text-[11px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream disabled:opacity-50"
+            >
+              <IconUpload /> Восстановить
+            </button>
+            <input ref={fileRef} type="file" accept=".json" hidden onChange={(e) => { handleRestore(e.target.files?.[0]); e.target.value = '' }} />
           </div>
+
+          <div className="space-y-1.5">
+            <input type="password" className={inputCls} placeholder="Новый мастер-пароль" value={newPass} onChange={(e) => setNewPass(e.target.value)} />
+            <div className="flex gap-2">
+              <button
+                onClick={() => wrap(() => onChange(newPass))}
+                disabled={loading || !newPass}
+                className="flex-1 rounded-lg border border-white/10 px-2.5 py-1.5 text-[11px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream disabled:opacity-50"
+              >
+                Сменить пароль
+              </button>
+              <button
+                onClick={() => { if (window.confirm('Отключить шифрование? Ключи будут в открытом виде.')) wrap(onDisable) }}
+                disabled={loading}
+                className="flex-1 rounded-lg border border-red-500/20 px-2.5 py-1.5 text-[11px] text-red-300 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+              >
+                Отключить
+              </button>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[12px] text-cream-faint">Автоблокировка</span>
+            <select
+              className="rounded-lg border border-white/10 bg-graphite-900 px-2 py-1 text-[12px] text-cream"
+              value={vault.autolockMinutes ?? 0}
+              onChange={(e) => wrap(() => onAutolock(Number(e.target.value)))}
+            >
+              <option value={0}>Выкл</option>
+              <option value={5}>5 мин</option>
+              <option value={15}>15 мин</option>
+              <option value={30}>30 мин</option>
+              <option value={60}>60 мин</option>
+            </select>
+          </div>
+        </div>
+      )}
+
+      {msg && (
+        <div className={`rounded-lg px-3 py-2 text-[12px] ${msg.ok ? 'bg-green-500/10 text-green-300' : 'bg-red-500/10 text-red-300'}`}>
+          {msg.text}
         </div>
       )}
     </section>
@@ -762,7 +706,7 @@ export default function SettingsModal({
   open,
   settings,
   online,
-  vault = { enabled: false, locked: false },
+  vault,
   onSaveKey,
   onDeleteKey,
   onActivateKey,

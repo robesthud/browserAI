@@ -35,6 +35,7 @@ export default function ModelBar({
   autoHint,        // { taskType, reason } | null
   onSelectModel,
   onToggleAuto,
+  dropUp = true,   // true = вверх (над чатом), false = вниз (стартовый экран)
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -145,9 +146,9 @@ export default function ModelBar({
         </span>
       )}
 
-      {/* Дропдаун */}
+      {/* БАГ 4 ИСПРАВЛЕН: дропдаун открывается вверх или вниз в зависимости от dropUp */}
       {open && (
-        <div className="absolute bottom-full left-0 right-0 z-40 mb-2 overflow-hidden rounded-2xl border border-white/10 bg-graphite-800 shadow-2xl">
+        <div className={`absolute left-0 right-0 z-40 overflow-hidden rounded-2xl border border-white/10 bg-graphite-800 shadow-2xl ${dropUp ? 'bottom-full mb-2' : 'top-full mt-2'}`}>
           {/* Шапка — авторежим */}
           <div className="border-b border-white/5 p-3 space-y-2">
             <button

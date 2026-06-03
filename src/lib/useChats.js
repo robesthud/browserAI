@@ -116,9 +116,9 @@ export function useChats(settings) {
     setIsStreaming(false)
   }, [])
 
-  // Отправка сообщения. text + attachments[]
+  // Отправка сообщения. text + attachments[] + overrideModel (для авторежима)
   const sendMessage = useCallback(
-    async (text, attachments = []) => {
+    async (text, attachments = [], overrideModel = null) => {
       const trimmed = (text || '').trim()
       if (!trimmed && attachments.length === 0) return
 
@@ -184,7 +184,11 @@ export function useChats(settings) {
       }
 
       try {
-        const resolved = resolveActive(settings)
+        // БАГ 3 ИСПРАВЛЕН: если авторежим передал overrideModel — используем его,
+        // не дожидаясь пока React обновит settings через setState
+        const resolved = overrideModel
+          ? { ...resolveActive(settings), model: overrideModel }
+          : resolveActive(settings)
 
         if (
           resolved.apiKey &&
