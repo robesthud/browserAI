@@ -1325,6 +1325,14 @@ app.get('/api/web/fetch', requireAuth, async (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ ok: true }))
 
+// Удаление своего аккаунта (залогиненный пользователь)
+app.delete('/api/auth/account', requireAuth, (req, res) => {
+  const userId = req.user.id
+  db.prepare('DELETE FROM users WHERE id = ?').run(userId)
+  clearSessionCookie(res)
+  res.json({ ok: true })
+})
+
 
 
 // #6 FIX: удалён мёртвый код «void getActiveKeyDecrypted»
