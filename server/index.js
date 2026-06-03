@@ -1325,6 +1325,25 @@ app.get('/api/web/fetch', requireAuth, async (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ ok: true }))
 
+// ---- Временный admin эндпоинт для сброса пользователей (только при наличии ADMIN_DELETE_KEY) ----
+// Используется один раз для удаления owner из БД. После использования ADMIN_DELETE_KEY
+// нужно убрать из Railway Variables.
+;(() => {
+  const ADMIN_KEY = process.env.ADMIN_DELETE_KEY || ''
+  if (!ADMIN_KEY) return
+  app.delete('/api/admin/nuke-users', (req, res) => {
+    const key = req.headers['x-admin-key'] || ''
+    if (!key || key !== ADMIN_KEY) return res.status(403).json({ error: 'Forbidden' })
+    const users = db.prepare('SELECT id, email, role FROM users').all()
+    db.prepare('DELETE FROM users').run()
+    db.prepare('DELETE FROM sessions').run()
+    db.prepare('DELETE FROM user_cloud_data').run()
+    db.prepare('DELETE FROM password_reset_tokens').run()
+    db.prepare('DELETE FROM sms_codes').run()
+    res.json({ ok: true, deleted: users.map((u) => ({ id: u.id, email: u.email, role: u.role })) })
+  })
+})()
+
 // #6 FIX: удалён мёртвый код «void getActiveKeyDecrypted»
 // Функция импортирована из db.js и доступна в модуле напрямую, если понадобится.
 
