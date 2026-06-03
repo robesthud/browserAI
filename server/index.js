@@ -1080,51 +1080,97 @@ app.post('/api/validate', requireAuth, async (req, res) => {
 
   if (isSession) {
     const stealthH = buildSessionHeaders({ baseUrl, apiKey, authType, authHeader, extraHeaders })
-    const probeBody = buildProbeBody(baseUrl, model)
 
-    try {
-      const r = await fetch(`${root}/chat/completions`, {
-        method: 'POST',
-        headers: stealthH,
-        body: JSON.stringify(probeBody),
-        signal: AbortSignal.timeout(15000),
-      })
+    // Собираем список моделей-кандидатов для перебора
+    const candidates = []
+    if (model) candidates.push(model)
+    if (Array.isArray(profile.modelCandidates)) {
+      for (const c of profile.modelCandidates) {
+        if (!candidates.includes(c)) candidates.push(c)
+      }
+    }
+    if (candidates.length === 0) candidates.push('gpt-4o-mini')
 
-      // 200, 400 (неверная модель/параметр) — токен принят сервером
-      if (r.ok || r.status === 400) {
-        return res.json({
-          ok: true,
-          message: `Сессионный токен принят (${r.status})`,
-          models: model ? [model] : [],
-          preferredModel: model || '',
+    // Пробуем каждую модель — собираем работающие
+    const workingModels = []
+    let firstOkModel = ''
+    let tokenRejected = false
+    let lastStatus = 0
+
+    for (const candidateModel of candidates) {
+      try {
+        const probeBody = applyBodyDefaults({
+          model:    candidateModel,
+          messages: [{ role: 'user', content: 'Hi' }],
+          max_tokens: 5,
+          stream:   false,
+        }, baseUrl)
+
+        const r = await fetch(`${root}/chat/completions`, {
+          method: 'POST',
+          headers: stealthH,
+          body: JSON.stringify(probeBody),
+          signal: AbortSignal.timeout(10000),
         })
+        lastStatus = r.status
+
+        if (r.status === 401 || r.status === 403) {
+          tokenRejected = true
+          break
+        }
+        if (r.status === 429) {
+          // Rate limited — считаем что токен валиден, но не можем проверить модели
+          if (workingModels.length === 0 && model) workingModels.push(model)
+          break
+        }
+
+        if (r.ok) {
+          // Пробуем извлечь реальное имя модели из ответа
+          let realModel = candidateModel
+          try {
+            const body = await r.json()
+            if (body?.model) realModel = body.model
+          } catch { /* ignore parse errors */ }
+
+          if (!workingModels.includes(realModel)) workingModels.push(realModel)
+          // Также добавляем имя кандидата если отличается
+          if (realModel !== candidateModel && !workingModels.includes(candidateModel)) {
+            workingModels.push(candidateModel)
+          }
+          if (!firstOkModel) firstOkModel = realModel
+        }
+        // 400 — модель невалидна, пробуем следующую (не добавляем)
+      } catch {
+        // Таймаут одного кандидата — пробуем следующего
+        continue
       }
-      if (r.status === 401 || r.status === 403) {
-        return res.json({
-          ok: false,
-          message: `Токен отклонён (${r.status}) — обнови токен в браузере`,
-          models: [],
-          preferredModel: '',
-        })
-      }
-      if (r.status === 429) {
-        return res.json({
-          ok: false,
-          message: 'Слишком много запросов (429) — подожди немного',
-          models: [],
-          preferredModel: '',
-        })
-      }
+    }
+
+    if (tokenRejected) {
       return res.json({
         ok: false,
-        message: `Сервер ответил ${r.status}`,
+        message: `Токен отклонён (${lastStatus}) — обнови токен в браузере`,
         models: [],
         preferredModel: '',
       })
-    } catch (e) {
-      const msg = e?.name === 'TimeoutError' ? 'Таймаут (15s) — сайт не ответил' : (e.message || 'Ошибка сети')
-      return res.json({ ok: false, message: msg, models: [], preferredModel: '' })
     }
+
+    if (workingModels.length > 0) {
+      return res.json({
+        ok: true,
+        message: `Сессионный токен принят · моделей: ${workingModels.length}`,
+        models: workingModels,
+        preferredModel: firstOkModel || workingModels[0],
+      })
+    }
+
+    // Ничего не сработало
+    return res.json({
+      ok: false,
+      message: lastStatus ? `Сервер ответил ${lastStatus} — ни одна модель не работает` : 'Не удалось подключиться',
+      models: [],
+      preferredModel: '',
+    })
   }
 
   // ── Обычный API-ключ (bearer, официальный провайдер) ──

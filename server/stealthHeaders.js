@@ -66,8 +66,10 @@ const SITE_PROFILES = {
       'x-requested-with': 'XMLHttpRequest',
     },
     bodyDefaults:     { temperature: 1.0, stream: true },
-    isBearerSession:  true,   // JWT токен из Authorization: Bearer eyJ...
+    isBearerSession:  true,
     skipModelsProbe:  true,
+    // Модели-кандидаты для перебора при validate
+    modelCandidates:  ['deepseek_chat', 'deepseek-chat', 'DeepThink', 'deepseek-reasoner'],
   },
 
   // ── Grok (xAI) ─────────────────────────────────────────────────────────────
@@ -79,6 +81,7 @@ const SITE_PROFILES = {
     bodyDefaults:     { temperature: 0.7, stream: true },
     isBearerSession:  true,
     skipModelsProbe:  true,
+    modelCandidates:  ['grok-3', 'grok-2', 'grok-3-mini', 'grok-2-mini'],
   },
 
   // ── Claude (Anthropic) ─────────────────────────────────────────────────────
@@ -89,8 +92,9 @@ const SITE_PROFILES = {
       'anthropic-client-platform': 'web',
     },
     bodyDefaults:     { stream: true },
-    isBearerSession:  false,  // Использует Cookie
+    isBearerSession:  false,
     skipModelsProbe:  true,
+    modelCandidates:  ['claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-haiku-20240307', 'claude-3-opus-20240229'],
   },
 
   // ── Gemini AI (Google AI Studio / gemini.google.com) ──────────────────────
@@ -120,12 +124,13 @@ const SITE_PROFILES = {
   'chatgpt.com': {
     origin: 'https://chatgpt.com',
     extra: {
-      'openai-sentinel-chat-requirements-token': '',  // заполняется из сессии
+      'openai-sentinel-chat-requirements-token': '',
       'openai-conversation-id': '',
     },
     bodyDefaults:     { stream: true },
-    isBearerSession:  true,   // Bearer токен из Authorization
+    isBearerSession:  true,
     skipModelsProbe:  true,
+    modelCandidates:  ['gpt-4o', 'gpt-4o-mini', 'gpt-4', 'gpt-3.5-turbo', 'o3-mini'],
   },
 
   // ── Mistral AI ─────────────────────────────────────────────────────────────
@@ -137,6 +142,7 @@ const SITE_PROFILES = {
     bodyDefaults:     { stream: true },
     isBearerSession:  true,
     skipModelsProbe:  true,
+    modelCandidates:  ['mistral-large-latest', 'mistral-medium-latest', 'mistral-small-latest'],
   },
 
   // ── Qwen (Alibaba) ─────────────────────────────────────────────────────────
