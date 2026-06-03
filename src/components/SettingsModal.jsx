@@ -270,6 +270,33 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
         onChange={set('apiKey')}
       />
 
+      {/* Выбор модели — дропдаун если список получен, иначе текстовый ввод */}
+      <Field
+        label="Модель"
+        hint={form.availableModels?.length
+          ? `Доступно моделей: ${form.availableModels.length}`
+          : 'Введите вручную или нажмите «Проверить» для автозагрузки списка'}
+      >
+        {form.availableModels?.length > 0 ? (
+          <select
+            className={inputCls}
+            value={form.model}
+            onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
+          >
+            {form.availableModels.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        ) : (
+          <input
+            className={inputCls}
+            value={form.model}
+            onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
+            placeholder="gpt-4o, claude-3-5-sonnet, gemini-2.0-flash…"
+          />
+        )}
+      </Field>
+
       {result && (
         <div
           className={`rounded-lg px-3 py-2 text-[12px]
@@ -283,9 +310,9 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
             {result.ok ? '✓ ' : '⚠ '}
             {result.message}
           </div>
-          {result.ok && form.availableModels?.length > 0 && (
+          {result.ok && form.model && (
             <div className="mt-1 text-[11px] text-green-200/90">
-              Сохранится моделей: {form.availableModels.length}. Первая выбранная — {form.model}.
+              Выбранная модель: {form.model}
             </div>
           )}
         </div>
