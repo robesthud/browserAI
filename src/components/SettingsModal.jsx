@@ -790,13 +790,13 @@ export default function SettingsModal({
                 onClick={() => onSetParams({ useWebAI: !settings.useWebAI })}
                 role="switch"
                 aria-checked={settings.useWebAI}
-                className={`relative h-[18px] w-8 rounded-full transition-colors ${
+                className={`relative shrink-0 h-6 w-11 rounded-full transition-colors ${
                   settings.useWebAI ? 'bg-cream' : 'bg-graphite-600'
                 }`}
               >
                 <span
-                  className={`absolute top-[2px] h-[14px] w-[14px] rounded-full bg-graphite-900 transition-transform ${
-                    settings.useWebAI ? 'translate-x-[16px]' : 'translate-x-[2px]'
+                  className={`absolute top-[3px] h-[18px] w-[18px] rounded-full bg-graphite-900 shadow transition-transform ${
+                    settings.useWebAI ? 'translate-x-[22px]' : 'translate-x-[3px]'
                   }`}
                 />
               </button>
@@ -822,16 +822,25 @@ export default function SettingsModal({
                 className="w-full accent-cream"
               />
             </Field>
-            <label className="flex items-center justify-between">
+            <label className="flex items-center justify-between gap-3">
               <span className="text-[13px] text-cream-soft">
                 Потоковый вывод (stream)
               </span>
-              <input
-                type="checkbox"
-                checked={settings.stream}
-                onChange={(e) => onSetParams({ stream: e.target.checked })}
-                className="h-4 w-4 accent-cream"
-              />
+              <button
+                type="button"
+                role="switch"
+                aria-checked={settings.stream}
+                onClick={() => onSetParams({ stream: !settings.stream })}
+                className={`relative shrink-0 h-6 w-11 rounded-full transition-colors ${
+                  settings.stream ? 'bg-cream' : 'bg-graphite-600'
+                }`}
+              >
+                <span
+                  className={`absolute top-[3px] h-[18px] w-[18px] rounded-full bg-graphite-900 shadow transition-transform ${
+                    settings.stream ? 'translate-x-[22px]' : 'translate-x-[3px]'
+                  }`}
+                />
+              </button>
             </label>
           </section>
           </>

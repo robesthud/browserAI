@@ -591,13 +591,13 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
                 onClick={() => setShowHidden((v) => !v)}
                 role="switch"
                 aria-checked={showHidden}
-                className={`relative h-[18px] w-8 rounded-full transition-colors ${
+                className={`relative shrink-0 h-6 w-11 rounded-full transition-colors ${
                   showHidden ? 'bg-cream' : 'bg-graphite-600'
                 }`}
               >
                 <span
-                  className={`absolute top-[2px] h-[14px] w-[14px] rounded-full bg-graphite-900 transition-transform ${
-                    showHidden ? 'translate-x-[16px]' : 'translate-x-[2px]'
+                  className={`absolute top-[3px] h-[18px] w-[18px] rounded-full bg-graphite-900 shadow transition-transform ${
+                    showHidden ? 'translate-x-[22px]' : 'translate-x-[3px]'
                   }`}
                 />
               </button>
