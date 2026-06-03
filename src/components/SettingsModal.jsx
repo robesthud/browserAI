@@ -307,7 +307,26 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
     if (preset.hint) alert(`💡 Как получить токен:\n\n${preset.hint}`)
   }
 
-  // БАГ 1 ИСПРАВЛЕН: передаём authType и authHeader в validate
+  // Применяет результат валидации к форме и возвращает обновлённую форму
+  const applyValidationResult = (r) => {
+    let updatedForm = null
+    setForm((f) => {
+      const models = (r.ok && Array.isArray(r.models) && r.models.length > 0) ? r.models : f.availableModels || []
+      const preferredModel =
+        (r.preferredModel && models.includes(r.preferredModel) && r.preferredModel) ||
+        (models.includes(f.model) ? f.model : null) ||
+        models[0] || f.model || ''
+      updatedForm = {
+        ...f,
+        availableModels: models.length > 0 ? models : (f.model ? [f.model] : []),
+        model: preferredModel,
+      }
+      return updatedForm
+    })
+    return updatedForm
+  }
+
+  // Проверка + автосохранение: после успешной валидации сразу сохраняет ключ
   const check = async () => {
     setChecking(true)
     setResult(null)
@@ -320,14 +339,10 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
         authHeader: form.authHeader || '',
       })
       setResult(r)
-      if (r.ok && Array.isArray(r.models) && r.models.length > 0) {
-        setForm((f) => ({
-          ...f,
-          availableModels: r.models,
-          model:
-            (r.preferredModel && r.models.includes(r.preferredModel) && r.preferredModel) ||
-            (r.models.includes(f.model) ? f.model : r.models[0]),
-        }))
+      const updated = applyValidationResult(r)
+      // Автосохранение при успешной проверке
+      if (r.ok && updated && updated.apiKey?.trim() && updated.baseUrl?.trim() && updated.model?.trim()) {
+        onSave(updated)
       }
     } finally {
       setChecking(false)
@@ -343,15 +358,14 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
     modelRef.current = form.model || ''
   }, [form.model])
 
-  // БАГ 2 ИСПРАВЛЕН: auto-validate тоже передаёт authType/authHeader
-  // Для сессионных токенов (cookie/custom) не запускаем авто-валидацию —
-  // она бесполезна без модели и мешает UX
+  // Авто-валидация при вводе ключа/URL
+  // Для сессионных токенов (cookie/custom) тоже запускаем, но только если модель уже указана
   useEffect(() => {
     const isSession = form.authType === 'cookie' || form.authType === 'custom'
-    if (isSession) return undefined
-
     const hasCredentials = form.baseUrl.trim() && form.apiKey.trim()
     if (!hasCredentials) return undefined
+    // Для сессионных — нужна модель (из пресета). Без модели валидация бесполезна.
+    if (isSession && !modelRef.current) return undefined
 
     const controller = new AbortController()
     const timer = setTimeout(async () => {
@@ -369,14 +383,10 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
         )
         if (controller.signal.aborted) return
         setResult(r)
-        if (r.ok && Array.isArray(r.models) && r.models.length > 0) {
-          setForm((f) => ({
-            ...f,
-            availableModels: r.models,
-            model:
-              (r.preferredModel && r.models.includes(r.preferredModel) && r.preferredModel) ||
-              (r.models.includes(f.model) ? f.model : r.models[0]),
-          }))
+        const updated = applyValidationResult(r)
+        // Автосохранение при успешной авто-валидации
+        if (r.ok && updated && updated.apiKey?.trim() && updated.baseUrl?.trim() && updated.model?.trim()) {
+          onSave(updated)
         }
       } catch {
         /* ignore auto-fetch errors */
