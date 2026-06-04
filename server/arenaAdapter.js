@@ -100,20 +100,33 @@ async function launchBrowser() {
 
   // Устанавливаем arena cookie
   if (currentCookie) {
-    // Cookie может содержать символы которые нужно URL-encode
-    // Playwright принимает domain без leading dot
-    await context.addCookies([{
-      name: 'arena-auth-prod-v1',
-      value: encodeURIComponent(currentCookie),
-      domain: 'arena.ai',
-      path: '/',
-      secure: true,
-      sameSite: 'None',
-    }])
-    log('Cookie set in browser context')
+    log('Cookie will be set via JavaScript after navigation')
   }
 
   page = await context.newPage()
+
+  // Устанавливаем cookie через CDP (Chrome DevTools Protocol)
+  // Это обходит ограничения Playwright addCookies на длину/символы
+  if (currentCookie) {
+    const cdp = await page.context().newCDPSession(page)
+    await cdp.send('Network.setCookie', {
+      name: 'arena-auth-prod-v1',
+      value: currentCookie,
+      domain: '.arena.ai',
+      path: '/',
+      secure: true,
+      httpOnly: false,
+      sameSite: 'Lax',
+    }).catch(async (e) => {
+      warn('CDP setCookie failed:', e.message, '— trying document.cookie')
+      // Fallback: устанавливаем через JavaScript
+      await page.goto(ARENA_ORIGIN + '/', { waitUntil: 'domcontentloaded', timeout: 15000 })
+      await page.evaluate((cookie) => {
+        document.cookie = 'arena-auth-prod-v1=' + cookie + '; path=/; secure; samesite=lax; max-age=2592000'
+      }, currentCookie)
+    })
+    log('Cookie set')
+  }
 
   // Перехватываем обновлённые cookies
   context.on('response', async (response) => {
