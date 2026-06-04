@@ -305,103 +305,32 @@ GitHub Actions workflows:
 
 ---
 
-## 🏟 Arena.ai — встроенный адаптер (600+ бесплатных моделей)
+## 🌉 Arena.ai Bridge (LMArenaBridge) — 600+ бесплатных моделей
 
-BrowserAI имеет **встроенный адаптер** для Arena.ai, который работает полностью автоматически
-через headless Chromium (Playwright). Не нужны внешние прокси, userscript или открытые вкладки.
+Прямой встроенный серверный адаптер удалён. 
 
-### Что даёт Arena.ai
+Основной способ — через внешний **LMArenaBridge** (OpenAI-совместимый прокси к lmarena.ai / arena.ai).
 
-- **600+ моделей** бесплатно: GPT-5, Claude Opus 4, Gemini 3, Grok 4, Qwen, Kimi, Mistral и др.
-- Все модели доступны через один аккаунт arena.ai (Google-авторизация)
+**Hosted на Railway (рекомендуется):**
+- Base URL: `https://lmarena-bridge-production.up.railway.app/api/v1`
+- Добавь как ключ в BrowserAI → выбери пресет "🌉 Arena.ai Bridge"
+- Api Key: любая заглушка (не используется)
+- Cookie настраивается внутри bridge-сервиса (LMARENA_AUTH_TOKENS или config)
 
-### Как включить
+**Локально:**
+- Установи LMArenaBridge (см. GitHub CloudWaddie/LMArenaBridge или jtostrings/LMarenaBridge)
+- Получи cookie: F12 → Cookies → arena-auth-prod-v1 на lmarena.ai
+- Запусти bridge, укажи cookie в его config.json
+- Base URL: `http://localhost:8000/api/v1`
 
-1. **Зарегистрируйтесь** на [arena.ai](https://arena.ai) (Google-аккаунт)
+**Шаги в BrowserAI:**
+1. Получи cookie с lmarena.ai
+2. Настрой cookie в своём bridge (hosted или локальный)
+3. В UI: Настройки → + → Arena.ai Bridge → вставь Base URL + заглушка
+4. Проверь → модели загрузятся (Claude, Gemini, Grok и др.)
+5. Используй в чате
 
-2. **Скопируйте cookie:**
-   - Откройте arena.ai → F12 → Application → Cookies
-   - Скопируйте **значение** cookie `arena-auth-prod-v1` (начинается с `base64-`)
-
-3. **Задайте переменную окружения** на сервере (Railway / Docker / .env) — один из вариантов:
-   - Полная кука: `ARENA_AUTH_COOKIE=base64-eyJhY2Nlc3NfdG9rZW4iOi...`
-   - Только refresh + anon: `ARENA_REFRESH_TOKEN=...` и `ARENA_ANON_KEY=...`
-
-   ```
-   PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium
-   ```
-
-4. **В BrowserAI:** Настройки → пресет **🏟 Arena.ai** → введите любой ключ → Сохранить
-
-5. **Готово!** Токен обновляется автоматически — повторно копировать cookie не нужно.
-
-> 💡 Cookie содержит `refresh_token`. Адаптер сам обновляет `access_token` через Supabase 
-> каждый час. Пока `refresh_token` жив (недели), всё работает без вмешательства.
-
-### Как работает
-
-```
-Пользователь → BrowserAI → /api/chat
-                               │
-                               ▼
-                     isArenaUrl(baseUrl)?
-                               │ да
-                               ▼
-                     arenaAdapter.js
-                         │
-                         ├── Playwright (headless Chromium)
-                         │     ├── Устанавливает cookie через CDP
-                         │     ├── Открывает arena.ai
-                         │     ├── Перехватывает Supabase anon key из network
-                         │     └── Извлекает reCAPTCHA v3 site key
-                         │
-                         ├── Автообновление токена
-                         │     ├── Декодирует cookie → refresh_token
-                         │     ├── POST Supabase /auth/v1/token?grant_type=refresh_token
-                         │     └── Обновляет cookie + браузерный контекст
-                         │
-                         └── Отправка сообщения
-                               ├── page.evaluate(fetch('/nextjs-api/stream/create-evaluation'))
-                               ├── Обходит CORS и Cloudflare (из контекста браузера)
-                               └── Парсит SSE → конвертирует в OpenAI формат
-```
-
-### Требования
-
-- **RAM:** +400 МБ (Chromium в headless режиме)
-- **Railway:** nixpacks.toml устанавливает Chromium автоматически
-- **Docker:** Dockerfile устанавливает Chromium автоматически
-- **Termux:** не поддерживается (нет Chromium; используйте Arena.ai Bridge)
-
-### Файлы адаптера
-
-| Файл | Назначение |
-|------|-----------|
-| `server/arenaAdapter.js` | Playwright, reCAPTCHA, Supabase token refresh, chat API |
-| `server/index.js` | Маршруты: `/api/arena/models`, `/api/arena/status`, `/api/arena/diag` |
-| `nixpacks.toml` | Chromium + системные зависимости для Railway |
-| `Dockerfile` | Chromium + зависимости для Docker |
-
-### Переменные окружения Arena.ai
-
-| Переменная | Описание |
-|------------|----------|
-| `ARENA_AUTH_COOKIE` | Полная cookie `arena-auth-prod-v1` (`base64-eyJ...`). Содержит access_token + refresh_token. Адаптер автообновляет access_token. |
-| `ARENA_ANON_KEY` | Supabase anon key (для использования с ARENA_REFRESH_TOKEN) |
-| `ARENA_REFRESH_TOKEN` | refresh_token из cookie (для авто-обновления сессии без полной куки) |
-| `ARENA_ENABLED` | `1` — принудительно включить (обычно авто по наличию ARENA_AUTH_COOKIE) |
- | `ARENA_EMAIL` / `ARENA_PASSWORD` | **НЕ ИСПОЛЬЗУЙТЕ** — полностью удалено. Только pure cookie/token mode (ARENA_AUTH_COOKIE или REFRESH+ANON). |
-| `PLAYWRIGHT_CHROMIUM_PATH` | Путь к Chromium (`/usr/bin/chromium` на Railway/Docker) |
-
-### Диагностика
-
-| Эндпоинт | Что показывает |
-|----------|----------------|
-| `GET /api/arena/status` | Подключён ли адаптер, email пользователя |
-| `GET /api/arena/models` | Список доступных моделей |
-| `GET /api/arena/diag` | Путь к Chromium, тест запуска Playwright, тест навигации на arena.ai |
-
----
+> Токены (cookie) в bridge протухают — обновляй при 401.
 
 ## Web AI
 

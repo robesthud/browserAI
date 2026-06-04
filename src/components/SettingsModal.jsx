@@ -23,7 +23,6 @@ const PROVIDER_PRESETS = [
     label: 'OpenAI',
     name: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
-    authType: 'bearer',
   },
   {
     id: 'deepseek-api',
@@ -31,7 +30,6 @@ const PROVIDER_PRESETS = [
     label: 'DeepSeek API',
     name: 'DeepSeek API',
     baseUrl: 'https://api.deepseek.com/v1',
-    authType: 'bearer',
   },
   {
     id: 'gemini',
@@ -39,7 +37,6 @@ const PROVIDER_PRESETS = [
     label: 'Gemini API',
     name: 'Gemini API',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    authType: 'bearer',
     hint: 'Ключ: console.cloud.google.com → APIs → Gemini API → Credentials',
   },
   {
@@ -48,7 +45,6 @@ const PROVIDER_PRESETS = [
     label: 'Mistral API',
     name: 'Mistral API',
     baseUrl: 'https://api.mistral.ai/v1',
-    authType: 'bearer',
   },
   {
     id: 'groq',
@@ -56,7 +52,6 @@ const PROVIDER_PRESETS = [
     label: 'Groq',
     name: 'Groq',
     baseUrl: 'https://api.groq.com/openai/v1',
-    authType: 'bearer',
     hint: 'Ключ: console.groq.com → API Keys (бесплатный tier доступен)',
   },
   {
@@ -65,7 +60,6 @@ const PROVIDER_PRESETS = [
     label: 'Together AI',
     name: 'Together AI',
     baseUrl: 'https://api.together.xyz/v1',
-    authType: 'bearer',
   },
   {
     id: 'openrouter',
@@ -73,7 +67,6 @@ const PROVIDER_PRESETS = [
     label: 'OpenRouter',
     name: 'OpenRouter',
     baseUrl: 'https://openrouter.ai/api/v1',
-    authType: 'bearer',
     hint: 'openrouter.ai — доступ к 100+ моделям через один ключ',
   },
   // --- Сессионные токены (веб-интерфейс) ---
@@ -84,7 +77,6 @@ const PROVIDER_PRESETS = [
     name: 'DeepSeek Web (сессия)',
     baseUrl: 'https://chat.deepseek.com/api/v0',
     model: 'deepseek_chat',
-    authType: 'bearer',
     extraHeaders: {
       'Referer': 'https://chat.deepseek.com/',
       'Origin': 'https://chat.deepseek.com',
@@ -101,7 +93,6 @@ const PROVIDER_PRESETS = [
     name: 'Grok Web (сессия)',
     baseUrl: 'https://grok.com/api',
     model: 'grok-3',
-    authType: 'bearer',
     extraHeaders: { 'Referer': 'https://grok.com/', 'Origin': 'https://grok.com' },
     hint: 'F12 → Network → запрос к /chat → заголовок Authorization',
   },
@@ -140,7 +131,6 @@ const PROVIDER_PRESETS = [
     name: 'ChatGPT Web (сессия)',
     baseUrl: 'https://chatgpt.com/backend-api',
     model: 'gpt-4o',
-    authType: 'bearer',
     extraHeaders: {
       'Referer': 'https://chatgpt.com/',
       'Origin': 'https://chatgpt.com',
@@ -154,7 +144,6 @@ const PROVIDER_PRESETS = [
     name: 'Mistral Chat (сессия)',
     baseUrl: 'https://chat.mistral.ai/api',
     model: 'mistral-large-latest',
-    authType: 'bearer',
     extraHeaders: {
       'Referer': 'https://chat.mistral.ai/',
       'Origin': 'https://chat.mistral.ai',
@@ -162,25 +151,13 @@ const PROVIDER_PRESETS = [
     hint: 'F12 → Network → запрос к /api → заголовок Authorization',
   },
   // --- Локальные мосты ---
-  {
-    id: 'arena-builtin',
-    group: 'api',
-    label: '🏟 Arena.ai',
-    name: 'Arena.ai (встроенный)',
-    baseUrl: 'https://arena.ai',
-    model: 'gemini-2.5-flash',
-    authType: 'bearer',
-    hint: `Arena.ai — бесплатный доступ к 600+ моделям (GPT-5, Claude Opus, Gemini, Grok и др.).\n\nНастройка (PURE TOKEN/COOKIE MODE — БЕЗ АВТОЛОГИНА):\n• ARENA_AUTH_COOKIE (полная base64-кука с access+refresh)\n• ARENA_REFRESH_TOKEN + ARENA_ANON_KEY (авто-обновление сессии)\n2. Введите любой ключ-заглушку (напр. "arena")\n3. Модели загрузятся автоматически (или укажи вручную)\n\nВсё работает через встроенный Playwright (сервер-сайд) — куки/токены только, без email/password и симуляции.`,
-  },
-  {
     id: 'arena-bridge',
     group: 'local',
     label: '🌉 Arena.ai Bridge',
     name: 'Arena.ai (через LMArenaBridge)',
-    baseUrl: 'http://localhost:8000/api/v1',
+    baseUrl: 'https://lmarena-bridge-production.up.railway.app/api/v1',
     model: '',
-    authType: 'bearer',
-    hint: `Arena.ai через внешний LMArenaBridge прокси.\n\nИспользуйте встроенный Arena.ai (вкладка API) если он доступен.\n\nДля ручной настройки:\n1. Получи токен: F12 → Cookies → arena-auth-prod-v1\n2. Установи LMArenaBridge\n3. Base URL: http://localhost:8000/api/v1`,
+    hint: `Arena.ai через внешний LMArenaBridge (основной способ).\n\nHosted (рекомендуется): https://lmarena-bridge-production.up.railway.app/api/v1\n\n1. Получи cookie arena-auth-prod-v1 с lmarena.ai\n2. Настрой в LMArenaBridge или используй hosted\n3. В BrowserAI: Base URL выше + заглушка-ключа.\n\nМодели 600+ загрузятся автоматически.`,
   },
   {
     id: 'custom-web',
@@ -189,7 +166,6 @@ const PROVIDER_PRESETS = [
     name: 'Кастомный сайт',
     baseUrl: '',
     model: '',
-    authType: 'bearer',
     hint: 'F12 → Network → найди запрос к AI → скопируй URL и заголовок авторизации',
   },
 ]

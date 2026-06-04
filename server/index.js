@@ -68,21 +68,7 @@ import {
 import { searchWeb, fetchWebPage } from './web.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, isSessionUrl, buildProbeBody, getChatUrl } from './stealthHeaders.js'
 import { isDeepSeekWebUrl, handleDeepSeekWebChat, validateDeepSeekWebKey } from './deepseekWeb.js'
-import { isArenaEnabled, isArenaUrl, handleArenaChat, getArenaModels, validateArenaSession, ensureStarted as ensureArenaStarted } from './arenaAdapter.js'
 
-// Virtual server-configured Arena key (so user doesn't need to add it in UI)
-function getArenaServerKey() {
-  if (!isArenaEnabled()) return null
-  return {
-    id: 'arena-server',
-    name: '🏟 Arena.ai (server)',
-    baseUrl: 'https://arena.ai',
-    apiKey: 'server-configured',
-    model: 'gemini-2.5-flash',
-    availableModels: [],
-    authType: 'bearer',
-  }
-}
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 8787
@@ -950,14 +936,9 @@ function requireUnlocked(req, res, next) {
 // #2 FIX: защита настроек и ключей — требуем авторизацию
 app.get('/api/settings', requireAuth, async (req, res) => {
   const keys = listKeys(encKey())
-  const arenaKey = getArenaServerKey()
-  if (arenaKey) {
-    // Prepend so it's visible
-    keys.unshift(arenaKey)
-  }
   res.json({
     keys,
-    activeKeyId: getActiveKeyId() || (arenaKey ? arenaKey.id : null),
+    activeKeyId: getActiveKeyId(),
     params: getParams(),
     vault: vaultState(),
   })
@@ -965,9 +946,7 @@ app.get('/api/settings', requireAuth, async (req, res) => {
 
 app.get('/api/keys', requireAuth, (req, res) => {
   const keys = listKeys(encKey())
-  const arenaKey = getArenaServerKey()
-  if (arenaKey) keys.unshift(arenaKey)
-  res.json({ keys, activeKeyId: getActiveKeyId() || (arenaKey ? arenaKey.id : null), vault: vaultState() })
+  res.json({ keys, activeKeyId: getActiveKeyId(), vault: vaultState() })
 })
 
 app.post('/api/keys', requireAuth, requireUnlocked, (req, res) => {
@@ -1097,20 +1076,6 @@ app.post('/api/validate', requireAuth, async (req, res) => {
     return res.json({ ok: false, message: 'Доступ к внутренней сети запрещён', models: [], preferredModel: '' })
   }
 
-  // Special case for server-configured Arena (virtual key)
-  if (isArenaEnabled() && isArenaUrl(baseUrl)) {
-    try {
-      const models = await getArenaModels()
-      return res.json({
-        ok: true,
-        message: 'Arena.ai (server configured) — готов к работе',
-        models: models.data.map(m => m.id),
-        preferredModel: 'gemini-2.5-flash',
-      })
-    } catch (e) {
-      return res.json({ ok: false, message: 'Arena server error: ' + e.message, models: [], preferredModel: '' })
-    }
-  }
 
   const root = String(baseUrl).replace(/\/$/, '')
   const profile = getSiteProfile(baseUrl)
@@ -1565,19 +1530,6 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     return handleDeepSeekWebChat({ reqBody: req.body || {}, res })
   }
 
-  // Arena.ai — встроенный адаптер с Playwright (headless Chrome).
-  // Автоматически проходит Cloudflare, reCAPTCHA, обновляет токены.
-  if (isArenaEnabled() && isArenaUrl(baseUrl)) {
-    try {
-      return await handleArenaChat({ model, messages, stream, temperature }, res)
-    } catch (e) {
-      console.error('[arena-adapter] error:', e.message)
-      if (!res.headersSent) {
-        return res.status(502).json({ error: `Arena.ai: ${e.message}` })
-      }
-      return res.end()
-    }
-  }
 
   const root = String(baseUrl).replace(/\/$/, '')
   const stealthH = buildSessionHeaders({ baseUrl, apiKey, authType, authHeader, extraHeaders })
@@ -1692,134 +1644,6 @@ app.post('/api/chat', requireAuth, async (req, res) => {
       res.end()
     }
   }
-})
-
-// ── Arena.ai встроенный адаптер ──────────────────────────────────────────────
-// OpenAI-совместимые эндпоинты для Arena.ai (models, validate, status)
-app.get('/api/arena/models', requireAuth, async (req, res) => {
-  if (!isArenaEnabled()) {
-    return res.status(503).json({ error: 'Arena.ai адаптер не включён. Задайте ARENA_AUTH_COOKIE, ARENA_REFRESH_TOKEN+ARENA_ANON_KEY (pure token/cookie mode, no email/pass).' })
-  }
-  try {
-    const models = await getArenaModels()
-    res.json(models)
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
-})
-
-app.get('/api/arena/status', requireAuth, async (req, res) => {
-  if (!isArenaEnabled()) {
-    return res.json({ enabled: false, message: 'Arena не настроен (нужен ARENA_AUTH_COOKIE / REFRESH+ANON (pure token/cookie mode))' })
-  }
-  try {
-    const result = await validateArenaSession()
-    res.json({ enabled: true, ...result })
-  } catch (e) {
-    res.json({ enabled: true, ok: false, message: e.message })
-  }
-})
-
-
-// ── Arena.ai диагностика ────────────────────────────────────────────────────
-app.get('/api/arena/diag', requireAuth, async (req, res) => {
-  const { execSync } = await import('node:child_process')
-  const { existsSync } = await import('node:fs')
-  
-  const diag = {
-    env: {
-      ARENA_AUTH_COOKIE: process.env.ARENA_AUTH_COOKIE ? `set (${process.env.ARENA_AUTH_COOKIE.length} chars)` : 'NOT SET',
-      ARENA_REFRESH_TOKEN: process.env.ARENA_REFRESH_TOKEN ? 'set' : 'NOT SET',
-      ARENA_ANON_KEY: process.env.ARENA_ANON_KEY ? 'set' : 'NOT SET',
-      ARENA_EMAIL: process.env.ARENA_EMAIL ? 'set' : 'NOT SET',
-      PLAYWRIGHT_CHROMIUM_PATH: process.env.PLAYWRIGHT_CHROMIUM_PATH || 'NOT SET',
-    },
-    chromium: {},
-    playwright: {},
-  }
-  
-  // Check chromium paths
-  const paths = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome']
-  for (const p of paths) {
-    diag.chromium[p] = existsSync(p)
-  }
-  
-  // which chromium
-  try {
-    diag.chromium.which = execSync('which chromium 2>/dev/null || which chromium-browser 2>/dev/null || echo NOT_FOUND', { encoding: 'utf8' }).trim()
-  } catch { diag.chromium.which = 'error' }
-  
-  // find in /nix/store
-  try {
-    diag.chromium.nixStore = execSync('find /nix/store -name chromium -type f 2>/dev/null | head -3', { encoding: 'utf8', timeout: 5000 }).trim() || 'not found'
-  } catch { diag.chromium.nixStore = 'error/timeout' }
-  
-  // Try launching playwright
-  try {
-    const { chromium } = await import('playwright-core')
-    const chromiumPath = diag.chromium.which !== 'NOT_FOUND' && diag.chromium.which !== 'error' 
-      ? diag.chromium.which 
-      : (diag.chromium.nixStore !== 'not found' && diag.chromium.nixStore !== 'error/timeout' ? diag.chromium.nixStore.split('\n')[0] : undefined)
-    
-    diag.playwright.executablePath = chromiumPath || 'auto'
-    
-    const browser = await chromium.launch({
-      headless: true,
-      executablePath: chromiumPath || undefined,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process'],
-    })
-    diag.playwright.launched = true
-    diag.playwright.version = browser.version()
-    
-    const ctx = await browser.newContext()
-    const page = await ctx.newPage()
-    diag.playwright.pageCreated = true
-    
-    // Устанавливаем cookie
-    const arenaCookie = process.env.ARENA_AUTH_COOKIE || ''
-    if (arenaCookie) {
-      const cdp = await ctx.newCDPSession(page)
-      try {
-        await cdp.send('Network.setCookie', {
-          name: 'arena-auth-prod-v1',
-          value: arenaCookie,
-          domain: '.arena.ai',
-          path: '/',
-          secure: true,
-          httpOnly: false,
-          sameSite: 'Lax',
-        })
-        diag.playwright.cookieSet = 'CDP ok'
-      } catch (e) {
-        diag.playwright.cookieSet = 'CDP failed: ' + e.message
-        // Fallback: navigate first, then set via JS
-        await page.goto('https://arena.ai/', { waitUntil: 'domcontentloaded', timeout: 15000 })
-        await page.evaluate((c) => {
-          document.cookie = 'arena-auth-prod-v1=' + c + '; path=/; secure; samesite=lax'
-        }, arenaCookie)
-        diag.playwright.cookieSet = 'JS fallback'
-      }
-    }
-
-    await page.goto('https://arena.ai/', { waitUntil: 'domcontentloaded', timeout: 15000 })
-    diag.playwright.navigated = true
-    diag.playwright.title = await page.title()
-
-    // Проверяем auth
-    const me = await page.evaluate(async () => {
-      const r = await fetch('/api/me')
-      return { status: r.status, body: await r.text().catch(() => '') }
-    }).catch(e => ({ error: e.message }))
-    diag.playwright.authCheck = me
-    
-    await browser.close()
-    diag.playwright.closed = true
-  } catch (e) {
-    diag.playwright.error = e.message
-    diag.playwright.stack = e.stack?.split('\n').slice(0, 3)
-  }
-  
-  res.json(diag)
 })
 
 app.get('/api/health', (req, res) => res.json({ ok: true }))
@@ -1981,14 +1805,4 @@ try {
 app.listen(PORT, () => {
   console.log(`BrowserAI API + SQLite + Workspace на http://localhost:${PORT}`)
 
-  // Arena.ai адаптер запускается лениво — при первом запросе (не при старте сервера)
-  // Это экономит RAM и избегает гонки с Railway healthcheck
-  if (isArenaEnabled()) {
-    const hasCookieOrToken = process.env.ARENA_AUTH_COOKIE || (process.env.ARENA_REFRESH_TOKEN && process.env.ARENA_ANON_KEY);
-    if (hasCookieOrToken) {
-      console.log('[arena] Arena.ai готов в PURE TOKEN/COOKIE MODE — БЕЗ АВТОЛОГИНА (только ARENA_AUTH_COOKIE или REFRESH+ANON + авто-обновление)')
-    } else {
-      console.log('[arena] Arena.ai адаптер включён (ARENA_ENABLED=1) — запустится при первом чате (pure mode)')
-    }
-  }
 })

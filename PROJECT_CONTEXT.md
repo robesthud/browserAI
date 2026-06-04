@@ -4,11 +4,14 @@ Last updated: 2026-06-04.
 
 ## Arena.ai Built-in Adapter
 
-BrowserAI v1.0.13 includes a built-in Arena.ai adapter (`server/arenaAdapter.js`) that:
-- Uses Playwright (headless Chromium) to bypass Cloudflare and get reCAPTCHA v3 tokens
-- Automatically refreshes Supabase access_token via refresh_token
-- Sends requests directly to Arena.ai `/nextjs-api/stream/create-evaluation`
-- Converts Arena.ai SSE responses to OpenAI-compatible format
+
+Direct built-in server adapter removed.
+
+Use "🌉 Arena.ai Bridge" preset pointing to hosted LMArenaBridge or local instance.
+
+Hosted: https://lmarena-bridge-production.up.railway.app/api/v1
+
+See README for setup.
 
 ### How the adapter works internally
 
@@ -28,7 +31,6 @@ BrowserAI v1.0.13 includes a built-in Arena.ai adapter (`server/arenaAdapter.js`
    - Refresh happens 5 minutes before expiry
 
 3. **Chat request flow:**
-   - `handleArenaChat()` is called from `/api/chat` when `isArenaUrl(baseUrl)` is true
    - Checks and refreshes token if expired
    - Gets reCAPTCHA v3 token via `page.evaluate(grecaptcha.execute(...))`
    - Sends `POST /nextjs-api/stream/create-evaluation` via `page.evaluate(fetch(...))`
