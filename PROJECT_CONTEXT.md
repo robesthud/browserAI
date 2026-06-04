@@ -50,7 +50,7 @@ BrowserAI v1.0.13 includes a built-in Arena.ai adapter (`server/arenaAdapter.js`
   - Contains access_token + refresh_token; adapter auto-refreshes access_token
 - `ARENA_REFRESH_TOKEN` + `ARENA_ANON_KEY` — for auto-refresh without full cookie
   - Anon key: the Supabase anon key for huogzoeqzcrdvkwtvodi.supabase.co (intercepted at runtime or provided manually)
-- `ARENA_EMAIL` + `ARENA_PASSWORD` — full auto-login with human simulation (bypasses CF + reCAPTCHA)
+
 
 ### Arena.ai API endpoints discovered
 

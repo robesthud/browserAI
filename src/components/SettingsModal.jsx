@@ -170,7 +170,7 @@ const PROVIDER_PRESETS = [
     baseUrl: 'https://arena.ai',
     model: 'gemini-2.5-flash',
     authType: 'bearer',
-    hint: `Arena.ai — бесплатный доступ к 600+ моделям (GPT-5, Claude Opus, Gemini, Grok и др.).\n\nНастройка (любой из вариантов):\n• ARENA_AUTH_COOKIE (полная base64-кука с access+refresh)\n• ARENA_REFRESH_TOKEN + ARENA_ANON_KEY (авто-обновление сессии)\n• ARENA_EMAIL + ARENA_PASSWORD (авто-логин с симуляцией человека)\n2. Введите любой ключ-заглушку (напр. "arena")\n3. Модели загрузятся автоматически (или укажи вручную)\n\nВсё работает через встроенный Playwright — без внешних прокси и userscript.`,
+    hint: `Arena.ai — бесплатный доступ к 600+ моделям (GPT-5, Claude Opus, Gemini, Grok и др.).\n\nНастройка (PURE TOKEN/COOKIE MODE — БЕЗ АВТОЛОГИНА):\n• ARENA_AUTH_COOKIE (полная base64-кука с access+refresh)\n• ARENA_REFRESH_TOKEN + ARENA_ANON_KEY (авто-обновление сессии)\n2. Введите любой ключ-заглушку (напр. "arena")\n3. Модели загрузятся автоматически (или укажи вручную)\n\nВсё работает через встроенный Playwright (сервер-сайд) — куки/токены только, без email/password и симуляции.`,
   },
   {
     id: 'arena-bridge',

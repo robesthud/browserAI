@@ -326,7 +326,7 @@ BrowserAI имеет **встроенный адаптер** для Arena.ai, к
 3. **Задайте переменную окружения** на сервере (Railway / Docker / .env) — один из вариантов:
    - Полная кука: `ARENA_AUTH_COOKIE=base64-eyJhY2Nlc3NfdG9rZW4iOi...`
    - Только refresh + anon: `ARENA_REFRESH_TOKEN=...` и `ARENA_ANON_KEY=...`
-   - Email/pass для авто-логина: `ARENA_EMAIL=...` и `ARENA_PASSWORD=...`
+
    ```
    PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium
    ```
@@ -390,6 +390,7 @@ BrowserAI имеет **встроенный адаптер** для Arena.ai, к
 | `ARENA_ANON_KEY` | Supabase anon key (для использования с ARENA_REFRESH_TOKEN) |
 | `ARENA_REFRESH_TOKEN` | refresh_token из cookie (для авто-обновления сессии без полной куки) |
 | `ARENA_ENABLED` | `1` — принудительно включить (обычно авто по наличию ARENA_AUTH_COOKIE) |
+ | `ARENA_EMAIL` / `ARENA_PASSWORD` | **НЕ ИСПОЛЬЗУЙТЕ** — полностью удалено. Только pure cookie/token mode (ARENA_AUTH_COOKIE или REFRESH+ANON). |
 | `PLAYWRIGHT_CHROMIUM_PATH` | Путь к Chromium (`/usr/bin/chromium` на Railway/Docker) |
 
 ### Диагностика

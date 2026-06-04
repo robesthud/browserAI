@@ -1698,7 +1698,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
 // OpenAI-совместимые эндпоинты для Arena.ai (models, validate, status)
 app.get('/api/arena/models', requireAuth, async (req, res) => {
   if (!isArenaEnabled()) {
-    return res.status(503).json({ error: 'Arena.ai адаптер не включён. Задайте ARENA_AUTH_COOKIE, ARENA_REFRESH_TOKEN+ARENA_ANON_KEY или ARENA_EMAIL+ARENA_PASSWORD.' })
+    return res.status(503).json({ error: 'Arena.ai адаптер не включён. Задайте ARENA_AUTH_COOKIE, ARENA_REFRESH_TOKEN+ARENA_ANON_KEY (pure token/cookie mode, no email/pass).' })
   }
   try {
     const models = await getArenaModels()
@@ -1710,7 +1710,7 @@ app.get('/api/arena/models', requireAuth, async (req, res) => {
 
 app.get('/api/arena/status', requireAuth, async (req, res) => {
   if (!isArenaEnabled()) {
-    return res.json({ enabled: false, message: 'Arena не настроен (нужен ARENA_AUTH_COOKIE / REFRESH+ANON / EMAIL+PASS)' })
+    return res.json({ enabled: false, message: 'Arena не настроен (нужен ARENA_AUTH_COOKIE / REFRESH+ANON (pure token/cookie mode))' })
   }
   try {
     const result = await validateArenaSession()
@@ -1984,6 +1984,11 @@ app.listen(PORT, () => {
   // Arena.ai адаптер запускается лениво — при первом запросе (не при старте сервера)
   // Это экономит RAM и избегает гонки с Railway healthcheck
   if (isArenaEnabled()) {
-    console.log('[arena] Arena.ai адаптер включён (AUTH_COOKIE / REFRESH+ANON / EMAIL+PASS) — запустится при первом чате')
+    const hasCookieOrToken = process.env.ARENA_AUTH_COOKIE || (process.env.ARENA_REFRESH_TOKEN && process.env.ARENA_ANON_KEY);
+    if (hasCookieOrToken) {
+      console.log('[arena] Arena.ai готов в PURE TOKEN/COOKIE MODE — БЕЗ АВТОЛОГИНА (только ARENA_AUTH_COOKIE или REFRESH+ANON + авто-обновление)')
+    } else {
+      console.log('[arena] Arena.ai адаптер включён (ARENA_ENABLED=1) — запустится при первом чате (pure mode)')
+    }
   }
 })
