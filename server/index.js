@@ -1682,6 +1682,73 @@ app.get('/api/arena/status', requireAuth, async (req, res) => {
   }
 })
 
+
+// ── Arena.ai диагностика ────────────────────────────────────────────────────
+app.get('/api/arena/diag', requireAuth, async (req, res) => {
+  const { execSync } = await import('node:child_process')
+  const { existsSync } = await import('node:fs')
+  
+  const diag = {
+    env: {
+      ARENA_AUTH_COOKIE: process.env.ARENA_AUTH_COOKIE ? `set (${process.env.ARENA_AUTH_COOKIE.length} chars)` : 'NOT SET',
+      ARENA_REFRESH_TOKEN: process.env.ARENA_REFRESH_TOKEN ? 'set' : 'NOT SET',
+      PLAYWRIGHT_CHROMIUM_PATH: process.env.PLAYWRIGHT_CHROMIUM_PATH || 'NOT SET',
+    },
+    chromium: {},
+    playwright: {},
+  }
+  
+  // Check chromium paths
+  const paths = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome']
+  for (const p of paths) {
+    diag.chromium[p] = existsSync(p)
+  }
+  
+  // which chromium
+  try {
+    diag.chromium.which = execSync('which chromium 2>/dev/null || which chromium-browser 2>/dev/null || echo NOT_FOUND', { encoding: 'utf8' }).trim()
+  } catch { diag.chromium.which = 'error' }
+  
+  // find in /nix/store
+  try {
+    diag.chromium.nixStore = execSync('find /nix/store -name chromium -type f 2>/dev/null | head -3', { encoding: 'utf8', timeout: 5000 }).trim() || 'not found'
+  } catch { diag.chromium.nixStore = 'error/timeout' }
+  
+  // Try launching playwright
+  try {
+    const { chromium } = await import('playwright-core')
+    const chromiumPath = diag.chromium.which !== 'NOT_FOUND' && diag.chromium.which !== 'error' 
+      ? diag.chromium.which 
+      : (diag.chromium.nixStore !== 'not found' && diag.chromium.nixStore !== 'error/timeout' ? diag.chromium.nixStore.split('\n')[0] : undefined)
+    
+    diag.playwright.executablePath = chromiumPath || 'auto'
+    
+    const browser = await chromium.launch({
+      headless: true,
+      executablePath: chromiumPath || undefined,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process'],
+    })
+    diag.playwright.launched = true
+    diag.playwright.version = browser.version()
+    
+    const ctx = await browser.newContext()
+    const page = await ctx.newPage()
+    diag.playwright.pageCreated = true
+    
+    await page.goto('https://arena.ai/', { waitUntil: 'domcontentloaded', timeout: 15000 })
+    diag.playwright.navigated = true
+    diag.playwright.title = await page.title()
+    
+    await browser.close()
+    diag.playwright.closed = true
+  } catch (e) {
+    diag.playwright.error = e.message
+    diag.playwright.stack = e.stack?.split('\n').slice(0, 3)
+  }
+  
+  res.json(diag)
+})
+
 app.get('/api/health', (req, res) => res.json({ ok: true }))
 
 // ── Временный диагностический эндпоинт ──────────────────────────────────────
