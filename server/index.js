@@ -1940,10 +1940,10 @@ app.get('/api/arena/login-diag', requireAuth, async (req, res) => {
     const pg = await ctx.newPage()
     await pg.goto('https://arena.ai/sign-in', { waitUntil: 'networkidle', timeout: 30000 })
     // Ждём пока React отрендерит форму (SPA)
-    await pg.waitForTimeout(5000)
-    // Ждём появления любого input
-    await pg.waitForSelector('input', { timeout: 15000 }).catch(() => {})
-    await pg.waitForTimeout(2000)
+    await pg.waitForTimeout(8000)
+    // Ждём появления любого input или iframe
+    await pg.waitForSelector('input, iframe', { timeout: 20000 }).catch(() => {})
+    await pg.waitForTimeout(3000)
     
     const diag = await pg.evaluate(() => {
       const inputs = [...document.querySelectorAll('input')].map(el => ({
@@ -1966,9 +1966,13 @@ app.get('/api/arena/login-diag', requireAuth, async (req, res) => {
       }))
       // Ищем env переменные в window
       const envKeys = Object.keys(window).filter(k => k.includes('CLERK') || k.includes('clerk') || k.includes('Clerk'))
+      // Clerk
+      const clerkKey = window.Clerk?.publishableKey || window.__clerk_publishable_key || 
+        document.querySelector('meta[name*=clerk]')?.content || null
+      const clerkFrontendApi = window.Clerk?.frontendApi || null
       // __NEXT_DATA__
       const nextData = window.__NEXT_DATA__ ? JSON.stringify(window.__NEXT_DATA__).slice(0, 2000) : null
-      return { title, url, inputs, buttons, links: links.slice(0,10), iframes, envKeys, nextData }
+      return { title, url, inputs, buttons, links: links.slice(0,10), iframes, envKeys, nextData, clerkKey, clerkFrontendApi }
     })
     
     await browser.close()
