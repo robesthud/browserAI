@@ -1,8 +1,10 @@
 [variables]
 NPM_CONFIG_PRODUCTION = "false"
+PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
 
 [phases.setup]
-nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake"]
+nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake", "chromium", "nss", "at-spi2-atk"]
+aptPkgs = ["libasound2", "libgbm1", "libxkbcommon0", "fonts-liberation"]
 
 [phases.install]
 cmds = ["npm ci"]
