@@ -3,71 +3,74 @@
  *
  * Использует Playwright (headless Chromium) чтобы:
  *  1. Загрузить arena.ai с валидной cookie → пройти Cloudflare
- *  2. Получить reCAPTCHA v3 токен для каждого запроса
- *  3. Cookie обновляется автоматически через arena.ai JS (Supabase refresh)
+ *  2. Получить reCAPTCHA Enterprise токен ВНУТРИ браузерного контекста
+ *  3. Отправить запрос через page.evaluate(fetch()) — как настоящий браузер
+ *
+ * Ключевое отличие от предыдущей версии:
+ *  - НЕ используем Node.js fetch() с cookie-заголовком (детектируется)
+ *  - ИСПОЛЬЗУЕМ page.evaluate(fetch()) — запрос идёт из браузера, обходя reCAPTCHA Enterprise
  *
  * Переменные окружения:
- *   ARENA_AUTH_COOKIE     — полная cookie arena-auth-prod-v1 (base64-eyJ...)
- *   ARENA_REFRESH_TOKEN   — альтернатива: только refresh_token (если есть anon key)
- *   ARENA_ENABLED         — '1' чтобы включить
+ *   ARENA_AUTH_COOKIE   — полная cookie arena-auth-prod-v1 (base64-eyJ...)
+ *   ARENA_ENABLED       — '1' чтобы включить принудительно
  */
 
 import { chromium } from 'playwright-extra'
 import StealthPlugin from 'puppeteer-extra-plugin-stealth'
 
-// Stealth plugin маскирует headless Chromium от reCAPTCHA Enterprise
 chromium.use(StealthPlugin())
+
 import { execSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 
+// ── Chromium path detection ──────────────────────────────────────────────────
 function findChromium() {
-  // Явно заданный путь
   if (process.env.PLAYWRIGHT_CHROMIUM_PATH) {
     if (existsSync(process.env.PLAYWRIGHT_CHROMIUM_PATH)) {
       return process.env.PLAYWRIGHT_CHROMIUM_PATH
     }
   }
-
-  // Стандартные пути
   const candidates = [
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
     '/usr/bin/google-chrome',
     '/usr/bin/google-chrome-stable',
   ]
-
   for (const p of candidates) {
     if (existsSync(p)) return p
   }
-
-  // Поиск через which (nixpacks добавляет в PATH)
   try {
-    const result = execSync('which chromium 2>/dev/null || which chromium-browser 2>/dev/null || which google-chrome 2>/dev/null', { encoding: 'utf8' }).trim()
+    const result = execSync(
+      'which chromium 2>/dev/null || which chromium-browser 2>/dev/null || which google-chrome 2>/dev/null',
+      { encoding: 'utf8' }
+    ).trim()
     if (result) return result
   } catch { /* ignore */ }
-
-  // Поиск в /nix/store
   try {
-    const result = execSync('find /nix/store -name chromium -type f -executable 2>/dev/null | head -1', { encoding: 'utf8' }).trim()
+    const result = execSync(
+      'find /nix/store -name chromium -type f -executable 2>/dev/null | head -1',
+      { encoding: 'utf8' }
+    ).trim()
     if (result) return result
   } catch { /* ignore */ }
-
   warn('Chromium not found! Playwright will try its own binary.')
   return undefined
 }
 
-
 const ARENA_ORIGIN = 'https://arena.ai'
 
 let browser = null
+let context = null
 let page = null
 let currentCookie = process.env.ARENA_AUTH_COOKIE || ''
-let recaptchaSiteKey = '6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0'
 let supabaseAnonKey = null
 let starting = false
 let startPromise = null
 
-// ── UUID v7 ─────────────────────────────────────────────────────────────────
+function log(...a) { console.log('[arena]', ...a) }
+function warn(...a) { console.warn('[arena]', ...a) }
+
+// ── UUID v7 ──────────────────────────────────────────────────────────────────
 function uuidv7() {
   const ts = Date.now()
   const r = new Uint8Array(10)
@@ -83,161 +86,274 @@ function uuidv7() {
   return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`
 }
 
-function log(...a) { console.log('[arena]', ...a) }
-function warn(...a) { console.warn('[arena]', ...a) }
+// ── Token helpers ────────────────────────────────────────────────────────────
+function isTokenExpired() {
+  try {
+    const cookieValue = currentCookie.startsWith('base64-')
+      ? currentCookie.slice(7) : currentCookie
+    const padded = cookieValue + '='.repeat((4 - cookieValue.length % 4) % 4)
+    const data = JSON.parse(Buffer.from(padded, 'base64').toString('utf8'))
+    const expiresAt = (data.expires_at || 0) * 1000
+    return Date.now() > expiresAt - 5 * 60 * 1000
+  } catch {
+    return true
+  }
+}
 
-// ── Browser ─────────────────────────────────────────────────────────────────
+async function refreshSupabaseToken() {
+  if (!supabaseAnonKey) {
+    warn('Cannot refresh: Supabase anon key not yet intercepted')
+    return false
+  }
+  let sessionData
+  try {
+    const cookieValue = currentCookie.startsWith('base64-')
+      ? currentCookie.slice(7) : currentCookie
+    const padded = cookieValue + '='.repeat((4 - cookieValue.length % 4) % 4)
+    sessionData = JSON.parse(Buffer.from(padded, 'base64').toString('utf8'))
+  } catch (e) {
+    warn('Cannot decode cookie for refresh:', e.message)
+    return false
+  }
+  const refreshToken = sessionData?.refresh_token
+  if (!refreshToken) { warn('No refresh_token in cookie'); return false }
+
+  let supabaseUrl = 'https://huogzoeqzcrdvkwtvodi.supabase.co'
+  try {
+    const payload = JSON.parse(
+      Buffer.from(sessionData.access_token.split('.')[1] + '==', 'base64').toString()
+    )
+    if (payload.iss) supabaseUrl = payload.iss.replace('/auth/v1', '')
+  } catch { /* use default */ }
+
+  log('Refreshing Supabase token...')
+  try {
+    const resp = await fetch(supabaseUrl + '/auth/v1/token?grant_type=refresh_token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'apikey': supabaseAnonKey },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    })
+    if (!resp.ok) {
+      warn('Supabase refresh failed:', resp.status, (await resp.text().catch(() => '')).slice(0, 200))
+      return false
+    }
+    const newSession = await resp.json()
+    currentCookie = 'base64-' + Buffer.from(JSON.stringify(newSession)).toString('base64')
+
+    // Обновляем cookie в браузере
+    if (page) {
+      await page.evaluate((c) => {
+        document.cookie = 'arena-auth-prod-v1=' + c + '; path=/; domain=.arena.ai; secure; samesite=lax; max-age=2592000'
+      }, currentCookie).catch(() => {})
+    }
+    const exp = newSession.expires_at
+      ? new Date(newSession.expires_at * 1000).toISOString() : 'unknown'
+    log('Token refreshed! Expires:', exp)
+    return true
+  } catch (e) {
+    warn('Token refresh error:', e.message)
+    return false
+  }
+}
+
+// Фоновый рефреш токена каждые 50 минут
+setInterval(async () => {
+  if (!isArenaEnabled() || !supabaseAnonKey) return
+  if (isTokenExpired()) {
+    log('Token expiring soon — auto-refreshing...')
+    await refreshSupabaseToken()
+  }
+}, 50 * 60 * 1000).unref?.()
+
+// ── Browser launch ───────────────────────────────────────────────────────────
 async function launchBrowser() {
   if (browser?.isConnected()) return
+
   const chromiumPath = findChromium()
-  log('Launching headless Chromium...', chromiumPath ? `path: ${chromiumPath}` : 'auto-detect')
+  log('Launching headless Chromium...', chromiumPath || 'auto-detect')
+
   browser = await chromium.launch({
     headless: true,
     executablePath: chromiumPath,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process'],
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--single-process',
+      // Важно: НЕ отключаем WebGL и canvas — reCAPTCHA Enterprise их проверяет
+      '--disable-blink-features=AutomationControlled',
+    ],
   })
 
-  const context = await browser.newContext({
+  context = await browser.newContext({
+    // Chrome 131 Windows — максимально реалистичный UA
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    viewport: { width: 1920, height: 1080 },
+    viewport: { width: 1280, height: 800 },
     locale: 'en-US',
+    timezoneId: 'America/New_York',
+    // Включаем JavaScript (нужен для reCAPTCHA)
+    javaScriptEnabled: true,
   })
-
-  // Устанавливаем arena cookie
-  if (currentCookie) {
-    log('Cookie will be set via JavaScript after navigation')
-  }
 
   page = await context.newPage()
 
-  // Инжектируем cookie через route interceptor — 100% надёжно
-  // CDP/document.cookie не работают с длинными base64 cookies
+  // Скрываем признаки автоматизации через CDP
+  try {
+    const cdpSession = await context.newCDPSession(page)
+    await cdpSession.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `
+        // Скрываем webdriver
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+        // Реалистичные плагины
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+          ]
+        })
+        // Реалистичные языки
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] })
+        // Скрываем chrome.runtime.id (признак extension context)
+        if (window.chrome && window.chrome.runtime) {
+          Object.defineProperty(window.chrome.runtime, 'id', { get: () => undefined })
+        }
+      `,
+    })
+  } catch (e) {
+    warn('CDP stealth injection failed (non-fatal):', e.message)
+  }
+
+  // ── Перехватываем Supabase anon key ────────────────────────────────────────
+  context.on('request', (req) => {
+    const url = req.url()
+    if ((url.includes('supabase.co') || url.includes('supabase.in')) && !supabaseAnonKey) {
+      const apikey = req.headers()['apikey']
+      if (apikey) {
+        supabaseAnonKey = apikey
+        log('Supabase anon key intercepted:', apikey.slice(0, 20) + '...')
+      }
+    }
+  })
+
+  // ── Инжектируем cookie через route interceptor ──────────────────────────────
+  // route interceptor гарантированно добавляет cookie ко ВСЕМ запросам на arena.ai
   if (currentCookie) {
-    await page.route('**/*', async (route) => {
-      const request = route.request()
-      const url = request.url()
-      const headers = { ...request.headers() }
-      
-      // Добавляем cookie ко всем запросам на arena.ai
+    await context.route('**/*', async (route) => {
+      const req = route.request()
+      const url = req.url()
+      const headers = { ...req.headers() }
+
       if (url.includes('arena.ai')) {
         const existing = headers['cookie'] || ''
         if (!existing.includes('arena-auth-prod-v1=')) {
-          headers['cookie'] = existing 
+          headers['cookie'] = existing
             ? existing + '; arena-auth-prod-v1=' + currentCookie
             : 'arena-auth-prod-v1=' + currentCookie
         }
       }
-      
-      // Перехватываем Supabase anon key
+
+      // Перехватываем Supabase anon key из заголовков
       if ((url.includes('supabase.co') || url.includes('supabase.in')) && !supabaseAnonKey) {
         if (headers['apikey']) {
           supabaseAnonKey = headers['apikey']
-          log('Supabase anon key intercepted:', supabaseAnonKey.slice(0, 20) + '...')
+          log('Supabase anon key intercepted via route:', supabaseAnonKey.slice(0, 20) + '...')
         }
       }
-      
+
       await route.continue({ headers })
     })
     log('Cookie route interceptor installed')
   }
 
-  // Перехватываем обновлённые cookies и Supabase anon key
+  // Перехватываем обновлённые cookies из ответов
   context.on('response', async (response) => {
     try {
-      const url = response.url()
-      const hdrs = response.headers()
-      
-      // Перехват обновлённых cookies
-      const setCookie = hdrs['set-cookie'] || ''
+      const setCookie = response.headers()['set-cookie'] || ''
       if (setCookie.includes('arena-auth-prod-v1=')) {
         const match = setCookie.match(/arena-auth-prod-v1=([^;]+)/)
         if (match) {
           currentCookie = decodeURIComponent(match[1])
-          log('Cookie auto-refreshed by arena.ai')
+          log('Cookie auto-refreshed by arena.ai response')
         }
       }
     } catch { /* ignore */ }
   })
 
-  // Перехватываем Supabase anon key из outgoing requests
-  await page.route('**/*', async (route) => {
-    const request = route.request()
-    const url = request.url()
-    
-    // Supabase запросы содержат apikey в header
-    if (url.includes('supabase.co') || url.includes('supabase.in')) {
-      const headers = request.headers()
-      if (headers['apikey'] && !supabaseAnonKey) {
-        supabaseAnonKey = headers['apikey']
-        log('Supabase anon key intercepted:', supabaseAnonKey.slice(0, 20) + '...')
-      }
-    }
-    
-    await route.continue()
-  })
-
-  log('Browser launched, creating page...')
-  if (!page) {
-    throw new Error('Page creation failed — browser context may have crashed')
-  }
-
+  // ── Навигация на arena.ai ────────────────────────────────────────────────
   log('Navigating to arena.ai...')
   try {
-    await page.goto(ARENA_ORIGIN + '/', { waitUntil: 'domcontentloaded', timeout: 30000 })
-    await page.waitForTimeout(5000) // Wait for Cloudflare + page init
-
-    log('Browser ready. reCAPTCHA Enterprise key: ' + recaptchaSiteKey)
-    
-    // Ждём чтобы reCAPTCHA Enterprise загрузилась
-    await page.waitForFunction(() => {
-      return window.grecaptcha?.enterprise?.execute != null
-    }, { timeout: 10000 }).catch(() => {
-      warn('reCAPTCHA Enterprise not loaded after 10s — chat may fail')
+    await page.goto(ARENA_ORIGIN + '/', {
+      waitUntil: 'networkidle',
+      timeout: 45000,
     })
 
-    // Проверяем auth
+    // Ждём загрузки reCAPTCHA Enterprise
+    await page.waitForFunction(
+      () => window.grecaptcha?.enterprise?.execute != null,
+      { timeout: 15000 }
+    ).catch(() => {
+      warn('reCAPTCHA Enterprise not detected after 15s — will retry on first chat request')
+    })
+
+    // Проверяем авторизацию
     const me = await page.evaluate(async () => {
-      const r = await fetch('/api/me')
-      return r.ok ? await r.json() : null
+      try {
+        const r = await fetch('/api/me', { credentials: 'include' })
+        return r.ok ? await r.json() : { status: r.status }
+      } catch (e) {
+        return { error: e.message }
+      }
     }).catch(() => null)
 
     if (me?.user) {
-      log(`Authenticated as: ${me.user.email}`)
+      log(`✅ Authenticated as: ${me.user.email}`)
     } else {
-      warn('Not authenticated! Cookie may be expired.')
+      warn('⚠️ Not authenticated! me response:', JSON.stringify(me))
+      warn('Cookie may be expired. Check ARENA_AUTH_COOKIE.')
     }
   } catch (e) {
-    warn('Failed to load arena.ai:', e.message)
-    // Не фатально — page уже создана, просто навигация не удалась
-    // Можем попробовать без навигации (прямые fetch запросы)
+    warn('Navigation failed (non-fatal):', e.message)
   }
 
-  if (!page) throw new Error('Browser page is null after launch')
-  log('Arena adapter fully initialized')
+  log('Arena adapter initialized')
 }
 
-// ── reCAPTCHA ───────────────────────────────────────────────────────────────
+// ── reCAPTCHA — получаем токен ВНУТРИ браузерного контекста ─────────────────
 async function getRecaptchaToken(action = 'chat_submit') {
-  if (!page) {
-    warn('No page for reCAPTCHA')
-    return null
-  }
+  if (!page) { warn('No page for reCAPTCHA'); return null }
+
   try {
+    // Сначала проверяем что grecaptcha.enterprise загружена
+    const loaded = await page.evaluate(
+      () => window.grecaptcha?.enterprise?.execute != null
+    ).catch(() => false)
+
+    if (!loaded) {
+      warn('grecaptcha.enterprise not loaded, trying to wait...')
+      // Попытка перегрузить страницу чтобы инициализировать reCAPTCHA
+      await page.reload({ waitUntil: 'networkidle', timeout: 30000 }).catch(() => {})
+      await page.waitForFunction(
+        () => window.grecaptcha?.enterprise?.execute != null,
+        { timeout: 10000 }
+      ).catch(() => {})
+    }
+
     const token = await page.evaluate(async ({ key, action }) => {
-      // Arena.ai uses reCAPTCHA Enterprise
       if (window.grecaptcha?.enterprise?.execute) {
         return await window.grecaptcha.enterprise.execute(key, { action })
       }
-      // Fallback to regular v3
       if (window.grecaptcha?.execute) {
         return await window.grecaptcha.execute(key, { action })
       }
       return null
-    }, { key: recaptchaSiteKey, action })
+    }, { key: '6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0', action })
+
     if (token) {
-      log('reCAPTCHA token obtained (' + token.length + ' chars)')
+      log('✅ reCAPTCHA token obtained (' + token.length + ' chars)')
     } else {
-      warn('reCAPTCHA token is null — grecaptcha not loaded on page')
+      warn('⚠️ reCAPTCHA token is null — grecaptcha not available')
     }
     return token
   } catch (e) {
@@ -246,137 +362,22 @@ async function getRecaptchaToken(action = 'chat_submit') {
   }
 }
 
-// ── Headers ─────────────────────────────────────────────────────────────────
-function buildHeaders() {
-  return {
-    'Content-Type': 'application/json',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    'Origin': ARENA_ORIGIN,
-    'Referer': ARENA_ORIGIN + '/',
-    'Accept': 'text/event-stream, application/json, */*',
-    'Cookie': `arena-auth-prod-v1=${currentCookie}`,
-  }
-}
-
-// ── Chat ────────────────────────────────────────────────────────────────────
-
-// ── Supabase Token Auto-Refresh ─────────────────────────────────────────────
-async function refreshSupabaseToken() {
-  if (!supabaseAnonKey) {
-    warn('Cannot refresh: Supabase anon key not yet intercepted')
-    return false
-  }
-  
-  // Декодируем текущую cookie чтобы получить refresh_token
-  let sessionData
-  try {
-    const cookieValue = currentCookie.startsWith('base64-') ? currentCookie.slice(7) : currentCookie
-    // Добавляем padding если нужно
-    const padded = cookieValue + '='.repeat((4 - cookieValue.length % 4) % 4)
-    sessionData = JSON.parse(Buffer.from(padded, 'base64').toString('utf8'))
-  } catch (e) {
-    warn('Cannot decode cookie for refresh:', e.message)
-    return false
-  }
-  
-  const refreshToken = sessionData?.refresh_token
-  if (!refreshToken) {
-    warn('No refresh_token in cookie')
-    return false
-  }
-  
-  // Supabase URL из JWT issuer
-  let supabaseUrl = 'https://huogzoeqzcrdvkwtvodi.supabase.co'
-  try {
-    const payload = JSON.parse(Buffer.from(sessionData.access_token.split('.')[1] + '==', 'base64').toString())
-    if (payload.iss) supabaseUrl = payload.iss.replace('/auth/v1', '')
-  } catch { /* use default */ }
-  
-  log('Refreshing Supabase token...')
-  
-  try {
-    const resp = await fetch(supabaseUrl + '/auth/v1/token?grant_type=refresh_token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': supabaseAnonKey,
-      },
-      body: JSON.stringify({ refresh_token: refreshToken }),
-    })
-    
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => '')
-      warn('Supabase refresh failed:', resp.status, text.slice(0, 200))
-      return false
-    }
-    
-    const newSession = await resp.json()
-    
-    // Обновляем cookie
-    const newCookiePayload = JSON.stringify(newSession)
-    currentCookie = 'base64-' + Buffer.from(newCookiePayload).toString('base64')
-    
-    // Обновляем cookie в браузере
-    if (page) {
-      try {
-        const cdp = await page.context().newCDPSession(page)
-        await cdp.send('Network.setCookie', {
-          name: 'arena-auth-prod-v1',
-          value: currentCookie,
-          domain: '.arena.ai',
-          path: '/',
-          secure: true,
-          httpOnly: false,
-          sameSite: 'Lax',
-        })
-      } catch {
-        // Fallback
-        await page.evaluate((c) => {
-          document.cookie = 'arena-auth-prod-v1=' + c + '; path=/; secure; samesite=lax; max-age=2592000'
-        }, currentCookie)
-      }
-    }
-    
-    const exp = newSession.expires_at ? new Date(newSession.expires_at * 1000).toISOString() : 'unknown'
-    log('Token refreshed! Expires:', exp, 'New refresh_token:', newSession.refresh_token?.slice(0, 8) + '...')
-    return true
-  } catch (e) {
-    warn('Token refresh error:', e.message)
-    return false
-  }
-}
-
-// Проверяем не протух ли access_token
-function isTokenExpired() {
-  try {
-    const cookieValue = currentCookie.startsWith('base64-') ? currentCookie.slice(7) : currentCookie
-    const padded = cookieValue + '='.repeat((4 - cookieValue.length % 4) % 4)
-    const data = JSON.parse(Buffer.from(padded, 'base64').toString('utf8'))
-    const expiresAt = (data.expires_at || 0) * 1000
-    // Обновляем за 5 минут до expiry
-    return Date.now() > expiresAt - 5 * 60 * 1000
-  } catch {
-    return true // если не можем декодировать — считаем протухшим
-  }
-}
-
-// Фоновое автообновление токена каждые 50 минут
-setInterval(async () => {
-  if (!isArenaEnabled() || !supabaseAnonKey) return
-  if (isTokenExpired()) {
-    log('Token expired or expiring soon — auto-refreshing...')
-    await refreshSupabaseToken()
-  }
-}, 50 * 60 * 1000).unref?.()
-
+// ── ГЛАВНОЕ ИЗМЕНЕНИЕ: Chat через page.evaluate(fetch()) ─────────────────────
+// Запрос выполняется ВНУТРИ браузерного контекста Playwright.
+// Это означает что:
+//   1. reCAPTCHA Enterprise видит реальный браузер, а не Node.js fetch()
+//   2. Cookie передаются автоматически браузером (credentials: 'include')
+//   3. Cloudflare не блокирует — запрос идёт от "настоящего" Chrome
 export async function handleArenaChat({ model, messages, stream = true, temperature }, res) {
   await ensureStarted()
-  
-  // Автообновление токена если протух
+
+  // Автообновление токена
   if (isTokenExpired() && supabaseAnonKey) {
     const refreshed = await refreshSupabaseToken()
     if (!refreshed) {
-      return res.status(401).json({ error: 'Arena.ai: токен протух и не удалось обновить. Обновите ARENA_AUTH_COOKIE.' })
+      return res.status(401).json({
+        error: 'Arena.ai: токен протух и не удалось обновить. Обновите ARENA_AUTH_COOKIE в Railway Variables.',
+      })
     }
   }
 
@@ -384,60 +385,104 @@ export async function handleArenaChat({ model, messages, stream = true, temperat
   const userMsgId = uuidv7()
   const modelMsgId = uuidv7()
 
-  // Последнее сообщение пользователя
   const userContent = messages.filter(m => m.role === 'user').map(m => m.content).pop() || 'Hello'
   const systemMsgs = messages.filter(m => m.role === 'system')
   const fullContent = systemMsgs.length > 0
     ? systemMsgs.map(m => m.content).join('\n') + '\n\n' + userContent
     : userContent
 
-  const recaptchaToken = await getRecaptchaToken()
+  // Получаем reCAPTCHA токен из браузерного контекста
+  const recaptchaToken = await getRecaptchaToken('chat_submit')
 
-  const body = {
+  const requestBody = {
     id: evalId,
     mode: 'direct',
     modality: 'chat',
     modelAId: model,
     userMessageId: userMsgId,
     modelAMessageId: modelMsgId,
-    userMessage: { content: fullContent, experimental_attachments: [], metadata: {} },
+    userMessage: {
+      content: fullContent,
+      experimental_attachments: [],
+      metadata: {},
+    },
     recaptchaV3Token: recaptchaToken,
   }
 
-  log(`Chat: model=${model} content="${fullContent.slice(0, 50)}..." recaptcha=${!!recaptchaToken}`)
+  log(`Chat: model=${model} content="${fullContent.slice(0, 60)}..." recaptcha=${!!recaptchaToken}`)
 
-  // Отправляем через Node.js fetch с cookie header
-  // (page.evaluate(fetch()) не передаёт cookies надёжно)
-  const headers = {
-    'Content-Type': 'application/json',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    'Origin': ARENA_ORIGIN,
-    'Referer': ARENA_ORIGIN + '/',
-    'Cookie': 'arena-auth-prod-v1=' + currentCookie,
-  }
-
-  let upstream
+  // ── Отправка через page.evaluate(fetch()) — КЛЮЧЕВОЕ РЕШЕНИЕ ─────────────
+  // Запрос идёт изнутри браузера: cookies передаются автоматически,
+  // reCAPTCHA видит реальный browser fingerprint, Cloudflare не блокирует
+  let rawResponse
   try {
-    upstream = await fetch(ARENA_ORIGIN + '/nextjs-api/stream/create-evaluation', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120000),
+    rawResponse = await page.evaluate(async ({ url, body }) => {
+      try {
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          credentials: 'include', // Автоматически передаём cookie из браузера
+        })
+        const text = await resp.text()
+        return { ok: resp.ok, status: resp.status, text }
+      } catch (e) {
+        return { ok: false, status: 0, error: e.message, text: '' }
+      }
+    }, {
+      url: ARENA_ORIGIN + '/nextjs-api/stream/create-evaluation',
+      body: requestBody,
     })
   } catch (e) {
-    return res.status(502).json({ error: `Arena.ai fetch error: ${e.message}` })
+    warn('page.evaluate error:', e.message)
+    // Fallback: если page.evaluate упал — пробуем перезапустить браузер и повторить
+    try {
+      await shutdownArena()
+      await launchBrowser()
+      return res.status(503).json({
+        error: 'Arena.ai: браузер перезапускается. Попробуйте снова через 10-15 секунд.',
+      })
+    } catch {
+      return res.status(502).json({ error: `Arena.ai page error: ${e.message}` })
+    }
   }
 
-  if (!upstream.ok) {
-    const errText = await upstream.text().catch(() => '')
-    warn(`Arena.ai ${upstream.status}: ${errText.slice(0, 200)}`)
-    return res.status(upstream.status || 502).json({
-      error: `Arena.ai: ${errText.slice(0, 500) || 'Unknown error'}`,
+  if (rawResponse?.error) {
+    warn('Fetch error inside browser:', rawResponse.error)
+    return res.status(502).json({ error: `Arena.ai fetch error: ${rawResponse.error}` })
+  }
+
+  if (!rawResponse?.ok) {
+    const snippet = (rawResponse?.text || '').slice(0, 300)
+    warn(`Arena.ai HTTP ${rawResponse?.status}: ${snippet}`)
+
+    // 403 / 429 — скорее всего reCAPTCHA или rate-limit
+    if (rawResponse?.status === 403) {
+      // Перезагружаем страницу чтобы обновить reCAPTCHA сессию
+      await page.reload({ waitUntil: 'networkidle', timeout: 30000 }).catch(() => {})
+      return res.status(403).json({
+        error: `Arena.ai: запрос отклонён (403). Страница перезагружена — попробуйте ещё раз.`,
+      })
+    }
+    if (rawResponse?.status === 429) {
+      return res.status(429).json({
+        error: `Arena.ai: слишком много запросов (429). Подождите минуту и попробуйте снова.`,
+      })
+    }
+    if (rawResponse?.status === 401) {
+      return res.status(401).json({
+        error: `Arena.ai: сессия истекла (401). Обновите ARENA_AUTH_COOKIE в Railway Variables.`,
+      })
+    }
+
+    return res.status(rawResponse?.status || 502).json({
+      error: `Arena.ai: ${snippet || 'Unknown error'}`,
     })
   }
 
-  const rawText = await upstream.text().catch(() => '')
+  const rawText = rawResponse.text || ''
 
+  // ── Парсим SSE и отдаём клиенту ────────────────────────────────────────────
   if (stream) {
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
     res.setHeader('Cache-Control', 'no-cache')
@@ -459,8 +504,9 @@ export async function handleArenaChat({ model, messages, stream = true, temperat
             choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
           })}\n\n`)
         }
-      } catch { /* skip */ }
+      } catch { /* skip malformed chunk */ }
     }
+
     res.write('data: [DONE]\n\n')
     res.end()
   } else {
@@ -483,6 +529,7 @@ export async function handleArenaChat({ model, messages, stream = true, temperat
   }
 }
 
+// ── Extract text from Arena.ai SSE payload ──────────────────────────────────
 function extractText(p) {
   if (!p || typeof p !== 'object') return ''
   const c = p.choices?.[0]
@@ -493,9 +540,13 @@ function extractText(p) {
   return ''
 }
 
-// ── Public API ──────────────────────────────────────────────────────────────
+// ── Public API ───────────────────────────────────────────────────────────────
 export function isArenaEnabled() {
-  return Boolean(process.env.ARENA_AUTH_COOKIE || process.env.ARENA_REFRESH_TOKEN || process.env.ARENA_ENABLED === '1')
+  return Boolean(
+    process.env.ARENA_AUTH_COOKIE ||
+    process.env.ARENA_REFRESH_TOKEN ||
+    process.env.ARENA_ENABLED === '1'
+  )
 }
 
 export function isArenaUrl(baseUrl = '') {
@@ -508,7 +559,6 @@ export function isArenaUrl(baseUrl = '') {
 export async function ensureStarted() {
   if (!isArenaEnabled()) throw new Error('Arena.ai не настроен. Задайте ARENA_AUTH_COOKIE.')
   if (browser?.isConnected() && page) return
-  // Reset stale promise
   if (startPromise) {
     try { await startPromise } catch { startPromise = null }
     if (browser?.isConnected() && page) return
@@ -527,40 +577,45 @@ export async function ensureStarted() {
 
 export async function getArenaModels() {
   const models = [
-    'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash', 'gemini-3-pro',
-    'gpt-5.5-instant', 'gpt-5.2', 'gpt-5.1', 'gpt-4.1-2025-04-14',
-    'claude-sonnet-4-6', 'claude-opus-4-6', 'claude-opus-4-7',
-    'grok-4.3', 'grok-4.20-beta-0309-reasoning',
-    'o3-2025-04-16',
-    'qwen3-max-preview', 'kimi-k2.5-instant',
+    'gemini-2.5-flash', 'gemini-2.5-pro',
+    'gpt-4.1-2025-04-14', 'gpt-4o',
+    'claude-sonnet-4-5', 'claude-opus-4-5',
+    'grok-3', 'grok-3-mini',
+    'o3-2025-04-16', 'o4-mini',
+    'qwen3-235b-a22b', 'qwen3-30b-a3b',
+    'deepseek-v3', 'deepseek-r1',
     'mistral-large-3',
+    'llama-3.3-70b-instruct',
   ]
   return {
     object: 'list',
-    data: models.map(id => ({ id, object: 'model', created: Math.floor(Date.now()/1000), owned_by: 'arena.ai' })),
+    data: models.map(id => ({
+      id,
+      object: 'model',
+      created: Math.floor(Date.now() / 1000),
+      owned_by: 'arena.ai',
+    })),
   }
 }
 
 export async function validateArenaSession() {
   try {
     await ensureStarted()
-    
-    // Пробуем обновить если протух
     if (isTokenExpired() && supabaseAnonKey) {
       await refreshSupabaseToken()
     }
-    const meResp = await fetch(ARENA_ORIGIN + '/api/me', {
-      headers: {
-        'Cookie': 'arena-auth-prod-v1=' + currentCookie,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      },
-    }).catch(() => null)
-    
-    if (meResp?.ok) {
-      const me = await meResp.json().catch(() => null)
-      if (me?.user) {
-        return { ok: true, message: `Arena.ai подключён · ${me.user.email}` }
+    // Проверяем через page.evaluate — чтобы использовать браузерный контекст
+    const me = await page.evaluate(async () => {
+      try {
+        const r = await fetch('/api/me', { credentials: 'include' })
+        return r.ok ? await r.json() : { status: r.status }
+      } catch (e) {
+        return { error: e.message }
       }
+    }).catch(() => null)
+
+    if (me?.user) {
+      return { ok: true, message: `Arena.ai подключён · ${me.user.email}` }
     }
     return { ok: false, message: 'Arena.ai: cookie протухла или невалидна' }
   } catch (e) {
@@ -571,9 +626,10 @@ export async function validateArenaSession() {
 export async function shutdownArena() {
   try {
     if (page) await page.close().catch(() => {})
+    if (context) await context.close().catch(() => {})
     if (browser) await browser.close().catch(() => {})
-    page = null; browser = null; startPromise = null
-    log('Shutdown')
+    page = null; context = null; browser = null; startPromise = null
+    log('Shutdown complete')
   } catch { /* ignore */ }
 }
 
