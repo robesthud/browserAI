@@ -1946,3 +1946,59 @@ app.listen(PORT, () => {
     console.log('[arena] ARENA_AUTH_COOKIE задан — адаптер будет запущен при первом запросе')
   }
 })
+// ── Временный endpoint для получения Supabase anon key ──────────────────────
+// Запускает браузер, перехватывает anon key из Supabase запросов, возвращает его
+app.get('/api/arena/anonkey', requireAuth, async (req, res) => {
+  try {
+    const { chromium } = await import('playwright-extra')
+    const StealthPlugin = (await import('puppeteer-extra-plugin-stealth')).default
+    chromium.use(StealthPlugin())
+    
+    let anonKey = null
+    const browser = await chromium.launch({
+      headless: true,
+      executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH || '/usr/bin/chromium',
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process'],
+    })
+    const ctx = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    })
+    const pg = await ctx.newPage()
+    
+    ctx.on('request', (request) => {
+      const url = request.url()
+      if (url.includes('supabase.co') || url.includes('supabase.in')) {
+        const apikey = request.headers()['apikey']
+        if (apikey) anonKey = apikey
+      }
+    })
+    
+    await pg.route('**/*', async (route) => {
+      const req2 = route.request()
+      const url = req2.url()
+      const headers = { ...req2.headers() }
+      if (url.includes('supabase.co') || url.includes('supabase.in')) {
+        const ak = headers['apikey']
+        if (ak) anonKey = ak
+      }
+      await route.continue({ headers })
+    })
+    
+    await pg.goto('https://arena.ai/', { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {})
+    await pg.waitForTimeout(5000)
+    
+    // Пробуем получить из JS
+    if (!anonKey) {
+      anonKey = await pg.evaluate(() => {
+        // Supabase клиент хранит key в window
+        const sb = window.__supabase || window.supabaseClient
+        return sb?.supabaseKey || sb?.headers?.apikey || null
+      }).catch(() => null)
+    }
+    
+    await browser.close()
+    res.json({ anonKey: anonKey || null, found: !!anonKey })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
