@@ -13,6 +13,45 @@
  */
 
 import { chromium } from 'playwright-core'
+import { execSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+
+function findChromium() {
+  // Явно заданный путь
+  if (process.env.PLAYWRIGHT_CHROMIUM_PATH) {
+    if (existsSync(process.env.PLAYWRIGHT_CHROMIUM_PATH)) {
+      return process.env.PLAYWRIGHT_CHROMIUM_PATH
+    }
+  }
+
+  // Стандартные пути
+  const candidates = [
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+  ]
+
+  for (const p of candidates) {
+    if (existsSync(p)) return p
+  }
+
+  // Поиск через which (nixpacks добавляет в PATH)
+  try {
+    const result = execSync('which chromium 2>/dev/null || which chromium-browser 2>/dev/null || which google-chrome 2>/dev/null', { encoding: 'utf8' }).trim()
+    if (result) return result
+  } catch { /* ignore */ }
+
+  // Поиск в /nix/store
+  try {
+    const result = execSync('find /nix/store -name chromium -type f -executable 2>/dev/null | head -1', { encoding: 'utf8' }).trim()
+    if (result) return result
+  } catch { /* ignore */ }
+
+  warn('Chromium not found! Playwright will try its own binary.')
+  return undefined
+}
+
 
 const ARENA_ORIGIN = 'https://arena.ai'
 
@@ -48,7 +87,7 @@ async function launchBrowser() {
   log('Launching headless Chromium...')
   browser = await chromium.launch({
     headless: true,
-    executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH || undefined,
+    executablePath: findChromium(),
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process'],
   })
 
