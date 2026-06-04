@@ -67,6 +67,7 @@ import {
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, isSessionUrl, buildProbeBody, getChatUrl } from './stealthHeaders.js'
+import { refreshAndUpdateBridgeCookie } from "./arenaCookieRefresher.js";
 import { isDeepSeekWebUrl, handleDeepSeekWebChat, validateDeepSeekWebKey } from './deepseekWeb.js'
 
 
@@ -1806,3 +1807,38 @@ app.listen(PORT, () => {
   console.log(`BrowserAI API + SQLite + Workspace на http://localhost:${PORT}`)
 
 })
+// === Arena cookie auto-refresh for LMArenaBridge ===
+// Refreshes the source cookie and pushes updated value to the bridge service.
+if (process.env.ARENA_AUTH_COOKIE) {
+  const REFRESH_INTERVAL = 45 * 60 * 1000; // every 45 min
+  setInterval(async () => {
+    try {
+      const original = process.env.ARENA_AUTH_COOKIE;
+      const refreshed = await refreshAndUpdateBridgeCookie(original);
+      if (refreshed !== original) {
+        // Update in-memory for this process too (if used elsewhere)
+        process.env.ARENA_AUTH_COOKIE = refreshed;
+        console.log('[arena-refresh] Cookie auto-updated for bridge service');
+      }
+    } catch (e) {
+      console.warn('[arena-refresh] Background refresh failed:', e.message);
+    }
+  }, REFRESH_INTERVAL).unref?.();
+  console.log('[arena-refresh] Auto cookie refresh for LMArenaBridge enabled (every ~45min)');
+}
+
+// Manual refresh endpoint (for UI or scripts)
+app.post('/api/arena/refresh-cookie', requireAuth, async (req, res) => {
+  try {
+    const original = process.env.ARENA_AUTH_COOKIE;
+    if (!original) return res.status(400).json({ error: 'No ARENA_AUTH_COOKIE in env' });
+    const refreshed = await refreshAndUpdateBridgeCookie(original);
+    if (refreshed !== original) {
+      process.env.ARENA_AUTH_COOKIE = refreshed;
+      return res.json({ ok: true, message: 'Cookie refreshed and pushed to bridge service. Restart the lmarena-bridge service if needed for immediate effect.', newCookie: refreshed });
+    }
+    return res.json({ ok: true, message: 'Cookie still valid, no change.' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
