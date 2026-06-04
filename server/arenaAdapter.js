@@ -106,27 +106,35 @@ async function launchBrowser() {
 
   page = await context.newPage()
 
-  // Устанавливаем cookie через CDP (Chrome DevTools Protocol)
-  // Это обходит ограничения Playwright addCookies на длину/символы
+  // Инжектируем cookie через route interceptor — 100% надёжно
+  // CDP/document.cookie не работают с длинными base64 cookies
   if (currentCookie) {
-    const cdp = await page.context().newCDPSession(page)
-    await cdp.send('Network.setCookie', {
-      name: 'arena-auth-prod-v1',
-      value: currentCookie,
-      domain: '.arena.ai',
-      path: '/',
-      secure: true,
-      httpOnly: false,
-      sameSite: 'Lax',
-    }).catch(async (e) => {
-      warn('CDP setCookie failed:', e.message, '— trying document.cookie')
-      // Fallback: устанавливаем через JavaScript
-      await page.goto(ARENA_ORIGIN + '/', { waitUntil: 'domcontentloaded', timeout: 15000 })
-      await page.evaluate((cookie) => {
-        document.cookie = 'arena-auth-prod-v1=' + cookie + '; path=/; secure; samesite=lax; max-age=2592000'
-      }, currentCookie)
+    await page.route('**/*', async (route) => {
+      const request = route.request()
+      const url = request.url()
+      const headers = { ...request.headers() }
+      
+      // Добавляем cookie ко всем запросам на arena.ai
+      if (url.includes('arena.ai')) {
+        const existing = headers['cookie'] || ''
+        if (!existing.includes('arena-auth-prod-v1=')) {
+          headers['cookie'] = existing 
+            ? existing + '; arena-auth-prod-v1=' + currentCookie
+            : 'arena-auth-prod-v1=' + currentCookie
+        }
+      }
+      
+      // Перехватываем Supabase anon key
+      if ((url.includes('supabase.co') || url.includes('supabase.in')) && !supabaseAnonKey) {
+        if (headers['apikey']) {
+          supabaseAnonKey = headers['apikey']
+          log('Supabase anon key intercepted:', supabaseAnonKey.slice(0, 20) + '...')
+        }
+      }
+      
+      await route.continue({ headers })
     })
-    log('Cookie set')
+    log('Cookie route interceptor installed')
   }
 
   // Перехватываем обновлённые cookies и Supabase anon key
