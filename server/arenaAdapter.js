@@ -394,40 +394,37 @@ export async function handleArenaChat({ model, messages, stream = true, temperat
 
   log(`Chat: model=${model} content="${fullContent.slice(0, 50)}..." recaptcha=${!!recaptchaToken}`)
 
-  // Отправляем через Playwright page context (обходит CORS/CF)
-  let response
+  // Отправляем через Node.js fetch с cookie header
+  // (page.evaluate(fetch()) не передаёт cookies надёжно)
+  const headers = {
+    'Content-Type': 'application/json',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Origin': ARENA_ORIGIN,
+    'Referer': ARENA_ORIGIN + '/',
+    'Cookie': 'arena-auth-prod-v1=' + currentCookie,
+  }
+
+  let upstream
   try {
-    response = await page.evaluate(async ({ url, body, headers }) => {
-      const r = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      if (!r.ok) {
-        const text = await r.text().catch(() => '')
-        return { error: true, status: r.status, text }
-      }
-      // Для non-stream — читаем весь ответ
-      const text = await r.text()
-      return { error: false, status: r.status, text, contentType: r.headers.get('content-type') || '' }
-    }, {
-      url: `${ARENA_ORIGIN}/nextjs-api/stream/create-evaluation`,
-      body,
-      headers: {},
+    upstream = await fetch(ARENA_ORIGIN + '/nextjs-api/stream/create-evaluation', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120000),
     })
   } catch (e) {
-    return res.status(502).json({ error: `Arena.ai Playwright error: ${e.message}` })
+    return res.status(502).json({ error: `Arena.ai fetch error: ${e.message}` })
   }
 
-  if (response.error) {
-    warn(`Arena.ai ${response.status}: ${response.text?.slice(0, 200)}`)
-    return res.status(response.status || 502).json({
-      error: `Arena.ai: ${response.text?.slice(0, 500) || 'Unknown error'}`,
+  if (!upstream.ok) {
+    const errText = await upstream.text().catch(() => '')
+    warn(`Arena.ai ${upstream.status}: ${errText.slice(0, 200)}`)
+    return res.status(upstream.status || 502).json({
+      error: `Arena.ai: ${errText.slice(0, 500) || 'Unknown error'}`,
     })
   }
 
-  // Парсим SSE ответ и конвертируем в OpenAI формат
-  const rawText = response.text || ''
+  const rawText = await upstream.text().catch(() => '')
 
   if (stream) {
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
@@ -540,13 +537,18 @@ export async function validateArenaSession() {
     if (isTokenExpired() && supabaseAnonKey) {
       await refreshSupabaseToken()
     }
-    const me = await page.evaluate(async () => {
-      const r = await fetch('/api/me')
-      return r.ok ? await r.json() : null
+    const meResp = await fetch(ARENA_ORIGIN + '/api/me', {
+      headers: {
+        'Cookie': 'arena-auth-prod-v1=' + currentCookie,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      },
     }).catch(() => null)
-
-    if (me?.user) {
-      return { ok: true, message: `Arena.ai подключён · ${me.user.email}` }
+    
+    if (meResp?.ok) {
+      const me = await meResp.json().catch(() => null)
+      if (me?.user) {
+        return { ok: true, message: `Arena.ai подключён · ${me.user.email}` }
+      }
     }
     return { ok: false, message: 'Arena.ai: cookie протухла или невалидна' }
   } catch (e) {
