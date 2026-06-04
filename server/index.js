@@ -70,6 +70,20 @@ import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, isSessionUrl, b
 import { isDeepSeekWebUrl, handleDeepSeekWebChat, validateDeepSeekWebKey } from './deepseekWeb.js'
 import { isArenaEnabled, isArenaUrl, handleArenaChat, getArenaModels, validateArenaSession, ensureStarted as ensureArenaStarted } from './arenaAdapter.js'
 
+// Virtual server-configured Arena key (so user doesn't need to add it in UI)
+function getArenaServerKey() {
+  if (!isArenaEnabled()) return null
+  return {
+    id: 'arena-server',
+    name: '🏟 Arena.ai (server)',
+    baseUrl: 'https://arena.ai',
+    apiKey: 'server-configured',
+    model: 'gemini-2.5-flash',
+    availableModels: [],
+    authType: 'bearer',
+  }
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 8787
 
@@ -934,17 +948,26 @@ function requireUnlocked(req, res, next) {
 
 // ---- Settings (ключи + параметры) ----
 // #2 FIX: защита настроек и ключей — требуем авторизацию
-app.get('/api/settings', requireAuth, (req, res) => {
+app.get('/api/settings', requireAuth, async (req, res) => {
+  const keys = listKeys(encKey())
+  const arenaKey = getArenaServerKey()
+  if (arenaKey) {
+    // Prepend so it's visible
+    keys.unshift(arenaKey)
+  }
   res.json({
-    keys: listKeys(encKey()),
-    activeKeyId: getActiveKeyId(),
+    keys,
+    activeKeyId: getActiveKeyId() || (arenaKey ? arenaKey.id : null),
     params: getParams(),
     vault: vaultState(),
   })
 })
 
 app.get('/api/keys', requireAuth, (req, res) => {
-  res.json({ keys: listKeys(encKey()), activeKeyId: getActiveKeyId(), vault: vaultState() })
+  const keys = listKeys(encKey())
+  const arenaKey = getArenaServerKey()
+  if (arenaKey) keys.unshift(arenaKey)
+  res.json({ keys, activeKeyId: getActiveKeyId() || (arenaKey ? arenaKey.id : null), vault: vaultState() })
 })
 
 app.post('/api/keys', requireAuth, requireUnlocked, (req, res) => {
@@ -1072,6 +1095,21 @@ app.post('/api/validate', requireAuth, async (req, res) => {
   }
   if (isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) {
     return res.json({ ok: false, message: 'Доступ к внутренней сети запрещён', models: [], preferredModel: '' })
+  }
+
+  // Special case for server-configured Arena (virtual key)
+  if (isArenaEnabled() && isArenaUrl(baseUrl)) {
+    try {
+      const models = await getArenaModels()
+      return res.json({
+        ok: true,
+        message: 'Arena.ai (server configured) — готов к работе',
+        models: models.data.map(m => m.id),
+        preferredModel: 'gemini-2.5-flash',
+      })
+    } catch (e) {
+      return res.json({ ok: false, message: 'Arena server error: ' + e.message, models: [], preferredModel: '' })
+    }
   }
 
   const root = String(baseUrl).replace(/\/$/, '')
@@ -1660,7 +1698,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
 // OpenAI-совместимые эндпоинты для Arena.ai (models, validate, status)
 app.get('/api/arena/models', requireAuth, async (req, res) => {
   if (!isArenaEnabled()) {
-    return res.status(503).json({ error: 'Arena.ai адаптер не включён. Задайте ARENA_REFRESH_TOKEN.' })
+    return res.status(503).json({ error: 'Arena.ai адаптер не включён. Задайте ARENA_AUTH_COOKIE, ARENA_REFRESH_TOKEN+ARENA_ANON_KEY или ARENA_EMAIL+ARENA_PASSWORD.' })
   }
   try {
     const models = await getArenaModels()
@@ -1672,7 +1710,7 @@ app.get('/api/arena/models', requireAuth, async (req, res) => {
 
 app.get('/api/arena/status', requireAuth, async (req, res) => {
   if (!isArenaEnabled()) {
-    return res.json({ enabled: false, message: 'ARENA_REFRESH_TOKEN не задан' })
+    return res.json({ enabled: false, message: 'Arena не настроен (нужен ARENA_AUTH_COOKIE / REFRESH+ANON / EMAIL+PASS)' })
   }
   try {
     const result = await validateArenaSession()
@@ -1692,6 +1730,8 @@ app.get('/api/arena/diag', requireAuth, async (req, res) => {
     env: {
       ARENA_AUTH_COOKIE: process.env.ARENA_AUTH_COOKIE ? `set (${process.env.ARENA_AUTH_COOKIE.length} chars)` : 'NOT SET',
       ARENA_REFRESH_TOKEN: process.env.ARENA_REFRESH_TOKEN ? 'set' : 'NOT SET',
+      ARENA_ANON_KEY: process.env.ARENA_ANON_KEY ? 'set' : 'NOT SET',
+      ARENA_EMAIL: process.env.ARENA_EMAIL ? 'set' : 'NOT SET',
       PLAYWRIGHT_CHROMIUM_PATH: process.env.PLAYWRIGHT_CHROMIUM_PATH || 'NOT SET',
     },
     chromium: {},
@@ -1944,6 +1984,6 @@ app.listen(PORT, () => {
   // Arena.ai адаптер запускается лениво — при первом запросе (не при старте сервера)
   // Это экономит RAM и избегает гонки с Railway healthcheck
   if (isArenaEnabled()) {
-    console.log('[arena] ARENA_AUTH_COOKIE задан — адаптер будет запущен при первом запросе')
+    console.log('[arena] Arena.ai адаптер включён (AUTH_COOKIE / REFRESH+ANON / EMAIL+PASS) — запустится при первом чате')
   }
 })

@@ -323,9 +323,11 @@ BrowserAI имеет **встроенный адаптер** для Arena.ai, к
    - Откройте arena.ai → F12 → Application → Cookies
    - Скопируйте **значение** cookie `arena-auth-prod-v1` (начинается с `base64-`)
 
-3. **Задайте переменную окружения** на сервере (Railway / Docker / .env):
+3. **Задайте переменную окружения** на сервере (Railway / Docker / .env) — один из вариантов:
+   - Полная кука: `ARENA_AUTH_COOKIE=base64-eyJhY2Nlc3NfdG9rZW4iOi...`
+   - Только refresh + anon: `ARENA_REFRESH_TOKEN=...` и `ARENA_ANON_KEY=...`
+   - Email/pass для авто-логина: `ARENA_EMAIL=...` и `ARENA_PASSWORD=...`
    ```
-   ARENA_AUTH_COOKIE=base64-eyJhY2Nlc3NfdG9rZW4iOi...
    PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium
    ```
 
@@ -385,6 +387,8 @@ BrowserAI имеет **встроенный адаптер** для Arena.ai, к
 | Переменная | Описание |
 |------------|----------|
 | `ARENA_AUTH_COOKIE` | Полная cookie `arena-auth-prod-v1` (`base64-eyJ...`). Содержит access_token + refresh_token. Адаптер автообновляет access_token. |
+| `ARENA_ANON_KEY` | Supabase anon key (для использования с ARENA_REFRESH_TOKEN) |
+| `ARENA_REFRESH_TOKEN` | refresh_token из cookie (для авто-обновления сессии без полной куки) |
 | `ARENA_ENABLED` | `1` — принудительно включить (обычно авто по наличию ARENA_AUTH_COOKIE) |
 | `PLAYWRIGHT_CHROMIUM_PATH` | Путь к Chromium (`/usr/bin/chromium` на Railway/Docker) |
 
@@ -561,5 +565,6 @@ BrowserAI имеет **встроенный адаптер** для Arena.ai, к
 | `TWILIO_AUTH_TOKEN` | — | Twilio токен |
 | `TWILIO_PHONE_FROM` | — | Номер отправителя SMS |
 | `ARENA_AUTH_COOKIE` | — | Cookie `arena-auth-prod-v1` для Arena.ai (auto-refresh) |
+| `ARENA_ANON_KEY` + `ARENA_REFRESH_TOKEN` | — | Для авто-обновления без полной куки (anon key + refresh_token) |
 | `ARENA_ENABLED` | — | `1` для принудительного включения Arena.ai |
 | `PLAYWRIGHT_CHROMIUM_PATH` | `/usr/bin/chromium` | Путь к Chromium для Playwright |

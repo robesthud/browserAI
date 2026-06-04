@@ -12,9 +12,11 @@
  *  5. Полная симуляция человеческого поведения (anti-bot защита)
  *
  * Переменные окружения:
- *   ARENA_EMAIL          — email для авторизации на arena.ai
+ *   ARENA_EMAIL          — email для авторизации на arena.ai (авто-логин + поддержка куки)
  *   ARENA_PASSWORD       — пароль для авторизации на arena.ai
- *   ARENA_AUTH_COOKIE    — готовая cookie (если нет email/password)
+ *   ARENA_AUTH_COOKIE    — полная готовая cookie `base64-...` (с access+refresh)
+ *   ARENA_ANON_KEY       — Supabase anon key (huogzoeqzcrdvkwtvodi.supabase.co) — для ручного ввода
+ *   ARENA_REFRESH_TOKEN  — refresh_token из cookie — для авто-обновления сессии без полной куки/email
  *   ARENA_ENABLED        — '1' принудительно включить
  *   PLAYWRIGHT_CHROMIUM_PATH — путь к Chromium
  */
@@ -41,7 +43,8 @@ let browser = null
 let context = null
 let page = null
 let currentCookie = process.env.ARENA_AUTH_COOKIE || ''
-let supabaseAnonKey = null
+let supabaseAnonKey = process.env.ARENA_ANON_KEY || null
+let arenaRefreshToken = process.env.ARENA_REFRESH_TOKEN || null
 let startPromise = null
 let isLoggedIn = false
 
@@ -222,6 +225,9 @@ function decodeCookie(cookie) {
 }
 
 function isTokenExpired(cookie = currentCookie) {
+  if (!cookie && arenaRefreshToken) {
+    return false // can bootstrap/refresh using provided refresh_token
+  }
   const data = decodeCookie(cookie)
   if (!data) return true
   const expiresAt = (data.expires_at || 0) * 1000
@@ -230,14 +236,27 @@ function isTokenExpired(cookie = currentCookie) {
 
 // ── Обновление Supabase токена ───────────────────────────────────────────────
 async function refreshSupabaseToken() {
+  // Поддержка ручного ввода anon key
   if (!supabaseAnonKey) {
-    warn('Supabase anon key not available — will try login')
-    return false
+    if (process.env.ARENA_ANON_KEY) {
+      supabaseAnonKey = process.env.ARENA_ANON_KEY
+      log('Используем ARENA_ANON_KEY из env')
+    } else {
+      warn('Supabase anon key not available — will try login or capture from browser')
+      return false
+    }
   }
 
-  const data = decodeCookie(currentCookie)
-  const refreshToken = data?.refresh_token
-  if (!refreshToken) { warn('No refresh_token'); return false }
+  // Приоритет: предоставленный refresh_token > из текущей куки
+  let refreshToken = arenaRefreshToken
+  if (!refreshToken) {
+    const data = decodeCookie(currentCookie)
+    refreshToken = data?.refresh_token
+  }
+  if (!refreshToken) { 
+    warn('No refresh_token (neither ARENA_REFRESH_TOKEN nor in cookie)')
+    return false 
+  }
 
   log('Refreshing Supabase token...')
   try {
@@ -252,6 +271,11 @@ async function refreshSupabaseToken() {
     }
     const newSession = await resp.json()
     currentCookie = 'base64-' + Buffer.from(JSON.stringify(newSession)).toString('base64')
+
+    // Обновляем refresh_token если пришёл новый
+    if (newSession.refresh_token) {
+      arenaRefreshToken = newSession.refresh_token
+    }
 
     // Обновляем cookie в браузере
     if (page) {
@@ -610,6 +634,17 @@ async function launchBrowser() {
     log('Используем сохранённую сессию')
   }
 
+  // Bootstrap из ARENA_REFRESH_TOKEN + ARENA_ANON_KEY (если нет полной куки)
+  if (!currentCookie && arenaRefreshToken && supabaseAnonKey) {
+    log('Bootstrapping full session from ARENA_REFRESH_TOKEN + ARENA_ANON_KEY...')
+    const ok = await refreshSupabaseToken()
+    if (ok) {
+      log('✅ Session bootstrapped from provided refresh_token + anon key')
+    } else {
+      warn('Bootstrap from refresh_token failed — falling back to browser capture/login')
+    }
+  }
+
   // Загружаем страницу
   await page.goto(`${ARENA_ORIGIN}/`, { waitUntil: 'domcontentloaded', timeout: 45000 })
     .catch(e => warn('Navigation error (non-fatal):', e.message))
@@ -634,6 +669,14 @@ async function launchBrowser() {
     // Попытка 1: обновить токен если есть anon key
     if (supabaseAnonKey && !isTokenExpired()) {
       log('Токен ещё валиден, пропускаем login')
+    }
+    // Попытка 1.5: bootstrap/refresh из ARENA_REFRESH_TOKEN + ARENA_ANON_KEY
+    else if (arenaRefreshToken && supabaseAnonKey) {
+      log('Есть ARENA_REFRESH_TOKEN + ARENA_ANON_KEY — пробуем рефреш для bootstrap')
+      const ok = await refreshSupabaseToken()
+      if (ok) {
+        log('✅ Успешно обновили сессию из предоставленного refresh_token')
+      }
     }
     // Попытка 2: логин через email/password
     else if (process.env.ARENA_EMAIL && process.env.ARENA_PASSWORD) {
@@ -661,7 +704,7 @@ async function launchBrowser() {
       }
     } else {
       warn('⚠️ Нет ARENA_EMAIL/ARENA_PASSWORD и cookie устарела')
-      warn('Задайте ARENA_EMAIL и ARENA_PASSWORD в Railway Variables')
+      warn('Задайте ARENA_EMAIL + ARENA_PASSWORD, или ARENA_AUTH_COOKIE, или ARENA_REFRESH_TOKEN + ARENA_ANON_KEY в Railway Variables')
     }
   }
 
@@ -751,9 +794,12 @@ export async function handleArenaChat({ model, messages, stream = true }, res) {
       if (process.env.ARENA_EMAIL && process.env.ARENA_PASSWORD && page) {
         log('Токен протух, переавторизуемся...')
         await loginWithCredentials(page)
+      } else if (arenaRefreshToken && supabaseAnonKey) {
+        log('Токен протух, пробуем рефреш из ARENA_REFRESH_TOKEN...')
+        await refreshSupabaseToken()
       } else {
         return res.status(401).json({
-          error: 'Arena.ai: сессия истекла. Задайте ARENA_EMAIL + ARENA_PASSWORD или обновите ARENA_AUTH_COOKIE.',
+          error: 'Arena.ai: сессия истекла. Задайте ARENA_EMAIL + ARENA_PASSWORD, ARENA_AUTH_COOKIE или ARENA_REFRESH_TOKEN + ARENA_ANON_KEY.',
         })
       }
     }
@@ -837,6 +883,8 @@ export async function handleArenaChat({ model, messages, stream = true }, res) {
       // Пробуем переавторизоваться
       if (process.env.ARENA_EMAIL && process.env.ARENA_PASSWORD && page) {
         await loginWithCredentials(page)
+      } else if (arenaRefreshToken && supabaseAnonKey) {
+        await refreshSupabaseToken()
       }
       return res.status(401).json({ error: 'Arena.ai: 401 — сессия истекла, переавторизуемся.' })
     }
@@ -907,6 +955,7 @@ export function isArenaEnabled() {
     process.env.ARENA_EMAIL ||
     process.env.ARENA_AUTH_COOKIE ||
     process.env.ARENA_REFRESH_TOKEN ||
+    process.env.ARENA_ANON_KEY ||
     process.env.ARENA_ENABLED === '1'
   )
 }
