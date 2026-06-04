@@ -8,6 +8,9 @@ server/*.db
 server/*.db-*
 workspace/
 
+# Railway local link config
+.railway/
+
 # Android
 android-app/.gradle/
 android-app/**/build/
