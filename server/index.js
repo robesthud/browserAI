@@ -1735,9 +1735,42 @@ app.get('/api/arena/diag', requireAuth, async (req, res) => {
     const page = await ctx.newPage()
     diag.playwright.pageCreated = true
     
+    // Устанавливаем cookie
+    const arenaCookie = process.env.ARENA_AUTH_COOKIE || ''
+    if (arenaCookie) {
+      const cdp = await ctx.newCDPSession(page)
+      try {
+        await cdp.send('Network.setCookie', {
+          name: 'arena-auth-prod-v1',
+          value: arenaCookie,
+          domain: '.arena.ai',
+          path: '/',
+          secure: true,
+          httpOnly: false,
+          sameSite: 'Lax',
+        })
+        diag.playwright.cookieSet = 'CDP ok'
+      } catch (e) {
+        diag.playwright.cookieSet = 'CDP failed: ' + e.message
+        // Fallback: navigate first, then set via JS
+        await page.goto('https://arena.ai/', { waitUntil: 'domcontentloaded', timeout: 15000 })
+        await page.evaluate((c) => {
+          document.cookie = 'arena-auth-prod-v1=' + c + '; path=/; secure; samesite=lax'
+        }, arenaCookie)
+        diag.playwright.cookieSet = 'JS fallback'
+      }
+    }
+
     await page.goto('https://arena.ai/', { waitUntil: 'domcontentloaded', timeout: 15000 })
     diag.playwright.navigated = true
     diag.playwright.title = await page.title()
+
+    // Проверяем auth
+    const me = await page.evaluate(async () => {
+      const r = await fetch('/api/me')
+      return { status: r.status, body: await r.text().catch(() => '') }
+    }).catch(e => ({ error: e.message }))
+    diag.playwright.authCheck = me
     
     await browser.close()
     diag.playwright.closed = true
