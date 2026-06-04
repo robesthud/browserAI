@@ -102,7 +102,11 @@ function isTokenExpired() {
 
 async function refreshSupabaseToken() {
   if (!supabaseAnonKey) {
-    warn('Cannot refresh: Supabase anon key not yet intercepted')
+    warn('Supabase anon key not intercepted — trying bootstrap...')
+    await bootstrapAnonKey()
+  }
+  if (!supabaseAnonKey) {
+    warn('Cannot refresh: Supabase anon key unavailable even after bootstrap')
     return false
   }
   let sessionData
@@ -635,3 +639,76 @@ export async function shutdownArena() {
 
 process.on('SIGTERM', shutdownArena)
 process.on('SIGINT', shutdownArena)
+
+// ── Bootstrap: получить Supabase anon key через отдельный браузер ─────────────
+// Вызывается когда supabaseAnonKey = null и нужно сделать refresh
+export async function bootstrapAnonKey() {
+  const chromiumPath = findChromium()
+  log('Bootstrapping Supabase anon key...')
+  
+  let foundKey = null
+  let tempBrowser = null
+  
+  try {
+    tempBrowser = await chromium.launch({
+      headless: true,
+      executablePath: chromiumPath,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process'],
+    })
+    const ctx = await tempBrowser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    })
+    const pg = await ctx.newPage()
+    
+    // Перехватываем ВСЕ запросы — ищем Supabase apikey
+    await ctx.route('**/*', async (route) => {
+      const req = route.request()
+      const url = req.url()
+      const headers = req.headers()
+      
+      // Supabase запросы — перехватываем apikey
+      if (url.includes('supabase.co') || url.includes('supabase.in')) {
+        const apikey = headers['apikey'] || headers['Apikey'] || headers['APIKEY']
+        if (apikey && !foundKey) {
+          foundKey = apikey
+          log('Bootstrap: Supabase anon key intercepted from', url.split('?')[0])
+        }
+      }
+      
+      // Добавляем cookie для авторизации
+      if (url.includes('arena.ai') && currentCookie) {
+        const existing = headers['cookie'] || ''
+        if (!existing.includes('arena-auth-prod-v1=')) {
+          headers['cookie'] = existing
+            ? existing + '; arena-auth-prod-v1=' + currentCookie
+            : 'arena-auth-prod-v1=' + currentCookie
+        }
+      }
+      
+      await route.continue({ headers }).catch(() => {})
+    })
+    
+    // Загружаем страницу — arena.ai сделает Supabase запросы автоматически
+    await pg.goto('https://arena.ai/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
+    
+    // Ждём до 15 секунд чтобы поймать Supabase запросы
+    let waited = 0
+    while (!foundKey && waited < 15000) {
+      await pg.waitForTimeout(500)
+      waited += 500
+    }
+    
+    if (foundKey) {
+      supabaseAnonKey = foundKey
+      log('Bootstrap: anon key obtained:', foundKey.slice(0, 20) + '...')
+    } else {
+      warn('Bootstrap: anon key not found in 15s')
+    }
+  } catch (e) {
+    warn('Bootstrap error:', e.message)
+  } finally {
+    if (tempBrowser) await tempBrowser.close().catch(() => {})
+  }
+  
+  return foundKey
+}

@@ -1,30 +1,14 @@
 /**
- * Cloudflare Worker — прокси для сессионных запросов к AI провайдерам.
- * Решает проблему гео-блокировки: Railway IP блокируется DeepSeek,
- * а Cloudflare Workers имеют IP по всему миру.
- *
- * Деплой:
- *   npx wrangler deploy
- *
- * Использование из BrowserAI:
- *   PROXY_URL=https://your-worker.your-subdomain.workers.dev
- *   Сервер шлёт POST на PROXY_URL с телом { targetUrl, headers, body }
+ * Cloudflare Worker — прокси для запросов к AI провайдерам.
  */
 
 export default {
   async fetch(request, env) {
-    // CORS preflight
     if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        headers: corsHeaders(),
-      })
+      return new Response(null, { headers: corsHeaders() })
     }
 
-    if (request.method !== 'POST') {
-      return json({ error: 'POST only' }, 405)
-    }
-
-    // Проверяем секретный ключ (чтобы прокси не использовали посторонние)
+    // Проверяем ключ
     const authKey = request.headers.get('X-Proxy-Key') || ''
     const expectedKey = env.PROXY_SECRET || ''
     if (expectedKey && authKey !== expectedKey) {
@@ -32,27 +16,39 @@ export default {
     }
 
     try {
-      const payload = await request.json()
-      const { targetUrl, headers = {}, body } = payload
+      let targetUrl, headers = {}, body = null, method = 'POST'
 
-      if (!targetUrl) {
-        return json({ error: 'targetUrl required' }, 400)
+      if (request.method === 'GET') {
+        // GET: targetUrl и headers из query params
+        const url = new URL(request.url)
+        targetUrl = url.searchParams.get('url')
+        method = 'GET'
+        if (!targetUrl) return json({ error: 'url param required' }, 400)
+      } else {
+        const payload = await request.json()
+        targetUrl = payload.targetUrl
+        headers = payload.headers || {}
+        body = payload.body
+        method = payload.method || 'POST'
       }
 
-      // Проксируем запрос к целевому URL
-      const upstreamResponse = await fetch(targetUrl, {
-        method: 'POST',
+      if (!targetUrl) return json({ error: 'targetUrl required' }, 400)
+
+      const fetchOptions = {
+        method,
         headers: {
-          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
           ...headers,
         },
-        body: typeof body === 'string' ? body : JSON.stringify(body),
-      })
+      }
+      if (body && method !== 'GET') {
+        fetchOptions.headers['Content-Type'] = fetchOptions.headers['Content-Type'] || 'application/json'
+        fetchOptions.body = typeof body === 'string' ? body : JSON.stringify(body)
+      }
 
-      // Пробрасываем ответ как есть (включая streaming)
+      const upstreamResponse = await fetch(targetUrl, fetchOptions)
       const responseHeaders = new Headers()
       responseHeaders.set('Access-Control-Allow-Origin', '*')
-      
       const ct = upstreamResponse.headers.get('content-type') || ''
       responseHeaders.set('Content-Type', ct)
       responseHeaders.set('X-Upstream-Status', String(upstreamResponse.status))
@@ -70,17 +66,14 @@ export default {
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: {
-      'Content-Type': 'application/json',
-      ...corsHeaders(),
-    },
+    headers: { 'Content-Type': 'application/json', ...corsHeaders() },
   })
 }
 
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, X-Proxy-Key',
   }
 }
