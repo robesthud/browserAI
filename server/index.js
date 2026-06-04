@@ -1921,6 +1921,51 @@ app.delete('/api/auth/account', requireAuth, (req, res) => {
 // #6 FIX: удалён мёртвый код «void getActiveKeyDecrypted»
 // Функция импортирована из db.js и доступна в модуле напрямую, если понадобится.
 
+
+// ── Диагностика формы входа arena.ai ─────────────────────────────────────────
+app.get('/api/arena/login-diag', requireAuth, async (req, res) => {
+  try {
+    const { chromium } = await import('playwright-extra')
+    const StealthPlugin = (await import('puppeteer-extra-plugin-stealth')).default
+    chromium.use(StealthPlugin())
+    const browser = await chromium.launch({
+      headless: true,
+      executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH || '/usr/bin/chromium',
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process'],
+    })
+    const ctx = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      viewport: { width: 1280, height: 800 },
+    })
+    const pg = await ctx.newPage()
+    await pg.goto('https://arena.ai/sign-in', { waitUntil: 'networkidle', timeout: 30000 })
+    await pg.waitForTimeout(3000)
+    
+    const diag = await pg.evaluate(() => {
+      const inputs = [...document.querySelectorAll('input')].map(el => ({
+        type: el.type, name: el.name, id: el.id,
+        placeholder: el.placeholder, className: el.className.slice(0,100),
+        visible: el.offsetParent !== null,
+      }))
+      const buttons = [...document.querySelectorAll('button')].map(el => ({
+        type: el.type, text: el.textContent.trim().slice(0,50),
+        className: el.className.slice(0,100),
+      }))
+      const title = document.title
+      const url = location.href
+      const links = [...document.querySelectorAll('a[href*="sign"], a[href*="login"], a[href*="auth"]')].map(a => ({
+        href: a.href, text: a.textContent.trim().slice(0,30)
+      }))
+      return { title, url, inputs, buttons, links: links.slice(0,10) }
+    })
+    
+    await browser.close()
+    res.json(diag)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // ---- Статика (production) ----
 const distDir = join(__dirname, '..', 'dist')
 if (existsSync(distDir)) {
