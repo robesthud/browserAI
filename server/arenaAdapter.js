@@ -100,14 +100,15 @@ async function launchBrowser() {
 
   // Устанавливаем arena cookie
   if (currentCookie) {
+    // Cookie может содержать символы которые нужно URL-encode
+    // Playwright принимает domain без leading dot
     await context.addCookies([{
       name: 'arena-auth-prod-v1',
-      value: currentCookie,
-      domain: '.arena.ai',
+      value: encodeURIComponent(currentCookie),
+      domain: 'arena.ai',
       path: '/',
-      httpOnly: false,
       secure: true,
-      sameSite: 'Lax',
+      sameSite: 'None',
     }])
     log('Cookie set in browser context')
   }
