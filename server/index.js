@@ -1960,7 +1960,15 @@ app.get('/api/arena/login-diag', requireAuth, async (req, res) => {
       const links = [...document.querySelectorAll('a[href*="sign"], a[href*="login"], a[href*="auth"]')].map(a => ({
         href: a.href, text: a.textContent.trim().slice(0,30)
       }))
-      return { title, url, inputs, buttons, links: links.slice(0,10) }
+      // Ищем iframes (Clerk часто использует iframe)
+      const iframes = [...document.querySelectorAll('iframe')].map(f => ({
+        src: f.src, id: f.id, className: f.className.slice(0,100)
+      }))
+      // Ищем env переменные в window
+      const envKeys = Object.keys(window).filter(k => k.includes('CLERK') || k.includes('clerk') || k.includes('Clerk'))
+      // __NEXT_DATA__
+      const nextData = window.__NEXT_DATA__ ? JSON.stringify(window.__NEXT_DATA__).slice(0, 2000) : null
+      return { title, url, inputs, buttons, links: links.slice(0,10), iframes, envKeys, nextData }
     })
     
     await browser.close()
