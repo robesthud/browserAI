@@ -58,7 +58,7 @@ const ARENA_ORIGIN = 'https://arena.ai'
 let browser = null
 let page = null
 let currentCookie = process.env.ARENA_AUTH_COOKIE || ''
-let recaptchaSiteKey = null
+let recaptchaSiteKey = '6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0'
 let supabaseAnonKey = null
 let starting = false
 let startPromise = null
@@ -182,25 +182,14 @@ async function launchBrowser() {
     await page.goto(ARENA_ORIGIN + '/', { waitUntil: 'domcontentloaded', timeout: 30000 })
     await page.waitForTimeout(5000) // Wait for Cloudflare + page init
 
-    // Извлекаем reCAPTCHA site key
-    recaptchaSiteKey = await page.evaluate(() => {
-      for (const s of document.querySelectorAll('script[src*="recaptcha"]')) {
-        const m = s.src.match(/render=([^&]+)/)
-        if (m) return m[1]
-      }
-      // Или из grecaptcha._config
-      try { return window.grecaptcha?.enterprise?.execute ? null : null } catch { return null }
-      return null
-    }).catch(() => null)
-
-    // Также попробуем через page content
-    if (!recaptchaSiteKey) {
-      const html = await page.content()
-      const m = html.match(/recaptcha[^"]*render=([A-Za-z0-9_-]+)/)
-      if (m) recaptchaSiteKey = m[1]
-    }
-
-    log(`Browser ready. reCAPTCHA key: ${recaptchaSiteKey || 'not found'}`)
+    log('Browser ready. reCAPTCHA Enterprise key: ' + recaptchaSiteKey)
+    
+    // Ждём чтобы reCAPTCHA Enterprise загрузилась
+    await page.waitForFunction(() => {
+      return window.grecaptcha?.enterprise?.execute != null
+    }, { timeout: 10000 }).catch(() => {
+      warn('reCAPTCHA Enterprise not loaded after 10s — chat may fail')
+    })
 
     // Проверяем auth
     const me = await page.evaluate(async () => {
@@ -225,13 +214,32 @@ async function launchBrowser() {
 
 // ── reCAPTCHA ───────────────────────────────────────────────────────────────
 async function getRecaptchaToken(action = 'chat_submit') {
-  if (!page || !recaptchaSiteKey) return null
+  if (!page) {
+    warn('No page for reCAPTCHA')
+    return null
+  }
   try {
-    return await page.evaluate(async ({ key, action }) => {
-      if (!window.grecaptcha?.execute) return null
-      return await window.grecaptcha.execute(key, { action })
-    }, { key: recaptchaSiteKey, action }).catch(() => null)
-  } catch { return null }
+    const token = await page.evaluate(async ({ key, action }) => {
+      // Arena.ai uses reCAPTCHA Enterprise
+      if (window.grecaptcha?.enterprise?.execute) {
+        return await window.grecaptcha.enterprise.execute(key, { action })
+      }
+      // Fallback to regular v3
+      if (window.grecaptcha?.execute) {
+        return await window.grecaptcha.execute(key, { action })
+      }
+      return null
+    }, { key: recaptchaSiteKey, action })
+    if (token) {
+      log('reCAPTCHA token obtained (' + token.length + ' chars)')
+    } else {
+      warn('reCAPTCHA token is null — grecaptcha not loaded on page')
+    }
+    return token
+  } catch (e) {
+    warn('reCAPTCHA error:', e.message)
+    return null
+  }
 }
 
 // ── Headers ─────────────────────────────────────────────────────────────────
