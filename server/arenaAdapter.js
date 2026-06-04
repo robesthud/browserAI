@@ -129,6 +129,11 @@ async function launchBrowser() {
     } catch { /* ignore */ }
   })
 
+  log('Browser launched, creating page...')
+  if (!page) {
+    throw new Error('Page creation failed — browser context may have crashed')
+  }
+
   log('Navigating to arena.ai...')
   try {
     await page.goto(ARENA_ORIGIN + '/', { waitUntil: 'domcontentloaded', timeout: 30000 })
@@ -167,7 +172,12 @@ async function launchBrowser() {
     }
   } catch (e) {
     warn('Failed to load arena.ai:', e.message)
+    // Не фатально — page уже создана, просто навигация не удалась
+    // Можем попробовать без навигации (прямые fetch запросы)
   }
+
+  if (!page) throw new Error('Browser page is null after launch')
+  log('Arena adapter fully initialized')
 }
 
 // ── reCAPTCHA ───────────────────────────────────────────────────────────────
