@@ -12,7 +12,11 @@
  *   ARENA_ENABLED         — '1' чтобы включить
  */
 
-import { chromium } from 'playwright-core'
+import { chromium } from 'playwright-extra'
+import StealthPlugin from 'puppeteer-extra-plugin-stealth'
+
+// Stealth plugin маскирует headless Chromium от reCAPTCHA Enterprise
+chromium.use(StealthPlugin())
 import { execSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 
