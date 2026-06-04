@@ -4,11 +4,10 @@
  * Used to auto-update cookie for the external LMArenaBridge service.
  */
 
-const SUPABASE_URL = 'https://huogzoeqzcrdvkwtvodi.supabase.co';
+const SUPABASE_URL = 'https://takecharge.supabase.co';
 
 // Hardcoded anon key for the project (from original setup). Can be overridden by env.
-const DEFAULT_ANON_KEY = process.env.ARENA_ANON_KEY || 
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh1b2d6b2VxenNyZHZrd3R2b2RpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MDEyNzQ0MDAsImV4cCI6MjAxNjg1MDQwMH0.3_UBk2U1v1us4zkNMYZOjYfYF6LGd1FlpgLZaMmvPkuC8rr2hlY4onOByQFZuK7txCfIVqR3X8DtQnrttzKmFeww';
+const DEFAULT_ANON_KEY = process.env.ARENA_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRha2VjaGFyZ2UiLCJyb2xlIjoiYW5vbiIsImlhdCI6MTY4MDAwMDAwMCwiZXhwIjoxOTk1NzYwMDAwfQ.8RhjC9S7xYZw8L3fXr9kQ2tZ5mLn7PqX';
 
 function log(...a) { console.log('[arena-refresh]', ...a); }
 function warn(...a) { console.warn('[arena-refresh]', ...a); }
@@ -67,9 +66,9 @@ async function updateBridgeServiceCookie(newCookie) {
     return false;
   }
 
-  const projectId = 'd40e6637-c07a-4fd4-bba9-caff5f0bd231';
-  const envId = '3e760881-7301-4390-a2ea-e125dedd862c';
-  const bridgeServiceId = '7dba1298-16dc-4eee-8ce7-e26886730934';
+  const projectId = '57f88819-7cf7-4335-a9ef-4aa888e83154';
+  const envId = 'de68ec65-e899-439f-8545-c571c78404f1';
+  const bridgeServiceId = '695927ed-ba75-4e35-950e-c5cbecc25c95';
 
   try {
     const resp = await fetch('https://backboard.railway.app/graphql/v2', {
