@@ -1907,14 +1907,9 @@ try {
 app.listen(PORT, () => {
   console.log(`BrowserAI API + SQLite + Workspace на http://localhost:${PORT}`)
 
-  // Запускаем Arena.ai адаптер в фоне (если настроен)
+  // Arena.ai адаптер запускается лениво — при первом запросе (не при старте сервера)
+  // Это экономит RAM и избегает гонки с Railway healthcheck
   if (isArenaEnabled()) {
-    console.log('[arena-adapter] ARENA_REFRESH_TOKEN задан — запускаю Playwright...')
-    ensureArenaStarted().then(() => {
-      console.log('[arena-adapter] ✅ Arena.ai адаптер готов')
-    }).catch((e) => {
-      console.warn('[arena-adapter] ⚠ Не удалось запустить:', e.message)
-      console.warn('[arena-adapter] Arena.ai будет недоступен. Проверьте ARENA_REFRESH_TOKEN.')
-    })
+    console.log('[arena] ARENA_AUTH_COOKIE задан — адаптер будет запущен при первом запросе')
   }
 })
