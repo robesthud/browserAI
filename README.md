@@ -319,55 +319,82 @@ BrowserAI имеет **встроенный адаптер** для Arena.ai, к
 
 1. **Зарегистрируйтесь** на [arena.ai](https://arena.ai) (Google-аккаунт)
 
-2. **Получите refresh_token:**
+2. **Скопируйте cookie:**
    - Откройте arena.ai → F12 → Application → Cookies
-   - Скопируйте cookie `arena-auth-prod-v1` (начинается с `base64-`)
-   - Декодируйте Base64 и найдите поле `refresh_token` (короткая строка вида `xhfgebpe2dmf`)
+   - Скопируйте **значение** cookie `arena-auth-prod-v1` (начинается с `base64-`)
 
 3. **Задайте переменную окружения** на сервере (Railway / Docker / .env):
    ```
-   ARENA_REFRESH_TOKEN=xhfgebpe2dmf
+   ARENA_AUTH_COOKIE=base64-eyJhY2Nlc3NfdG9rZW4iOi...
+   PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium
    ```
 
-4. **В BrowserAI:** Настройки → выберите пресет **🏟 Arena.ai** → введите любой ключ-заглушку → Проверить
+4. **В BrowserAI:** Настройки → пресет **🏟 Arena.ai** → введите любой ключ → Сохранить
 
-5. **Готово!** Выбирайте модель и пишите сообщения.
+5. **Готово!** Токен обновляется автоматически — повторно копировать cookie не нужно.
+
+> 💡 Cookie содержит `refresh_token`. Адаптер сам обновляет `access_token` через Supabase 
+> каждый час. Пока `refresh_token` жив (недели), всё работает без вмешательства.
 
 ### Как работает
 
 ```
-Пользователь → BrowserAI → arenaAdapter.js (Playwright)
-                                    │
-                                    ├── Обновляет access_token через Supabase refresh
-                                    ├── Проходит Cloudflare автоматически
-                                    ├── Получает reCAPTCHA v3 токен
-                                    └── POST /nextjs-api/stream/create-evaluation
-                                              │
-                                              ▼
-                                          arena.ai → SSE стрим → ответ модели
+Пользователь → BrowserAI → /api/chat
+                               │
+                               ▼
+                     isArenaUrl(baseUrl)?
+                               │ да
+                               ▼
+                     arenaAdapter.js
+                         │
+                         ├── Playwright (headless Chromium)
+                         │     ├── Устанавливает cookie через CDP
+                         │     ├── Открывает arena.ai
+                         │     ├── Перехватывает Supabase anon key из network
+                         │     └── Извлекает reCAPTCHA v3 site key
+                         │
+                         ├── Автообновление токена
+                         │     ├── Декодирует cookie → refresh_token
+                         │     ├── POST Supabase /auth/v1/token?grant_type=refresh_token
+                         │     └── Обновляет cookie + браузерный контекст
+                         │
+                         └── Отправка сообщения
+                               ├── page.evaluate(fetch('/nextjs-api/stream/create-evaluation'))
+                               ├── Обходит CORS и Cloudflare (из контекста браузера)
+                               └── Парсит SSE → конвертирует в OpenAI формат
 ```
 
 ### Требования
 
 - **RAM:** +400 МБ (Chromium в headless режиме)
-- **Docker:** Chromium установлен в Dockerfile автоматически
-- **Railway:** работает на платном плане (нужно ≥1 ГБ RAM)
+- **Railway:** nixpacks.toml устанавливает Chromium автоматически
+- **Docker:** Dockerfile устанавливает Chromium автоматически
 - **Termux:** не поддерживается (нет Chromium; используйте Arena.ai Bridge)
 
 ### Файлы адаптера
 
 | Файл | Назначение |
 |------|-----------|
-| `server/arenaAdapter.js` | Playwright логика, reCAPTCHA, token refresh |
-| `server/index.js` | Интеграция: `/api/arena/models`, `/api/arena/status`, обработка в `/api/chat` |
+| `server/arenaAdapter.js` | Playwright, reCAPTCHA, Supabase token refresh, chat API |
+| `server/index.js` | Маршруты: `/api/arena/models`, `/api/arena/status`, `/api/arena/diag` |
+| `nixpacks.toml` | Chromium + системные зависимости для Railway |
+| `Dockerfile` | Chromium + зависимости для Docker |
 
 ### Переменные окружения Arena.ai
 
 | Переменная | Описание |
 |------------|----------|
-| `ARENA_REFRESH_TOKEN` | Supabase refresh token из cookie arena-auth-prod-v1 (обязательно) |
-| `ARENA_ENABLED` | `1` — принудительно включить (обычно авто по наличию ARENA_REFRESH_TOKEN) |
-| `PLAYWRIGHT_CHROMIUM_PATH` | Путь к Chromium (по умолчанию `/usr/bin/chromium` в Docker) |
+| `ARENA_AUTH_COOKIE` | Полная cookie `arena-auth-prod-v1` (`base64-eyJ...`). Содержит access_token + refresh_token. Адаптер автообновляет access_token. |
+| `ARENA_ENABLED` | `1` — принудительно включить (обычно авто по наличию ARENA_AUTH_COOKIE) |
+| `PLAYWRIGHT_CHROMIUM_PATH` | Путь к Chromium (`/usr/bin/chromium` на Railway/Docker) |
+
+### Диагностика
+
+| Эндпоинт | Что показывает |
+|----------|----------------|
+| `GET /api/arena/status` | Подключён ли адаптер, email пользователя |
+| `GET /api/arena/models` | Список доступных моделей |
+| `GET /api/arena/diag` | Путь к Chromium, тест запуска Playwright, тест навигации на arena.ai |
 
 ---
 
@@ -533,6 +560,6 @@ BrowserAI имеет **встроенный адаптер** для Arena.ai, к
 | `TWILIO_ACCOUNT_SID` | — | Twilio SID для SMS |
 | `TWILIO_AUTH_TOKEN` | — | Twilio токен |
 | `TWILIO_PHONE_FROM` | — | Номер отправителя SMS |
-| `ARENA_REFRESH_TOKEN` | — | Supabase refresh token для Arena.ai адаптера |
+| `ARENA_AUTH_COOKIE` | — | Cookie `arena-auth-prod-v1` для Arena.ai (auto-refresh) |
 | `ARENA_ENABLED` | — | `1` для принудительного включения Arena.ai |
 | `PLAYWRIGHT_CHROMIUM_PATH` | `/usr/bin/chromium` | Путь к Chromium для Playwright |

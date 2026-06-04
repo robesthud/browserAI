@@ -10,20 +10,103 @@ BrowserAI v1.0.13 includes a built-in Arena.ai adapter (`server/arenaAdapter.js`
 - Sends requests directly to Arena.ai `/nextjs-api/stream/create-evaluation`
 - Converts Arena.ai SSE responses to OpenAI-compatible format
 
-Required env var: `ARENA_REFRESH_TOKEN` (Supabase refresh token from arena-auth-prod-v1 cookie).
+### How the adapter works internally
 
-Arena.ai API endpoints discovered:
-- `POST /nextjs-api/stream/create-evaluation` — create new chat (requires reCAPTCHA v3)
-- `POST /nextjs-api/stream/post-to-evaluation/{id}` — continue existing chat
-- `POST /nextjs-api/stream/stop/{id}/messages/{msgId}` — stop generation
-- `POST /nextjs-api/stream/rerun/{id}` — rerun
-- `GET /api/me` — current user info (works with cookie auth, no CF challenge)
+1. **Startup (lazy — on first request):**
+   - Launches headless Chromium via Playwright
+   - Sets `arena-auth-prod-v1` cookie via CDP `Network.setCookie`
+   - Navigates to `https://arena.ai/`
+   - Intercepts outgoing Supabase requests to capture the `apikey` header (anon key)
+   - Extracts reCAPTCHA v3 site key from page scripts
+   - Verifies auth via `/api/me`
+
+2. **Token refresh (automatic):**
+   - Supabase anon key is captured from browser network requests (no hardcoding needed)
+   - `refreshSupabaseToken()` calls `POST /auth/v1/token?grant_type=refresh_token`
+   - New session is base64-encoded and set as updated `arena-auth-prod-v1` cookie
+   - Background timer checks token expiry every 50 minutes
+   - Refresh happens 5 minutes before expiry
+
+3. **Chat request flow:**
+   - `handleArenaChat()` is called from `/api/chat` when `isArenaUrl(baseUrl)` is true
+   - Checks and refreshes token if expired
+   - Gets reCAPTCHA v3 token via `page.evaluate(grecaptcha.execute(...))`
+   - Sends `POST /nextjs-api/stream/create-evaluation` via `page.evaluate(fetch(...))`
+     (executes within Playwright page context — bypasses CORS and Cloudflare)
+   - Response (SSE or JSON) is parsed and converted to OpenAI format
+
+4. **Cookie lifecycle:**
+   - Initial cookie from `ARENA_AUTH_COOKIE` env var
+   - Contains Supabase session: `{ access_token, refresh_token, expires_at, user, ... }`
+   - Access token expires in 1 hour
+   - Refresh token is long-lived (weeks)
+   - Adapter auto-refreshes using intercepted Supabase anon key
+   - Arena.ai JS may also auto-refresh cookie (intercepted via `set-cookie` header)
+
+### Required env vars
+
+- `ARENA_AUTH_COOKIE` — full `arena-auth-prod-v1` cookie value (`base64-eyJ...`)
+  - Get it: arena.ai → F12 → Application → Cookies → copy value
+  - Contains access_token + refresh_token; adapter auto-refreshes access_token
+
+### Arena.ai API endpoints discovered
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/me` | Current user info (works without CF challenge) |
+| `POST` | `/nextjs-api/stream/create-evaluation` | Create new chat (requires reCAPTCHA v3) |
+| `POST` | `/nextjs-api/stream/post-to-evaluation/{id}` | Continue existing chat |
+| `POST` | `/nextjs-api/stream/stop/{id}/messages/{msgId}` | Stop generation |
+| `POST` | `/nextjs-api/stream/rerun/{id}` | Rerun response |
+| `POST` | `/nextjs-api/stream/resample/{id}` | Resample response |
+| `POST` | `/nextjs-api/stream/skip-direct-battle/{id}` | Skip battle |
+
+### Arena.ai request body format
+
+```json
+{
+  "id": "UUID-v7",
+  "mode": "direct",
+  "modality": "chat",
+  "modelAId": "gemini-2.5-flash",
+  "userMessageId": "UUID-v7",
+  "modelAMessageId": "UUID-v7",
+  "userMessage": {
+    "content": "user text",
+    "experimental_attachments": [],
+    "metadata": {}
+  },
+  "recaptchaV3Token": "03AGdBq24..."
+}
+```
 
 Mode enum: `direct` | `battle` | `side-by-side` | `direct-battle`
 Modality enum: `auto` | `chat` | `webdev` | `search` | `image` | `p2l` | `video` | `audio`
 
-Auth: cookie `arena-auth-prod-v1` containing base64-encoded Supabase session JSON.
-Supabase project: `huogzoeqzcrdvkwtvodi.supabase.co`
+### Authentication
+
+- Cookie: `arena-auth-prod-v1` = base64-encoded Supabase session JSON
+- Supabase project: `huogzoeqzcrdvkwtvodi.supabase.co`
+- Supabase auth uses ES256 JWT (not HS256)
+- Anon key not embedded in client JS — only available at runtime via network requests
+- Adapter intercepts anon key via Playwright network route handler
+
+### Chromium on Railway
+
+Railway uses nixpacks.toml (not Dockerfile) for builds. Chromium is installed via:
+```toml
+[phases.setup]
+nixPkgs = ["chromium", "nss", "at-spi2-atk"]
+aptPkgs = ["libasound2", "libgbm1", "libxkbcommon0", "fonts-liberation"]
+```
+Chromium binary: `/usr/bin/chromium`
+Must set: `PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium`
+
+### Debugging
+
+- `GET /api/arena/status` — check if adapter is connected and authenticated
+- `GET /api/arena/models` — list available models (hardcoded fallback list)
+- `GET /api/arena/diag` — full diagnostics: Chromium path, launch test, page navigation test
 
 ## Current production URLs
 

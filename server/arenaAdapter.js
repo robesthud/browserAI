@@ -59,6 +59,7 @@ let browser = null
 let page = null
 let currentCookie = process.env.ARENA_AUTH_COOKIE || ''
 let recaptchaSiteKey = null
+let supabaseAnonKey = null
 let starting = false
 let startPromise = null
 
@@ -128,10 +129,13 @@ async function launchBrowser() {
     log('Cookie set')
   }
 
-  // Перехватываем обновлённые cookies
+  // Перехватываем обновлённые cookies и Supabase anon key
   context.on('response', async (response) => {
     try {
+      const url = response.url()
       const hdrs = response.headers()
+      
+      // Перехват обновлённых cookies
       const setCookie = hdrs['set-cookie'] || ''
       if (setCookie.includes('arena-auth-prod-v1=')) {
         const match = setCookie.match(/arena-auth-prod-v1=([^;]+)/)
@@ -141,6 +145,23 @@ async function launchBrowser() {
         }
       }
     } catch { /* ignore */ }
+  })
+
+  // Перехватываем Supabase anon key из outgoing requests
+  await page.route('**/*', async (route) => {
+    const request = route.request()
+    const url = request.url()
+    
+    // Supabase запросы содержат apikey в header
+    if (url.includes('supabase.co') || url.includes('supabase.in')) {
+      const headers = request.headers()
+      if (headers['apikey'] && !supabaseAnonKey) {
+        supabaseAnonKey = headers['apikey']
+        log('Supabase anon key intercepted:', supabaseAnonKey.slice(0, 20) + '...')
+      }
+    }
+    
+    await route.continue()
   })
 
   log('Browser launched, creating page...')
@@ -218,8 +239,126 @@ function buildHeaders() {
 }
 
 // ── Chat ────────────────────────────────────────────────────────────────────
+
+// ── Supabase Token Auto-Refresh ─────────────────────────────────────────────
+async function refreshSupabaseToken() {
+  if (!supabaseAnonKey) {
+    warn('Cannot refresh: Supabase anon key not yet intercepted')
+    return false
+  }
+  
+  // Декодируем текущую cookie чтобы получить refresh_token
+  let sessionData
+  try {
+    const cookieValue = currentCookie.startsWith('base64-') ? currentCookie.slice(7) : currentCookie
+    // Добавляем padding если нужно
+    const padded = cookieValue + '='.repeat((4 - cookieValue.length % 4) % 4)
+    sessionData = JSON.parse(Buffer.from(padded, 'base64').toString('utf8'))
+  } catch (e) {
+    warn('Cannot decode cookie for refresh:', e.message)
+    return false
+  }
+  
+  const refreshToken = sessionData?.refresh_token
+  if (!refreshToken) {
+    warn('No refresh_token in cookie')
+    return false
+  }
+  
+  // Supabase URL из JWT issuer
+  let supabaseUrl = 'https://huogzoeqzcrdvkwtvodi.supabase.co'
+  try {
+    const payload = JSON.parse(Buffer.from(sessionData.access_token.split('.')[1] + '==', 'base64').toString())
+    if (payload.iss) supabaseUrl = payload.iss.replace('/auth/v1', '')
+  } catch { /* use default */ }
+  
+  log('Refreshing Supabase token...')
+  
+  try {
+    const resp = await fetch(supabaseUrl + '/auth/v1/token?grant_type=refresh_token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': supabaseAnonKey,
+      },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    })
+    
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '')
+      warn('Supabase refresh failed:', resp.status, text.slice(0, 200))
+      return false
+    }
+    
+    const newSession = await resp.json()
+    
+    // Обновляем cookie
+    const newCookiePayload = JSON.stringify(newSession)
+    currentCookie = 'base64-' + Buffer.from(newCookiePayload).toString('base64')
+    
+    // Обновляем cookie в браузере
+    if (page) {
+      try {
+        const cdp = await page.context().newCDPSession(page)
+        await cdp.send('Network.setCookie', {
+          name: 'arena-auth-prod-v1',
+          value: currentCookie,
+          domain: '.arena.ai',
+          path: '/',
+          secure: true,
+          httpOnly: false,
+          sameSite: 'Lax',
+        })
+      } catch {
+        // Fallback
+        await page.evaluate((c) => {
+          document.cookie = 'arena-auth-prod-v1=' + c + '; path=/; secure; samesite=lax; max-age=2592000'
+        }, currentCookie)
+      }
+    }
+    
+    const exp = newSession.expires_at ? new Date(newSession.expires_at * 1000).toISOString() : 'unknown'
+    log('Token refreshed! Expires:', exp, 'New refresh_token:', newSession.refresh_token?.slice(0, 8) + '...')
+    return true
+  } catch (e) {
+    warn('Token refresh error:', e.message)
+    return false
+  }
+}
+
+// Проверяем не протух ли access_token
+function isTokenExpired() {
+  try {
+    const cookieValue = currentCookie.startsWith('base64-') ? currentCookie.slice(7) : currentCookie
+    const padded = cookieValue + '='.repeat((4 - cookieValue.length % 4) % 4)
+    const data = JSON.parse(Buffer.from(padded, 'base64').toString('utf8'))
+    const expiresAt = (data.expires_at || 0) * 1000
+    // Обновляем за 5 минут до expiry
+    return Date.now() > expiresAt - 5 * 60 * 1000
+  } catch {
+    return true // если не можем декодировать — считаем протухшим
+  }
+}
+
+// Фоновое автообновление токена каждые 50 минут
+setInterval(async () => {
+  if (!isArenaEnabled() || !supabaseAnonKey) return
+  if (isTokenExpired()) {
+    log('Token expired or expiring soon — auto-refreshing...')
+    await refreshSupabaseToken()
+  }
+}, 50 * 60 * 1000).unref?.()
+
 export async function handleArenaChat({ model, messages, stream = true, temperature }, res) {
   await ensureStarted()
+  
+  // Автообновление токена если протух
+  if (isTokenExpired() && supabaseAnonKey) {
+    const refreshed = await refreshSupabaseToken()
+    if (!refreshed) {
+      return res.status(401).json({ error: 'Arena.ai: токен протух и не удалось обновить. Обновите ARENA_AUTH_COOKIE.' })
+    }
+  }
 
   const evalId = uuidv7()
   const userMsgId = uuidv7()
@@ -388,6 +527,11 @@ export async function getArenaModels() {
 export async function validateArenaSession() {
   try {
     await ensureStarted()
+    
+    // Пробуем обновить если протух
+    if (isTokenExpired() && supabaseAnonKey) {
+      await refreshSupabaseToken()
+    }
     const me = await page.evaluate(async () => {
       const r = await fetch('/api/me')
       return r.ok ? await r.json() : null
