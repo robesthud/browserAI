@@ -1939,7 +1939,11 @@ app.get('/api/arena/login-diag', requireAuth, async (req, res) => {
     })
     const pg = await ctx.newPage()
     await pg.goto('https://arena.ai/sign-in', { waitUntil: 'networkidle', timeout: 30000 })
-    await pg.waitForTimeout(3000)
+    // Ждём пока React отрендерит форму (SPA)
+    await pg.waitForTimeout(5000)
+    // Ждём появления любого input
+    await pg.waitForSelector('input', { timeout: 15000 }).catch(() => {})
+    await pg.waitForTimeout(2000)
     
     const diag = await pg.evaluate(() => {
       const inputs = [...document.querySelectorAll('input')].map(el => ({
