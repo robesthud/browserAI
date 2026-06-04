@@ -84,10 +84,11 @@ function warn(...a) { console.warn('[arena]', ...a) }
 // ── Browser ─────────────────────────────────────────────────────────────────
 async function launchBrowser() {
   if (browser?.isConnected()) return
-  log('Launching headless Chromium...')
+  const chromiumPath = findChromium()
+  log('Launching headless Chromium...', chromiumPath ? `path: ${chromiumPath}` : 'auto-detect')
   browser = await chromium.launch({
     headless: true,
-    executablePath: findChromium(),
+    executablePath: chromiumPath,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process'],
   })
 
@@ -326,9 +327,21 @@ export function isArenaUrl(baseUrl = '') {
 
 export async function ensureStarted() {
   if (!isArenaEnabled()) throw new Error('Arena.ai не настроен. Задайте ARENA_AUTH_COOKIE.')
-  if (startPromise) return startPromise
-  if (browser?.isConnected()) return
-  startPromise = launchBrowser().catch(e => { startPromise = null; throw e })
+  if (browser?.isConnected() && page) return
+  // Reset stale promise
+  if (startPromise) {
+    try { await startPromise } catch { startPromise = null }
+    if (browser?.isConnected() && page) return
+  }
+  startPromise = (async () => {
+    try {
+      await launchBrowser()
+      if (!page) throw new Error('Playwright page not created')
+    } catch (e) {
+      startPromise = null
+      throw e
+    }
+  })()
   return startPromise
 }
 
