@@ -156,9 +156,9 @@ const PROVIDER_PRESETS = [
     group: 'local',
     label: '🌉 Arena.ai Bridge',
     name: 'Arena.ai (через LMArenaBridge)',
-    baseUrl: 'https://lmarena-bridge-production.up.railway.app/api/v1',
+    baseUrl: 'http://lmarena-bridge:8000/api/v1',
     model: '',
-    hint: `Arena.ai через внешний LMArenaBridge (основной способ).\n\nHosted (рекомендуется): https://lmarena-bridge-production.up.railway.app/api/v1\n\n1. Получи cookie arena-auth-prod-v1 с lmarena.ai\n2. Настрой в LMArenaBridge или используй hosted\n3. В BrowserAI: Base URL выше + заглушка-ключа.\n\nМодели 600+ загрузятся автоматически.`,
+    hint: `Arena.ai через внешний LMArenaBridge (внутренний Docker-мост).\n\n1. Получи cookie arena-auth-prod-v1 с lmarena.ai\n2. Настрой в LMArenaBridge (в bridge_config/config.json на сервере)\n3. Выбери этот пресет и нажми "Проверить" — 600+ моделей загрузятся.`,
   },
   {
     id: 'custom-web',

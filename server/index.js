@@ -739,7 +739,7 @@ async function fetchModels(baseUrl, apiKey, requestedModel = '') {
   } catch {
     return { ok: false, status: 400, models: [], preferredModel: '', error: 'Invalid URL' }
   }
-  if (isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) {
+  if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'lmarena-bridge' && hostname !== 'host.docker.internal') {
     return { ok: false, status: 403, models: [], preferredModel: '', error: 'Access to internal networks is not allowed' }
   }
 
@@ -1082,7 +1082,7 @@ app.post('/api/validate', requireAuth, async (req, res) => {
   try { hostname = new URL(baseUrl).hostname } catch {
     return res.json({ ok: false, message: 'Неверный URL', models: [], preferredModel: '' })
   }
-  if (isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) {
+  if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'lmarena-bridge' && hostname !== 'host.docker.internal') {
     return res.json({ ok: false, message: 'Доступ к внутренней сети запрещён', models: [], preferredModel: '' })
   }
 
@@ -1494,7 +1494,7 @@ app.get('/api/web/fetch', requireAuth, async (req, res) => {
     } catch {
       return res.status(400).json({ error: 'Invalid URL' })
     }
-    if (isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) {
+    if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'lmarena-bridge' && hostname !== 'host.docker.internal') {
       return res.status(403).json({ error: 'Access to internal networks is not allowed' })
     }
     const page = await fetchWebPage(url)
@@ -1530,7 +1530,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   try { hostname = new URL(baseUrl).hostname } catch {
     return res.status(400).json({ error: 'Неверный URL' })
   }
-  if (isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) {
+  if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'lmarena-bridge' && hostname !== 'host.docker.internal') {
     return res.status(403).json({ error: 'Доступ к внутренней сети запрещён' })
   }
 
