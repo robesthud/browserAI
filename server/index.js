@@ -18,7 +18,7 @@ import crypto from 'node:crypto'
 import nodemailer from 'nodemailer'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import {
   listKeys,
   getActiveKeyId,
@@ -1789,11 +1789,15 @@ app.delete('/api/auth/account', requireAuth, (req, res) => {
 
 // ---- Статика (production) ----
 const distDir = join(__dirname, '..', 'dist')
+console.log('Production: serving static from', distDir)
 if (existsSync(distDir)) {
+  console.log('Dist directory exists. Files:', readdirSync(distDir))
   app.use(express.static(distDir))
   app.get(/^(?!\/api).*/, (req, res) => {
     res.sendFile(join(distDir, 'index.html'))
   })
+} else {
+  console.log('Dist directory DOES NOT exist!')
 }
 
 try {
