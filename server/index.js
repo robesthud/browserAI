@@ -76,8 +76,15 @@ const PORT = process.env.PORT || 8787
 
 function isPrivateIp(address) {
   if (!isIp(address)) return false
-  const addr = ipaddr.parse(address)
-  return addr.range() !== 'unicast' || addr.isLoopback() || addr.isLinkLocal()
+  try {
+    const addr = ipaddr.parse(address)
+    const range = addr.range()
+    // In newer ipaddr.js, isLoopback/isLinkLocal were removed.
+    // Use range() which returns: 'unicast', 'private', 'loopback', 'linkLocal', etc.
+    return range !== 'unicast'
+  } catch {
+    return false
+  }
 }
 
 // Rate limiting: 300 запросов на IP за 15 минут (общий)
