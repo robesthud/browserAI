@@ -119,7 +119,8 @@ app.use(helmet({
       frameAncestors: ["'self'"],
       objectSrc: ["'none'"],
       workerSrc: ["'self'", 'blob:'],
-      upgradeInsecureRequests: [],
+      // upgradeInsecureRequests disabled — site may be served over plain HTTP
+      // upgradeInsecureRequests: [],
     },
   },
 }))
@@ -216,7 +217,8 @@ function parseCookies(req) {
 
 function setSessionCookie(res, token) {
   const maxAge = SESSION_DAYS * 24 * 60 * 60
-  const secure = process.env.NODE_ENV === 'production'
+  // Only set Secure flag when actually behind HTTPS (APP_URL starts with https)
+  const secure = process.env.NODE_ENV === 'production' && APP_URL.startsWith('https')
   res.setHeader('Set-Cookie', `${AUTH_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`)
 }
 
