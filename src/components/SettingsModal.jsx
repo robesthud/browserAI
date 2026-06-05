@@ -151,6 +151,7 @@ const PROVIDER_PRESETS = [
     hint: 'F12 → Network → запрос к /api → заголовок Authorization',
   },
   // --- Локальные мосты ---
+  {
     id: 'arena-bridge',
     group: 'local',
     label: '🌉 Arena.ai Bridge',
