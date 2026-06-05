@@ -67,7 +67,7 @@ import {
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, isSessionUrl, buildProbeBody, getChatUrl } from './stealthHeaders.js'
-import { refreshAndUpdateBridgeCookie } from "./arenaCookieRefresher.js";
+import { refreshAndUpdateBridgeCookie, bootstrapFromCookie, isTokenExpired } from "./arenaCookieRefresher.js";
 import { isDeepSeekWebUrl, handleDeepSeekWebChat, validateDeepSeekWebKey } from './deepseekWeb.js'
 
 
@@ -1815,36 +1815,66 @@ app.listen(PORT, () => {
 
 })
 // === Arena cookie auto-refresh for LMArenaBridge ===
-// Refreshes the source cookie and pushes updated value to the bridge service.
-if (process.env.ARENA_AUTH_COOKIE) {
-  const REFRESH_INTERVAL = 45 * 60 * 1000; // every 45 min
-  setInterval(async () => {
+// Autonomous token lifecycle:
+//   - Stores refresh_token in /data/arena_refresh.json (survives restarts)
+//   - Refreshes every 45 min via Supabase (token lives 60 min)
+//   - Pushes to Bridge via HTTP + config file
+//   - Works even if ARENA_AUTH_COOKIE env is missing/expired
+{
+  const REFRESH_INTERVAL = 45 * 60 * 1000; // 45 min
+  const STARTUP_DELAY = 10 * 1000; // 10 sec after boot
+
+  // Bootstrap: extract refresh_token from initial cookie (if available)
+  const initialCookie = process.env.ARENA_AUTH_COOKIE || '';
+  if (initialCookie) {
+    bootstrapFromCookie(initialCookie);
+    console.log('[arena-refresh] Bootstrapped refresh_token from env cookie');
+  }
+
+  async function doRefresh() {
     try {
-      const original = process.env.ARENA_AUTH_COOKIE;
-      const refreshed = await refreshAndUpdateBridgeCookie(original);
-      if (refreshed !== original) {
-        // Update in-memory for this process too (if used elsewhere)
+      const current = process.env.ARENA_AUTH_COOKIE || '';
+      const refreshed = await refreshAndUpdateBridgeCookie(current);
+      if (refreshed && refreshed !== current) {
         process.env.ARENA_AUTH_COOKIE = refreshed;
-        console.log('[arena-refresh] Cookie auto-updated for bridge service');
+        console.log('[arena-refresh] ✅ Token auto-refreshed and synced to Bridge');
+      } else if (refreshed === current && current) {
+        // Token didn't change — check if it's still valid
+        if (isTokenExpired(current, 600)) {
+          console.warn('[arena-refresh] ⚠ Token is expiring soon but refresh returned same token');
+        }
       }
     } catch (e) {
       console.warn('[arena-refresh] Background refresh failed:', e.message);
     }
-  }, REFRESH_INTERVAL).unref?.();
-  console.log('[arena-refresh] Auto cookie refresh for LMArenaBridge enabled (every ~45min)');
+  }
+
+  // First refresh shortly after startup (gives Bridge time to start)
+  setTimeout(doRefresh, STARTUP_DELAY);
+  // Then every 45 minutes
+  setInterval(doRefresh, REFRESH_INTERVAL).unref?.();
+  console.log('[arena-refresh] Autonomous token refresh enabled (every 45min, state in /data/arena_refresh.json)');
 }
 
 // Manual refresh endpoint (for UI or scripts)
 app.post('/api/arena/refresh-cookie', requireAuth, async (req, res) => {
   try {
-    const original = process.env.ARENA_AUTH_COOKIE;
-    if (!original) return res.status(400).json({ error: 'No ARENA_AUTH_COOKIE in env' });
-    const refreshed = await refreshAndUpdateBridgeCookie(original);
-    if (refreshed !== original) {
+    const current = process.env.ARENA_AUTH_COOKIE || '';
+    const refreshed = await refreshAndUpdateBridgeCookie(current);
+    if (refreshed && refreshed !== current) {
       process.env.ARENA_AUTH_COOKIE = refreshed;
-      return res.json({ ok: true, message: 'Cookie refreshed and pushed to bridge service. Restart the lmarena-bridge service if needed for immediate effect.', newCookie: refreshed });
+      return res.json({
+        ok: true,
+        message: 'Token refreshed and pushed to Bridge.',
+        expiresAt: new Date((require('./arenaCookieRefresher.js').decodeCookie?.(refreshed)?.expires_at || 0) * 1000).toISOString(),
+      });
     }
-    return res.json({ ok: true, message: 'Cookie still valid, no change.' });
+    if (!current && !refreshed) {
+      return res.status(400).json({
+        error: 'No token available. Add a fresh arena-auth-prod-v1 cookie via Bridge dashboard first.',
+      });
+    }
+    return res.json({ ok: true, message: 'Token still valid, no change needed.' });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
