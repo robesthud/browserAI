@@ -1,3 +1,3 @@
 #!/bin/bash
-export PORT=${PORT:-8080}
-npm run start
+npm run build
+node server/index.js
