@@ -11,6 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 RUN git clone https://github.com/CloudWaddie/LMArenaBridge.git .
 RUN pip install --no-cache-dir -r requirements.txt
+# Ensure playwright browsers and deps are installed
+RUN playwright install firefox
+RUN playwright install-deps firefox
 ENV PORT=8000
 EXPOSE 8000
-CMD ["python", "-m", "src.main"]
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
