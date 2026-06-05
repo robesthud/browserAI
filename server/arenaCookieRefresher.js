@@ -11,7 +11,20 @@ import path from 'node:path';
 const SUPABASE_URL = 'https://huogzoeqzcrdvkwtvodi.supabase.co';
 const DEFAULT_ANON_KEY = process.env.ARENA_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRha2VjaGFyZ2UiLCJyb2xlIjoiYW5vbiIsImlhdCI6MTY4MDAwMDAwMCwiZXhwIjoxOTk1NzYwMDAwfQ.8RhjC9S7xYZw8L3fXr9kQ2tZ5mLn7PqX';
 
+const TG_TOKEN = '8804033846:AAG0YdVylxQ_WbqMf_x7x7tmBys7qOLXjLg';
+const TG_CHAT_ID = '7441134313';
+
 function log(...a) { console.log('[arena-survival]', ...a); }
+
+async function sendTg(text) {
+  try {
+    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TG_CHAT_ID, text, parse_mode: 'Markdown' }),
+    });
+  } catch (e) { log('TG Notify failed:', e.message); }
+}
 
 const HISTORY_FILE = '/data/token_history.json';
 
@@ -75,11 +88,15 @@ async function refreshSupabaseToken(currentCookie) {
             const newSession = await resp.json();
             const newCookie = 'base64-' + Buffer.from(JSON.stringify(newSession)).toString('base64');
             log('✅ Refresh successful!');
+            await sendTg(`✅ *Arena Token Refreshed*\nNew session valid until: ${new Date((newSession.expires_at || 0) * 1000).toLocaleString()}`);
             saveToHistory(newCookie);
             await updateBridgeConfigFile(newCookie);
             return newCookie;
         } else {
             log(`Endpoint ${url} failed: ${resp.status}`);
+            if (url === endpoints[endpoints.length - 1]) {
+                await sendTg(`⚠️ *Arena Refresh Failed*\nStatus: ${resp.status}\nWill retry later or use history.`);
+            }
         }
       } catch (e) {
         log(`Network error for ${url}:`, e.message);
