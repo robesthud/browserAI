@@ -2,7 +2,7 @@
 nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake"]
 
 [phases.build]
-cmds = ["npm install"]
+cmds = ["npm install", "npm run build"]
 
 [start]
-cmd = "bash railway-start.sh"
+cmd = "node server/index.js"
