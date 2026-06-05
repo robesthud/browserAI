@@ -4,17 +4,43 @@ node_modules/
 .env
 .env.*
 *.log
+
+# Database files
 server/*.db
 server/*.db-*
+*.db
+*.db-shm
+*.db-wal
+
+# Workspace (user files)
 workspace/
+data/
 
-# Railway local link config
+# Bridge config (generated at runtime)
+bridge_config/
+
+# Secrets — NEVER commit these
+arena_token.txt
+cookies.txt
+**/netrc.txt
+*.pem
+*.key
+
+# Railway (not used — deployed on Timeweb VPS)
 .railway/
+nixpacks.toml
+railway-start.sh
 
-# Android
+# Android build artifacts
 android-app/.gradle/
 android-app/**/build/
 android-app/local.properties
 *.apk
 *.aab
-.env
+
+# Temp / one-off scripts
+diagnose.sh
+fix_and_restart.sh
+setup_server.sh
+cloud_init*.sh
+docker-compose.yml
