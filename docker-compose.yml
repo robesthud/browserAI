@@ -18,30 +18,62 @@ services:
       - ./data:/data
       - ./bridge_config:/bridge_config
     command: >
-      sh -c "git clone https://github.com/robesthud/browserAI.git /app && 
-             cd /app && 
-             npm install && 
-             npm run build && 
-             npm start"
+      sh -c "
+        if [ ! -d /app/.git ]; then
+          git clone https://github.com/robesthud/browserAI.git /app;
+        else
+          cd /app && git pull --ff-only 2>/dev/null || true;
+        fi &&
+        cd /app &&
+        npm install --production &&
+        npm run build &&
+        npm start
+      "
     working_dir: /app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8787/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
 
   bridge:
-    image: python:3.10
+    image: python:3.10-slim
     container_name: lmarena-bridge
     restart: always
     ports:
       - "8000:8000"
     volumes:
-      - ./bridge_config:/app/config_dir
+      - ./bridge_config:/config_dir
     environment:
-      - CONFIG_FILE=/app/config_dir/config.json
-      - MODELS_FILE=/app/config_dir/models.json
+      - CONFIG_FILE=/config_dir/config.json
+      - MODELS_FILE=/config_dir/models.json
+      - PORT=8000
+      - DEBUG=1
     command: >
-      sh -c "apt-get update && apt-get install -y git libgtk-3-0 libasound2 libnss3 libx11-xcb1 libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrender1 libxtst6 libglib2.0-0 libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 libgcc-s1 libc6 libdbus-1-3 libxcb1 libxkbcommon0 libgbm1 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxt6 libdbus-glib-1-2 libpci3 libegl1 libopus0 libevent-2.1-7 ca-certificates &&
-             git clone https://github.com/CloudWaddie/LMArenaBridge.git /app && 
-             cd /app && 
-             pip install -r requirements.txt && 
-             playwright install firefox &&
-             playwright install-deps firefox &&
-             python3 -m src.main"
+      sh -c "
+        apt-get update && 
+        apt-get install -y --no-install-recommends
+          git curl libgtk-3-0 libasound2 libnss3 libx11-xcb1
+          libxcomposite1 libxcursor1 libxdamage1 libxext6
+          libxfixes3 libxi6 libxrender1 libxtst6 libglib2.0-0
+          libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 libgcc-s1
+          libc6 libdbus-1-3 libxcb1 libxkbcommon0 libgbm1
+          libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxt6
+          libdbus-glib-1-2 libpci3 libegl1 libopus0 libevent-2.1-7
+          ca-certificates &&
+        rm -rf /var/lib/apt/lists/* &&
+        git clone https://github.com/CloudWaddie/LMArenaBridge.git /app &&
+        cd /app &&
+        pip install --no-cache-dir -r requirements.txt &&
+        playwright install firefox &&
+        playwright install-deps firefox &&
+        python3 -m src.main
+      "
     working_dir: /app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
