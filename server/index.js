@@ -1790,6 +1790,7 @@ app.delete('/api/auth/account', requireAuth, (req, res) => {
 // ---- Статика (production) ----
 const distDir = join(__dirname, '..', 'dist')
 console.log('Production: serving static from', distDir)
+console.log('Project root contents:', readdirSync(join(__dirname, '..')))
 if (existsSync(distDir)) {
   console.log('Dist directory exists. Files:', readdirSync(distDir))
   app.use(express.static(distDir))
