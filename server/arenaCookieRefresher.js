@@ -4,7 +4,7 @@
  */
 import fs from 'node:fs';
 
-const SUPABASE_URL = 'https://takecharge.supabase.co';
+const SUPABASE_URL = 'https://huogzoeqzcrdvkwtvodi.supabase.co';
 const DEFAULT_ANON_KEY = process.env.ARENA_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRha2VjaGFyZ2UiLCJyb2xlIjoiYW5vbiIsImlhdCI6MTY4MDAwMDAwMCwiZXhwIjoxOTk1NzYwMDAwfQ.8RhjC9S7xYZw8L3fXr9kQ2tZ5mLn7PqX';
 
 function log(...a) { console.log('[arena-refresh]', ...a); }
@@ -33,22 +33,40 @@ async function refreshSupabaseToken(currentCookie) {
   
   if (!refreshToken) return currentCookie;
 
+  log('Refreshing Arena session via Supabase...');
   try {
-    const resp = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+    // Try user suggested endpoint first
+    let resp = await fetch(`https://auth.arena.ai/token?grant_type=refresh_token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'apikey': anonKey },
       body: JSON.stringify({ refresh_token: refreshToken }),
     });
-    if (!resp.ok) return currentCookie;
+
+    // Fallback to standard Supabase URL if 404
+    if (!resp.ok) {
+        log('auth.arena.ai failed, trying fallback supabase url...');
+        resp = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'apikey': anonKey },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+    }
+
+    if (!resp.ok) {
+        log('Refresh failed:', resp.status);
+        return currentCookie;
+    }
     
     const newSession = await resp.json();
     const newCookie = 'base64-' + Buffer.from(JSON.stringify(newSession)).toString('base64');
+    log('✅ Session refreshed. New expires:', new Date((newSession.expires_at || 0) * 1000).toISOString());
     
     // Push to bridge file
     await updateBridgeConfigFile(newCookie);
     
     return newCookie;
   } catch (e) {
+    log('Refresh error:', e.message);
     return currentCookie;
   }
 }
