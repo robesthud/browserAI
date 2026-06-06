@@ -339,25 +339,6 @@ public class MainActivity extends Activity {
                 return super.onConsoleMessage(consoleMessage);
             }
 
-            // Разрешения для микрофона/камеры (нужны если добавить voice input)
-            @Override
-            public void onPermissionRequest(PermissionRequest request) {
-                // Показываем диалог пользователю — он должен явно разрешить
-                String[] resources = request.getResources();
-                StringBuilder sb = new StringBuilder("Сайт запрашивает доступ к:\n");
-                for (String r : resources) {
-                    if (r.equals(PermissionRequest.RESOURCE_AUDIO_CAPTURE)) sb.append("• Микрофон\n");
-                    if (r.equals(PermissionRequest.RESOURCE_VIDEO_CAPTURE)) sb.append("• Камера\n");
-                    if (r.equals(PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID)) sb.append("• Защищённые медиа\n");
-                }
-                new AlertDialog.Builder(MainActivity.this)
-                        .setTitle("Запрос разрешения")
-                        .setMessage(sb.toString())
-                        .setPositiveButton("Разрешить", (d, w) -> request.grant(resources))
-                        .setNegativeButton("Отклонить", (d, w) -> request.deny())
-                        .setCancelable(false)
-                        .show();
-            }
 
             // Геолокация для Web AI (если включена)
             @Override
