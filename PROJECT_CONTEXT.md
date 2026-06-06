@@ -4,9 +4,7 @@ Last updated: 2026-06-07.
 
 ## Managed DeepSeek session
 
-The previous Arena.ai / LMArenaBridge integration has been **removed**
-(see commits `c24edfa` and `61612c0` on `main`). The replacement is a
-native `chat.deepseek.com` session manager that:
+Native `chat.deepseek.com` session manager:
 
 - Stores `userToken` (Bearer JWT) + cookies in `/data/deepseek_session.json`
   (volume-mounted, survives restarts).
@@ -88,9 +86,8 @@ The canonical deployment is via Docker:
 - `.env.example` documents all environment variables; copy to `.env`
   next to `docker-compose.yml` on the deploy host.
 
-Older Railway-only deployment notes (Nixpacks, Playwright Chromium) are
-no longer applicable — the Arena bridge that required Chromium has been
-removed.
+For Railway-style deployments the same `Dockerfile` works as-is; just
+point the platform at the repo and mount a persistent volume at `/data`.
 
 ## Auth/cloud-sync status
 
