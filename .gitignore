@@ -2,7 +2,7 @@ node_modules/
 
 .DS_Store
 .env
-.env.*
+.env.local
 *.log
 
 # Database files
@@ -43,4 +43,3 @@ diagnose.sh
 fix_and_restart.sh
 setup_server.sh
 cloud_init*.sh
-docker-compose.yml

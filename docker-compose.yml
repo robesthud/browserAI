@@ -1,0 +1,28 @@
+services:
+  browserai:
+    build: .
+    image: browserai:latest
+    container_name: browserai
+    restart: unless-stopped
+    ports:
+      - "80:8080"
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+      # DeepSeek managed-session env (optional bootstrap, can be set later via UI/TG)
+      - DEEPSEEK_STATE_FILE=/data/deepseek_session.json
+      # - DEEPSEEK_USER_TOKEN=
+      # - DEEPSEEK_COOKIES=
+      # Telegram bot (optional)
+      - TG_BOT_TOKEN=${TG_BOT_TOKEN:-}
+      - TG_ADMIN_CHAT_ID=${TG_ADMIN_CHAT_ID:-}
+      # App-level secrets
+      - SESSION_SECRET=${SESSION_SECRET:-change-me}
+      - APP_URL=${APP_URL:-http://localhost}
+    volumes:
+      - browserai_data:/data
+      - browserai_workspace:/workspace
+
+volumes:
+  browserai_data:
+  browserai_workspace:
