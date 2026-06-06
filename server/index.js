@@ -126,8 +126,6 @@ app.use(helmet({
       frameAncestors: ["'self'"],
       objectSrc: ["'none'"],
       workerSrc: ["'self'", 'blob:'],
-      // Explicitly disable upgrade-insecure-requests — site is served over plain HTTP
-      upgradeInsecureRequests: null,
     },
   },
 }))
