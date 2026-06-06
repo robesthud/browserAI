@@ -1,122 +1,71 @@
 # BrowserAI project context for future AI agents
 
-Last updated: 2026-06-04.
+Last updated: 2026-06-07.
 
-## Arena.ai Built-in Adapter
+## Managed DeepSeek session
 
+The previous Arena.ai / LMArenaBridge integration has been **removed**
+(see commits `c24edfa` and `61612c0` on `main`). The replacement is a
+native `chat.deepseek.com` session manager that:
 
-Direct built-in server adapter removed.
+- Stores `userToken` (Bearer JWT) + cookies in `/data/deepseek_session.json`
+  (volume-mounted, survives restarts).
+- Pings `GET https://chat.deepseek.com/api/v0/users/current` every 10
+  minutes. The response is used as a heartbeat; any `Set-Cookie` rotated
+  by DeepSeek is merged back into the persisted state.
+- Refreshes the cached model list every hour (falls back to the
+  hard-coded pair `deepseek_chat` / `deepseek_reasoner` if discovery
+  fails).
+- Notifies Telegram (`TG_BOT_TOKEN` + `TG_ADMIN_CHAT_ID`) on session
+  updates, rotations, and 401/403 failures.
+- Auto-injects the managed bearer + cookies into `/api/chat` and
+  `/api/validate` when the client sends `apiKey: '__managed__'` (or
+  omits it entirely) for a `chat.deepseek.com` URL — so users select the
+  preset **«✨ DeepSeek (managed)»** and never see a token.
 
-Use "🌉 Arena.ai Bridge" preset pointing to hosted LMArenaBridge or local instance.
+### Files
 
-Hosted: https://lmarena-bridge-production.up.railway.app/api/v1
+| File | Purpose |
+|------|---------|
+| `server/deepseekTokenRefresher.js` | Session state + heartbeat + models cache |
+| `server/deepseekBot.js`            | Telegram control surface (long polling) |
+| `server/deepseekWeb.js`            | Lower-level DeepSeek HTTP client + WASM POW |
+| `src/components/DeepSeekAdmin.jsx` | `/admin/deepseek` dashboard |
+| `server/DEEPSEEK_SESSION.md`       | Full operator guide (env, endpoints, bot) |
 
-See README for setup.
+### Public API surface
 
-### How the adapter works internally
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET    | `/api/deepseek/managed`            | none | Probe availability for the UI |
+| GET    | `/api/admin/deepseek/status`       | required | Session state (no secrets) |
+| POST   | `/api/admin/deepseek/refresh`      | required | Force heartbeat + models refresh |
+| POST   | `/api/admin/deepseek/token`        | required | Set `userToken` and/or cookies |
+| GET    | `/api/admin/deepseek/models`       | required | Cached model list |
 
-1. **Startup (lazy — on first request):**
-   - Launches headless Chromium via Playwright
-   - Sets `arena-auth-prod-v1` cookie via CDP `Network.setCookie`
-   - Navigates to `https://arena.ai/`
-   - Intercepts outgoing Supabase requests to capture the `apikey` header (anon key)
-   - Extracts reCAPTCHA v3 site key from page scripts
-   - Verifies auth via `/api/me`
+### Telegram commands (admin chat only)
 
-2. **Token refresh (automatic):**
-   - Supabase anon key is captured from browser network requests (no hardcoding needed)
-   - `refreshSupabaseToken()` calls `POST /auth/v1/token?grant_type=refresh_token`
-   - New session is base64-encoded and set as updated `arena-auth-prod-v1` cookie
-   - Background timer checks token expiry every 50 minutes
-   - Refresh happens 5 minutes before expiry
+`/status` · `/refresh` · `/settoken <jwt>` · `/setcookie <name=val;…>` ·
+`/models` · `/help`. Messages containing the raw token are deleted by the
+bot after saving.
 
-3. **Chat request flow:**
-   - Checks and refreshes token if expired
-   - Gets reCAPTCHA v3 token via `page.evaluate(grecaptcha.execute(...))`
-   - Sends `POST /nextjs-api/stream/create-evaluation` via `page.evaluate(fetch(...))`
-     (executes within Playwright page context — bypasses CORS and Cloudflare)
-   - Response (SSE or JSON) is parsed and converted to OpenAI format
+### Env vars
 
-4. **Cookie lifecycle:**
-   - Initial cookie from `ARENA_AUTH_COOKIE` env var
-   - Contains Supabase session: `{ access_token, refresh_token, expires_at, user, ... }`
-   - Access token expires in 1 hour
-   - Refresh token is long-lived (weeks)
-   - Adapter auto-refreshes using intercepted Supabase anon key
-   - Arena.ai JS may also auto-refresh cookie (intercepted via `set-cookie` header)
-
-### Required env vars (any one sufficient)
-
-- `ARENA_AUTH_COOKIE` — full `arena-auth-prod-v1` cookie value (`base64-eyJ...`)
-  - Get it: arena.ai → F12 → Application → Cookies → copy value
-  - Contains access_token + refresh_token; adapter auto-refreshes access_token
-- `ARENA_REFRESH_TOKEN` + `ARENA_ANON_KEY` — for auto-refresh without full cookie
-  - Anon key: the Supabase anon key for huogzoeqzcrdvkwtvodi.supabase.co (intercepted at runtime or provided manually)
-
-
-### Arena.ai API endpoints discovered
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/me` | Current user info (works without CF challenge) |
-| `POST` | `/nextjs-api/stream/create-evaluation` | Create new chat (requires reCAPTCHA v3) |
-| `POST` | `/nextjs-api/stream/post-to-evaluation/{id}` | Continue existing chat |
-| `POST` | `/nextjs-api/stream/stop/{id}/messages/{msgId}` | Stop generation |
-| `POST` | `/nextjs-api/stream/rerun/{id}` | Rerun response |
-| `POST` | `/nextjs-api/stream/resample/{id}` | Resample response |
-| `POST` | `/nextjs-api/stream/skip-direct-battle/{id}` | Skip battle |
-
-### Arena.ai request body format
-
-```json
-{
-  "id": "UUID-v7",
-  "mode": "direct",
-  "modality": "chat",
-  "modelAId": "gemini-2.5-flash",
-  "userMessageId": "UUID-v7",
-  "modelAMessageId": "UUID-v7",
-  "userMessage": {
-    "content": "user text",
-    "experimental_attachments": [],
-    "metadata": {}
-  },
-  "recaptchaV3Token": "03AGdBq24..."
-}
+```text
+DEEPSEEK_USER_TOKEN     # optional bootstrap Bearer (otherwise UI/bot supplies it)
+DEEPSEEK_COOKIES        # optional bootstrap cookies "name=value; name2=value2"
+DEEPSEEK_HEARTBEAT_MS   # default 600000 (10 min)
+DEEPSEEK_MODELS_REFRESH_MS  # default 3600000 (1 h)
+DEEPSEEK_BOT            # "off" disables the Telegram bot
+TG_BOT_TOKEN            # bot token from @BotFather
+TG_ADMIN_CHAT_ID        # numeric chat_id allowed to issue commands
 ```
-
-Mode enum: `direct` | `battle` | `side-by-side` | `direct-battle`
-Modality enum: `auto` | `chat` | `webdev` | `search` | `image` | `p2l` | `video` | `audio`
-
-### Authentication
-
-- Cookie: `arena-auth-prod-v1` = base64-encoded Supabase session JSON
-- Supabase project: `huogzoeqzcrdvkwtvodi.supabase.co`
-- Supabase auth uses ES256 JWT (not HS256)
-- Anon key not embedded in client JS — only available at runtime via network requests
-- Adapter intercepts anon key via Playwright network route handler
-
-### Chromium on Railway
-
-Railway uses nixpacks.toml (not Dockerfile) for builds. Chromium is installed via:
-```toml
-[phases.setup]
-nixPkgs = ["chromium", "nss", "at-spi2-atk"]
-aptPkgs = ["libasound2", "libgbm1", "libxkbcommon0", "fonts-liberation"]
-```
-Chromium binary: `/usr/bin/chromium`
-Must set: `PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium`
-
-### Debugging
-
-- `GET /api/arena/status` — check if adapter is connected and authenticated
-- `GET /api/arena/models` — list available models (hardcoded fallback list)
-- `GET /api/arena/diag` — full diagnostics: Chromium path, launch test, page navigation test
 
 ## Current production URLs
 
 - GitHub repo: `https://github.com/robesthud/browserAI`
-- Railway web/backend: `https://browserai-production.up.railway.app/`
+- Primary deployment: Timeweb Cloud VPS `browserai`
+  (Ubuntu 22.04 + Docker, single-node), reachable via the `APP_URL` env.
 - Android package/applicationId: `ai.browser.app`
 - Android project folder: `android-app/`
 
@@ -126,13 +75,22 @@ BrowserAI is a full-stack app:
 
 - React/Vite/Tailwind frontend is built to `dist/`.
 - Express server in `server/index.js` serves both `/api/*` and static `dist/`.
-- Railway should run it as a Web Service with Nixpacks:
-  - install: `npm ci`
-  - build: `npm run build`
-  - start: `npm start`
-- Persistent Railway volume should be mounted to `/data`:
-  - DB: `/data/browserai.db`
-  - workspace: `/data/workspace`
+
+The canonical deployment is via Docker:
+
+- `Dockerfile` — multi-stage `node:22-alpine` build that runs `vite build`,
+  prunes devDeps, and includes `python3/make/g++` so `better-sqlite3` can
+  compile its native binding.
+- `docker-compose.yml` — exposes port 8080 inside the container (mapped to
+  host 80 by default) and mounts two named volumes:
+  - `browserai_data` → `/data` (sqlite db, `deepseek_session.json`, sessions)
+  - `browserai_workspace` → `/workspace` (user files)
+- `.env.example` documents all environment variables; copy to `.env`
+  next to `docker-compose.yml` on the deploy host.
+
+Older Railway-only deployment notes (Nixpacks, Playwright Chromium) are
+no longer applicable — the Arena bridge that required Chromium has been
+removed.
 
 ## Auth/cloud-sync status
 

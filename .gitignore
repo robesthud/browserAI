@@ -16,11 +16,7 @@ server/*.db-*
 workspace/
 data/
 
-# Bridge config (generated at runtime)
-bridge_config/
-
 # Secrets — NEVER commit these
-arena_token.txt
 cookies.txt
 **/netrc.txt
 *.pem
