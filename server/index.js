@@ -116,7 +116,7 @@ app.use(helmet({
       baseUri: ["'self'"],
       // Vite legacy builds inject small inline loader scripts. They are required
       // for older Android System WebView versions that do not support modules.
-      scriptSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", 'data:', 'blob:'],
       scriptSrcAttr: ["'none'"],
       styleSrc: ["'self'", 'https:', "'unsafe-inline'"],
       imgSrc: ["'self'", 'data:', 'blob:'],
