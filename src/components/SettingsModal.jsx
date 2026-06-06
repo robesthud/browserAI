@@ -76,12 +76,15 @@ const PROVIDER_PRESETS = [
     baseUrl: 'https://openrouter.ai/api/v1',
     hint: 'openrouter.ai — доступ к 100+ моделям через один ключ',
   },
-  // --- Сессионные токены (веб-интерфейс) ---
+  // --- Бесплатно (серверные managed-сессии) ---
+  // Сюда добавляются провайдеры, у которых токен/сессию хранит и
+  // автоматически обновляет сам сервер. Клиент ничего не вводит —
+  // выбирает пресет и сразу общается.
   {
     id: 'deepseek-managed',
-    group: 'web',
-    label: '✨ DeepSeek (managed)',
-    name: 'DeepSeek (серверная сессия)',
+    group: 'free',
+    label: '✨ DeepSeek',
+    name: 'DeepSeek (managed)',
     baseUrl: 'https://chat.deepseek.com/api/v0',
     model: 'deepseek_chat',
     apiKey: '__managed__',
@@ -89,97 +92,7 @@ const PROVIDER_PRESETS = [
       'Referer': 'https://chat.deepseek.com/',
       'Origin': 'https://chat.deepseek.com',
     },
-    hint: 'Без ввода ключа: токен и cookies хранятся на сервере и обновляются автоматически. Управление в /admin/deepseek или через Telegram-бота.',
-  },
-  {
-    id: 'deepseek-web',
-    group: 'web',
-    label: '🍪 DeepSeek Web',
-    name: 'DeepSeek Web (сессия)',
-    baseUrl: 'https://chat.deepseek.com/api/v0',
-    model: 'deepseek_chat',
-    extraHeaders: {
-      'Referer': 'https://chat.deepseek.com/',
-      'Origin': 'https://chat.deepseek.com',
-      'x-app-version': '20241129.1',
-      'x-client-platform': 'web',
-      'x-client-version': '1.0.0-always',
-    },
-    hint: 'DeepSeek Web Experimental. Нужен Bearer-токен из localStorage: userToken.value. Cookie можно добавить ниже в «Дополнительные заголовки» строкой Cookie: ...',
-  },
-  {
-    id: 'grok-web',
-    group: 'web',
-    label: '🍪 Grok Web',
-    name: 'Grok Web (сессия)',
-    baseUrl: 'https://grok.com/api',
-    model: 'grok-3',
-    extraHeaders: { 'Referer': 'https://grok.com/', 'Origin': 'https://grok.com' },
-    hint: 'F12 → Network → запрос к /chat → заголовок Authorization',
-  },
-  {
-    id: 'claude-web',
-    group: 'web',
-    label: '🍪 Claude Web',
-    name: 'Claude Web (сессия)',
-    baseUrl: 'https://claude.ai/api',
-    model: 'claude-3-5-sonnet-20241022',
-    authType: 'custom',
-    authHeader: 'Cookie',
-    extraHeaders: { 'Referer': 'https://claude.ai/', 'Origin': 'https://claude.ai' },
-    hint: 'F12 → Network → любой запрос к /api → скопируй весь заголовок Cookie',
-  },
-  {
-    id: 'gemini-web',
-    group: 'web',
-    label: '🍪 Gemini Web',
-    name: 'Gemini Web (сессия)',
-    baseUrl: 'https://gemini.google.com/api',
-    model: 'gemini-2.0-flash',
-    authType: 'custom',
-    authHeader: 'Cookie',
-    extraHeaders: {
-      'Referer': 'https://gemini.google.com/',
-      'Origin': 'https://gemini.google.com',
-      'x-goog-api-client': 'gl-js/ fire/0.0.0',
-    },
-    hint: 'F12 → Network → запрос к /api → вкладка Headers → скопируй весь заголовок Cookie\n\nТакже можно попробовать AI Studio:\nBase URL: https://aistudio.google.com/api/v1\nТокен: заголовок x-goog-api-key или Cookie',
-  },
-  {
-    id: 'chatgpt-web',
-    group: 'web',
-    label: '🍪 ChatGPT Web',
-    name: 'ChatGPT Web (сессия)',
-    baseUrl: 'https://chatgpt.com/backend-api',
-    model: 'gpt-4o',
-    extraHeaders: {
-      'Referer': 'https://chatgpt.com/',
-      'Origin': 'https://chatgpt.com',
-    },
-    hint: 'F12 → Network → запрос к /backend-api/conversation → заголовок Authorization\n\nТокен начинается с eyJ... (JWT)',
-  },
-  {
-    id: 'mistral-web',
-    group: 'web',
-    label: '🍪 Mistral Web',
-    name: 'Mistral Chat (сессия)',
-    baseUrl: 'https://chat.mistral.ai/api',
-    model: 'mistral-large-latest',
-    extraHeaders: {
-      'Referer': 'https://chat.mistral.ai/',
-      'Origin': 'https://chat.mistral.ai',
-    },
-    hint: 'F12 → Network → запрос к /api → заголовок Authorization',
-  },
-  // --- Локальные мосты ---
-  {
-    id: 'custom-web',
-    group: 'local',
-    label: '🔧 Свой сайт',
-    name: 'Кастомный сайт',
-    baseUrl: '',
-    model: '',
-    hint: 'F12 → Network → найди запрос к AI → скопируй URL и заголовок авторизации',
+    hint: 'Бесплатно. Токен и cookies хранятся на сервере и обновляются автоматически. Управление: /admin/deepseek или Telegram-бот.',
   },
 ]
 
@@ -368,9 +281,8 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
   const [activeTab, setActiveTab] = useState(presetGroup)
   
   const providerGroups = [
-    { title: 'Официальные API', group: 'api', cls: 'border-white/10 text-cream-soft hover:border-white/20 hover:bg-graphite-750 hover:text-cream' },
-    { title: 'Web-сессии / Cookie', group: 'web', cls: 'border-amber-400/20 bg-amber-400/5 text-amber-300 hover:border-amber-400/40 hover:bg-amber-400/10' },
-    { title: 'Локальные и другие', group: 'local', cls: 'border-blue-400/20 bg-blue-400/5 text-blue-300 hover:border-blue-400/40 hover:bg-blue-400/10' },
+    { title: 'Официальные API', group: 'api',  cls: 'border-white/10 text-cream-soft hover:border-white/20 hover:bg-graphite-750 hover:text-cream' },
+    { title: 'Бесплатно',       group: 'free', cls: 'border-emerald-400/20 bg-emerald-400/5 text-emerald-300 hover:border-emerald-400/40 hover:bg-emerald-400/10' },
   ]
 
   return (
