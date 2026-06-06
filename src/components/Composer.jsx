@@ -150,7 +150,7 @@ export default function Composer({
       const recognition = new SpeechRecognition()
       recognition.lang = 'ru-RU'
       recognition.interimResults = true
-      recognition.continuous = true
+      recognition.continuous = false
 
       recognition.onstart = () => {
         setText(prev => {
@@ -211,6 +211,14 @@ export default function Composer({
     if (isStreaming) return
     const t = text.trim()
     if (!t && attachments.length === 0) return
+    
+    // Если отправляем во время записи, останавливаем запись и очищаем базу
+    if (isRecording) {
+      recognitionRef.current?.stop()
+      setIsRecording(false)
+    }
+    baseTextRef.current = ''
+    
     onSend(t, attachments)
     setText('')
     setAttachments([])
