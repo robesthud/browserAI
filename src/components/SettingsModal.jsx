@@ -352,7 +352,8 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
     modelRef.current = form.model || ''
   }, [form.model])
 
-  const [activeTab, setActiveTab] = useState('api')
+  const presetGroup = initial.baseUrl ? PROVIDER_PRESETS.find(p => p.baseUrl === initial.baseUrl)?.group || 'api' : 'api'
+  const [activeTab, setActiveTab] = useState(presetGroup)
   
   const providerGroups = [
     { title: 'Официальные API', group: 'api', cls: 'border-white/10 text-cream-soft hover:border-white/20 hover:bg-graphite-750 hover:text-cream' },
