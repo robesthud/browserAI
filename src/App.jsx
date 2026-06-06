@@ -6,6 +6,7 @@ import Workspace from './components/Workspace.jsx'
 import MessageList from './components/MessageList.jsx'
 import SettingsModal from './components/SettingsModal.jsx'
 import AuthGate from './components/AuthGate.jsx'
+import DeepSeekAdmin from './components/DeepSeekAdmin.jsx'
 import ModelBar from './components/ModelBar.jsx'
 import { IconExpand } from './icons.jsx'
 import {
@@ -350,6 +351,16 @@ function BrowserApp({ user, reloadAuth }) {
 }
 
 export default function App() {
+  // Admin routes use plain pathname matching to avoid pulling react-router
+  // for a single page. AuthGate still guards access via cookie session.
+  const pathname = typeof window !== 'undefined' ? window.location.pathname : '/'
+  if (pathname === '/admin/deepseek') {
+    return (
+      <AuthGate>
+        {() => <DeepSeekAdmin />}
+      </AuthGate>
+    )
+  }
   return (
     <AuthGate>
       {({ user, reloadAuth, renderKey }) => (

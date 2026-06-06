@@ -78,6 +78,20 @@ const PROVIDER_PRESETS = [
   },
   // --- Сессионные токены (веб-интерфейс) ---
   {
+    id: 'deepseek-managed',
+    group: 'web',
+    label: '✨ DeepSeek (managed)',
+    name: 'DeepSeek (серверная сессия)',
+    baseUrl: 'https://chat.deepseek.com/api/v0',
+    model: 'deepseek_chat',
+    apiKey: '__managed__',
+    extraHeaders: {
+      'Referer': 'https://chat.deepseek.com/',
+      'Origin': 'https://chat.deepseek.com',
+    },
+    hint: 'Без ввода ключа: токен и cookies хранятся на сервере и обновляются автоматически. Управление в /admin/deepseek или через Telegram-бота.',
+  },
+  {
     id: 'deepseek-web',
     group: 'web',
     label: '🍪 DeepSeek Web',

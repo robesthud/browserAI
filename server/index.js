@@ -69,6 +69,16 @@ import { searchWeb, fetchWebPage } from './web.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, isSessionUrl, buildProbeBody, getChatUrl } from './stealthHeaders.js'
 
 import { isDeepSeekWebUrl, handleDeepSeekWebChat, validateDeepSeekWebKey } from './deepseekWeb.js'
+import {
+  bootstrap as bootstrapDeepSeekSession,
+  getSessionState as getDeepSeekState,
+  getActiveBearer as getDeepSeekBearer,
+  getCookieHeader as getDeepSeekCookieHeader,
+  getCachedModels as getDeepSeekModels,
+  refreshNow as refreshDeepSeekNow,
+  setSession as setDeepSeekSession,
+} from './deepseekTokenRefresher.js'
+import { startDeepSeekBot } from './deepseekBot.js'
 
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -1066,11 +1076,28 @@ app.put('/api/params', requireAuth, (req, res) => {
 // Для обычных API-ключей — /models + probe /chat/completions
 app.post('/api/validate', requireAuth, async (req, res) => {
   const {
-    baseUrl, apiKey, model,
+    baseUrl, model,
     authType = 'bearer',
     authHeader = '',
     extraHeaders = {},
   } = req.body || {}
+  let { apiKey } = req.body || {}
+  let mergedExtraHeaders = extraHeaders
+
+  // Managed DeepSeek: inject server-side token+cookies if client omits apiKey.
+  if (isDeepSeekWebUrl(baseUrl) && (!apiKey || apiKey === '__managed__')) {
+    const managedBearer = getDeepSeekBearer()
+    const managedCookies = getDeepSeekCookieHeader()
+    if (managedBearer) {
+      apiKey = managedBearer
+      mergedExtraHeaders = { ...(extraHeaders || {}) }
+      if (managedCookies && !Object.keys(mergedExtraHeaders).some((k) => k.toLowerCase() === 'cookie')) {
+        mergedExtraHeaders.Cookie = managedCookies
+      }
+    } else {
+      return res.json({ ok: false, message: 'DeepSeek session is not configured on the server', models: [], preferredModel: '' })
+    }
+  }
 
   if (!baseUrl || !apiKey) {
     return res.json({ ok: false, message: 'Укажите Base URL и ключ', models: [], preferredModel: '' })
@@ -1092,7 +1119,15 @@ app.post('/api/validate', requireAuth, async (req, res) => {
   // ── DeepSeek Web Experimental: это не OpenAI-compatible API.
   // Проверяем через создание chat_session, а не через /chat/completions.
   if (isDeepSeekWebUrl(baseUrl)) {
-    const result = await validateDeepSeekWebKey({ baseUrl, apiKey, authType, authHeader, extraHeaders, model })
+    const result = await validateDeepSeekWebKey({ baseUrl, apiKey, authType, authHeader, extraHeaders: mergedExtraHeaders, model })
+    // Прикладываем кэшированный список managed-моделей если client пришёл без своих
+    if (result?.ok && (!result.models || !result.models.length)) {
+      const cached = getDeepSeekModels()
+      if (cached?.length) {
+        result.models = cached.map((m) => m.id)
+        result.preferredModel = result.preferredModel || cached[0].id
+      }
+    }
     return res.json(result)
   }
 
@@ -1510,7 +1545,6 @@ app.get('/api/web/fetch', requireAuth, async (req, res) => {
 app.post('/api/chat', requireAuth, async (req, res) => {
   const {
     baseUrl,
-    apiKey,
     authType = 'bearer',
     authHeader = '',
     extraHeaders = {},
@@ -1519,6 +1553,25 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     temperature = 0.7,
     stream = false,
   } = req.body || {}
+  let { apiKey } = req.body || {}
+
+  // Managed DeepSeek: if client omits apiKey (or passes '__managed__'),
+  // inject the server-managed Bearer token + cookies from the refresher.
+  let mergedExtraHeaders = extraHeaders
+  if (isDeepSeekWebUrl(baseUrl) && (!apiKey || apiKey === '__managed__')) {
+    const managedBearer = getDeepSeekBearer()
+    const managedCookies = getDeepSeekCookieHeader()
+    if (!managedBearer) {
+      return res.status(503).json({
+        error: 'DeepSeek session is not configured on the server. Ask an admin to provide a userToken.',
+      })
+    }
+    apiKey = managedBearer
+    mergedExtraHeaders = { ...(extraHeaders || {}) }
+    if (managedCookies && !Object.keys(mergedExtraHeaders).some((k) => k.toLowerCase() === 'cookie')) {
+      mergedExtraHeaders.Cookie = managedCookies
+    }
+  }
 
   if (!baseUrl || !apiKey || !model) {
     return res.status(400).json({ error: 'baseUrl, apiKey и model обязательны' })
@@ -1534,14 +1587,16 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   }
 
   // DeepSeek Web Experimental использует собственные endpoints/body/POW,
-  // поэтому обрабатываем его отдельным адаптером.
+  // поэтому обрабатываем его отдельным адаптером. В managed-режиме передаём
+  // подменённые apiKey/extraHeaders из серверного refresher'а.
   if (isDeepSeekWebUrl(baseUrl)) {
-    return handleDeepSeekWebChat({ reqBody: req.body || {}, res })
+    const reqBody = { ...(req.body || {}), apiKey, extraHeaders: mergedExtraHeaders }
+    return handleDeepSeekWebChat({ reqBody, res })
   }
 
 
   const root = String(baseUrl).replace(/\/$/, '')
-  const stealthH = buildSessionHeaders({ baseUrl, apiKey, authType, authHeader, extraHeaders })
+  const stealthH = buildSessionHeaders({ baseUrl, apiKey, authType, authHeader, extraHeaders: mergedExtraHeaders })
   const body = applyBodyDefaults({ model, messages, temperature, stream }, baseUrl)
   const targetUrl = getChatUrl(baseUrl)
 
@@ -1816,8 +1871,67 @@ try {
   process.exit(1);
 }
 
+// ── DeepSeek managed-session admin API ─────────────────────────────────────
+// All routes require auth. Token/cookies are server-side only and never
+// returned to the client in raw form (see getSessionState()).
+app.get('/api/admin/deepseek/status', requireAuth, (req, res) => {
+  res.json(getDeepSeekState())
+})
+
+app.post('/api/admin/deepseek/refresh', requireAuth, async (req, res) => {
+  try {
+    const state = await refreshDeepSeekNow({ source: `admin-ui:${req.user?.id || req.user?.email || 'unknown'}` })
+    res.json({ ok: true, state })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message })
+  }
+})
+
+app.post('/api/admin/deepseek/token', requireAuth, async (req, res) => {
+  const { userToken = '', cookies = null } = req.body || {}
+  if (!userToken && !cookies) {
+    return res.status(400).json({ ok: false, error: 'Provide userToken and/or cookies' })
+  }
+  try {
+    const state = await setDeepSeekSession({
+      userToken,
+      cookies,
+      source: `admin-ui:${req.user?.id || req.user?.email || 'unknown'}`,
+    })
+    res.json({ ok: true, state })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message })
+  }
+})
+
+app.get('/api/admin/deepseek/models', requireAuth, (req, res) => {
+  res.json({ models: getDeepSeekModels() })
+})
+
+// Public-ish: lets the chat UI know whether a managed DeepSeek session is
+// available without exposing the token. No auth required because it returns
+// only booleans + model ids.
+app.get('/api/deepseek/managed', (req, res) => {
+  const s = getDeepSeekState()
+  res.json({
+    available: Boolean(s.hasToken && s.alive !== false),
+    models: s.models || [],
+    expiresAt: s.expiresAt,
+  })
+})
+
 app.listen(PORT, () => {
   console.log(`BrowserAI API + SQLite + Workspace на http://localhost:${PORT}`)
-
 })
+
+// ── DeepSeek session auto-refresh bootstrap ────────────────────────────────
+// Loads persisted token from /data/deepseek_session.json (or env vars on
+// first boot), starts the 10-min heartbeat, hourly models refresh, and the
+// optional Telegram control bot.
+try {
+  bootstrapDeepSeekSession()
+  startDeepSeekBot()
+} catch (e) {
+  console.warn('[deepseek-refresh] bootstrap failed:', e.message)
+}
 
