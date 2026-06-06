@@ -1,15 +1,5 @@
 import { IconFolder, IconSettings } from '../icons.jsx'
 
-function WorkingSpinner() {
-  return (
-    <span
-      className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-cream/25 border-t-cream"
-      aria-label="AI работает"
-      title="AI работает"
-    />
-  )
-}
-
 export default function Topbar({
   title,
   configured,
@@ -29,7 +19,6 @@ export default function Topbar({
       {/* Левая часть: заголовок чата + спиннер + подсказка авторежима */}
       <div className="min-w-0 flex items-center gap-2 pl-11 md:pl-12">
         <span className="truncate text-[14px] text-cream-soft">{title}</span>
-        {aiWorking && <WorkingSpinner />}
 
         {/* Подсказка об авторежиме — отображается после автовыбора */}
         {autoModelHint && !aiWorking && (
@@ -85,7 +74,7 @@ export default function Topbar({
         {/* Выход */}
         <button
           onClick={onLogout}
-          className="hidden rounded-lg border border-white/10 px-2.5 py-2 text-[12px] text-cream-dim transition-colors hover:bg-graphite-800 hover:text-cream sm:block"
+          className="rounded-lg border border-white/10 px-2.5 py-2 text-[12px] text-cream-dim transition-colors hover:bg-graphite-800 hover:text-cream"
           title="Выйти из аккаунта"
         >
           Выйти

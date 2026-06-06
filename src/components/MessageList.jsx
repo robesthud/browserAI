@@ -67,7 +67,17 @@ function CopyButton({ text }) {
   )
 }
 
-function Message({ m }) {
+function WorkingSpinner() {
+  return (
+    <span
+      className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-cream/25 border-t-cream"
+      aria-label="AI работает"
+      title="AI работает"
+    />
+  )
+}
+
+function Message({ m, isLast, aiWorking }) {
   const isUser = m.role === 'user'
   return (
     <div className="group flex gap-3 px-4 py-5">
@@ -80,8 +90,9 @@ function Message({ m }) {
 
       <div className="min-w-0 flex-1">
         <div className="mb-1 flex items-center gap-2">
-          <span className="text-[13px] font-medium text-cream">
+          <span className="text-[13px] font-medium text-cream flex items-center gap-2">
             {isUser ? 'Вы' : 'Ассистент'}
+            {!isUser && isLast && aiWorking && <WorkingSpinner />}
           </span>
           {m.content && !m.pending && <CopyButton text={m.content} />}
         </div>
@@ -112,7 +123,7 @@ function Message({ m }) {
   )
 }
 
-export default function MessageList({ messages }) {
+export default function MessageList({ messages, aiWorking }) {
   const bottomRef = useRef(null)
   const prevLenRef = useRef(messages.length)
 
@@ -129,8 +140,8 @@ export default function MessageList({ messages }) {
   return (
     <div className="thin-scroll flex-1 overflow-y-auto">
       <div className="mx-auto w-full max-w-2xl divide-y divide-white/[0.04]">
-        {messages.map((m) => (
-          <Message key={m.id} m={m} />
+        {messages.map((m, i) => (
+          <Message key={m.id} m={m} isLast={i === messages.length - 1} aiWorking={aiWorking} />
         ))}
       </div>
       <div ref={bottomRef} className="h-4" />

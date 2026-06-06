@@ -236,7 +236,7 @@ function BrowserApp({ user, reloadAuth }) {
 
         {hasMessages ? (
           <>
-            <MessageList messages={messages} />
+            <MessageList messages={messages} aiWorking={aiWorking} />
             {/* ModelBar над полем ввода (когда есть сообщения) — дропдаун открывается вверх */}
             {availableModels.length > 0 && (
               <ModelBar

@@ -322,10 +322,6 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
       model: preferredModel,
     })
     setForm(updatedForm)
-
-    if (r.ok && updatedForm.apiKey?.trim() && updatedForm.baseUrl?.trim() && updatedForm.model?.trim()) {
-      onSave(updatedForm)
-    }
   }
 
   const check = async () => {
@@ -356,55 +352,32 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
     modelRef.current = form.model || ''
   }, [form.model])
 
-  useEffect(() => {
-    const hasCredentials = form.baseUrl.trim() && form.apiKey.trim()
-    if (!hasCredentials) return undefined
-
-    const controller = new AbortController()
-    const timer = setTimeout(async () => {
-      setChecking(true)
-      try {
-        const snapshot = { ...form }
-        const r = await onValidate(
-          {
-            baseUrl: snapshot.baseUrl,
-            apiKey: snapshot.apiKey,
-            model: modelRef.current || snapshot.model,
-            authType: snapshot.authType || 'bearer',
-            authHeader: snapshot.authHeader || '',
-            extraHeaders: snapshot.extraHeaders || {},
-          },
-          controller.signal,
-        )
-        if (controller.signal.aborted) return
-        setResult(r)
-        if (r.ok) applyValidationResult(r, snapshot)
-      } catch {
-        /* ignore auto-fetch errors */
-      } finally {
-        if (!controller.signal.aborted) setChecking(false)
-      }
-    }, 700)
-
-    return () => {
-      controller.abort()
-      clearTimeout(timer)
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.baseUrl, form.apiKey, form.authType, form.authHeader, form.extraHeaders, onValidate])
-
+  const [activeTab, setActiveTab] = useState('api')
+  
   const providerGroups = [
-    { title: 'API', group: 'api', cls: 'border-white/10 text-cream-soft hover:border-white/20 hover:bg-graphite-750 hover:text-cream' },
-    { title: 'Web-сессии', group: 'web', cls: 'border-amber-400/20 bg-amber-400/5 text-amber-300 hover:border-amber-400/40 hover:bg-amber-400/10' },
-    { title: 'Другое', group: 'local', cls: 'border-blue-400/20 bg-blue-400/5 text-blue-300 hover:border-blue-400/40 hover:bg-blue-400/10' },
+    { title: 'Официальные API', group: 'api', cls: 'border-white/10 text-cream-soft hover:border-white/20 hover:bg-graphite-750 hover:text-cream' },
+    { title: 'Web-сессии / Cookie', group: 'web', cls: 'border-amber-400/20 bg-amber-400/5 text-amber-300 hover:border-amber-400/40 hover:bg-amber-400/10' },
+    { title: 'Локальные и другие', group: 'local', cls: 'border-blue-400/20 bg-blue-400/5 text-blue-300 hover:border-blue-400/40 hover:bg-blue-400/10' },
   ]
 
   return (
     <div className="space-y-3 rounded-xl border border-white/10 bg-graphite-900/60 p-3">
-      <div className="space-y-2">
+      <div className="flex border-b border-white/10 text-[12px]">
         {providerGroups.map((group) => (
+          <button
+            key={group.group}
+            type="button"
+            onClick={() => setActiveTab(group.group)}
+            className={`px-3 py-1.5 transition-colors border-b-2 ${activeTab === group.group ? 'border-cream text-cream' : 'border-transparent text-cream-faint hover:text-cream-soft'}`}
+          >
+            {group.title}
+          </button>
+        ))}
+      </div>
+      
+      <div className="space-y-2">
+        {providerGroups.filter(g => g.group === activeTab).map((group) => (
           <div key={group.group}>
-            <div className="mb-1 text-[11px] text-cream-faint">{group.title}</div>
             <div className="flex flex-wrap gap-1.5">
               {PROVIDER_PRESETS.filter((p) => p.group === group.group).map((preset) => (
                 <button
