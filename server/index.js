@@ -124,6 +124,7 @@ app.use(helmet({
       fontSrc: ["'self'", 'https:', 'data:'],
       formAction: ["'self'"],
       frameAncestors: ["'self'"],
+      upgradeInsecureRequests: null,
       objectSrc: ["'none'"],
       workerSrc: ["'self'", 'blob:'],
     },
