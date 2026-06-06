@@ -37,6 +37,9 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.core.content.FileProvider;
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
+import android.Manifest;
+import android.content.pm.PackageManager;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -60,10 +63,13 @@ public class MainActivity extends Activity {
     private static final String APP_VERSION_API = "/api/app-version";
     // FIX: макс размер APK 150 МБ
     private static final long MAX_APK_BYTES = 150L * 1024 * 1024;
+    private static final int AUDIO_PERMISSION_REQUEST = 1002;
 
     private WebView webView;
     private TextView offlineView;
     private ProgressBar progressBar;
+    private SwipeRefreshLayout swipeRefreshLayout;
+    private PermissionRequest activePermissionRequest = null;
     private ValueCallback<Uri[]> filePathCallback;
     private String appUrl;
 
@@ -78,10 +84,25 @@ public class MainActivity extends Activity {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(0xFF24262B);
 
+        // SwipeRefreshLayout
+        swipeRefreshLayout = new SwipeRefreshLayout(this);
+        swipeRefreshLayout.setProgressBackgroundColorSchemeColor(0xFF24262B);
+        swipeRefreshLayout.setColorSchemeColors(0xFFE6E8EC);
+        swipeRefreshLayout.setOnRefreshListener(() -> {
+            // Очищаем кэш, чтобы загрузить свежий JS/HTML, и перезагружаем
+            webView.clearCache(true);
+            webView.reload();
+        });
+
         // WebView
         webView = new WebView(this);
         webView.setBackgroundColor(0xFF24262B);
-        root.addView(webView, new FrameLayout.LayoutParams(
+        swipeRefreshLayout.addView(webView, new SwipeRefreshLayout.LayoutParams(
+                SwipeRefreshLayout.LayoutParams.MATCH_PARENT,
+                SwipeRefreshLayout.LayoutParams.MATCH_PARENT
+        ));
+
+        root.addView(swipeRefreshLayout, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
         ));
@@ -176,7 +197,8 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageFinished(WebView view, String url) {
-                // FIX: скрываем прогресс-бар
+                // FIX: скрываем прогресс-бар и лоадер pull-to-refresh
+                swipeRefreshLayout.setRefreshing(false);
                 progressBar.setProgress(100);
                 progressBar.setVisibility(View.GONE);
                 offlineView.setVisibility(View.GONE);
@@ -254,6 +276,27 @@ public class MainActivity extends Activity {
 
         // FIX: прогресс WebChromeClient тоже обновляет progressBar
         webView.setWebChromeClient(new WebChromeClient() {
+            // Разрешения (микрофон и т.д.)
+            @Override
+            public void onPermissionRequest(final PermissionRequest request) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    for (String permission : request.getResources()) {
+                        if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(permission)) {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                                    activePermissionRequest = request;
+                                    requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, AUDIO_PERMISSION_REQUEST);
+                                    return;
+                                }
+                            }
+                            request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+                            return;
+                        }
+                    }
+                    request.deny();
+                }
+            }
+
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
                 if (progressBar != null) {
@@ -628,5 +671,22 @@ public class MainActivity extends Activity {
         super.onPause();
         // Сохраняем cookies при уходе из приложения
         CookieManager.getInstance().flush();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        if (requestCode == AUDIO_PERMISSION_REQUEST && activePermissionRequest != null) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    activePermissionRequest.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+                }
+            } else {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    activePermissionRequest.deny();
+                }
+                Toast.makeText(this, "Разрешение на микрофон отклонено", Toast.LENGTH_SHORT).show();
+            }
+            activePermissionRequest = null;
+        }
     }
 }
