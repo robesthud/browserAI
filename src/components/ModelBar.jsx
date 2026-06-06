@@ -3,6 +3,7 @@
  * Показывает текущую модель, позволяет переключить или включить авторежим.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { IconStar, IconStarFilled } from '../icons.jsx'
 
 // Короткое имя модели для кнопки
 function shortName(model) {
@@ -39,16 +40,37 @@ export default function ModelBar({
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const [favorites, setFavorites] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('browserai_favorites') || '[]')
+    } catch { return [] }
+  })
   const rootRef = useRef(null)
   const inputRef = useRef(null)
+
+  const toggleFavorite = (m, e) => {
+    e.stopPropagation()
+    const next = favorites.includes(m) ? favorites.filter(x => x !== m) : [...favorites, m]
+    setFavorites(next)
+    localStorage.setItem('browserai_favorites', JSON.stringify(next))
+  }
 
   const hasModels = models.length > 0
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return models
-    return models.filter((m) => m.toLowerCase().includes(q))
-  }, [models, query])
+    let list = models
+    if (q) list = models.filter((m) => m.toLowerCase().includes(q))
+    
+    // Сортировка: сначала избранные
+    return list.sort((a, b) => {
+      const aFav = favorites.includes(a)
+      const bFav = favorites.includes(b)
+      if (aFav && !bFav) return -1
+      if (!aFav && bFav) return 1
+      return 0
+    })
+  }, [models, query, favorites])
 
   // Закрытие при клике вне
   useEffect(() => {
@@ -182,6 +204,7 @@ export default function ModelBar({
             {filtered.length > 0 ? (
               filtered.map((model) => {
                 const active = model === selectedModel
+                const isFav = favorites.includes(model)
                 return (
                   <button
                     key={model}
@@ -193,6 +216,13 @@ export default function ModelBar({
                         : 'text-cream-soft hover:bg-graphite-750 hover:text-cream'
                       }`}
                   >
+                    <button
+                      onClick={(e) => toggleFavorite(model, e)}
+                      className={`shrink-0 p-1 hover:scale-110 transition-transform ${isFav ? 'text-amber-400' : 'text-white/10 hover:text-white/30'}`}
+                      title={isFav ? 'Убрать из избранного' : 'Добавить в избранное'}
+                    >
+                      {isFav ? <IconStarFilled /> : <IconStar />}
+                    </button>
                     {active && (
                       <span className="shrink-0 text-[12px] text-green-400">●</span>
                     )}

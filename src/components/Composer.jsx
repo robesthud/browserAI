@@ -6,6 +6,7 @@ import {
   IconClose,
   IconFile,
   IconFolder,
+  IconMic,
 } from '../icons.jsx'
 import { processFiles, formatSize } from '../lib/files.js'
 import FileTree from './FileTree.jsx'
@@ -139,6 +140,58 @@ export default function Composer({
     setAttachments((prev) => prev.filter((a) => a.id !== id))
   }
 
+  const [isRecording, setIsRecording] = useState(false)
+  const recognitionRef = useRef(null)
+
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition()
+      recognition.lang = 'ru-RU'
+      recognition.interimResults = true
+      recognition.continuous = true
+
+      recognition.onresult = (e) => {
+        let transcript = ''
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          transcript += e.results[i][0].transcript
+        }
+        // Записываем финальный или промежуточный результат (упрощенно)
+        // Если хотим добавлять к текущему тексту:
+        setText(prev => {
+          const base = prev.replace(/\s*\(Слушаю...\)$/, '')
+          return base + ' ' + transcript + (e.results[e.results.length - 1].isFinal ? '' : ' (Слушаю...)')
+        })
+      }
+
+      recognition.onend = () => {
+        setIsRecording(false)
+        setText(prev => prev.replace(/\s*\(Слушаю...\)$/, ''))
+      }
+
+      recognition.onerror = () => {
+        setIsRecording(false)
+        setText(prev => prev.replace(/\s*\(Слушаю...\)$/, ''))
+      }
+
+      recognitionRef.current = recognition
+    }
+  }, [])
+
+  const toggleRecording = () => {
+    if (isRecording) {
+      recognitionRef.current?.stop()
+      setIsRecording(false)
+    } else {
+      if (recognitionRef.current) {
+        recognitionRef.current.start()
+        setIsRecording(true)
+      } else {
+        alert("Голосовой ввод не поддерживается в этом браузере")
+      }
+    }
+  }
+
   const submit = () => {
     if (isStreaming) return
     const t = text.trim()
@@ -259,6 +312,15 @@ export default function Composer({
                 >
                   <IconFolder />
                   <span>Workspace</span>
+                </button>
+
+                <button
+                  onClick={toggleRecording}
+                  className={`grid h-[38px] w-[38px] place-items-center rounded-full border border-white/10 text-[13px] transition-colors
+                           ${isRecording ? 'bg-red-500/20 text-red-400 border-red-500/30 animate-pulse' : 'text-cream-soft hover:border-white/20 hover:bg-graphite-750 hover:text-cream'}`}
+                  title={isRecording ? "Остановить запись" : "Голосовой ввод"}
+                >
+                  <IconMic />
                 </button>
               </div>
 

@@ -142,6 +142,37 @@ function BrowserApp({ user, reloadAuth }) {
     await reloadAuth?.()
   }
 
+  const handleEditMessage = (m) => {
+    // Вставляем текст в Composer (сделать это можно через событие или стейт)
+    // Но для простоты: Ищем Composer input
+    const ta = document.querySelector('textarea')
+    if (ta) {
+      ta.value = m.content
+      ta.style.height = 'auto'
+      ta.style.height = Math.min(ta.scrollHeight, 220) + 'px'
+      // Dispatch event to trigger React state update if needed, but easier is just value change + focus
+      ta.focus()
+    }
+  }
+
+  const handleRegenerate = (m) => {
+    if (aiWorking || !activeChat) return
+    // Находим индекс этого сообщения
+    const idx = messages.findIndex(x => x.id === m.id)
+    if (idx === -1) return
+    // Удаляем это сообщение И ВСЕ после него
+    const updatedMessages = messages.slice(0, idx)
+    updateChat(activeChat.id, { messages: updatedMessages })
+    
+    // Запускаем перегенерацию на основе предыдущих сообщений (нужно отправить заново)
+    // Последнее сообщение юзера:
+    const lastUserMsg = updatedMessages.reverse().find(x => x.role === 'user')
+    if (lastUserMsg) {
+      // Инициируем запрос повторно
+      sendMessage(lastUserMsg.content, lastUserMsg.attachments, selectedModel)
+    }
+  }
+
   const configured = isConfigured(settings)
   const activeKey = useMemo(() => getActiveKey(settings), [settings])
   const availableModels = useMemo(() => getAvailableModels(activeKey), [activeKey])
@@ -236,7 +267,7 @@ function BrowserApp({ user, reloadAuth }) {
 
         {hasMessages ? (
           <>
-            <MessageList messages={messages} aiWorking={aiWorking} />
+            <MessageList messages={messages} aiWorking={aiWorking} onEdit={handleEditMessage} onRegenerate={handleRegenerate} />
             {/* ModelBar над полем ввода (когда есть сообщения) — дропдаун открывается вверх */}
             {availableModels.length > 0 && (
               <ModelBar

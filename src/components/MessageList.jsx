@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { IconBot, IconUser, IconFile, IconCopy } from '../icons.jsx'
+import { IconBot, IconUser, IconFile, IconCopy, IconEdit, IconRefresh } from '../icons.jsx'
 import { formatSize } from '../lib/files.js'
 import Markdown from '../lib/markdown.jsx'
 
@@ -77,7 +77,7 @@ function WorkingSpinner() {
   )
 }
 
-function Message({ m, isLast, aiWorking }) {
+function Message({ m, isLast, aiWorking, onEdit, onRegenerate }) {
   const isUser = m.role === 'user'
   return (
     <div className="group flex gap-3 px-4 py-5">
@@ -95,6 +95,16 @@ function Message({ m, isLast, aiWorking }) {
             {!isUser && isLast && aiWorking && <WorkingSpinner />}
           </span>
           {m.content && !m.pending && <CopyButton text={m.content} />}
+          {isUser && onEdit && (
+             <button onClick={() => onEdit(m)} className="opacity-0 group-hover:opacity-100 transition-opacity text-cream-faint hover:text-cream px-1" title="Редактировать">
+               <IconEdit />
+             </button>
+          )}
+          {!isUser && onRegenerate && (
+             <button onClick={() => onRegenerate(m)} disabled={aiWorking} className={`opacity-0 group-hover:opacity-100 transition-opacity text-cream-faint hover:text-cream px-1 ${aiWorking ? 'hidden' : ''}`} title="Сгенерировать заново">
+               <IconRefresh />
+             </button>
+          )}
         </div>
 
         {isUser ? (
@@ -123,7 +133,7 @@ function Message({ m, isLast, aiWorking }) {
   )
 }
 
-export default function MessageList({ messages, aiWorking }) {
+export default function MessageList({ messages, aiWorking, onEdit, onRegenerate }) {
   const bottomRef = useRef(null)
   const prevLenRef = useRef(messages.length)
 
@@ -141,7 +151,7 @@ export default function MessageList({ messages, aiWorking }) {
     <div className="thin-scroll flex-1 overflow-y-auto">
       <div className="mx-auto w-full max-w-2xl divide-y divide-white/[0.04]">
         {messages.map((m, i) => (
-          <Message key={m.id} m={m} isLast={i === messages.length - 1} aiWorking={aiWorking} />
+          <Message key={m.id} m={m} isLast={i === messages.length - 1} aiWorking={aiWorking} onEdit={onEdit} onRegenerate={onRegenerate} />
         ))}
       </div>
       <div ref={bottomRef} className="h-4" />
