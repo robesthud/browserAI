@@ -19,10 +19,14 @@ services:
       # App-level secrets
       - SESSION_SECRET=${SESSION_SECRET:-change-me}
       - APP_URL=${APP_URL:-http://localhost}
+    # Bind-mounts: state lives on the host filesystem, visible with plain ls,
+    # easy to rsync / backup, completely independent from docker volumes so
+    # `docker compose down -v` does NOT touch it.
+    #
+    # Override the host paths via .env if you want different locations:
+    #   DATA_DIR=/srv/browserai/data
+    #   WORKSPACE_DIR=/srv/browserai/workspace
     volumes:
-      - browserai_data:/data
-      - browserai_workspace:/workspace
+      - ${DATA_DIR:-./data}:/data
+      - ${WORKSPACE_DIR:-./workspace}:/workspace
 
-volumes:
-  browserai_data:
-  browserai_workspace:

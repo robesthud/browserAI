@@ -1,0 +1,72 @@
+name: Deploy to Timeweb
+
+# Triggers:
+#   - any push to main (skipped if only docs / android / cf-proxy changed)
+#   - manual via "Run workflow"
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'android-app/**'
+      - 'cf-proxy/**'
+      - '.github/workflows/build-android-apk.yml'
+      - '.github/workflows/release-android-apk.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-timeweb
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Pull + rebuild on Timeweb VPS
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout (for audit only)
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          DEPLOY_KEY: ${{ secrets.TIMEWEB_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.TIMEWEB_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: git pull + docker compose up -d --build
+        env:
+          DEPLOY_HOST: ${{ secrets.TIMEWEB_HOST }}
+          DEPLOY_USER: ${{ secrets.TIMEWEB_USER }}
+          APP_DIR:     ${{ secrets.TIMEWEB_APP_DIR }}
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "set -euo pipefail
+               cd '${APP_DIR}'
+               echo '── git pull ──'
+               git fetch --quiet origin main
+               git reset --hard origin/main
+               echo '── docker compose build ──'
+               docker compose build
+               echo '── docker compose up -d ──'
+               docker compose up -d
+               echo '── prune dangling images ──'
+               docker image prune -f
+               echo '── health ──'
+               sleep 5
+               curl -fsS http://localhost/api/health"
+
+      - name: Post-deploy summary
+        if: always()
+        run: |
+          echo "### Timeweb deploy" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "* commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "* actor:  \`${{ github.actor }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "* status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY

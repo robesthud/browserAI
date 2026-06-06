@@ -1,0 +1,12 @@
+[Unit]
+Description=BrowserAI — hourly DeepSeek session snapshot
+
+[Timer]
+# Hourly, with a small random jitter so multiple servers don't fire at once.
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+Unit=browserai-backup.service
+
+[Install]
+WantedBy=timers.target
