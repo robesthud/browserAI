@@ -56,6 +56,16 @@ export function baseBrowserHeaders(origin = '') {
 //  isBearerSession — это сессионный bearer-токен (не API-ключ)
 //                    → validate должен идти напрямую в /chat, минуя /models
 const SITE_PROFILES = {
+  // ── Zhipu AI (BigModel) ──────────────────────────────────────────────────
+  'bigmodel.cn': {
+    origin: '',
+    extra: {},
+    bodyDefaults: { stream: true, temperature: 0.7 },
+    isBearerSession: false,
+    skipModelsProbe: false,
+    modelCandidates: ['glm-4-flash', 'glm-4', 'glm-4-plus', 'glm-4-air', 'glm-4-long', 'glm-4-0520'],
+  },
+
 
   // ── DeepSeek Chat ──────────────────────────────────────────────────────────
   'chat.deepseek.com': {

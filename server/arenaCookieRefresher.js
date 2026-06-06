@@ -235,72 +235,21 @@ async function refreshViaSupabase(refreshToken, anonKey) {
 
 // ── Main refresh logic ──────────────────────────────────────────────────────
 async function refreshAndUpdateBridgeCookie(currentCookie) {
-  const anonKey = process.env.ARENA_ANON_KEY || DEFAULT_ANON_KEY;
-
-  // 1. Extract refresh_token — try current cookie first, then saved state, then history
-  let refreshToken = null;
-  let source = '';
-
-  // From current cookie
-  const currentData = decodeCookie(currentCookie);
-  if (currentData?.refresh_token) {
-    refreshToken = currentData.refresh_token;
-    source = 'current cookie';
-  }
-
-  // From saved state (survives restarts)
-  if (!refreshToken) {
-    const state = loadRefreshState();
-    if (state.refresh_token) {
-      refreshToken = state.refresh_token;
-      source = 'saved state';
-    }
-  }
-
-  // From history
-  if (!refreshToken) {
-    for (const histToken of getHistoryTokens()) {
-      const d = decodeCookie(histToken);
-      if (d?.refresh_token) {
-        refreshToken = d.refresh_token;
-        source = 'history';
-        break;
+  const configPath = process.env.BRIDGE_CONFIG_PATH || '/bridge_config/config.json';
+  try {
+    if (fs.existsSync(configPath)) {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (config.auth_tokens && config.auth_tokens.length > 0) {
+        log('Reading fresh token from LMArenaBridge config.json...');
+        return config.auth_tokens[0];
       }
     }
+  } catch (e) {
+    warn('Error reading config.json:', e.message);
   }
-
-  if (!refreshToken) {
-    warn('❌ No refresh_token found anywhere. Need manual token input.');
-    await sendTg('⚠️ *Arena Refresh Failed*\nNo refresh_token available. Please add a fresh token via Bridge dashboard.');
-    return currentCookie;
-  }
-
-  log(`Using refresh_token from ${source} (${refreshToken.slice(0, 10)}...)`);
-
-  // 2. Call Supabase
-  const newSession = await refreshViaSupabase(refreshToken, anonKey);
-  if (!newSession) {
-    warn('❌ All refresh endpoints failed');
-
-    // Try history tokens as fallback
-    for (const histToken of getHistoryTokens()) {
-      const d = decodeCookie(histToken);
-      if (d?.refresh_token && d.refresh_token !== refreshToken) {
-        log('Trying fallback refresh_token from history...');
-        const fallback = await refreshViaSupabase(d.refresh_token, anonKey);
-        if (fallback) {
-          log('✅ Fallback refresh succeeded!');
-          return await processNewSession(fallback, currentCookie);
-        }
-      }
-    }
-
-    await sendTg('⚠️ *Arena Refresh Failed*\nAll endpoints returned errors. Token may be revoked.');
-    return currentCookie;
-  }
-
-  return await processNewSession(newSession, currentCookie);
+  return currentCookie;
 }
+
 
 async function processNewSession(newSession, currentCookie) {
   // 3. Build new cookie
