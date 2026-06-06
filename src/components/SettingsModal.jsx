@@ -159,15 +159,6 @@ const PROVIDER_PRESETS = [
   },
   // --- Локальные мосты ---
   {
-    id: 'arena-bridge',
-    group: 'local',
-    label: '🌉 Arena.ai Bridge',
-    name: 'Arena.ai (через LMArenaBridge)',
-    baseUrl: 'http://lmarena-bridge:8000/api/v1',
-    model: '',
-    hint: `Arena.ai через внешний LMArenaBridge (внутренний Docker-мост).\n\n1. Получи cookie arena-auth-prod-v1 с lmarena.ai\n2. Настрой в LMArenaBridge (в bridge_config/config.json на сервере)\n3. Выбери этот пресет и нажми "Проверить" — 600+ моделей загрузятся.`,
-  },
-  {
     id: 'custom-web',
     group: 'local',
     label: '🔧 Свой сайт',

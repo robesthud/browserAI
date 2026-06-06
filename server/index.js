@@ -67,7 +67,7 @@ import {
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, isSessionUrl, buildProbeBody, getChatUrl } from './stealthHeaders.js'
-import { refreshAndUpdateBridgeCookie, bootstrapFromCookie, isTokenExpired } from "./arenaCookieRefresher.js";
+
 import { isDeepSeekWebUrl, handleDeepSeekWebChat, validateDeepSeekWebKey } from './deepseekWeb.js'
 
 
@@ -738,7 +738,7 @@ async function fetchModels(baseUrl, apiKey, requestedModel = '') {
   } catch {
     return { ok: false, status: 400, models: [], preferredModel: '', error: 'Invalid URL' }
   }
-  if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'lmarena-bridge' && hostname !== 'host.docker.internal') {
+  if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'host.docker.internal') {
     return { ok: false, status: 403, models: [], preferredModel: '', error: 'Access to internal networks is not allowed' }
   }
 
@@ -1081,7 +1081,7 @@ app.post('/api/validate', requireAuth, async (req, res) => {
   try { hostname = new URL(baseUrl).hostname } catch {
     return res.json({ ok: false, message: 'Неверный URL', models: [], preferredModel: '' })
   }
-  if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'lmarena-bridge' && hostname !== 'host.docker.internal') {
+  if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'host.docker.internal') {
     return res.json({ ok: false, message: 'Доступ к внутренней сети запрещён', models: [], preferredModel: '' })
   }
 
@@ -1493,7 +1493,7 @@ app.get('/api/web/fetch', requireAuth, async (req, res) => {
     } catch {
       return res.status(400).json({ error: 'Invalid URL' })
     }
-    if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'lmarena-bridge' && hostname !== 'host.docker.internal') {
+    if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'host.docker.internal') {
       return res.status(403).json({ error: 'Access to internal networks is not allowed' })
     }
     const page = await fetchWebPage(url)
@@ -1529,7 +1529,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   try { hostname = new URL(baseUrl).hostname } catch {
     return res.status(400).json({ error: 'Неверный URL' })
   }
-  if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'lmarena-bridge' && hostname !== 'host.docker.internal') {
+  if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'host.docker.internal') {
     return res.status(403).json({ error: 'Доступ к внутренней сети запрещён' })
   }
 
@@ -1820,68 +1820,4 @@ app.listen(PORT, () => {
   console.log(`BrowserAI API + SQLite + Workspace на http://localhost:${PORT}`)
 
 })
-// === Arena cookie auto-refresh for LMArenaBridge ===
-// Autonomous token lifecycle:
-//   - Stores refresh_token in /data/arena_refresh.json (survives restarts)
-//   - Refreshes every 45 min via Supabase (token lives 60 min)
-//   - Pushes to Bridge via HTTP + config file
-//   - Works even if ARENA_AUTH_COOKIE env is missing/expired
-{
-  const REFRESH_INTERVAL = 45 * 60 * 1000; // 45 min
-  const STARTUP_DELAY = 10 * 1000; // 10 sec after boot
 
-  // Bootstrap: extract refresh_token from initial cookie (if available)
-  const initialCookie = process.env.ARENA_AUTH_COOKIE || '';
-  if (initialCookie) {
-    bootstrapFromCookie(initialCookie);
-    console.log('[arena-refresh] Bootstrapped refresh_token from env cookie');
-  }
-
-  async function doRefresh() {
-    try {
-      const current = process.env.ARENA_AUTH_COOKIE || '';
-      const refreshed = await refreshAndUpdateBridgeCookie(current);
-      if (refreshed && refreshed !== current) {
-        process.env.ARENA_AUTH_COOKIE = refreshed;
-        console.log('[arena-refresh] ✅ Token auto-refreshed and synced to Bridge');
-      } else if (refreshed === current && current) {
-        // Token didn't change — check if it's still valid
-        if (isTokenExpired(current, 600)) {
-          console.warn('[arena-refresh] ⚠ Token is expiring soon but refresh returned same token');
-        }
-      }
-    } catch (e) {
-      console.warn('[arena-refresh] Background refresh failed:', e.message);
-    }
-  }
-
-  // First refresh shortly after startup (gives Bridge time to start)
-  setTimeout(doRefresh, STARTUP_DELAY);
-  // Then every 45 minutes
-  setInterval(doRefresh, REFRESH_INTERVAL).unref?.();
-  console.log('[arena-refresh] Autonomous token refresh enabled (every 45min, state in /data/arena_refresh.json)');
-}
-
-// Manual refresh endpoint (for UI or scripts)
-app.post('/api/arena/refresh-cookie', requireAuth, async (req, res) => {
-  try {
-    const current = process.env.ARENA_AUTH_COOKIE || '';
-    const refreshed = await refreshAndUpdateBridgeCookie(current);
-    if (refreshed && refreshed !== current) {
-      process.env.ARENA_AUTH_COOKIE = refreshed;
-      return res.json({
-        ok: true,
-        message: 'Token refreshed and pushed to Bridge.',
-        expiresAt: new Date((require('./arenaCookieRefresher.js').decodeCookie?.(refreshed)?.expires_at || 0) * 1000).toISOString(),
-      });
-    }
-    if (!current && !refreshed) {
-      return res.status(400).json({
-        error: 'No token available. Add a fresh arena-auth-prod-v1 cookie via Bridge dashboard first.',
-      });
-    }
-    return res.json({ ok: true, message: 'Token still valid, no change needed.' });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
