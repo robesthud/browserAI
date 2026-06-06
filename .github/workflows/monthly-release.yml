@@ -37,6 +37,8 @@ jobs:
         run: |
           if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
             echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android-app/app/debug.keystore
+          elif [ -f "android-app/app/debug.keystore" ]; then
+            echo "✓ Keystore found in repo"
           else
             keytool -genkeypair -v \
               -keystore android-app/app/debug.keystore \
