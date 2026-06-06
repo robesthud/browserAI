@@ -25,6 +25,20 @@ const PROVIDER_PRESETS = [
     baseUrl: 'https://api.openai.com/v1',
   },
   {
+    id: 'bigmodel',
+    group: 'api',
+    label: 'Zhipu AI (BigModel)',
+    name: 'Zhipu AI',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+  },
+  {
+    id: 'bigmodel',
+    group: 'api',
+    label: 'Zhipu AI (BigModel)',
+    name: 'Zhipu AI',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+  },
+  {
     id: 'deepseek-api',
     group: 'api',
     label: 'DeepSeek API',
