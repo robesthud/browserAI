@@ -142,6 +142,7 @@ export default function Composer({
 
   const [isRecording, setIsRecording] = useState(false)
   const recognitionRef = useRef(null)
+  const baseTextRef = useRef('')
 
   useEffect(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
@@ -151,27 +152,41 @@ export default function Composer({
       recognition.interimResults = true
       recognition.continuous = true
 
+      recognition.onstart = () => {
+        setText(prev => {
+          baseTextRef.current = prev
+          return prev
+        })
+      }
+
       recognition.onresult = (e) => {
         let transcript = ''
-        for (let i = e.resultIndex; i < e.results.length; i++) {
+        for (let i = 0; i < e.results.length; i++) {
           transcript += e.results[i][0].transcript
         }
-        // Записываем финальный или промежуточный результат (упрощенно)
-        // Если хотим добавлять к текущему тексту:
-        setText(prev => {
-          const base = prev.replace(/\s*\(Слушаю...\)$/, '')
-          return base + ' ' + transcript + (e.results[e.results.length - 1].isFinal ? '' : ' (Слушаю...)')
+        
+        setText(() => {
+          const base = baseTextRef.current.trim()
+          return (base ? base + ' ' : '') + transcript + (e.results[e.results.length - 1].isFinal ? '' : ' (Слушаю...)')
         })
       }
 
       recognition.onend = () => {
         setIsRecording(false)
-        setText(prev => prev.replace(/\s*\(Слушаю...\)$/, ''))
+        setText(prev => {
+          const final = prev.replace(/\s*\(Слушаю...\)$/, '')
+          baseTextRef.current = final
+          return final
+        })
       }
 
       recognition.onerror = () => {
         setIsRecording(false)
-        setText(prev => prev.replace(/\s*\(Слушаю...\)$/, ''))
+        setText(prev => {
+          const final = prev.replace(/\s*\(Слушаю...\)$/, '')
+          baseTextRef.current = final
+          return final
+        })
       }
 
       recognitionRef.current = recognition
