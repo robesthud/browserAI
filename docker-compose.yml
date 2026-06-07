@@ -40,6 +40,10 @@ services:
       - ${WORKSPACE_DIR:-./workspace}:/workspace
       # Allows `docker exec agent-sandbox ...` from inside this container.
       - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      # Allows BrowserAI container to reach host-local services such as
+      # gemini-web-proxy running on 127.0.0.1:8080 on the VPS.
+      - "host.docker.internal:host-gateway"
     depends_on:
       - agent-sandbox
 

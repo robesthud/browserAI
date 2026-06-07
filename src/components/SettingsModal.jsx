@@ -94,6 +94,17 @@ const PROVIDER_PRESETS = [
     },
     hint: 'Бесплатно. Токен и cookies хранятся на сервере и обновляются автоматически. Управление: /admin/deepseek или Telegram-бот.',
   },
+  {
+    id: 'gemini-web-proxy',
+    group: 'free',
+    label: '✨ Gemini Web Proxy',
+    name: 'Gemini Web Proxy',
+    baseUrl: 'http://host.docker.internal:8080/v1',
+    model: '00bx-gemini-web',
+    apiKey: 'not-needed',
+    availableModels: ['00bx-gemini-web'],
+    hint: 'Бесплатно через Google Gemini Web. На Timeweb должен быть запущен gemini-web-proxy; первый логин выполняется через временный noVNC.',
+  },
 ]
 
 function Field({ label, hint, children }) {
