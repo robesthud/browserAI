@@ -54,6 +54,7 @@ Sidebar.
 |---|---|---|
 | `list_files`   | `workspace.getWorkspaceTree` | Drill into a folder, list entries |
 | `read_file`    | `workspace.readWorkspaceFile` | Get text content, capped to 20 KB |
+| `find_projects` | `workspace.getWorkspaceTree` | Find nested project roots after downloads/imports |
 | `write_file`   | `workspace.createFile` / `writeFileContent` | Create or overwrite, auto-creates parent dirs |
 | `edit_file`    | `workspace.readWorkspaceFile` + `writeFileContent` | Surgical replace with unique-substring check |
 | `delete_file`  | `workspace.deleteItem` | Recursive delete |

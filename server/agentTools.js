@@ -74,6 +74,31 @@ async function runGit({ path = '', command, timeout_sec = 30 } = {}) {
 }
 
 
+function collectProjectsFromTree(tree) {
+  const markers = new Set(['package.json', 'pyproject.toml', 'go.mod', 'Cargo.toml', 'pom.xml', 'composer.json', 'requirements.txt'])
+  const projects = []
+
+  function walk(node) {
+    if (!node || node.type !== 'dir') return
+    const children = Array.isArray(node.children) ? node.children : []
+    const names = new Set(children.map((child) => child.name))
+    const found = [...markers].filter((name) => names.has(name))
+    const hasReadme = children.some((child) => /^readme(\..*)?$/i.test(child.name))
+    if (found.length || (hasReadme && children.some((child) => child.type === 'dir' && ['src', 'server', 'app', 'lib'].includes(child.name)))) {
+      projects.push({
+        path: node.path || '/',
+        markers: found,
+        hasReadme,
+        children: children.slice(0, 25).map((child) => ({ name: child.name, type: child.type, path: child.path })),
+      })
+    }
+    for (const child of children) walk(child)
+  }
+
+  walk(tree)
+  return projects
+}
+
 // ── Tool registry ───────────────────────────────────────────────────────────
 export const TOOLS = {
 
@@ -100,6 +125,18 @@ export const TOOLS = {
           return ok(node)
         }
         return ok(tree)
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  find_projects: {
+    description: 'Find likely project roots in the workspace by looking for package.json, pyproject.toml, go.mod, Cargo.toml, pom.xml, composer.json, requirements.txt and README+src/server markers. Use this after downloading archives when files are nested.',
+    params: {},
+    handler: async () => {
+      try {
+        const tree = await getWorkspaceTree(false)
+        const projects = collectProjectsFromTree(tree)
+        return ok({ count: projects.length, projects: projects.slice(0, 20) })
       } catch (e) { return err(e.message) }
     },
   },

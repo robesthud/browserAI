@@ -5,6 +5,7 @@ import {
   IconDownload,
   IconEye,
   IconFile,
+  IconTrash,
 } from '../icons.jsx'
 import { formatWorkspaceSize } from '../lib/workspace.js'
 
@@ -39,6 +40,7 @@ function Row({
   onDownload,
   onContextMenu,
   onMove,
+  onDelete,
 }) {
   const [open, setOpen] = useState(depth < 1)
   const isDir = node.type === 'dir'
@@ -81,19 +83,35 @@ function Row({
           title={title}
           className="rounded-md"
         >
-          <button
-            onClick={() => setOpen((v) => !v)}
-            className="group flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-[13px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream"
+          <div
+            className="group flex items-center rounded-md text-[13px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream"
             style={{ paddingLeft: pad }}
           >
-            <IconChevronRight
-              className={`shrink-0 text-cream-faint transition-transform ${open ? 'rotate-90' : ''}`}
-            />
-            <span className="shrink-0 text-cream-dim">
-              <IconFolderSolid />
-            </span>
-            <span className="truncate">{node.name}</span>
-          </button>
+            <button
+              onClick={() => setOpen((v) => !v)}
+              className="flex min-w-0 flex-1 items-center gap-1.5 py-1 pr-2 text-left"
+            >
+              <IconChevronRight
+                className={`shrink-0 text-cream-faint transition-transform ${open ? 'rotate-90' : ''}`}
+              />
+              <span className="shrink-0 text-cream-dim">
+                <IconFolderSolid />
+              </span>
+              <span className="truncate">{node.name}</span>
+            </button>
+            {node.path && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onDelete?.(node)
+                }}
+                title="Удалить папку целиком"
+                className="mr-1 grid h-6 w-6 shrink-0 place-items-center rounded text-cream-faint opacity-0 transition-all hover:bg-red-500/10 hover:text-red-300 group-hover:opacity-100"
+              >
+                <IconTrash />
+              </button>
+            )}
+          </div>
         </div>
 
         {open && node.children?.length > 0 && (
@@ -108,6 +126,7 @@ function Row({
                 onDownload={onDownload}
                 onContextMenu={onContextMenu}
                 onMove={onMove}
+                onDelete={onDelete}
               />
             ))}
           </ul>
@@ -157,6 +176,13 @@ function Row({
             className="grid h-6 w-6 place-items-center rounded text-cream-faint transition-colors hover:bg-graphite-700 hover:text-cream"
           >
             <IconDownload />
+          </button>
+          <button
+            onClick={() => onDelete?.(node)}
+            title="Удалить файл из Workspace"
+            className="grid h-6 w-6 place-items-center rounded text-cream-faint transition-colors hover:bg-red-500/10 hover:text-red-300"
+          >
+            <IconTrash />
           </button>
         </div>
       </div>

@@ -435,6 +435,19 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
     }
   }
 
+  const deleteNode = async (node) => {
+    if (!node?.path) return
+    const kind = node.type === 'dir' ? 'папку целиком' : 'файл'
+    if (!confirm(`Удалить ${kind} "${node.name}" из Workspace?`)) return
+    try {
+      await workspaceApi.remove(node.path)
+      await refresh()
+      if (preview?.path === node.path || preview?.path?.startsWith(`${node.path}/`)) setPreview(null)
+    } catch (e) {
+      setError(e.message || 'Не удалось удалить')
+    }
+  }
+
   const onMove = async (sourcePath, targetDirPath = '') => {
     try {
       await workspaceApi.move(sourcePath, targetDirPath)
@@ -583,11 +596,7 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
       }
 
       if (action === 'delete' && node?.path) {
-        if (confirm(`Удалить ${node.type === 'dir' ? 'папку' : 'файл'} "${node.name}"?`)) {
-          await workspaceApi.remove(node.path)
-          await refresh()
-          if (preview?.path === node.path) setPreview(null)
-        }
+        await deleteNode(node)
       }
     } catch (e) {
       setError(e.message || 'Операция не выполнена')
@@ -749,6 +758,7 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
                 onDownload={downloadFile}
                 onContextMenu={openNodeMenu}
                 onMove={onMove}
+                onDelete={deleteNode}
               />
             ) : (
               <div className="px-3 py-3 text-[11px] leading-snug text-cream-faint">
