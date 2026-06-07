@@ -249,6 +249,25 @@ function BrowserApp({ user, reloadAuth }) {
     }
   }
 
+  const shouldUseAgentForText = (text, taskType) => {
+    if (!agentMode) return false
+    if (autoMode && ['image', 'chat', 'fast', 'creative', 'translation'].includes(taskType || '')) return false
+    const lower = String(text || '').toLowerCase()
+    return (
+      taskType === 'code' ||
+      lower.includes('workspace') ||
+      lower.includes('файл') ||
+      lower.includes('папк') ||
+      lower.includes('скачай') ||
+      lower.includes('github') ||
+      lower.includes('git') ||
+      lower.includes('запусти') ||
+      lower.includes('исправь') ||
+      lower.includes('измени') ||
+      lower.includes('создай файл')
+    )
+  }
+
   // Обёртка sendMessage с авторежимом
   // БАГ 3 ИСПРАВЛЕН: передаём выбранную модель напрямую в sendMessage (overrideModel),
   // не ждём пока React обновит settings — это устраняет гонку данных
@@ -274,10 +293,9 @@ function BrowserApp({ user, reloadAuth }) {
       }
     }
 
-    // Agent mode is for tool/code/workspace tasks. Image-generation prompts
-    // must go through the normal multimodal chat route, otherwise the agent
-    // system prompt makes models answer as a coding agent instead of drawing.
-    if (agentMode && routedTaskType !== 'image') {
+    // Agent mode is for tool/code/workspace tasks. In Auto mode, simple chat,
+    // greetings and image/media prompts go through the normal chat route.
+    if (shouldUseAgentForText(text, routedTaskType)) {
       return sendAgentMessage(text, attachments, overrideModel)
     }
 

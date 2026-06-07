@@ -153,8 +153,20 @@ export function pickBestModel(text, models, currentModel) {
   const task = classifyTask(text)
 
   if (!task) {
-    // Нет явной задачи — оставляем текущую модель
-    return { model: currentModel || models[0], reason: '', taskType: null, changed: false }
+    // Обычный чат/приветствие в Auto Gateway лучше отправлять в быстрый
+    // текстовый DeepSeek, а не оставлять случайно выбранный Gemini/agent model.
+    const preferred =
+      models.find((m) => m === 'deepseek_chat') ||
+      models.find((m) => /chat/i.test(m) && !/reasoner|coder/i.test(m)) ||
+      currentModel ||
+      models[0]
+    return {
+      model: preferred,
+      reason: preferred !== currentModel ? 'обычный чат' : '',
+      taskType: 'chat',
+      icon: '💬',
+      changed: Boolean(preferred && preferred !== currentModel),
+    }
   }
 
   // Оцениваем все модели
