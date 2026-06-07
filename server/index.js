@@ -1970,6 +1970,26 @@ app.get('/api/admin/deepseek/models', requireAuth, (req, res) => {
   res.json({ models: getDeepSeekModels() })
 })
 
+// Client-side error reporter (no auth — anonymous crash reports).
+// Writes one JSON line per crash to CLIENT_ERROR_LOG (default
+// /data/client-errors.log) so we can debug grey screens via SSH:
+//   tail -f /opt/browserai-data/client-errors.log
+app.post('/api/debug/client-error', express.json({ limit: '256kb' }), (req, res) => {
+  const file = process.env.CLIENT_ERROR_LOG || '/data/client-errors.log'
+  try {
+    const body = req.body || {}
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      ip: (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim(),
+      ...body,
+    })
+    _appendFileSyncDebug(file, line + '\n')
+  } catch {
+    // Swallow — we never want this endpoint to throw back at the browser.
+  }
+  res.status(204).end()
+})
+
 // Public-ish: lets the chat UI know whether a managed DeepSeek session is
 // available without exposing the token. No auth required because it returns
 // only booleans + model ids.
