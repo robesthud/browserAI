@@ -225,6 +225,10 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
       ...f,
       name: preset.name || f.name,
       baseUrl: preset.baseUrl,
+      // Pre-fill apiKey from the preset if it provides one (e.g. the
+      // '__managed__' marker for server-side managed sessions). Otherwise
+      // keep whatever the user had typed.
+      apiKey: preset.apiKey !== undefined ? preset.apiKey : f.apiKey,
       availableModels: [],
       model: preset.model || '',
       authType: preset.authType || 'bearer',
@@ -319,14 +323,19 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
         ))}
       </div>
 
-      <SecretField
-        label={form.authType === 'cookie' ? 'Cookie / сессия' : 'Токен / API-ключ'}
-        hint={form.baseUrl.includes('chat.deepseek.com')
-          ? 'Для DeepSeek Web нужен Bearer userToken. Cookie можно добавить ниже в «Дополнительно».'
-          : 'Вставь ключ — модели подтянутся автоматически после проверки.'}
-        value={form.apiKey}
-        onChange={set('apiKey')}
-      />
+      {form.apiKey === '__managed__' ? (
+        <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-3 py-2.5 text-[12px] text-emerald-200">
+          🔒 Серверная сессия — ключ хранится на сервере и обновляется автоматически.
+          Ничего вводить не нужно, просто нажми <b>Сохранить</b>.
+        </div>
+      ) : (
+        <SecretField
+          label={form.authType === 'cookie' ? 'Cookie / сессия' : 'Токен / API-ключ'}
+          hint="Вставь ключ — модели подтянутся автоматически после проверки."
+          value={form.apiKey}
+          onChange={set('apiKey')}
+        />
+      )}
 
       {form.availableModels?.length > 0 ? (
         <Field label="Модель" hint={`Найдено моделей: ${form.availableModels.length}`}>
