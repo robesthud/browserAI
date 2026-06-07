@@ -254,6 +254,138 @@ export function useChats(settings) {
     [activeId, newChat, settings],
   )
 
+  // ── Agent mode: streams /api/agent/chat and updates the assistant
+  // message in place as tool calls / final answer come in. The history
+  // sent to the server is just role+content; tool calls live on the
+  // *client* assistant message as m.toolCalls[].
+  const sendAgentMessage = useCallback(
+    async (text, attachments = []) => {
+      const trimmed = (text || '').trim()
+      if (!trimmed && attachments.length === 0) return
+
+      let chatId = activeId
+      if (!chatId) chatId = newChat()
+
+      const userMsg = { id: uid(), role: 'user', content: trimmed, attachments }
+      const assistantMsg = {
+        id: uid(),
+        role: 'assistant',
+        content: '',
+        pending: true,
+        toolCalls: [],
+        agent: true,
+      }
+
+      let history = []
+      setChats((prev) =>
+        prev.map((c) => {
+          if (c.id !== chatId) return c
+          const isFirst = c.messages.length === 0
+          history = [...c.messages, userMsg]
+          return {
+            ...c,
+            title: isFirst ? deriveTitle(trimmed) : c.title,
+            updatedAt: Date.now(),
+            messages: [...c.messages, userMsg, assistantMsg],
+          }
+        }),
+      )
+
+      const controller = new AbortController()
+      abortRef.current = controller
+      setIsStreaming(true)
+
+      const patchAssistant = (patch) => {
+        setChats((prev) =>
+          prev.map((c) =>
+            c.id !== chatId
+              ? c
+              : {
+                  ...c,
+                  updatedAt: Date.now(),
+                  messages: c.messages.map((m) =>
+                    m.id === assistantMsg.id ? (typeof patch === 'function' ? patch(m) : { ...m, ...patch }) : m,
+                  ),
+                },
+          ),
+        )
+      }
+
+      const { streamAgent } = await import('./agentStream.js')
+
+      // Build the LLM history: same as chat but agent loop wants strict
+      // role,content only. Drop the empty assistant placeholder we just
+      // pushed.
+      const llmHistory = history.map((m) => ({
+        role: m.role,
+        content: m.role === 'user'
+          ? (m.attachments?.length
+              ? `${m.content || ''}\n\nAttachments:\n${m.attachments.map((a) => `- ${a.name} (${a.type})`).join('\n')}`
+              : (m.content || ''))
+          : (m.content || ''),
+      }))
+
+      try {
+        await new Promise((resolve) => {
+          streamAgent({
+            history: llmHistory,
+            model: settings?.model || 'deepseek_chat',
+            signal: controller.signal,
+            onEvent: (kind, data) => {
+              switch (kind) {
+                case 'thinking':
+                  // Optional: we could surface a "thinking" indicator
+                  break
+                case 'tool_start':
+                  patchAssistant((m) => ({
+                    ...m,
+                    pending: true,
+                    toolCalls: [
+                      ...(m.toolCalls || []),
+                      {
+                        id: `${data.step}-${data.name}`,
+                        step: data.step,
+                        name: data.name,
+                        args: data.args,
+                        status: 'running',
+                      },
+                    ],
+                  }))
+                  break
+                case 'tool_result':
+                  patchAssistant((m) => ({
+                    ...m,
+                    toolCalls: (m.toolCalls || []).map((tc) =>
+                      tc.step === data.step && tc.name === data.name
+                        ? { ...tc, status: 'done', ok: data.ok, result: data.result, error: data.error }
+                        : tc,
+                    ),
+                  }))
+                  break
+                case 'assistant':
+                  patchAssistant({ content: data.text || '', pending: false })
+                  break
+                case 'error':
+                  patchAssistant((m) => ({ ...m, error: data.message || 'agent error', pending: false }))
+                  break
+                case 'done':
+                  patchAssistant({ pending: false })
+                  resolve()
+                  break
+              }
+            },
+          })
+        })
+      } catch (e) {
+        patchAssistant({ pending: false, error: e?.message || 'agent crashed' })
+      } finally {
+        abortRef.current = null
+        setIsStreaming(false)
+      }
+    },
+    [activeId, newChat, settings],
+  )
+
   return {
     chats,
     activeChat,
@@ -265,6 +397,7 @@ export function useChats(settings) {
     renameChat,
     updateChat,
     sendMessage,
+    sendAgentMessage,
     stop,
   }
 }

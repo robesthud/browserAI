@@ -1,0 +1,116 @@
+/**
+ * agentSandbox.js
+ *
+ * Runs LLM-supplied shell commands inside an isolated docker container
+ * ("agent-sandbox" service in docker-compose.yml). Communication uses
+ * `docker exec`, which is the most reliable cross-runtime channel and
+ * does not require us to open a network port on the sandbox.
+ *
+ * Safety properties:
+ *   - sandbox image: alpine:3.20 + node + git + curl + grep/find
+ *   - read-only root (filesystem of the image is immutable)
+ *   - only /workspace is read/write, bind-mounted to the same
+ *     directory the main app sees
+ *   - sandbox runs as non-root uid 1000:1000
+ *   - no network restrictions are applied here yet (curl works) —
+ *     the perimeter relies on Timeweb's firewall + the absence of
+ *     credentials on the container
+ *   - per-command CPU/RAM caps come from docker-compose deploy.resources
+ *
+ * Output is streamed back; large outputs are capped at 8 KB stdout +
+ * 4 KB stderr to keep the LLM context manageable.
+ */
+import { spawn } from 'node:child_process'
+
+const SANDBOX_CONTAINER = process.env.AGENT_SANDBOX_CONTAINER || 'agent-sandbox'
+const MAX_STDOUT = 8 * 1024
+const MAX_STDERR = 4 * 1024
+
+function clip(buf, max) {
+  if (buf.length <= max) return { text: buf.toString('utf8'), truncated: false }
+  return {
+    text: buf.subarray(0, max).toString('utf8') + `\n... [truncated, ${buf.length - max} more bytes]`,
+    truncated: true,
+  }
+}
+
+/**
+ * Run a shell command inside the agent-sandbox container.
+ *
+ * @param {object} opts
+ * @param {string} opts.command            shell command (passed to sh -c)
+ * @param {number} [opts.timeoutMs=30000]  hard kill timer
+ * @param {string} [opts.cwd='/workspace'] working directory inside container
+ * @returns {Promise<{stdout, stderr, exitCode, truncated}>}
+ */
+export function runSandboxCommand({ command, timeoutMs = 30_000, cwd = '/workspace' } = {}) {
+  return new Promise((resolve, reject) => {
+    if (!command || typeof command !== 'string') {
+      return reject(new Error('command must be a non-empty string'))
+    }
+
+    const args = [
+      'exec',
+      '--user', '1000:1000',
+      '-w', cwd,
+      SANDBOX_CONTAINER,
+      'sh', '-c', command,
+    ]
+
+    const proc = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    const outChunks = []
+    const errChunks = []
+    let outBytes = 0
+    let errBytes = 0
+    let killed = false
+
+    const timer = setTimeout(() => {
+      killed = true
+      try { proc.kill('SIGKILL') } catch {}
+    }, timeoutMs)
+
+    proc.stdout.on('data', (c) => {
+      outBytes += c.length
+      if (outBytes <= MAX_STDOUT * 2) outChunks.push(c)
+    })
+    proc.stderr.on('data', (c) => {
+      errBytes += c.length
+      if (errBytes <= MAX_STDERR * 2) errChunks.push(c)
+    })
+
+    proc.on('error', (e) => {
+      clearTimeout(timer)
+      // Likely: docker binary missing, or sandbox container not running.
+      reject(new Error(`sandbox exec failed: ${e.message}. Is the agent-sandbox container running?`))
+    })
+
+    proc.on('close', (code) => {
+      clearTimeout(timer)
+      const stdout = clip(Buffer.concat(outChunks), MAX_STDOUT)
+      const stderr = clip(Buffer.concat(errChunks), MAX_STDERR)
+      const exitCode = killed ? -1 : (code == null ? -1 : code)
+      const truncated = stdout.truncated || stderr.truncated || killed
+      const extraStderr = killed ? `\n[sandbox] killed after ${timeoutMs}ms timeout` : ''
+      resolve({
+        stdout: stdout.text,
+        stderr: stderr.text + extraStderr,
+        exitCode,
+        truncated,
+      })
+    })
+  })
+}
+
+/**
+ * Quick health check used at server boot to log whether the sandbox is
+ * reachable. Does not throw — returns a status string instead.
+ */
+export async function sandboxHealth() {
+  try {
+    const r = await runSandboxCommand({ command: 'echo ok', timeoutMs: 5_000 })
+    if (r.exitCode === 0 && r.stdout.trim() === 'ok') return 'ok'
+    return `unexpected response: stdout=${JSON.stringify(r.stdout)} exit=${r.exitCode}`
+  } catch (e) {
+    return `unreachable: ${e.message}`
+  }
+}

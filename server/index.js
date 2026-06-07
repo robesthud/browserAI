@@ -79,6 +79,8 @@ import {
   setSession as setDeepSeekSession,
 } from './deepseekTokenRefresher.js'
 import { startDeepSeekBot } from './deepseekBot.js'
+import { runAgent } from './agentLoop.js'
+import { sandboxHealth } from './agentSandbox.js'
 
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -1988,6 +1990,39 @@ app.post('/api/debug/client-error', express.json({ limit: '256kb' }), (req, res)
     // Swallow — we never want this endpoint to throw back at the browser.
   }
   res.status(204).end()
+})
+
+// ── Agent mode ─────────────────────────────────────────────────────────────
+// SSE stream of an autonomous DeepSeek agent that can call workspace,
+// web and sandboxed bash tools. Body: { history: [{role, content}], model? }.
+// Events:
+//   thinking | tool_start | tool_result | assistant | done | error
+app.post('/api/agent/chat', requireAuth, async (req, res) => {
+  const { history = [], model = 'deepseek_chat', extraSystem = '' } = req.body || {}
+  if (!Array.isArray(history) || history.length === 0) {
+    return res.status(400).json({ error: 'history must be a non-empty array' })
+  }
+  // Normalise — drop fields the LLM does not need (attachments stay inline
+  // via the message content built by the client).
+  const safeHistory = history
+    .filter((m) => m && typeof m.content === 'string' && m.content.trim())
+    .map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }))
+
+  try {
+    await runAgent({ history: safeHistory, model, extraSystem, res })
+  } catch (e) {
+    if (!res.headersSent) {
+      res.status(500).json({ error: e.message })
+    }
+  }
+})
+
+app.get('/api/agent/health', requireAuth, async (req, res) => {
+  const sandbox = await sandboxHealth()
+  res.json({
+    deepseekManaged: Boolean(getDeepSeekState().alive),
+    sandbox,
+  })
 })
 
 // Public-ish: lets the chat UI know whether a managed DeepSeek session is

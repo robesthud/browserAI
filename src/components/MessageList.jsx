@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { IconBot, IconUser, IconFile, IconCopy, IconEdit, IconRefresh } from '../icons.jsx'
 import { formatSize } from '../lib/files.js'
 import Markdown from '../lib/markdown.jsx'
+import AgentToolBlock from './AgentToolBlock.jsx'
 
 function Attachments({ items }) {
   if (!items?.length) return null
@@ -117,6 +118,23 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate }) {
           </div>
         ) : (
           <div className="text-[14px] leading-relaxed text-cream-soft">
+            {/* Agent tool calls (if this assistant message is from the agent loop) */}
+            {Array.isArray(m.toolCalls) && m.toolCalls.length > 0 && (
+              <div className="mb-2 space-y-1">
+                {m.toolCalls.map((tc) => (
+                  <AgentToolBlock
+                    key={tc.id}
+                    step={tc.step}
+                    name={tc.name}
+                    args={tc.args}
+                    status={tc.status}
+                    ok={tc.ok}
+                    result={tc.result}
+                    error={tc.error}
+                  />
+                ))}
+              </div>
+            )}
             {m.content ? <Markdown text={m.content} /> : null}
             {m.pending && (
               <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-cream/70 align-middle" />

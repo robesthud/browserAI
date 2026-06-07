@@ -84,6 +84,20 @@ function BrowserApp({ user, reloadAuth }) {
     } catch {}
   }, [autoMode])
 
+  // Agent mode — model is allowed to call tools (workspace / web / bash)
+  const [agentMode, setAgentMode] = useState(() => {
+    try {
+      return localStorage.getItem('browserai.agentMode') === '1'
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('browserai.agentMode', agentMode ? '1' : '0')
+    } catch {}
+  }, [agentMode])
+
   const {
     settings,
     online,
@@ -114,6 +128,7 @@ function BrowserApp({ user, reloadAuth }) {
     selectChat,
     deleteChat,
     sendMessage,
+    sendAgentMessage,
     stop,
   } = useChats(settings)
 
@@ -198,6 +213,12 @@ function BrowserApp({ user, reloadAuth }) {
   // БАГ 3 ИСПРАВЛЕН: передаём выбранную модель напрямую в sendMessage (overrideModel),
   // не ждём пока React обновит settings — это устраняет гонку данных
   const handleSendMessage = async (text, attachments = []) => {
+    // Agent mode short-circuits the regular chat flow. It streams /api/agent/chat
+    // (tool calls + final answer) instead of a plain LLM completion.
+    if (agentMode) {
+      return sendAgentMessage(text, attachments)
+    }
+
     let overrideModel = null
 
     if (autoMode && availableModels.length > 1 && text?.trim()) {
@@ -267,6 +288,8 @@ function BrowserApp({ user, reloadAuth }) {
           onToggleWebAI={(next) => setParams({ useWebAI: next })}
           autoMode={autoMode}
           autoModelHint={autoHint ? `${autoHint.icon || ''} ${autoHint.reason}` : ''}
+          agentMode={agentMode}
+          onToggleAgentMode={setAgentMode}
           workspaceOpen={workspaceOpen}
           onToggleWorkspace={toggleWorkspace}
           onOpenSettings={() => setSettingsOpen(true)}

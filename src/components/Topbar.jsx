@@ -8,6 +8,8 @@ export default function Topbar({
   onToggleWebAI,
   autoMode,
   autoModelHint,
+  agentMode,
+  onToggleAgentMode,
   workspaceOpen,
   onToggleWorkspace,
   onOpenSettings,
@@ -41,6 +43,19 @@ export default function Topbar({
 
       {/* Правая часть: Web AI, авто-бейдж, настройки, workspace */}
       <div className="flex shrink-0 items-center gap-1 md:gap-1.5">
+        {/* Agent mode toggle — modelchat → tool-using agent */}
+        <button
+          onClick={() => onToggleAgentMode?.(!agentMode)}
+          className={`rounded-lg border px-2 py-2 text-[11px] transition-colors md:px-3 md:text-[12px] ${
+            agentMode
+              ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-300'
+              : 'border-white/10 bg-graphite-800 text-cream-dim hover:bg-graphite-750 hover:text-cream'
+          }`}
+          title="Включить агентский режим: модель может читать/писать файлы, искать в вебе и запускать shell-команды"
+        >
+          🤖 Агент {agentMode ? 'On' : 'Off'}
+        </button>
+
         {/* Web AI toggle */}
         <button
           onClick={() => onToggleWebAI?.(!useWebAI)}
