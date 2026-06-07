@@ -238,7 +238,9 @@ async function heartbeat({ silent = false } = {}) {
     state.alive = true
     state.lastSeenAt = Date.now()
     state.lastError = ''
-    if (cookieChanged) saveToDisk()
+    // Always persist after a successful heartbeat: even if no cookie was
+    // rotated, we want lastSeenAt / alive / user to survive restarts.
+    saveToDisk()
     return { ok: true, user: biz }
   } catch (e) {
     state.alive = false
@@ -331,7 +333,11 @@ export async function refreshNow({ source = 'api' } = {}) {
   state.lastRefreshAt = Date.now()
   const r = await heartbeat({ silent: false })
   if (r.ok) await fetchModels()
-  saveToDisk()
+  // Persist only when heartbeat actually communicated with DeepSeek
+  // (success, http-error, or unauthorized). Skip 'no-credentials' so
+  // an erroneous refresh from a fresh process never wipes the on-disk
+  // session of the live process.
+  if (r.reason !== 'no-credentials') saveToDisk()
   log(`Manual refresh (${source}):`, r.ok ? 'OK' : `FAIL (${r.reason})`)
   return getSessionState()
 }
@@ -397,10 +403,21 @@ export function bootstrap() {
   if (state.userToken || Object.keys(state.cookies).length) {
     saveToDisk()
   }
-  // Initial heartbeat + models a few seconds after boot
+  // Initial heartbeat + models a few seconds after boot.
+  // We log the outcome so operators can see whether the persisted
+  // session is alive without having to call /api/admin/deepseek/status.
   setTimeout(async () => {
-    const r = await heartbeat({ silent: true })
-    if (r.ok) await fetchModels()
+    try {
+      const r = await heartbeat({ silent: true })
+      if (r.ok) {
+        await fetchModels()
+        log(`Initial heartbeat OK — user: ${state.user?.email || state.user?.username || state.user?.id || '(no email)'}`)
+      } else {
+        log(`Initial heartbeat FAILED — reason: ${r.reason}${r.status ? ' (HTTP ' + r.status + ')' : ''}${state.lastError ? ', error: ' + state.lastError : ''}`)
+      }
+    } catch (e) {
+      warn('Initial heartbeat crashed:', e.message)
+    }
   }, STARTUP_DELAY_MS)
 
   // Periodic heartbeat
