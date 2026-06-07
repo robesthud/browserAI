@@ -2260,6 +2260,18 @@ app.get('/api/deepseek/managed', (req, res) => {
   })
 })
 
+// ── Глобальный обработчик ошибок ───────────────────────────────────────────
+// Express 5 автоматически передаёт сюда отклонённые промисы из async-роутов.
+// Без этого middleware необработанное исключение отдавало бы дефолтную
+// HTML-страницу со стектрейсом (утечка путей/инфраструктуры). Возвращаем
+// безопасный JSON; подробности пишем только в серверный лог.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error('[unhandled]', req.method, req.path, '-', err?.stack || err?.message || err)
+  if (res.headersSent) return
+  res.status(err?.status || 500).json({ error: 'Внутренняя ошибка сервера' })
+})
+
 app.listen(PORT, () => {
   console.log(`BrowserAI API + SQLite + Workspace на http://localhost:${PORT}`)
 })
