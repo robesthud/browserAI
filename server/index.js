@@ -68,7 +68,7 @@ import {
   deleteWorkspaceScope,
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
-import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, isSessionUrl, buildProbeBody, getChatUrl } from './stealthHeaders.js'
+import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
 import { isDeepSeekWebUrl, handleDeepSeekWebChat, validateDeepSeekWebKey } from './deepseekWeb.js'
 import {
@@ -1621,7 +1621,7 @@ function chatDebugLog(tag, payload) {
     }
     _appendFileSyncDebug(file, `${new Date().toISOString()} ${tag} ${JSON.stringify(safe)}\n`)
   } catch (e) {
-    try { _appendFileSyncDebug(file, `${new Date().toISOString()} ${tag} LOG_ERR ${e.message}\n`) } catch {}
+    try { _appendFileSyncDebug(file, `${new Date().toISOString()} ${tag} LOG_ERR ${e.message}\n`) } catch { /* ignore debug log write error */ }
   }
 }
 
@@ -1851,7 +1851,6 @@ app.get('/api/debug/chat-test', requireAuth, async (req, res) => {
       extraHeaders: key.extraHeaders,
     }
 
-    const root = String(key.baseUrl || '').replace(/\/$/, '')
     const stealthH = buildSessionHeaders({
       baseUrl: key.baseUrl,
       apiKey: key.apiKey,

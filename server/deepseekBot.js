@@ -153,7 +153,7 @@ async function poll() {
         warn('getUpdates error:', data.description)
         await new Promise((r) => setTimeout(r, 5000))
       }
-    } catch (e) {
+    } catch {
       // Network/timeout — back off briefly
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
     }

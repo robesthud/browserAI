@@ -283,8 +283,7 @@ async function handlePlainChat(user, userText) {
   // Send placeholder we will edit as the response streams
   const placeholder = await reply(user.chat_id, '✍️ ...')
   const messageId = placeholder?.result?.message_id
-  let acc = ''
-  let lastEdit = 0
+  let acc
 
   const provider = await getProvider(user)
   if (!provider.apiKey) {
@@ -393,7 +392,7 @@ async function handleAgentChat(user, userText) {
         break
       case 'thought':
         if (data.text && data.text.trim()) {
-          try { await reply(user.chat_id, `💭 ${data.text.trim().slice(0, 1500)}`, { reply_markup: undefined }) } catch {}
+          try { await reply(user.chat_id, `💭 ${data.text.trim().slice(0, 1500)}`, { reply_markup: undefined }) } catch { /* ignore Telegram send error */ }
         }
         break
       case 'tool_start': {
@@ -410,14 +409,13 @@ async function handleAgentChat(user, userText) {
         const id = toolMsgIds.get(data.step)
         if (!id) break
         const icon = data.ok ? '✓' : '✗'
-        const args = data.args || {}
         let summary = ''
         let resultSnippet = ''
         if (data.result?.stdout) resultSnippet = String(data.result.stdout).slice(0, 500)
         else if (data.result?.content) resultSnippet = String(data.result.content).slice(0, 500)
         else if (data.error) resultSnippet = data.error
         const text = `${icon} *${data.name}*${summary}${resultSnippet ? '\n```\n' + resultSnippet + '\n```' : ''}`
-        try { await editMessage(user.chat_id, id, text) } catch {}
+        try { await editMessage(user.chat_id, id, text) } catch { /* ignore Telegram edit error */ }
         break
       }
       case 'assistant':
@@ -577,7 +575,7 @@ async function poll() {
         warn('getUpdates error:', data.description)
         await new Promise((r) => setTimeout(r, 5000))
       }
-    } catch (e) {
+    } catch {
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
     }
   }

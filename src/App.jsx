@@ -85,7 +85,9 @@ function BrowserApp({ user, reloadAuth }) {
   useEffect(() => {
     try {
       localStorage.setItem('browserai.autoMode', autoMode ? '1' : '0')
-    } catch {}
+    } catch {
+      // localStorage may be unavailable
+    }
   }, [autoMode])
 
   // Agent mode — model is allowed to call tools (workspace / web / bash)
@@ -99,7 +101,9 @@ function BrowserApp({ user, reloadAuth }) {
   useEffect(() => {
     try {
       localStorage.setItem('browserai.agentMode', agentMode ? '1' : '0')
-    } catch {}
+    } catch {
+      // localStorage may be unavailable
+    }
   }, [agentMode])
 
   const {
@@ -223,6 +227,7 @@ function BrowserApp({ user, reloadAuth }) {
 
   // При смене чата — сбрасываем подсказку
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAutoHint(null)
   }, [activeId])
 

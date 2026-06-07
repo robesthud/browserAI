@@ -197,7 +197,10 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
   useEffect(() => {
     workspaceApi.setChatId(chatId || '')
     if (chatId) workspaceApi.initChatWorkspace(chatId).catch(() => {})
-    if (open) void refresh()
+    if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      void refresh()
+    }
   }, [chatId, open, refresh])
 
   useEffect(() => {

@@ -145,42 +145,6 @@ function buildProviderMessages({ settings, messages, memorySummary = '', webCont
   return providerMessages
 }
 
-// Строит заголовки для запроса к провайдеру
-function buildAuthHeaders(apiKey, authType = 'bearer', authHeader = '', extraHeaders = {}) {
-  const key = String(apiKey || '').trim()
-  if (!key) return {}
-
-  let authH = {}
-  switch (authType) {
-    case 'cookie':
-      authH = { Cookie: key }
-      break
-    case 'custom':
-      if (authHeader.trim()) authH = { [authHeader.trim()]: key }
-      else authH = { Authorization: key }
-      break
-    case 'bearer':
-    default:
-      authH = { Authorization: key.startsWith('Bearer ') ? key : `Bearer ${key}` }
-      break
-  }
-  // Для сессионных токенов добавляем Accept-Language
-  const browserLike = (authType === 'cookie' || authType === 'custom') ? {
-    'Accept': 'application/json, text/event-stream, */*',
-    'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8',
-  } : {}
-  // extraHeaders от пользователя
-  const safe = {}
-  if (extraHeaders && typeof extraHeaders === 'object') {
-    const FORBIDDEN = new Set(['host', 'content-length', 'transfer-encoding'])
-    for (const [hk, hv] of Object.entries(extraHeaders)) {
-      if (!hk || FORBIDDEN.has(hk.toLowerCase())) continue
-      safe[hk] = String(hv || '')
-    }
-  }
-  return { ...browserLike, ...authH, ...safe }
-}
-
 // Извлечение значения по пути вида "choices.0.message.content"
 function getByPath(obj, path) {
   if (!path || !obj) return ''

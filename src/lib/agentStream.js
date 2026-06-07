@@ -91,5 +91,5 @@ export function streamAgent({ chatId = '', history, provider, extraSystem = '', 
     }
   })()
 
-  return () => { try { controller?.abort() } catch {} }
+  return () => { try { controller?.abort() } catch { /* already aborted */ } }
 }

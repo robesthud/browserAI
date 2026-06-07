@@ -7,7 +7,6 @@ import {
   IconDownload,
   IconUpload,
   IconLock,
-  IconUnlock,
 } from '../icons.jsx'
 import { emptyKey, getActiveKey, getSelectedModel } from '../lib/settings.js'
 import { exportKeysToFile, importKeysFromFile } from '../lib/keyfile.js'

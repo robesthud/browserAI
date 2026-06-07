@@ -89,7 +89,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser }
   const swipe = useSwipeActions()
 
   const copyMessage = async () => {
-    try { await navigator.clipboard.writeText(m.content || '') } catch {}
+    try { await navigator.clipboard.writeText(m.content || '') } catch { /* clipboard unavailable */ }
     swipe.reset()
   }
 

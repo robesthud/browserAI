@@ -191,7 +191,7 @@ const SITE_PROFILES = {
 
 /** Возвращает профиль сайта по baseUrl */
 export function getSiteProfile(baseUrl) {
-  let hostname = ''
+  let hostname
   try {
     hostname = new URL(baseUrl).hostname.replace(/^www\./, '')
   } catch {
@@ -309,7 +309,6 @@ export function getChatUrl(baseUrl) {
  * Короткий но натуральный запрос.
  */
 export function buildProbeBody(baseUrl, model) {
-  const profile = getSiteProfile(baseUrl)
   return applyBodyDefaults({
     model:    model || 'gpt-4o-mini',
     messages: [{ role: 'user', content: 'Hi' }],
