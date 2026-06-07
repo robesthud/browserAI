@@ -1,0 +1,338 @@
+diff --git a/server.py b/server.py
+index 121bdc5..cb8227f 100644
+--- a/server.py
++++ b/server.py
+@@ -6,6 +6,9 @@ import json
+ import asyncio
+ import time
+ import re
++import base64
++import tempfile
++import os
+ from pathlib import Path
+ from playwright.async_api import async_playwright, BrowserContext, Page
+ from markdownify import markdownify as md
+@@ -13,7 +16,8 @@ from markdownify import markdownify as md
+ app = FastAPI()
+ 
+ # Service profile
+-SERVICE_DIR = Path.home() / ".gemini-service"
++import os
++SERVICE_DIR = Path(os.environ.get("GEMINI_SERVICE_DIR", str(Path.home() / ".gemini-service")))
+ PROFILE_DIR = SERVICE_DIR / "chrome-profile"
+ LOGIN_FLAG = SERVICE_DIR / "logged-in"
+ 
+@@ -70,6 +74,122 @@ def get_content_text(content: Any) -> str:
+         ])
+     return ""
+ 
++def extract_image_urls(content: Any) -> List[str]:
++    """Extract OpenAI-compatible image_url entries from message content."""
++    urls = []
++    if isinstance(content, list):
++        for c in content:
++            if not isinstance(c, dict):
++                continue
++            if c.get("type") == "image_url":
++                image_url = c.get("image_url")
++                if isinstance(image_url, dict):
++                    url = image_url.get("url")
++                else:
++                    url = image_url
++                if isinstance(url, str) and url:
++                    urls.append(url)
++    return urls
++
++
++def data_url_to_temp_file(data_url: str) -> Optional[str]:
++    m = re.match(r'^data:([^;,]+)(?:;[^,]*)?,(.*)$', data_url or '', re.S)
++    if not m:
++        return None
++    mime, payload = m.group(1), m.group(2)
++    ext = 'png'
++    if 'jpeg' in mime or 'jpg' in mime: ext = 'jpg'
++    elif 'webp' in mime: ext = 'webp'
++    elif 'gif' in mime: ext = 'gif'
++    try:
++        raw = base64.b64decode(payload)
++    except Exception:
++        return None
++    fd, path = tempfile.mkstemp(prefix='gemini-upload-', suffix='.' + ext)
++    with os.fdopen(fd, 'wb') as f:
++        f.write(raw)
++    return path
++
++
++async def attach_images_to_gemini(page: Page, image_paths: List[str]):
++    if not image_paths:
++        return
++
++    async def try_inputs():
++        inputs = await page.query_selector_all('input[type="file"]')
++        for inp in inputs:
++            try:
++                await inp.set_input_files(image_paths)
++                await asyncio.sleep(4)
++                return True
++            except Exception:
++                continue
++        return False
++
++    if await try_inputs():
++        return
++
++    # Open upload/tools menu via plus button near composer.
++    btn = await page.query_selector('button[aria-label="Загрузка и инструменты"]') \
++        or await page.query_selector('button[aria-label="Upload and tools"]') \
++        or await page.query_selector('button[aria-haspopup="menu"][aria-label*="Загрузка" i]') \
++        or await page.query_selector('button[aria-haspopup="menu"][aria-label*="Upload" i]')
++    if not btn:
++        raise Exception('Gemini upload/tools button not found')
++    await btn.click()
++    await asyncio.sleep(1.2)
++
++    # Gemini uses hidden xapfileselectortrigger buttons that open file chooser.
++    chooser_selectors = [
++        'button.hidden-local-file-image-selector-button',
++        'button[data-test-id="hidden-local-image-upload-button"]',
++        'button.hidden-local-file-upload-button',
++        'button[data-test-id="hidden-local-file-upload-button"]',
++        'button[xapfileselectortrigger]',
++    ]
++    last_error = None
++    for sel in chooser_selectors:
++        try:
++            el = await page.query_selector(sel)
++            if not el:
++                continue
++            async with page.expect_file_chooser(timeout=5000) as fc_info:
++                try:
++                    await el.click(force=True)
++                except Exception:
++                    await page.evaluate('(e) => e.click()', el)
++            chooser = await fc_info.value
++            await chooser.set_files(image_paths)
++            await asyncio.sleep(5)
++            return
++        except Exception as e:
++            last_error = e
++            continue
++
++    # Fallback: click visible "Загрузить файлы" menu item and catch chooser.
++    try:
++        item = await page.query_selector('[role="menuitem"]:has-text("Загрузить файлы")') \
++            or await page.query_selector('[role="menuitem"]:has-text("Upload files")')
++        if item:
++            async with page.expect_file_chooser(timeout=5000) as fc_info:
++                await item.click()
++            chooser = await fc_info.value
++            await chooser.set_files(image_paths)
++            await asyncio.sleep(5)
++            return
++    except Exception as e:
++        last_error = e
++
++    if await try_inputs():
++        return
++
++    debug = await page.evaluate('''() => [...document.querySelectorAll('input[type="file"], button[xapfileselectortrigger], [role="menuitem"], button')].map((el,i)=>{
++      const r=el.getBoundingClientRect();
++      return {i, tag:el.tagName, visible:!!(r.width&&r.height), rect:{x:r.x,y:r.y,w:r.width,h:r.height}, aria:el.getAttribute('aria-label')||'', role:el.getAttribute('role')||'', cls:el.className||'', test:el.getAttribute('data-test-id')||'', text:(el.textContent||'').replace(/\s+/g,' ').trim().slice(0,100), html:(el.outerHTML||'').replace(/\s+/g,' ').trim().slice(0,200)}
++    }).slice(0,140)''')
++    raise Exception('Could not attach image files to Gemini UI: ' + str(last_error) + ' debug=' + json.dumps(debug, ensure_ascii=False)[:2500])
++
++
+ async def check_logged_in(page: Page) -> bool:
+     try:
+         await asyncio.sleep(3)
+@@ -101,10 +221,11 @@ async def init_browser():
+     context = await playwright_instance.chromium.launch_persistent_context(
+         user_data_dir=str(PROFILE_DIR),
+         headless=False,
+-        channel="chrome",
+         args=[
+             "--disable-blink-features=AutomationControlled",
+             "--disable-extensions",
++            "--no-sandbox",
++            "--disable-dev-shm-usage",
+             *headless_args
+         ],
+         viewport={"width": 1280, "height": 900},
+@@ -383,12 +504,17 @@ def format_conversation(messages: List[Message], tools: Optional[List[Tool]] = N
+     return "\n\n".join(formatted)
+ 
+ 
+-async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -> str:
++async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None, image_paths: Optional[List[str]] = None) -> str:
+     if timeout is None:
+         timeout = 300  # 5 minute default
+     
+     await page.wait_for_selector('rich-textarea', timeout=10000)
+     input_div = await page.wait_for_selector('rich-textarea .ql-editor', timeout=10000)
++
++    if image_paths:
++        await attach_images_to_gemini(page, image_paths)
++        await page.wait_for_selector('rich-textarea', timeout=10000)
++        input_div = await page.wait_for_selector('rich-textarea .ql-editor', timeout=10000)
+     
+     # Count existing responses BEFORE sending
+     existing_responses = await page.query_selector_all('div[id^="model-response-message-content"]')
+@@ -448,10 +574,35 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
+     if not response_text:
+         raise Exception(f"Timeout after {timeout}s")
+     
+-    # Extract code blocks and text using JavaScript (preserves formatting)
+-    extraction = await page.evaluate('''() => {
++    # Extract code blocks, text and generated images using JavaScript (preserves formatting)
++    extraction = await page.evaluate('''async () => {
+         const lastResponse = [...document.querySelectorAll('div[id^="model-response-message-content"]')].pop();
+-        if (!lastResponse) return { text: '', codeBlocks: [] };
++        if (!lastResponse) return { text: '', codeBlocks: [], images: [] };
++        
++        async function srcToDataUrl(src) {
++            if (!src) return '';
++            if (src.startsWith('data:image/')) return src;
++            try {
++                const blob = await fetch(src).then(r => r.blob());
++                return await new Promise((resolve, reject) => {
++                    const reader = new FileReader();
++                    reader.onload = () => resolve(String(reader.result || ''));
++                    reader.onerror = reject;
++                    reader.readAsDataURL(blob);
++                });
++            } catch (e) {
++                return src;
++            }
++        }
++        
++        const images = [];
++        const imgEls = [...lastResponse.querySelectorAll('img')];
++        for (const img of imgEls.slice(0, 8)) {
++            const src = img.currentSrc || img.src || '';
++            if (!src) continue;
++            const dataUrl = await srcToDataUrl(src);
++            images.push({ src, dataUrl, alt: img.alt || 'generated image' });
++        }
+         
+         // Try multiple selectors for code blocks in Gemini
+         const selectors = [
+@@ -476,7 +627,7 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
+         // Get full text content
+         const text = lastResponse.innerText || lastResponse.textContent || '';
+         
+-        return { text, codeBlocks };
++        return { text, codeBlocks, images };
+     }''')
+     
+     text_content = extraction.get('text', '').replace('\\_', '_')
+@@ -560,6 +711,67 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
+     
+     # No tool calls - convert HTML to markdown
+     response_text = md(response_text, heading_style="ATX", code_language_callback=lambda el: el.get('class', [''])[0].replace('language-', '') if el.get('class') else '')
++
++    # Gemini generated images often appear as blob: URLs inside the browser.
++    # Those blob URLs are not readable by BrowserAI clients, so replace them
++    # with data:image/... URLs extracted in the page context above.
++    for image in extraction.get('images', []) or []:
++        src = image.get('src') or ''
++        data_url = image.get('dataUrl') or ''
++        alt = image.get('alt') or 'generated image'
++        if src and data_url:
++            response_text = response_text.replace(src, data_url)
++        if data_url and data_url not in response_text:
++            response_text += f"\n\n![{alt}]({data_url})"
++
++    # Last-resort fallback: Gemini image responses can be rendered in a
++    # component that hides the real image URL. If markdown contains an empty
++    # image or a leftover generated-image marker, return a screenshot of the
++    # response block so BrowserAI can display/save something useful.
++    if 'data:image' not in response_text and ('![]()' in response_text or 'создано искусственным интеллектом' in response_text or 'created with AI' in response_text.lower()):
++        try:
++            shot = await last_response.screenshot(type='png')
++            data_url = 'data:image/png;base64,' + base64.b64encode(shot).decode('ascii')
++            response_text = re.sub(r'!\[[^\]]*\]\([^)]*\)', f'![generated image]({data_url})', response_text)
++            if data_url not in response_text:
++                response_text += f"\n\n![generated image]({data_url})"
++        except Exception:
++            pass
++
++    # Fallback: markdownify can preserve blob: URLs from elements that are
++    # not <img>. Fetch every remaining blob URL directly in the page context.
++    for blob_url in sorted(set(re.findall(r'blob:https://[^\s)"\]]+', response_text))):
++        try:
++            data_url = await page.evaluate('''async (src) => {
++                async function blobToDataUrl(blob) {
++                    return await new Promise((resolve, reject) => {
++                        const reader = new FileReader();
++                        reader.onload = () => resolve(String(reader.result || ''));
++                        reader.onerror = reject;
++                        reader.readAsDataURL(blob);
++                    });
++                }
++                try {
++                    const blob = await fetch(src).then(r => r.blob());
++                    const data = await blobToDataUrl(blob);
++                    if (data && data.startsWith('data:image/')) return data;
++                } catch (e) {}
++                try {
++                    const img = [...document.querySelectorAll('img')].find(i => (i.currentSrc || i.src) === src || (i.currentSrc || i.src || '').includes(src));
++                    if (!img) return '';
++                    if (!img.complete) await new Promise(resolve => { img.onload = resolve; img.onerror = resolve; setTimeout(resolve, 3000); });
++                    const canvas = document.createElement('canvas');
++                    canvas.width = img.naturalWidth || img.width || 1024;
++                    canvas.height = img.naturalHeight || img.height || 1024;
++                    const ctx = canvas.getContext('2d');
++                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
++                    return canvas.toDataURL('image/png');
++                } catch (e) { return ''; }
++            }''', blob_url)
++            if data_url:
++                response_text = response_text.replace(blob_url, data_url)
++        except Exception:
++            pass
+     
+     return response_text.strip()
+ 
+@@ -672,10 +884,19 @@ async def chat_completions(request: ChatRequest):
+     
+     async with page_locks[session_id]:
+         conversation = format_conversation(request.messages, request.tools)
+-        print(f"\n📥 [{time.strftime('%H:%M:%S')}] Session:{session_id} | msgs:{current_msg_count} | {conversation[:60]}...")
++        image_paths = []
++        for msg in request.messages:
++            if msg.role != 'user':
++                continue
++            for url in extract_image_urls(msg.content):
++                if url.startswith('data:image/'):
++                    fpath = data_url_to_temp_file(url)
++                    if fpath:
++                        image_paths.append(fpath)
++        print(f"\n📥 [{time.strftime('%H:%M:%S')}] Session:{session_id} | msgs:{current_msg_count} | images:{len(image_paths)} | {conversation[:60]}...")
+         
+         try:
+-            response = await send_to_gemini(page, conversation, request.timeout)
++            response = await send_to_gemini(page, conversation, request.timeout, image_paths=image_paths)
+             print(f"📤 [{time.strftime('%H:%M:%S')}] {response[:80]}...")
+             
+             # Check for tool calls
+@@ -824,12 +1045,17 @@ async def chat_completions(request: ChatRequest):
+ 
+ @app.get("/v1/models")
+ async def list_models():
++    # BrowserAI-facing aliases for the Gemini Web account.
++    # The current proxy drives the selected Gemini Web UI session; Gemini Web
++    # may ignore the model id internally, but these are the real public Gemini
++    # families users expect to see instead of OpenAI placeholder names.
++    now = int(time.time())
+     return {
+         "object": "list",
+         "data": [
+-            {"id": "gemini-pro", "object": "model", "created": int(time.time()), "owned_by": "google"},
+-            {"id": "gpt-4", "object": "model", "created": int(time.time()), "owned_by": "google"},
+-            {"id": "gpt-4o", "object": "model", "created": int(time.time()), "owned_by": "google"},
++            {"id": "gemini-2.5-pro", "object": "model", "created": now, "owned_by": "google"},
++            {"id": "gemini-2.5-flash", "object": "model", "created": now, "owned_by": "google"},
++            {"id": "gemini-2.0-flash", "object": "model", "created": now, "owned_by": "google"},
+         ]
+     }
+ 
