@@ -1,4 +1,5 @@
 import { backend } from './backend.js'
+import { getModelCapabilities, isImageAttachment } from './modelCapabilities.js'
 
 function normalizeBaseUrl(baseUrl = '') {
   return String(baseUrl || '').replace(/\/$/, '')
@@ -62,12 +63,39 @@ function formatAttachment(attachment) {
     .join('\n')
 }
 
-function messageToProviderContent(message) {
+function messageToProviderContent(message, settings = {}) {
   const base = String(message?.content || '')
-  const attachments = Array.isArray(message?.attachments)
-    ? message.attachments.map(formatAttachment).filter(Boolean)
-    : []
+  const rawAttachments = Array.isArray(message?.attachments) ? message.attachments : []
+  const caps = getModelCapabilities(settings?.model, settings?.baseUrl)
 
+  if (caps.imageInput && rawAttachments.some(isImageAttachment)) {
+    const parts = []
+    const textAttachments = []
+    if (base) parts.push({ type: 'text', text: base })
+
+    for (const attachment of rawAttachments) {
+      if (isImageAttachment(attachment) && attachment.dataUrl) {
+        parts.push({
+          type: 'image_url',
+          image_url: { url: attachment.dataUrl },
+        })
+        continue
+      }
+      const formatted = formatAttachment(attachment)
+      if (formatted) textAttachments.push(formatted)
+    }
+
+    if (textAttachments.length) {
+      parts.push({
+        type: 'text',
+        text: `Вложения:\n\n${textAttachments.join('\n\n---\n\n')}`,
+      })
+    }
+
+    return parts.length ? parts : base
+  }
+
+  const attachments = rawAttachments.map(formatAttachment).filter(Boolean)
   if (attachments.length === 0) return base
   const prefix = base ? `${base}\n\n` : ''
   return `${prefix}Вложения:\n\n${attachments.join('\n\n---\n\n')}`
@@ -110,7 +138,7 @@ function buildProviderMessages({ settings, messages, memorySummary = '', webCont
     if (!message?.role) continue
     providerMessages.push({
       role: message.role,
-      content: messageToProviderContent(message),
+      content: messageToProviderContent(message, settings),
     })
   }
 
