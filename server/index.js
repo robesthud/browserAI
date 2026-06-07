@@ -10,8 +10,7 @@ import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
-import { isIP as isIp } from 'is-ip'
-import ipaddr from 'ipaddr.js'
+import { isBlockedHost } from './ssrf.js'
 import AdmZip from 'adm-zip'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -106,19 +105,6 @@ const APP_WEB_VERSION = (() => {
     return process.env.npm_package_version || '0.0.0'
   }
 })()
-
-function isPrivateIp(address) {
-  if (!isIp(address)) return false
-  try {
-    const addr = ipaddr.parse(address)
-    const range = addr.range()
-    // In newer ipaddr.js, isLoopback/isLinkLocal were removed.
-    // Use range() which returns: 'unicast', 'private', 'loopback', 'linkLocal', etc.
-    return range !== 'unicast'
-  } catch {
-    return false
-  }
-}
 
 // Rate limiting: 300 запросов на IP за 15 минут (общий)
 // Увеличен с 100 до 300 т.к. чат-запросы теперь тоже идут через сервер
@@ -784,7 +770,7 @@ async function fetchModels(baseUrl, apiKey, requestedModel = '') {
   } catch {
     return { ok: false, status: 400, models: [], preferredModel: '', error: 'Invalid URL' }
   }
-  if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'host.docker.internal') {
+  if (isBlockedHost(hostname)) {
     return { ok: false, status: 403, models: [], preferredModel: '', error: 'Access to internal networks is not allowed' }
   }
 
@@ -1161,7 +1147,7 @@ app.post('/api/validate', requireAuth, async (req, res) => {
   try { hostname = new URL(baseUrl).hostname } catch {
     return res.json({ ok: false, message: 'Неверный URL', models: [], preferredModel: '' })
   }
-  if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'host.docker.internal') {
+  if (isBlockedHost(hostname)) {
     return res.json({ ok: false, message: 'Доступ к внутренней сети запрещён', models: [], preferredModel: '' })
   }
 
@@ -1663,7 +1649,7 @@ app.get('/api/web/fetch', requireAuth, async (req, res) => {
     } catch {
       return res.status(400).json({ error: 'Invalid URL' })
     }
-    if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'host.docker.internal') {
+    if (isBlockedHost(hostname)) {
       return res.status(403).json({ error: 'Access to internal networks is not allowed' })
     }
     const page = await fetchWebPage(url)
@@ -1776,7 +1762,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   try { hostname = new URL(baseUrl).hostname } catch {
     return res.status(400).json({ error: 'Неверный URL' })
   }
-  if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'host.docker.internal') {
+  if (isBlockedHost(hostname)) {
     return res.status(403).json({ error: 'Доступ к внутренней сети запрещён' })
   }
 
@@ -2210,7 +2196,7 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
   try { hostname = new URL(baseUrl).hostname } catch {
     return res.status(400).json({ error: 'Invalid baseUrl' })
   }
-  if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'host.docker.internal') {
+  if (isBlockedHost(hostname)) {
     return res.status(403).json({ error: 'Access to internal networks is not allowed' })
   }
 

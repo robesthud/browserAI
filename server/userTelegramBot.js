@@ -37,6 +37,9 @@ const POLL_INTERVAL_MS = 2000
 const STREAM_EDIT_MS = 800            // throttle for edit-message during streaming
 const MAX_HISTORY_MESSAGES = 30
 const MAX_MESSAGE_LEN = 4000
+// Public URL shown to users (e.g. for the web interface link). Configurable via
+// env so the deployment host isn't hardcoded. Falls back to APP_URL or the VPS.
+const APP_PUBLIC_URL = (process.env.APP_URL || process.env.APP_PUBLIC_URL || 'http://72.56.116.15').replace(/\/$/, '')
 
 // ── Mode / model defaults ──────────────────────────────────────────────────
 const DEFAULT_MODE = 'chat'           // 'chat' | 'agent'
@@ -490,7 +493,7 @@ async function handleMessage(msg) {
     return
   }
   if (text === '/files' || text === '📁 Файлы') {
-    await reply(chatId, '📁 Управление файлами через бота в разработке.\n\nИспользуйте веб: http://72.56.116.15')
+    await reply(chatId, `📁 Управление файлами через бота в разработке.\n\nИспользуйте веб: ${APP_PUBLIC_URL}`)
     return
   }
   if (text === '💬 Чат') {
