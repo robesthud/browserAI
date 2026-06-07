@@ -430,6 +430,7 @@ async function sendSmsCode(phone, code) {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       body: params.toString(),
+      signal: AbortSignal.timeout(15000),
     }
   )
   if (!response.ok) {
@@ -749,6 +750,7 @@ async function probeChatModel(root, apiKey, model) {
       max_tokens: 1,
       stream: false,
     }),
+    signal: AbortSignal.timeout(15000),
   })
 
   if (r.ok) return { ok: true }
@@ -785,6 +787,7 @@ async function fetchModels(baseUrl, apiKey, requestedModel = '') {
   }
   const r = await fetch(`${root}/models`, {
     headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(15000),
   })
 
   if (!r.ok) {
