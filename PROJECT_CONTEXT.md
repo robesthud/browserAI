@@ -2,6 +2,33 @@
 
 Last updated: 2026-06-07.
 
+## TL;DR what BrowserAI does now
+
+A self-hosted chat UI for any OpenAI-compatible LLM (plus a special
+managed adapter for `chat.deepseek.com`). It bundles:
+- multi-chat history with auto-summary
+- a workspace file manager
+- web search context injection
+- a **tool-using agent mode** (see `AGENT_GUIDE.md`)
+- a mobile-first UI with edge swipes, haptics, theme toggle, font scale,
+  pull-to-refresh, inline tool cards (see `MOBILE_UX_GUIDE.md`)
+- an Android WebView wrapper (see `android-app/README.md`)
+- a Cloudflare Workers proxy for fetching anti-bot pages
+  (see `cf-proxy/README.md`)
+
+## Doc index for AI agents
+
+| File | Read when |
+|---|---|
+| `README.md` | Asked about how to install / set up / configure |
+| `DEVELOPER_GUIDE.md` | Asked about authentication, chat storage, Vault, sync, workspace |
+| `AGENT_GUIDE.md` | Asked about tools / agent loop / sandbox / how to add a new tool |
+| `MOBILE_UX_GUIDE.md` | Asked about gestures, haptics, theme, mobile-only behaviour |
+| `server/DEEPSEEK_SESSION.md` | Asked about the managed DeepSeek session / Telegram bot / refresher |
+| `android-app/README.md` | Asked about APK build / Android wrapper |
+| `cf-proxy/README.md` | Asked about the Cloudflare Worker |
+| `WEB_AI_EVOLUTION_PLAN.md` | Historical roadmap, not authoritative for current state |
+
 ## Managed DeepSeek session
 
 Native `chat.deepseek.com` session manager:
@@ -220,3 +247,84 @@ Fixes applied for that sequence:
 - `normalizeKey(null)` crash fixed.
 - Mobile layout fixes in `App.jsx`, `Sidebar.jsx`, `Topbar.jsx`, `Composer.jsx`.
 - Android WebView viewport fixed in `MainActivity.java`.
+
+## Agent mode
+
+Universal LLM agent (`server/agentLoop.js`) — works with any
+OpenAI-compatible provider plus the managed DeepSeek transport. Streams
+SSE events to the client (`thinking`, `tool_start`, `tool_result`,
+`thought`, `assistant`, `done`, `error`). Tools live in
+`server/agentTools.js`; bash runs in the `agent-sandbox` docker service
+via `docker exec`. Full architecture / event grammar / "how to add a
+new tool" — see `AGENT_GUIDE.md`.
+
+Wire-up summary:
+- Front: toggle 🤖 Агент in Sidebar -> `useChats.sendAgentMessage`
+  -> `lib/agentStream.streamAgent(provider, history)` -> SSE.
+- Back: `POST /api/agent/chat` (requireAuth) -> `runAgent({provider,
+  history, res})` -> `callLLM(provider, messages)` per step.
+- Persistence: tool calls + thoughts live on the assistant message
+  itself (`m.toolCalls[]`, `m.thoughts[]`), which `lib/storage.js`
+  saves with `trimChatsForStorage()` (clips read_file/bash/web_fetch
+  payloads to 4 KB so localStorage doesn't overflow).
+
+## Mobile UX
+
+Every gesture / hook is gated to `< md` (768 px). Desktop layout is
+intentionally untouched.
+
+Hooks (`src/lib/`):
+- `usePullToRefresh` — drag-from-top on the chat scroll
+- `useEdgeSwipe` — left-edge swipe opens the Sidebar
+- `useSwipeActions` — swipe-left on a message reveals copy/regen/edit
+- `haptics` — `tap`/`success`/`error` patterns, toggleable
+- `syntaxHighlight` — 150-line tokenizer used in `AgentToolBlock`
+
+Components:
+- `MobileHeaderModelPicker` — compact ✱ model name ▾ in the top bar
+- `AgentToolBlock` — Arena-style single-row tool card with duration
+- `SidebarUserPrefs` — theme / font / haptics toggles in Sidebar bottom
+- `ErrorBoundary` — wraps `<App />` in `src/main.jsx`, beacons crashes
+  to `/api/debug/client-error`
+
+For visual catalogue + which hook owns what — see `MOBILE_UX_GUIDE.md`.
+
+## Important fixes after the agent-mode rollout
+
+- `useChats` was missing `updateChat` in the destructure in `App.jsx`,
+  which crashed the Regenerate button. Fixed by adding it back.
+- DeepSeek's new minified stream `{p,o,v}` format was misread by
+  `extractDeltaText`, returning `''` for every content chunk and
+  spuriously emitting `Greeting response` from the trailing `event:
+  title` frame. Parser rewritten to recognise `v` as the primary
+  delta carrier and to ignore non-`response/content` paths.
+- `runSandboxCommand` failed with `spawn docker ENOENT` because the
+  runtime image lacked `docker-cli`. Added to `Dockerfile`.
+- `heartbeat()` in `deepseekTokenRefresher.js` saved to disk only when
+  Set-Cookie rotated, so `alive: true` was lost across restarts.
+  Now persists after every successful heartbeat.
+- `refreshNow()` unconditionally saved, including on the
+  `no-credentials` early return — a `docker compose exec` could wipe
+  the live session. Now skips persistence on that path.
+
+## Build / deploy / smoke-test cheatsheet
+
+```bash
+# Local dev
+npm i
+npm run dev:all                   # vite + node server with concurrent reload
+
+# Production build
+npm run build                     # outputs dist/
+
+# Deploy on the Timeweb VPS (managed by .github/workflows/deploy-timeweb.yml,
+# or run manually):
+ssh root@72.56.116.15 \
+  'cd /opt/browserai && git pull && docker compose up -d --build'
+
+# Quick smoke tests
+curl -s http://72.56.116.15/api/health
+curl -s http://72.56.116.15/api/deepseek/managed | jq
+# Sandbox liveness (requires auth cookie):
+curl -s -H "Cookie: browserai_session=…" http://72.56.116.15/api/agent/health | jq
+```

@@ -129,6 +129,7 @@ function BrowserApp({ user, reloadAuth }) {
     newChat,
     selectChat,
     deleteChat,
+    updateChat,
     sendMessage,
     sendAgentMessage,
     stop,

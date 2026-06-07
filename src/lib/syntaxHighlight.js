@@ -102,7 +102,6 @@ const RULES = {
 }
 
 const WS_RE = /\s+/y
-const ANY_RE = /[^\s]/y
 
 export function highlight(text, ext) {
   const lang = langFromExt(ext)

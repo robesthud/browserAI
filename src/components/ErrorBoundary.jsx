@@ -69,8 +69,8 @@ export default class ErrorBoundary extends Component {
           ...payload,
         }),
         keepalive: true,
-      }).catch(() => {})
-    } catch {}
+      }).catch(() => { /* network error reporting failed — nothing else to do */ })
+    } catch { /* fetch unavailable (very old browsers) */ }
   }
 
   render() {

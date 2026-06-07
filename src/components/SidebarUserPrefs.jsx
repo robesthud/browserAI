@@ -42,11 +42,11 @@ export default function SidebarUserPrefs() {
   // Apply preferences on mount and whenever they change
   useEffect(() => {
     applyTheme(theme)
-    try { localStorage.setItem(THEME_KEY, theme) } catch {}
+    try { localStorage.setItem(THEME_KEY, theme) } catch { /* private mode / quota */ }
   }, [theme])
   useEffect(() => {
     applyFontSize(fz)
-    try { localStorage.setItem(FONT_KEY, String(fz)) } catch {}
+    try { localStorage.setItem(FONT_KEY, String(fz)) } catch { /* private mode / quota */ }
   }, [fz])
   useEffect(() => {
     haptics.setEnabled(hapticOn)

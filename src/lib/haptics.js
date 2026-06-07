@@ -19,7 +19,12 @@ function enabled() {
 
 function vibrate(pattern) {
   if (!enabled()) return
-  try { navigator.vibrate(pattern) } catch { /* ignore */ }
+  try {
+    navigator.vibrate(pattern)
+  } catch {
+    // Vibration API may exist but throw on some platforms (Firefox iOS,
+    // restricted PWAs). Swallow — feedback is best-effort.
+  }
 }
 
 // Public API
@@ -30,7 +35,7 @@ export const haptics = {
   error:     () => vibrate([60, 80, 60]),
   isEnabled: () => enabled(),
   setEnabled(value) {
-    try { localStorage.setItem(STORAGE_KEY, value ? 'on' : 'off') } catch {}
+    try { localStorage.setItem(STORAGE_KEY, value ? 'on' : 'off') } catch { /* quota / private mode */ }
   },
 }
 
