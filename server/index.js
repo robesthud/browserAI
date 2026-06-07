@@ -86,6 +86,7 @@ import {
 import { startDeepSeekBot } from './deepseekBot.js'
 import { runAgent } from './agentLoop.js'
 import { sandboxHealth } from './agentSandbox.js'
+import { browserHealth } from './browserTools.js'
 import { answerQuestion } from './askUserRegistry.js'
 import { startUserTelegramBot } from './userTelegramBot.js'
 
@@ -2230,9 +2231,11 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
 
 app.get('/api/agent/health', requireAuth, async (req, res) => {
   const sandbox = await sandboxHealth()
+  const browser = await browserHealth()
   res.json({
     deepseekManaged: Boolean(getDeepSeekState().alive),
     sandbox,
+    browser,
   })
 })
 

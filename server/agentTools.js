@@ -23,6 +23,7 @@ import {
 import { searchWeb, fetchWebPage } from './web.js'
 import { runSandboxCommand } from './agentSandbox.js'
 import { listOpsServices, runOpsAction } from './ops.js'
+import { browserOpen, browserScreenshot, browserClick, browserType, browserClose } from './browserTools.js'
 
 // ── Utility ─────────────────────────────────────────────────────────────────
 function truncate(str, max = 8000) {
@@ -366,6 +367,65 @@ export const TOOLS = {
         const page = await fetchWebPage(String(url))
         return ok({ url, title: page?.title || '', content: truncate(page?.content || page?.text || '', 12000) })
       } catch (e) { return err(e.message) }
+    },
+  },
+
+  // ── Browser automation ───────────────────────────────────────────────
+  browser_open: {
+    description: 'Open a web page in a headless browser, collect title/text/console/network errors, and save a screenshot into workspace. Useful for UI debugging and visual checks.',
+    params: {
+      url: { type: 'string', required: true, description: 'URL starting with http:// or https://.' },
+      waitMs: { type: 'number', optional: true, description: 'Milliseconds to wait after load. Default 1500.' },
+      screenshot: { type: 'boolean', optional: true, description: 'Save screenshot. Default true.' },
+    },
+    handler: async (args = {}) => {
+      try { return ok(await browserOpen(args)) } catch (e) { return err(e.message) }
+    },
+  },
+
+  browser_screenshot: {
+    description: 'Take a screenshot of an existing browser session and save it into workspace.',
+    params: {
+      sessionId: { type: 'string', required: true, description: 'Session id returned by browser_open.' },
+      path: { type: 'string', optional: true, description: 'Optional workspace path for PNG screenshot.' },
+    },
+    handler: async (args = {}) => {
+      try { return ok(await browserScreenshot(args)) } catch (e) { return err(e.message) }
+    },
+  },
+
+  browser_click: {
+    description: 'Click an element in an existing browser session by CSS selector or visible text; returns updated screenshot and diagnostics.',
+    params: {
+      sessionId: { type: 'string', required: true, description: 'Session id returned by browser_open.' },
+      selector: { type: 'string', optional: true, description: 'CSS selector to click.' },
+      text: { type: 'string', optional: true, description: 'Visible text to click if selector is omitted.' },
+      waitMs: { type: 'number', optional: true, description: 'Wait after click. Default 1000.' },
+    },
+    handler: async (args = {}) => {
+      try { return ok(await browserClick(args)) } catch (e) { return err(e.message) }
+    },
+  },
+
+  browser_type: {
+    description: 'Fill an input/textarea/contenteditable element by CSS selector; optionally press Enter; returns screenshot and diagnostics.',
+    params: {
+      sessionId: { type: 'string', required: true, description: 'Session id returned by browser_open.' },
+      selector: { type: 'string', required: true, description: 'CSS selector for input.' },
+      text: { type: 'string', required: true, description: 'Text to type/fill.' },
+      pressEnter: { type: 'boolean', optional: true, description: 'Press Enter after filling. Default false.' },
+      waitMs: { type: 'number', optional: true, description: 'Wait after typing. Default 1000.' },
+    },
+    handler: async (args = {}) => {
+      try { return ok(await browserType(args)) } catch (e) { return err(e.message) }
+    },
+  },
+
+  browser_close: {
+    description: 'Close a browser session.',
+    params: { sessionId: { type: 'string', required: true, description: 'Session id returned by browser_open.' } },
+    handler: async (args = {}) => {
+      try { return ok(await browserClose(args)) } catch (e) { return err(e.message) }
     },
   },
 
