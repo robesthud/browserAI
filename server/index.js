@@ -1542,7 +1542,56 @@ app.get('/api/web/fetch', requireAuth, async (req, res) => {
 // Решает проблему CORS: фронтенд шлёт запрос на свой сервер,
 // сервер проксирует его к провайдеру (DeepSeek, Grok и т.д.) с stealthHeaders.
 // Поддерживает как streaming (SSE), так и обычные JSON-ответы.
+
+// ---- DEBUG LOG: пишем каждый /api/chat в файл (для отладки серого экрана) ----
+// Включается переменной CHAT_DEBUG_LOG=/data/chat-debug.log
+import { appendFileSync as _appendFileSyncDebug } from 'node:fs'
+function chatDebugLog(tag, payload) {
+  const file = process.env.CHAT_DEBUG_LOG
+  if (!file) return
+  try {
+    const safe = JSON.parse(JSON.stringify(payload || {}))
+    // Маскируем секреты
+    if (typeof safe.apiKey === 'string' && safe.apiKey.length > 8) {
+      safe.apiKey = safe.apiKey.slice(0, 6) + '...***...' + safe.apiKey.slice(-4)
+    }
+    if (safe.extraHeaders && safe.extraHeaders.Cookie) {
+      safe.extraHeaders.Cookie = String(safe.extraHeaders.Cookie).slice(0, 30) + '...***...'
+    }
+    if (safe.extraHeaders && safe.extraHeaders.cookie) {
+      safe.extraHeaders.cookie = String(safe.extraHeaders.cookie).slice(0, 30) + '...***...'
+    }
+    _appendFileSyncDebug(file, `${new Date().toISOString()} ${tag} ${JSON.stringify(safe)}\n`)
+  } catch (e) {
+    try { _appendFileSyncDebug(file, `${new Date().toISOString()} ${tag} LOG_ERR ${e.message}\n`) } catch {}
+  }
+}
+
 app.post('/api/chat', requireAuth, async (req, res) => {
+  chatDebugLog('REQ', {
+    baseUrl: req.body?.baseUrl,
+    apiKey: req.body?.apiKey,
+    model: req.body?.model,
+    authType: req.body?.authType,
+    msgCount: Array.isArray(req.body?.messages) ? req.body.messages.length : 0,
+    firstMsg: Array.isArray(req.body?.messages) && req.body.messages[0]
+      ? { role: req.body.messages[0].role, len: String(req.body.messages[0].content || '').length }
+      : null,
+    stream: req.body?.stream,
+    extraHeadersKeys: req.body?.extraHeaders ? Object.keys(req.body.extraHeaders) : [],
+    user: req.user?.email || req.user?.id || null,
+  })
+
+  // Перехватим завершение ответа чтобы залогировать статус
+  const origStatus = res.status.bind(res)
+  res.status = (code) => { res._dbgStatus = code; return origStatus(code) }
+  res.on('finish', () => {
+    chatDebugLog('RES', { status: res._dbgStatus || res.statusCode })
+  })
+  res.on('close', () => {
+    if (!res.writableEnded) chatDebugLog('RES_CLOSED', { status: res._dbgStatus || res.statusCode, aborted: true })
+  })
+
   const {
     baseUrl,
     authType = 'bearer',
@@ -1591,7 +1640,20 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   // подменённые apiKey/extraHeaders из серверного refresher'а.
   if (isDeepSeekWebUrl(baseUrl)) {
     const reqBody = { ...(req.body || {}), apiKey, extraHeaders: mergedExtraHeaders }
-    return handleDeepSeekWebChat({ reqBody, res })
+    chatDebugLog('DEEPSEEK_DISPATCH', {
+      hasManagedBearer: Boolean(apiKey && apiKey !== req.body?.apiKey),
+      mergedHeadersKeys: Object.keys(mergedExtraHeaders || {}),
+      model,
+      stream,
+    })
+    try {
+      return await handleDeepSeekWebChat({ reqBody, res })
+    } catch (e) {
+      chatDebugLog('DEEPSEEK_THROW', { message: e?.message, stack: String(e?.stack || '').slice(0, 800) })
+      console.error('[deepseek] handler threw:', e)
+      if (!res.headersSent) res.status(500).json({ error: e?.message || 'DeepSeek handler error' })
+      return
+    }
   }
 
 

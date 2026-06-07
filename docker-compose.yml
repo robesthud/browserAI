@@ -11,6 +11,7 @@ services:
       - PORT=8080
       # DeepSeek managed-session env (optional bootstrap, can be set later via UI/TG)
       - DEEPSEEK_STATE_FILE=/data/deepseek_session.json
+      - CHAT_DEBUG_LOG=/data/chat-debug.log
       # - DEEPSEEK_USER_TOKEN=
       # - DEEPSEEK_COOKIES=
       # Telegram bot (optional)
