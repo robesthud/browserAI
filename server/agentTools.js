@@ -195,6 +195,27 @@ export const TOOLS = {
     },
   },
 
+  // ── Interactive: ask the user a multi-select question ──────────────────
+  // The actual UI rendering happens client-side: the agent loop emits
+  // an "ask_user" SSE event with the spec, the UI shows a card with
+  // checkboxes + optional free-text input, and on submit POSTs the
+  // answer back to /api/agent/answer which resolves a pending Promise.
+  //
+  // Because of that round-trip the handler here is just a *marker* —
+  // the loop intercepts the call before invokeTool() is reached.
+  ask_user: {
+    description: 'Ask the user a multi-select question with optional custom text. Use this when you need clarification or a decision from the user. Returns the user\'s selection as { selected: [option_id, ...], custom?: string }.',
+    params: {
+      question:    { type: 'string', required: true, description: 'The question text shown to the user.' },
+      options:     { type: 'array',  required: true, description: 'Array of {id: string, label: string, description?: string} — choices the user can pick.' },
+      multi:       { type: 'boolean', optional: true, description: 'Allow multiple selections. Default: true.' },
+      allow_custom: { type: 'boolean', optional: true, description: 'Allow the user to type additional free-form text. Default: true.' },
+    },
+    // Placeholder handler — never actually invoked because the loop
+    // short-circuits this tool. Kept so the schema validates.
+    handler: async () => ok({ pending: true }),
+  },
+
   // ── Shell (sandboxed) ───────────────────────────────────────────────────
   bash: {
     description: 'Run a shell command inside an isolated Linux sandbox that has a copy of the workspace mounted at /workspace. Useful for git, npm, node, curl, grep, build steps, etc. Output is returned. Timeout 30s.',

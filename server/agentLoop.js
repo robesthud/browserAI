@@ -36,6 +36,7 @@
  */
 import { TOOLS, renderToolsForPrompt, invokeTool } from './agentTools.js'
 import { callLLM, supportsNativeTools } from './llmClient.js'
+import { registerQuestion } from './askUserRegistry.js'
 
 const DEFAULT_MAX_STEPS = 15
 const DEFAULT_DEADLINE_MS = 5 * 60 * 1000
@@ -264,7 +265,29 @@ export async function runAgent({
 
       sse(res, 'tool_start', { step, name: call.tool, args: call.args })
 
-      const result = await invokeTool(call.tool, call.args)
+      let result
+      if (call.tool === 'ask_user') {
+        // Special-case: don't actually invoke the (no-op) handler. Open a
+        // pending question, push it to the client UI via an SSE event,
+        // and await the user's answer (or timeout).
+        const { id: questionId, promise } = registerQuestion()
+        sse(res, 'ask_user', {
+          step,
+          question_id: questionId,
+          question: call.args?.question || '(no question)',
+          options: Array.isArray(call.args?.options) ? call.args.options : [],
+          multi: call.args?.multi !== false,
+          allow_custom: call.args?.allow_custom !== false,
+        })
+        try {
+          const answer = await promise
+          result = { ok: true, result: answer }
+        } catch (e) {
+          result = { ok: false, error: e?.message || 'ask_user cancelled' }
+        }
+      } else {
+        result = await invokeTool(call.tool, call.args)
+      }
 
       sse(res, 'tool_result', {
         step,
@@ -300,6 +323,6 @@ export async function runAgent({
   } catch (e) {
     sse(res, 'error', { message: e?.message || String(e) })
     sse(res, 'done', { steps: step, reason: 'crash' })
-    try { res.end() } catch {}
+    try { res.end() } catch { /* response already closed */ }
   }
 }

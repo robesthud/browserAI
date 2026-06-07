@@ -3,6 +3,7 @@ import { IconBot, IconUser, IconFile, IconCopy, IconEdit, IconRefresh } from '..
 import { formatSize } from '../lib/files.js'
 import Markdown from '../lib/markdown.jsx'
 import AgentToolBlock from './AgentToolBlock.jsx'
+import AgentAskUser from './AgentAskUser.jsx'
 import usePullToRefresh from '../lib/usePullToRefresh.js'
 import useSwipeActions from '../lib/useSwipeActions.js'
 
@@ -80,7 +81,7 @@ function WorkingSpinner() {
   )
 }
 
-function Message({ m, isLast, aiWorking, onEdit, onRegenerate }) {
+function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser }) {
   const isUser = m.role === 'user'
 
   // Mobile swipe-left -> reveal action buttons (regenerate / copy).
@@ -220,6 +221,25 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate }) {
                 })()}
               </div>
             ) : null}
+
+            {/* ask_user cards (multi-select questions from the agent) */}
+            {Array.isArray(m.askUsers) && m.askUsers.length > 0 && (
+              <div className="space-y-1">
+                {m.askUsers.map((q) => (
+                  <AgentAskUser
+                    key={q.id}
+                    question={q.question}
+                    options={q.options}
+                    multi={q.multi}
+                    allowCustom={q.allowCustom}
+                    answered={q.answered}
+                    answer={q.answer}
+                    onSubmit={(payload) => onAnswerAskUser?.(q.id, payload)}
+                  />
+                ))}
+              </div>
+            )}
+
             {m.content ? <Markdown text={m.content} /> : null}
             {m.pending && (
               <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-cream/70 align-middle" />
@@ -237,7 +257,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate }) {
   )
 }
 
-export default function MessageList({ messages, aiWorking, onEdit, onRegenerate, onRefresh }) {
+export default function MessageList({ messages, aiWorking, onEdit, onRegenerate, onRefresh, onAnswerAskUser }) {
   const bottomRef = useRef(null)
   const scrollRef = useRef(null)
   const prevLenRef = useRef(messages.length)
@@ -285,7 +305,15 @@ export default function MessageList({ messages, aiWorking, onEdit, onRegenerate,
 
       <div className="mx-auto w-full max-w-2xl divide-y divide-white/[0.04]">
         {messages.map((m, i) => (
-          <Message key={m.id} m={m} isLast={i === messages.length - 1} aiWorking={aiWorking} onEdit={onEdit} onRegenerate={onRegenerate} />
+          <Message
+            key={m.id}
+            m={m}
+            isLast={i === messages.length - 1}
+            aiWorking={aiWorking}
+            onEdit={onEdit}
+            onRegenerate={onRegenerate}
+            onAnswerAskUser={(questionId, payload) => onAnswerAskUser?.(m.id, questionId, payload)}
+          />
         ))}
       </div>
       <div ref={bottomRef} className="h-4" />

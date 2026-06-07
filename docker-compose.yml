@@ -14,9 +14,12 @@ services:
       - CHAT_DEBUG_LOG=/data/chat-debug.log
       # - DEEPSEEK_USER_TOKEN=
       # - DEEPSEEK_COOKIES=
-      # Telegram bot (optional)
+      # Telegram bots (optional)
+      # TG_BOT_TOKEN — admin bot for managed-DeepSeek control
+      # TG_USER_BOT_TOKEN — end-user bot (recommended: separate token)
       - TG_BOT_TOKEN=${TG_BOT_TOKEN:-}
       - TG_ADMIN_CHAT_ID=${TG_ADMIN_CHAT_ID:-}
+      - TG_USER_BOT_TOKEN=${TG_USER_BOT_TOKEN:-}
       # App-level secrets
       - SESSION_SECRET=${SESSION_SECRET:-change-me}
       - APP_URL=${APP_URL:-http://localhost}

@@ -81,6 +81,8 @@ import {
 import { startDeepSeekBot } from './deepseekBot.js'
 import { runAgent } from './agentLoop.js'
 import { sandboxHealth } from './agentSandbox.js'
+import { answerQuestion } from './askUserRegistry.js'
+import { startUserTelegramBot } from './userTelegramBot.js'
 
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -2095,6 +2097,17 @@ app.get('/api/agent/health', requireAuth, async (req, res) => {
   })
 })
 
+// Submit an answer to a pending ask_user question. The body is the answer
+// payload the LLM will see as the tool result, typically
+// { selected: ['opt1','opt2'], custom: 'optional free-form text' }.
+app.post('/api/agent/answer', requireAuth, (req, res) => {
+  const { question_id, answer } = req.body || {}
+  if (!question_id) return res.status(400).json({ error: 'question_id is required' })
+  const ok = answerQuestion(String(question_id), answer ?? null)
+  if (!ok) return res.status(404).json({ error: 'question_id not found or already answered' })
+  res.json({ ok: true })
+})
+
 // Public-ish: lets the chat UI know whether a managed DeepSeek session is
 // available without exposing the token. No auth required because it returns
 // only booleans + model ids.
@@ -2120,5 +2133,17 @@ try {
   startDeepSeekBot()
 } catch (e) {
   console.warn('[deepseek-refresh] bootstrap failed:', e.message)
+}
+
+// ── End-user Telegram bot ─────────────────────────────────────────────────
+// Friendly chat interface for everyone, backed by the same agent loop.
+// Uses TG_USER_BOT_TOKEN (separate token recommended — long polling is
+// exclusive). Falls back to TG_BOT_TOKEN if the user-only var is missing,
+// but in that case the admin bot is also using it and conflicts will
+// appear in logs ("terminated by other getUpdates request").
+try {
+  startUserTelegramBot({ db })
+} catch (e) {
+  console.warn('[user-tg] bootstrap failed:', e.message)
 }
 

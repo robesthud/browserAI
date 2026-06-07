@@ -132,6 +132,7 @@ function BrowserApp({ user, reloadAuth }) {
     updateChat,
     sendMessage,
     sendAgentMessage,
+    answerAgentQuestion,
     stop,
   } = useChats(settings)
 
@@ -321,6 +322,9 @@ function BrowserApp({ user, reloadAuth }) {
               onEdit={handleEditMessage}
               onRegenerate={handleRegenerate}
               onRefresh={() => location.reload()}
+              onAnswerAskUser={(messageId, questionId, payload) =>
+                answerAgentQuestion(activeChat.id, messageId, questionId, payload)
+              }
             />
             {/* ModelBar над полем ввода (когда есть сообщения) — только на десктопе.
                 На мобиле выбор модели живёт в шапке (MobileHeaderModelPicker). */}

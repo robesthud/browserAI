@@ -66,7 +66,7 @@ export function runSandboxCommand({ command, timeoutMs = 30_000, cwd = '/workspa
 
     const timer = setTimeout(() => {
       killed = true
-      try { proc.kill('SIGKILL') } catch {}
+      try { proc.kill('SIGKILL') } catch { /* already exited */ }
     }, timeoutMs)
 
     proc.stdout.on('data', (c) => {

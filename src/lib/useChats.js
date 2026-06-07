@@ -396,6 +396,31 @@ export function useChats(settings) {
                     ],
                   }))
                   break
+                case 'ask_user':
+                  // Open question card inline in the assistant message.
+                  // The user will submit via /api/agent/answer, which
+                  // resolves the server-side promise; the agent loop
+                  // then continues and we'll see a tool_result with the
+                  // selection echoed back (which is fine — we just
+                  // ignore it, the card is already shown).
+                  patchAssistant((m) => ({
+                    ...m,
+                    askUsers: [
+                      ...(m.askUsers || []),
+                      {
+                        id: data.question_id,
+                        step: data.step,
+                        question: data.question,
+                        options: data.options || [],
+                        multi: data.multi !== false,
+                        allowCustom: data.allow_custom !== false,
+                        answered: false,
+                        answer: null,
+                      },
+                    ],
+                  }))
+                  haptics.warning()
+                  break
                 case 'assistant':
                   patchAssistant({ content: data.text || '', pending: false })
                   haptics.success()
@@ -423,6 +448,35 @@ export function useChats(settings) {
     [activeId, newChat, settings],
   )
 
+  // Submit an answer to an `ask_user` question the agent posed earlier.
+  // Resolves the server-side promise so the agent loop continues. We also
+  // mark the question card as answered locally so the user sees feedback.
+  const answerAgentQuestion = useCallback(async (chatId, messageId, questionId, payload) => {
+    try {
+      await fetch('/api/agent/answer', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question_id: questionId, answer: payload }),
+      })
+    } catch (e) {
+      console.warn('answerAgentQuestion failed:', e?.message || e)
+    }
+    setChats((prev) => prev.map((c) => c.id !== chatId ? c : {
+      ...c,
+      messages: c.messages.map((m) => {
+        if (m.id !== messageId) return m
+        return {
+          ...m,
+          askUsers: (m.askUsers || []).map((q) =>
+            q.id === questionId ? { ...q, answered: true, answer: payload } : q,
+          ),
+        }
+      }),
+    }))
+    haptics.tap()
+  }, [])
+
   return {
     chats,
     activeChat,
@@ -435,6 +489,7 @@ export function useChats(settings) {
     updateChat,
     sendMessage,
     sendAgentMessage,
+    answerAgentQuestion,
     stop,
   }
 }

@@ -111,14 +111,14 @@ async function handleCommand(msg) {
       if (!arg) { await reply(chatId, 'Usage: `/settoken <userToken>`'); return }
       const s = await setSession({ userToken: arg, source: 'tg-bot' })
       // Try to delete the message with the secret token
-      try { await tg('deleteMessage', { chat_id: chatId, message_id: msg.message_id }) } catch {}
+      try { await tg('deleteMessage', { chat_id: chatId, message_id: msg.message_id }) } catch { /* can't delete: not admin or too old */ }
       await reply(chatId, '🔐 Token saved.\n\n' + fmtState(s))
       return
     }
     if (cmd === '/setcookie') {
       if (!arg) { await reply(chatId, 'Usage: `/setcookie <name=value; name2=value2>`'); return }
       const s = await setSession({ cookies: arg, source: 'tg-bot' })
-      try { await tg('deleteMessage', { chat_id: chatId, message_id: msg.message_id }) } catch {}
+      try { await tg('deleteMessage', { chat_id: chatId, message_id: msg.message_id }) } catch { /* can't delete: not admin or too old */ }
       await reply(chatId, '🍪 Cookies saved.\n\n' + fmtState(s))
       return
     }
