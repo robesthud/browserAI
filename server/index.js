@@ -64,6 +64,8 @@ import {
   statWorkspaceItem,
   getDownloadName,
   safePath,
+  withWorkspaceScope,
+  deleteWorkspaceScope,
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, isSessionUrl, buildProbeBody, getChatUrl } from './stealthHeaders.js'
@@ -1307,6 +1309,38 @@ app.post('/api/validate', requireAuth, async (req, res) => {
 
 // ---- Server Workspace ----
 // #1 FIX: все workspace-эндпоинты требуют авторизации через requireAuth
+
+function workspaceChatIdFromReq(req) {
+  return req.get('x-browserai-chat-id')
+    || req.query?.chatId
+    || req.body?.chatId
+    || ''
+}
+
+app.use('/api/workspace', (req, _res, next) => {
+  withWorkspaceScope(workspaceChatIdFromReq(req), () => next())
+})
+
+app.post('/api/workspace/chat/init', requireAuth, async (_req, res) => {
+  try {
+    await ensureWorkspaceRoot()
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(400).json({ error: e.message || 'Не удалось создать workspace чата' })
+  }
+})
+
+app.delete('/api/workspace/chat', requireAuth, async (req, res) => {
+  try {
+    const chatId = workspaceChatIdFromReq(req)
+    if (!chatId) return res.status(400).json({ error: 'chatId required' })
+    await deleteWorkspaceScope(chatId)
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(400).json({ error: e.message || 'Не удалось удалить workspace чата' })
+  }
+})
+
 app.get('/api/workspace/tree', requireAuth, async (req, res) => {
   try {
     const showHidden = String(req.query.hidden || '0') === '1'
@@ -2022,6 +2056,7 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
     history = [],
     extraSystem = '',
     temperature = 0.3,
+    chatId = '',
   } = req.body || {}
   let { apiKey } = req.body || {}
 
@@ -2080,6 +2115,7 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
       },
       history: safeHistory,
       extraSystem,
+      workspaceScope: chatId,
       res,
     })
   } catch (e) {

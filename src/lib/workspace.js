@@ -1,9 +1,15 @@
 const BASE = '/api/workspace'
+let activeChatId = ''
+
+export function setWorkspaceChatId(chatId = '') {
+  activeChatId = String(chatId || '')
+}
 
 async function req(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
     headers: {
       'Content-Type': 'application/json',
+      ...(activeChatId ? { 'X-BrowserAI-Chat-Id': activeChatId } : {}),
       ...(options.headers || {}),
     },
     ...options,
@@ -20,6 +26,22 @@ async function req(path, options = {}) {
 }
 
 export const workspaceApi = {
+  setChatId: setWorkspaceChatId,
+
+  initChatWorkspace: (chatId) =>
+    req('/chat/init', {
+      method: 'POST',
+      headers: chatId ? { 'X-BrowserAI-Chat-Id': String(chatId) } : {},
+      body: JSON.stringify({ chatId }),
+    }),
+
+  deleteChatWorkspace: (chatId) =>
+    req('/chat', {
+      method: 'DELETE',
+      headers: chatId ? { 'X-BrowserAI-Chat-Id': String(chatId) } : {},
+      body: JSON.stringify({ chatId }),
+    }),
+
   getTree: (showHidden = false) => req(`/tree?hidden=${showHidden ? '1' : '0'}`),
 
   readFile: (path) => req(`/file?path=${encodeURIComponent(path)}`),

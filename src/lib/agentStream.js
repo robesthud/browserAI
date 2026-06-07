@@ -17,7 +17,7 @@
  *   })
  *   // call stop() to abort
  */
-export function streamAgent({ history, provider, extraSystem = '', onEvent, signal }) {
+export function streamAgent({ chatId = '', history, provider, extraSystem = '', onEvent, signal }) {
   if (!provider || !provider.baseUrl || !provider.model) {
     onEvent?.('error', { message: 'Не выбран активный API-ключ или модель. Открой Настройки и выбери провайдера.' })
     onEvent?.('done', { reason: 'no-provider' })
@@ -33,6 +33,7 @@ export function streamAgent({ history, provider, extraSystem = '', onEvent, sign
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          chatId,
           history,
           extraSystem,
           // Provider config — flatten into the body so /api/agent/chat

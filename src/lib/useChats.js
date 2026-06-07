@@ -12,6 +12,7 @@ import {
 import { sendChat, summarizeConversation } from './api.js'
 import { resolveActive } from './settings.js'
 import haptics from './haptics.js'
+import { workspaceApi } from './workspace.js'
 
 const SUMMARY_TRIGGER_MESSAGES = 14
 const SUMMARY_KEEP_RECENT = 8
@@ -77,6 +78,7 @@ export function useChats(settings) {
     const chat = createChat()
     setChats((prev) => [chat, ...prev])
     setActiveId(chat.id)
+    workspaceApi.initChatWorkspace(chat.id).catch(() => {})
     return chat.id
   }, [])
 
@@ -86,6 +88,7 @@ export function useChats(settings) {
 
   const deleteChat = useCallback(
     (id) => {
+      workspaceApi.deleteChatWorkspace(id).catch(() => {})
       setChats((prev) => {
         const next = prev.filter((c) => c.id !== id)
         if (id === activeId) {
@@ -337,6 +340,7 @@ export function useChats(settings) {
       try {
         await new Promise((resolve) => {
           streamAgent({
+            chatId,
             history: llmHistory,
             provider: {
               baseUrl:      active.baseUrl,

@@ -380,6 +380,7 @@ function BrowserApp({ user, reloadAuth }) {
         open={workspaceOpen}
         onClose={toggleWorkspace}
         settings={settings}
+        chatId={activeId || ''}
         onSendToChat={handleSendMessage}
         onAiBusyChange={setWorkspaceAiBusy}
       />

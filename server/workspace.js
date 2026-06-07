@@ -5,18 +5,53 @@ import os from 'node:os'
 import crypto from 'node:crypto'
 import dns from 'node:dns/promises'
 import net from 'node:net'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import AdmZip from 'adm-zip'
 import * as tar from 'tar'
 import ipaddr from 'ipaddr.js'
 
 const DEFAULT_DATA_DIR = '/data'
-const workspaceRoot = path.resolve(
+const baseWorkspaceRoot = path.resolve(
   process.env.WORKSPACE_ROOT
     || (fsSync.existsSync(DEFAULT_DATA_DIR)
       ? path.join(DEFAULT_DATA_DIR, 'workspace')
       : path.join(process.cwd(), 'workspace')),
 )
-const historyRoot = path.join(workspaceRoot, '.history')
+const workspaceScope = new AsyncLocalStorage()
+
+function sanitizeScopeId(id = '') {
+  return String(id || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+}
+
+function getScopedWorkspaceRoot() {
+  const scope = workspaceScope.getStore()
+  const chatId = sanitizeScopeId(scope?.chatId || '')
+  return chatId ? path.join(baseWorkspaceRoot, 'chats', chatId) : baseWorkspaceRoot
+}
+
+function getScopedHistoryRoot() {
+  return path.join(getScopedWorkspaceRoot(), '.history')
+}
+
+function withWorkspaceScope(chatId, fn) {
+  const clean = sanitizeScopeId(chatId)
+  if (!clean) return fn()
+  return workspaceScope.run({ chatId: clean }, fn)
+}
+
+async function deleteWorkspaceScope(chatId) {
+  const clean = sanitizeScopeId(chatId)
+  if (!clean) throw new Error('chatId required')
+  const target = path.join(baseWorkspaceRoot, 'chats', clean)
+  if (!isInsideRoot(target, path.join(baseWorkspaceRoot, 'chats'))) {
+    throw new Error('Path traversal detected')
+  }
+  await fs.rm(target, { recursive: true, force: true })
+}
 
 const MAX_HISTORY_REVISIONS = 30
 const MAX_PREVIEW_TEXT_BYTES = 200 * 1024
@@ -26,7 +61,7 @@ const MAX_SEARCH_TEXT_BYTES = 512 * 1024
 const WORKSPACE_QUOTA_BYTES = (Number(process.env.WORKSPACE_QUOTA_MB) || 500) * 1024 * 1024
 const MAX_SINGLE_FILE_BYTES = (Number(process.env.WORKSPACE_MAX_FILE_MB) || 50) * 1024 * 1024
 
-async function getWorkspaceSizeBytes(dir = workspaceRoot) {
+async function getWorkspaceSizeBytes(dir = getScopedWorkspaceRoot()) {
   let total = 0
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true })
@@ -116,8 +151,8 @@ function normalizeRelativePath(relativePath = '') {
 
 function safePath(relativePath) {
   const normalized = normalizeRelativePath(relativePath)
-  const full = path.resolve(workspaceRoot, normalized)
-  if (!isInsideRoot(full, workspaceRoot)) {
+  const full = path.resolve(getScopedWorkspaceRoot(), normalized)
+  if (!isInsideRoot(full, getScopedWorkspaceRoot())) {
     throw new Error('Path traversal detected')
   }
   return full
@@ -125,8 +160,8 @@ function safePath(relativePath) {
 
 function safeHistoryPath(relativePath = '') {
   const normalized = normalizeRelativePath(relativePath)
-  const full = path.resolve(historyRoot, normalized)
-  if (!isInsideRoot(full, historyRoot)) {
+  const full = path.resolve(getScopedHistoryRoot(), normalized)
+  if (!isInsideRoot(full, getScopedHistoryRoot())) {
     throw new Error('Path traversal detected in history')
   }
   return full
@@ -195,8 +230,8 @@ function parseRevisionMeta(baseName, fileName) {
 }
 
 async function ensureWorkspaceRoot() {
-  await fs.mkdir(workspaceRoot, { recursive: true })
-  await fs.mkdir(historyRoot, { recursive: true })
+  await fs.mkdir(getScopedWorkspaceRoot(), { recursive: true })
+  await fs.mkdir(getScopedHistoryRoot(), { recursive: true })
 }
 
 async function saveRevisionSnapshot(relPath, content, reason = 'edit') {
@@ -271,7 +306,7 @@ async function getWorkspaceTree(showHidden = false) {
     name: 'workspace',
     path: '',
     type: 'dir',
-    children: await buildTree(workspaceRoot, '', showHidden),
+    children: await buildTree(getScopedWorkspaceRoot(), '', showHidden),
   }
 }
 
@@ -790,7 +825,7 @@ async function searchWorkspaceContent(query, showHidden = false) {
     }
   }
 
-  await searchDir(workspaceRoot, '')
+  await searchDir(getScopedWorkspaceRoot(), '')
   return results
 }
 
@@ -880,4 +915,7 @@ export {
   statWorkspaceItem,
   getDownloadName,
   safePath,
+  withWorkspaceScope,
+  deleteWorkspaceScope,
+  sanitizeScopeId,
 }

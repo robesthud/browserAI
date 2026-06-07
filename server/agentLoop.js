@@ -35,6 +35,7 @@
  *   error         {message}
  */
 import { TOOLS, renderToolsForPrompt, invokeTool } from './agentTools.js'
+import { withWorkspaceScope } from './workspace.js'
 import { callLLM, supportsNativeTools } from './llmClient.js'
 import { registerQuestion } from './askUserRegistry.js'
 
@@ -151,7 +152,11 @@ function sse(res, event, data) {
  * @param {string} [opts.extraSystem]
  * @param {object} opts.res                   Express response, will be SSE-streamed
  */
-export async function runAgent({
+export async function runAgent(opts) {
+  return withWorkspaceScope(opts?.workspaceScope || '', () => runAgentInner(opts || {}))
+}
+
+async function runAgentInner({
   provider,
   history = [],
   maxSteps = DEFAULT_MAX_STEPS,
