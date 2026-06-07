@@ -117,6 +117,14 @@ function BrowserApp({ user, reloadAuth }) {
     stop,
   } = useChats(settings)
 
+  // Unified "AI is busy" flag — true while streaming a chat answer OR
+  // while a workspace AI operation is running. Used to gate Regenerate /
+  // MessageList spinner / Topbar status. Previously this variable was
+  // referenced in App but never declared (the inline expression existed
+  // only in the Topbar prop), which produced a runtime ReferenceError
+  // ('aiWorking is not defined') the moment a chat had any messages.
+  const aiWorking = isStreaming || workspaceAiBusy
+
   const closeSidebarOnMobile = () => {
     if (typeof window !== 'undefined' && window.innerWidth < 768) {
       setCollapsed(true)
@@ -254,7 +262,7 @@ function BrowserApp({ user, reloadAuth }) {
         <Topbar
           title={activeChat?.title ?? 'BrowserAI'}
           configured={configured}
-          aiWorking={isStreaming || workspaceAiBusy}
+          aiWorking={aiWorking}
           useWebAI={settings.useWebAI}
           onToggleWebAI={(next) => setParams({ useWebAI: next })}
           autoMode={autoMode}
