@@ -68,6 +68,8 @@ Sidebar.
 | `git_clone`   | `git clone --depth` | Clone public repos when git history is needed |
 | `git_pull`    | `git pull --ff-only` | Update an existing workspace repo |
 | `bash`         | `runSandboxCommand` | Shell in agent-sandbox container, 30 s default timeout |
+| `ops_list_services` | `ops.listOpsServices` | List configured external/service connectors |
+| `ops_run_action` | `ops.runOpsAction` | Run safe/confirmed service actions: deploy, logs, GitHub, Telegram |
 
 Every handler returns `{ok: boolean, result?: any, error?: string}`.
 The loop serialises the result into a tagged `[tool_result …]` block

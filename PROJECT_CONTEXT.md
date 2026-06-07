@@ -23,6 +23,7 @@ managed adapter for `chat.deepseek.com`). It bundles:
 | `README.md` | Asked about how to install / set up / configure |
 | `DEVELOPER_GUIDE.md` | Asked about authentication, chat storage, Vault, sync, workspace |
 | `AGENT_GUIDE.md` | Asked about tools / agent loop / sandbox / how to add a new tool |
+| `OPS_GUIDE.md` | Asked about deploy/logs/GitHub/Telegram/service connectors |
 | `MOBILE_UX_GUIDE.md` | Asked about gestures, haptics, theme, mobile-only behaviour |
 | `server/DEEPSEEK_SESSION.md` | Asked about the managed DeepSeek session / Telegram bot / refresher |
 | `android-app/README.md` | Asked about APK build / Android wrapper |
@@ -328,3 +329,8 @@ curl -s http://72.56.116.15/api/deepseek/managed | jq
 # Sandbox liveness (requires auth cookie):
 curl -s -H "Cookie: browserai_session=…" http://72.56.116.15/api/agent/health | jq
 ```
+
+
+## Ops Gateway
+
+Agent Mode has server-side service connectors documented in `OPS_GUIDE.md`. Built-ins: `browserai` (health, docker logs, deploy, repair_deploy), `github` (repo status, actions runs/logs, file get/put), and `telegram` (admin notifications). Extra REST services can be registered in `/data/ops/services.json`. Dangerous actions require confirmation via `ask_user`.
