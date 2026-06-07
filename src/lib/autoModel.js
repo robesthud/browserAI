@@ -13,9 +13,10 @@ const TASK_PATTERNS = [
       'сгенерируй изображение', 'создай изображение', 'сделай фото',
       'draw', 'image', 'picture', 'generate image', 'create image',
       'illustration', 'иллюстрацию', 'иллюстрация', 'арт', 'art', 'создай картинку',
-      'нарисуй мне', 'визуализируй',
+      'нарисуй мне', 'визуализируй', 'сгенерируй картинку', 'создай картинку', 'картинка',
+      'фото', 'изображения', 'генерация изображения',
     ],
-    preferKeywords: ['dall-e', 'dall.e', 'flux', 'imagen', 'stable', 'midjourney', 'sdxl', 'kandinsky'],
+    preferKeywords: ['gemini', 'imagen', 'dall-e', 'dall.e', 'flux', 'stable', 'midjourney', 'sdxl', 'kandinsky'],
     label: 'изображения',
   },
   {
@@ -114,8 +115,10 @@ function scoreModelForTask(modelId, task) {
 
   // Штрафуем модели которые явно не для этого типа
   if (task.type === 'image') {
-    // для изображений НЕ нужны чат-модели
-    if (id.includes('claude') || id.includes('gpt') || id.includes('gemini')) score -= 5
+    // Для изображений предпочитаем модели/провайдеры, у которых есть image-generation route.
+    // Gemini Web умеет генерировать картинки через web UI, поэтому НЕ штрафуем gemini.
+    if (id.includes('deepseek') || id.includes('reasoner') || id.includes('coder')) score -= 6
+    if (id.includes('claude') || id.includes('gpt')) score -= 2
   }
 
   if (task.type === 'code' || task.type === 'reasoning') {
