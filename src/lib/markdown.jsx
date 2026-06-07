@@ -27,11 +27,17 @@ function renderInline(text) {
 
 // Аккуратная сборка ссылок (regex выше упрощён) — делаем явно
 function linkify(html) {
-  return html.replace(
+  let out = html.replace(
+    /!\[([^\]]*)\]\((data:image\/[^\s)]+|https?:\/\/[^\s)]+)\)/g,
+    (_m, alt, url) =>
+      `<img src="${url}" alt="${alt || 'generated image'}" loading="lazy" class="md-img preserve-color" />`,
+  )
+  out = out.replace(
     /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
     (_m, label, url) =>
       `<a href="${url}" target="_blank" rel="noopener noreferrer" class="md-link">${label}</a>`,
   )
+  return out
 }
 
 function toHtml(md) {
@@ -146,8 +152,8 @@ export default function Markdown({ text }) {
     const clean = DOMPurify.sanitize(raw, {
       // 'button' added so the per-codeblock Copy button can render.
       // data-* attrs let the delegated click handler find the source code.
-      ALLOWED_TAGS: ['h1','h2','h3','strong','em','code','pre','a','li','ul','ol','p','div','span','br','button'],
-      ALLOWED_ATTR: ['href','target','rel','class','data-code','data-copy-btn','type'],
+      ALLOWED_TAGS: ['h1','h2','h3','strong','em','code','pre','a','li','ul','ol','p','div','span','br','button','img'],
+      ALLOWED_ATTR: ['href','target','rel','class','data-code','data-copy-btn','type','src','alt','loading'],
     })
     return { __html: clean }
   }, [text])
