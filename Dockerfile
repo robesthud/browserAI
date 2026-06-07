@@ -18,8 +18,9 @@ RUN npm prune --omit=dev
 FROM node:22-alpine AS runtime
 WORKDIR /app
 
-# Native deps for better-sqlite3
-RUN apk add --no-cache python3 make g++ \
+# Native deps for better-sqlite3 + docker-cli so the agent loop can
+# 'docker exec agent-sandbox …' through the mounted /var/run/docker.sock
+RUN apk add --no-cache python3 make g++ docker-cli \
  && rm -rf /var/cache/apk/*
 
 # Copy app + built assets + production node_modules
