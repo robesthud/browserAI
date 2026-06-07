@@ -113,7 +113,7 @@ export default function MobileHeaderModelPicker({
                   <button
                     key={m}
                     type="button"
-                    onClick={() => { onSelectModel?.(m); setOpen(false); setQuery('') }}
+                    onClick={() => { if (autoMode) onToggleAuto?.(); onSelectModel?.(m); setOpen(false); setQuery('') }}
                     className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[13px] transition-colors ${
                       active ? 'bg-graphite-700 text-cream' : 'text-cream-soft hover:bg-graphite-750 hover:text-cream'
                     }`}

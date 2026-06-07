@@ -190,9 +190,12 @@ export function useChats(settings) {
       try {
         // БАГ 3 ИСПРАВЛЕН: если авторежим передал overrideModel — используем его,
         // не дожидаясь пока React обновит settings через setState
+        const baseResolved = resolveActive(settings)
         const resolved = overrideModel
-          ? { ...resolveActive(settings), model: overrideModel }
-          : resolveActive(settings)
+          ? (typeof overrideModel === 'object'
+              ? { ...baseResolved, ...overrideModel }
+              : { ...baseResolved, model: overrideModel })
+          : baseResolved
 
         if (
           resolved.apiKey &&

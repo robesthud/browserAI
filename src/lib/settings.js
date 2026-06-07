@@ -166,6 +166,23 @@ export function getAvailableModels(key) {
   return normalizeKey(key).availableModels
 }
 
+export function getAllAvailableModels(settings) {
+  const out = []
+  for (const key of settings?.keys || []) {
+    for (const model of normalizeKey(key).availableModels) {
+      if (!out.includes(model)) out.push(model)
+    }
+  }
+  return out
+}
+
+export function findKeyForModel(settings, model) {
+  const target = String(model || '')
+  if (!target) return getActiveKey(settings)
+  return (settings?.keys || []).find((key) => normalizeKey(key).availableModels.includes(target))
+    || getActiveKey(settings)
+}
+
 // «Плоский» вид настроек для api.js / useChats: подставляет поля активного ключа
 export function resolveActive(settings) {
   const k = getActiveKey(settings)

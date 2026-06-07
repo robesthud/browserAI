@@ -10,7 +10,9 @@ import DeepSeekAdmin from './components/DeepSeekAdmin.jsx'
 import ModelBar from './components/ModelBar.jsx'
 import { IconExpand } from './icons.jsx'
 import {
+  findKeyForModel,
   getActiveKey,
+  getAllAvailableModels,
   getAvailableModels,
   getSelectedModel,
   isConfigured,
@@ -211,7 +213,10 @@ function BrowserApp({ user, reloadAuth }) {
 
   const configured = isConfigured(settings)
   const activeKey = useMemo(() => getActiveKey(settings), [settings])
-  const availableModels = useMemo(() => getAvailableModels(activeKey), [activeKey])
+  const availableModels = useMemo(() => {
+    const all = getAllAvailableModels(settings)
+    return all.length ? all : getAvailableModels(activeKey)
+  }, [settings, activeKey])
   const selectedModel = getSelectedModel(activeKey)
   const messages = activeChat?.messages ?? []
   const hasMessages = messages.length > 0
@@ -220,6 +225,24 @@ function BrowserApp({ user, reloadAuth }) {
   useEffect(() => {
     setAutoHint(null)
   }, [activeId])
+
+  const providerOverrideForModel = (model) => {
+    const key = findKeyForModel(settings, model)
+    if (!key) return null
+    return {
+      baseUrl: key.baseUrl,
+      apiKey: key.apiKey,
+      model,
+      authType: key.authType || 'bearer',
+      authHeader: key.authHeader || '',
+      responsePath: key.responsePath || '',
+      extraHeaders: key.extraHeaders || {},
+      systemPrompt: settings.systemPrompt,
+      temperature: settings.temperature,
+      stream: settings.stream,
+      useWebAI: settings.useWebAI,
+    }
+  }
 
   // Обёртка sendMessage с авторежимом
   // БАГ 3 ИСПРАВЛЕН: передаём выбранную модель напрямую в sendMessage (overrideModel),
@@ -236,7 +259,7 @@ function BrowserApp({ user, reloadAuth }) {
     if (autoMode && availableModels.length > 1 && text?.trim()) {
       const result = pickBestModel(text, availableModels, selectedModel)
       if (result.changed) {
-        overrideModel = result.model
+        overrideModel = providerOverrideForModel(result.model) || result.model
         // Обновляем настройки в фоне (без await — не блокируем отправку)
         setActiveModel(result.model).catch(() => {})
         setAutoHint({

@@ -96,6 +96,7 @@ export default function ModelBar({
   }
 
   const select = (model) => {
+    if (autoMode) onToggleAuto?.()
     onSelectModel?.(model)
     close()
   }

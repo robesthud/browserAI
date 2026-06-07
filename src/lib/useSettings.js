@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   DEFAULT_SETTINGS,
-  getActiveKey,
+  findKeyForModel, getActiveKey,
   loadSettings,
   normalizeKey,
   saveSettings,
@@ -400,13 +400,14 @@ export function useSettings() {
 
   const setActiveModel = useCallback(
     async (model) => {
-      const active = getActiveKey(settings)
-      if (!active) return
+      const key = findKeyForModel(settings, model)
+      if (!key) return
       await saveKey({
-        ...active,
+        ...key,
         model,
-        availableModels: active.availableModels || (active.model ? [active.model] : []),
+        availableModels: key.availableModels || (key.model ? [key.model] : []),
       })
+      setSettings((s) => ({ ...s, activeKeyId: key.id }))
     },
     [saveKey, settings],
   )
