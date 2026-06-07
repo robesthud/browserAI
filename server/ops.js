@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
 import AdmZip from 'adm-zip'
 
 const DEFAULT_TIMEOUT_MS = 180_000
@@ -8,6 +9,7 @@ const SSH_KEY = process.env.OPS_SSH_KEY || '/data/ops/timeweb_ed25519'
 const APP_DIR = process.env.OPS_APP_DIR || '/opt/browserai'
 const TG_TOKEN = process.env.TG_USER_BOT_TOKEN || process.env.TG_BOT_TOKEN || ''
 const TG_ADMIN_CHAT_ID = process.env.TG_ADMIN_CHAT_ID || process.env.TG_CHAT_ID || ''
+const OPS_SERVICES_FILE = process.env.OPS_SERVICES_FILE || '/data/ops/services.json'
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || ''
 const GITHUB_REPO = process.env.GITHUB_REPO || 'robesthud/browserAI'
 
@@ -57,6 +59,55 @@ function runSsh(command, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   return runLocal(sshCmd, { timeoutMs })
 }
 
+
+
+function renderTemplate(str = '', params = {}) {
+  return String(str || '').replace(/\{([a-zA-Z0-9_]+)\}/g, (_, key) => encodeURIComponent(params[key] ?? ''))
+}
+
+function loadDynamicServices() {
+  if (!existsSync(OPS_SERVICES_FILE)) return {}
+  try {
+    const parsed = JSON.parse(readFileSync(OPS_SERVICES_FILE, 'utf8'))
+    const list = Array.isArray(parsed) ? parsed : (parsed.services || [])
+    const out = {}
+    for (const svc of list) {
+      if (!svc?.id || !svc?.type) continue
+      out[svc.id] = svc
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+async function runRestServiceAction(svc, action, params = {}) {
+  const def = svc.actions?.[action]
+  if (!def) throw new Error(`Unknown REST action: ${svc.id}.${action}`)
+  const base = String(svc.baseUrl || '').replace(/\/$/, '')
+  const path = renderTemplate(def.path || '/', params)
+  const headers = { ...(svc.headers || {}), ...(def.headers || {}) }
+  const auth = def.auth || svc.auth || {}
+  if (auth.type === 'bearer') {
+    const token = process.env[auth.env || ''] || auth.token || ''
+    if (!token) throw new Error(`Missing bearer token env: ${auth.env}`)
+    headers.Authorization = token.startsWith('Bearer ') ? token : `Bearer ${token}`
+  } else if (auth.type === 'header') {
+    const token = process.env[auth.env || ''] || auth.value || ''
+    if (!token) throw new Error(`Missing auth header env: ${auth.env}`)
+    headers[auth.header || 'Authorization'] = token
+  } else if (auth.type === 'basic') {
+    const user = process.env[auth.userEnv || ''] || auth.user || ''
+    const pass = process.env[auth.passEnv || ''] || auth.pass || ''
+    headers.Authorization = `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`
+  }
+  const method = (def.method || 'GET').toUpperCase()
+  const body = def.body ? renderTemplate(JSON.stringify(def.body), params) : (params.body ? JSON.stringify(params.body) : undefined)
+  if (body && !headers['Content-Type']) headers['Content-Type'] = 'application/json'
+  const r = await fetch(`${base}${path}`, { method, headers, body, signal: AbortSignal.timeout(Number(def.timeoutMs) || 60_000) })
+  const text = await r.text()
+  return { stdout: clip(text, Number(def.maxChars) || 12000), stderr: r.ok ? '' : clip(text, 4000), exitCode: r.ok ? 0 : r.status }
+}
 
 async function githubApi(path, { method = 'GET', body = null, accept = 'application/vnd.github+json' } = {}) {
   if (!GITHUB_TOKEN) throw new Error('GITHUB_TOKEN is not configured')
@@ -187,15 +238,17 @@ export const OPS_SERVICES = {
 }
 
 export function listOpsServices() {
-  return Object.entries(OPS_SERVICES).map(([id, svc]) => ({
+  const all = { ...OPS_SERVICES, ...loadDynamicServices() }
+  return Object.entries(all).map(([id, svc]) => ({
     id,
     label: svc.label,
-    actions: Object.entries(svc.actions).map(([action, meta]) => ({ action, ...meta })),
+    actions: Object.entries(svc.actions || {}).map(([action, meta]) => ({ action, ...meta })),
   }))
 }
 
 export async function runOpsAction({ service, action, params = {}, confirm = false } = {}) {
-  const svc = OPS_SERVICES[service]
+  const dynamicServices = loadDynamicServices()
+  const svc = OPS_SERVICES[service] || dynamicServices[service]
   if (!svc) throw new Error(`Unknown ops service: ${service}`)
   const meta = svc.actions[action]
   if (!meta) throw new Error(`Unknown action ${action} for service ${service}`)
@@ -204,6 +257,10 @@ export async function runOpsAction({ service, action, params = {}, confirm = fal
       requiresConfirmation: true,
       message: `Action ${service}.${action} is potentially dangerous. Re-run with confirm:true after user confirmation.`,
     }
+  }
+
+  if (dynamicServices[service]?.type === 'rest') {
+    return runRestServiceAction(dynamicServices[service], action, params)
   }
 
   if (service === 'telegram' && action === 'notify_admin') {

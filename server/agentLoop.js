@@ -176,9 +176,9 @@ async function runAgentInner({
     return
   }
 
-  const useNativeTools = supportsNativeTools(provider.baseUrl)
-  const systemPrompt = buildSystemPrompt({ extraSystem, native: useNativeTools })
-  const toolsSpec = useNativeTools ? buildNativeToolsSpec() : undefined
+  let useNativeTools = supportsNativeTools(provider.baseUrl)
+  let systemPrompt = buildSystemPrompt({ extraSystem, native: useNativeTools })
+  let toolsSpec = useNativeTools ? buildNativeToolsSpec() : undefined
 
   const convo = [
     { role: 'system', content: systemPrompt },
@@ -202,7 +202,9 @@ async function runAgentInner({
       step += 1
       sse(res, 'thinking', { step })
 
-      // Call the LLM
+      // Call the LLM. Some OpenAI-compatible endpoints advertise a familiar
+      // base URL but a concrete model does not support native tool calling.
+      // In that case, fall back to the universal JSON-in-text tool protocol.
       let reply
       try {
         reply = await callLLM({
@@ -217,10 +219,38 @@ async function runAgentInner({
           ...(useNativeTools ? { tools: toolsSpec, toolChoice: 'auto' } : {}),
         })
       } catch (e) {
-        sse(res, 'error', { message: 'LLM call failed: ' + (e.message || String(e)) })
-        sse(res, 'done', { steps: step, reason: 'llm-error' })
-        res.end()
-        return
+        if (useNativeTools) {
+          useNativeTools = false
+          toolsSpec = undefined
+          systemPrompt = buildSystemPrompt({ extraSystem, native: false })
+          convo[0] = { role: 'system', content: systemPrompt }
+          sse(res, 'thought', {
+            step,
+            text: 'Native tool-calling is unavailable for this model/provider; switching to BrowserAI universal text tool protocol.',
+          })
+          try {
+            reply = await callLLM({
+              baseUrl:      provider.baseUrl,
+              apiKey:       provider.apiKey,
+              authType:     provider.authType || 'bearer',
+              authHeader:   provider.authHeader || '',
+              extraHeaders: provider.extraHeaders || {},
+              model:        provider.model,
+              messages:     convo,
+              temperature:  Number(provider.temperature ?? 0.3),
+            })
+          } catch (fallbackError) {
+            sse(res, 'error', { message: 'LLM call failed: ' + (fallbackError.message || String(fallbackError)) })
+            sse(res, 'done', { steps: step, reason: 'llm-error' })
+            res.end()
+            return
+          }
+        } else {
+          sse(res, 'error', { message: 'LLM call failed: ' + (e.message || String(e)) })
+          sse(res, 'done', { steps: step, reason: 'llm-error' })
+          res.end()
+          return
+        }
       }
 
       // Decide which tool path to follow
