@@ -20,6 +20,8 @@ services:
       - TG_BOT_TOKEN=${TG_BOT_TOKEN:-}
       - TG_ADMIN_CHAT_ID=${TG_ADMIN_CHAT_ID:-}
       - TG_USER_BOT_TOKEN=${TG_USER_BOT_TOKEN:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_REPO=${GITHUB_REPO:-robesthud/browserAI}
       # App-level secrets
       - SESSION_SECRET=${SESSION_SECRET:-change-me}
       - APP_URL=${APP_URL:-http://localhost}

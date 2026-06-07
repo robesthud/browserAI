@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import AdmZip from 'adm-zip'
 
 const DEFAULT_TIMEOUT_MS = 180_000
 const SSH_HOST = process.env.OPS_SSH_HOST || '72.56.116.15'
@@ -7,6 +8,8 @@ const SSH_KEY = process.env.OPS_SSH_KEY || '/data/ops/timeweb_ed25519'
 const APP_DIR = process.env.OPS_APP_DIR || '/opt/browserai'
 const TG_TOKEN = process.env.TG_USER_BOT_TOKEN || process.env.TG_BOT_TOKEN || ''
 const TG_ADMIN_CHAT_ID = process.env.TG_ADMIN_CHAT_ID || process.env.TG_CHAT_ID || ''
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || ''
+const GITHUB_REPO = process.env.GITHUB_REPO || 'robesthud/browserAI'
 
 function clip(s = '', max = 12000) {
   const str = String(s || '')
@@ -54,6 +57,89 @@ function runSsh(command, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   return runLocal(sshCmd, { timeoutMs })
 }
 
+
+async function githubApi(path, { method = 'GET', body = null, accept = 'application/vnd.github+json' } = {}) {
+  if (!GITHUB_TOKEN) throw new Error('GITHUB_TOKEN is not configured')
+  const r = await fetch(`https://api.github.com${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${GITHUB_TOKEN}`,
+      Accept: accept,
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+    signal: AbortSignal.timeout(60_000),
+  })
+  if (!r.ok) {
+    const text = await r.text().catch(() => '')
+    throw new Error(`GitHub ${r.status}: ${text.slice(0, 1000)}`)
+  }
+  return r
+}
+
+function repoPath(params = {}) {
+  return String(params.repo || GITHUB_REPO).replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '')
+}
+
+async function githubAction(action, params = {}) {
+  const repo = repoPath(params)
+  if (action === 'repo_status') {
+    const j = await (await githubApi(`/repos/${repo}`)).json()
+    return { stdout: JSON.stringify({ full_name: j.full_name, private: j.private, default_branch: j.default_branch, pushed_at: j.pushed_at, updated_at: j.updated_at, permissions: j.permissions }, null, 2), stderr: '', exitCode: 0 }
+  }
+  if (action === 'actions_runs') {
+    const workflow = params.workflow ? `&workflow_id=${encodeURIComponent(params.workflow)}` : ''
+    const j = await (await githubApi(`/repos/${repo}/actions/runs?per_page=${Number(params.limit) || 10}${workflow}`)).json()
+    const runs = (j.workflow_runs || []).map((r) => ({ id: r.id, name: r.name, status: r.status, conclusion: r.conclusion, branch: r.head_branch, sha: r.head_sha?.slice(0, 7), created_at: r.created_at, url: r.html_url }))
+    return { stdout: JSON.stringify(runs, null, 2), stderr: '', exitCode: 0 }
+  }
+  if (action === 'workflow_logs') {
+    const runId = params.run_id || params.runId
+    if (!runId) throw new Error('run_id required')
+    const r = await githubApi(`/repos/${repo}/actions/runs/${runId}/logs`, { accept: 'application/zip' })
+    const buf = Buffer.from(await r.arrayBuffer())
+    const zip = new AdmZip(buf)
+    const parts = []
+    for (const entry of zip.getEntries().slice(0, 30)) {
+      if (entry.isDirectory) continue
+      const text = entry.getData().toString('utf8')
+      parts.push(`===== ${entry.entryName} =====\n${clip(text, Number(params.maxCharsPerFile) || 4000)}`)
+    }
+    return { stdout: clip(parts.join('\n\n'), 30000), stderr: '', exitCode: 0 }
+  }
+  if (action === 'get_file') {
+    const filePath = params.path
+    if (!filePath) throw new Error('path required')
+    const ref = params.ref || 'main'
+    const j = await (await githubApi(`/repos/${repo}/contents/${encodeURIComponent(filePath).replace(/%2F/g, '/')}?ref=${encodeURIComponent(ref)}`)).json()
+    const content = j.content ? Buffer.from(j.content, 'base64').toString('utf8') : ''
+    return { stdout: content, stderr: '', exitCode: 0, sha: j.sha }
+  }
+  if (action === 'put_file') {
+    const filePath = params.path
+    const content = params.content
+    const message = params.message || `Update ${filePath}`
+    const branch = params.branch || 'main'
+    if (!filePath || content == null) throw new Error('path and content required')
+    let sha
+    try {
+      const existing = await (await githubApi(`/repos/${repo}/contents/${encodeURIComponent(filePath).replace(/%2F/g, '/')}?ref=${encodeURIComponent(branch)}`)).json()
+      sha = existing.sha
+    } catch { /* new file */ }
+    const body = { message, content: Buffer.from(String(content), 'utf8').toString('base64'), branch, ...(sha ? { sha } : {}) }
+    const j = await (await githubApi(`/repos/${repo}/contents/${encodeURIComponent(filePath).replace(/%2F/g, '/')}`, { method: 'PUT', body })).json()
+    return { stdout: JSON.stringify({ commit: j.commit?.sha, path: j.content?.path, html_url: j.content?.html_url }, null, 2), stderr: '', exitCode: 0 }
+  }
+  if (action === 'rerun_workflow') {
+    const runId = params.run_id || params.runId
+    if (!runId) throw new Error('run_id required')
+    await githubApi(`/repos/${repo}/actions/runs/${runId}/rerun`, { method: 'POST' })
+    return { stdout: `Requested rerun for ${runId}`, stderr: '', exitCode: 0 }
+  }
+  throw new Error(`GitHub action not implemented: ${action}`)
+}
+
 async function telegramNotify({ text = '' } = {}) {
   if (!TG_TOKEN || !TG_ADMIN_CHAT_ID) {
     return { stdout: '', stderr: 'Telegram token/admin chat is not configured', exitCode: 2 }
@@ -69,6 +155,17 @@ async function telegramNotify({ text = '' } = {}) {
 }
 
 export const OPS_SERVICES = {
+  github: {
+    label: 'GitHub repository / Actions',
+    actions: {
+      repo_status: { safe: true, description: 'Show repository metadata. params: repo?' },
+      actions_runs: { safe: true, description: 'List recent GitHub Actions runs. params: repo?, limit?, workflow?' },
+      workflow_logs: { safe: true, description: 'Download and summarize workflow logs. params: run_id, repo?' },
+      get_file: { safe: true, description: 'Read a file from GitHub repo. params: path, ref?, repo?' },
+      put_file: { safe: false, description: 'Create/update a file in GitHub repo. params: path, content, message?, branch?, repo?' },
+      rerun_workflow: { safe: false, description: 'Rerun a GitHub Actions workflow run. params: run_id, repo?' },
+    },
+  },
   browserai: {
     label: 'BrowserAI VPS / Docker',
     actions: {
@@ -111,6 +208,9 @@ export async function runOpsAction({ service, action, params = {}, confirm = fal
 
   if (service === 'telegram' && action === 'notify_admin') {
     return telegramNotify({ text: params.text || params.message || '' })
+  }
+  if (service === 'github') {
+    return githubAction(action, params)
   }
 
   if (service !== 'browserai') throw new Error(`Unsupported service: ${service}`)
