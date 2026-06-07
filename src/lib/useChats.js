@@ -206,6 +206,12 @@ export function useChats(settings) {
         }),
       )
 
+      // React may defer the state updater in concurrent/mobile WebView cases.
+      // Do not send an empty provider history: at minimum include the current user turn.
+      if (history.length === 0) {
+        history = [userMsg]
+      }
+
       const controller = new AbortController()
       abortRef.current = controller
       setIsStreaming(true)
@@ -340,6 +346,10 @@ export function useChats(settings) {
           }
         }),
       )
+
+      if (history.length === 0) {
+        history = [userMsg]
+      }
 
       const controller = new AbortController()
       abortRef.current = controller
