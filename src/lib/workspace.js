@@ -78,10 +78,10 @@ export const workspaceApi = {
       body: JSON.stringify({ parentPath, files }),
     }),
 
-  uploadFromUrl: (parentPath, url) =>
+  uploadFromUrl: (parentPath, url, options = {}) =>
     req('/upload-url', {
       method: 'POST',
-      body: JSON.stringify({ parentPath, url }),
+      body: JSON.stringify({ parentPath, url, ...options }),
     }),
 
   downloadUrl: (path) => `${BASE}/download?path=${encodeURIComponent(path)}`,

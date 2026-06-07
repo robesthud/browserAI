@@ -44,41 +44,33 @@ function drillTree(tree, relPath = '') {
   return node
 }
 
-function normalizeGithubDownloadUrl(inputUrl, branch = '') {
-  const raw = String(inputUrl || '').trim()
-  const u = new URL(raw)
-  const host = u.hostname.toLowerCase().replace(/^www\./, '')
-  if (host !== 'github.com') return raw
+function shellQuote(value = '') {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`
+}
 
-  const parts = u.pathname.split('/').filter(Boolean)
-  if (parts.length < 2) return raw
-
-  const owner = parts[0]
-  const repo = String(parts[1] || '').replace(/\.git$/i, '')
-  const kind = parts[2]
-
-  // https://github.com/owner/repo/blob/main/path/file.js -> raw.githubusercontent.com
-  if (kind === 'blob' && parts.length >= 5) {
-    const ref = parts[3]
-    const filePath = parts.slice(4).join('/')
-    return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${filePath}`
+function safeWorkspaceCwd(relPath = '') {
+  const raw = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '')
+  if (raw.includes('\0') || raw === '..' || raw.startsWith('../') || raw.includes('/../')) {
+    throw new Error('invalid workspace path')
   }
+  return raw ? `/workspace/${raw}` : '/workspace'
+}
 
-  // https://github.com/owner/repo/raw/main/path/file.js -> raw.githubusercontent.com
-  if (kind === 'raw' && parts.length >= 5) {
-    const ref = parts[3]
-    const filePath = parts.slice(4).join('/')
-    return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${filePath}`
-  }
-
-  // Full repository URL. Download as zip; workspace upload auto-extracts it.
-  // Branch defaults to main; callers can pass branch:"master" etc.
-  if (!kind || kind === 'tree') {
-    const ref = branch || parts[3] || 'main'
-    return `https://codeload.github.com/${owner}/${repo}/zip/refs/heads/${encodeURIComponent(ref)}`
-  }
-
-  return raw
+async function runGit({ path = '', command, timeout_sec = 30 } = {}) {
+  if (!command) return err('command is required')
+  try {
+    const r = await runSandboxCommand({
+      command,
+      cwd: safeWorkspaceCwd(path),
+      timeoutMs: Math.min(120_000, Math.max(1_000, Number(timeout_sec) * 1000 || 30_000)),
+    })
+    return ok({
+      stdout: truncate(r.stdout, 10000),
+      stderr: truncate(r.stderr, 4000),
+      exitCode: r.exitCode,
+      truncated: r.truncated || false,
+    })
+  } catch (e) { return err(e.message) }
 }
 
 
@@ -226,20 +218,87 @@ export const TOOLS = {
     handler: async ({ url, path = '', branch = '' } = {}) => {
       if (!url) return err('url is required')
       try {
-        const targetUrl = normalizeGithubDownloadUrl(String(url), String(branch || ''))
         const parentPath = String(path || '')
-        const saved = await uploadFromUrl(parentPath, targetUrl)
+        const saved = await uploadFromUrl(parentPath, String(url), { branch: String(branch || '') })
         const tree = await getWorkspaceTree(false)
         const node = drillTree(tree, parentPath) || tree
         return ok({
           url,
-          fetchedUrl: targetUrl,
           destination: parentPath || '/',
           ...saved,
           tree: node,
         })
       } catch (e) { return err(e.message) }
     },
+  },
+
+  // ── Git ────────────────────────────────────────────────────────────────
+  git_status: {
+    description: 'Show git status and current branch for a repository inside the workspace.',
+    params: {
+      path: { type: 'string', optional: true, description: 'Repository folder relative to workspace root. Empty = workspace root.' },
+    },
+    handler: async ({ path = '' } = {}) => runGit({
+      path,
+      command: 'git rev-parse --show-toplevel 2>/dev/null && git status --short --branch',
+    }),
+  },
+
+  git_diff: {
+    description: 'Show git diff for a repository inside the workspace. Use staged=true for --cached diff.',
+    params: {
+      path: { type: 'string', optional: true, description: 'Repository folder relative to workspace root.' },
+      staged: { type: 'boolean', optional: true, description: 'Show staged diff (--cached). Default false.' },
+      file: { type: 'string', optional: true, description: 'Optional file path relative to repository folder.' },
+    },
+    handler: async ({ path = '', staged = false, file = '' } = {}) => {
+      return runGit({ path, command: `git diff --no-ext-diff ${staged ? '--cached ' : ''}--stat && git diff --no-ext-diff ${staged ? '--cached ' : ''}-- ${file ? shellQuote(file) : '.'}`.replace('-- --', '--') })
+    },
+  },
+
+  git_commit: {
+    description: 'Create a git commit in a workspace repository. By default stages all changes first. Use only after reviewing git_diff.',
+    params: {
+      path: { type: 'string', optional: true, description: 'Repository folder relative to workspace root.' },
+      message: { type: 'string', required: true, description: 'Commit message.' },
+      add_all: { type: 'boolean', optional: true, description: 'Run git add -A before committing. Default true.' },
+    },
+    handler: async ({ path = '', message = '', add_all = true } = {}) => {
+      if (!message) return err('message is required')
+      return runGit({
+        path,
+        command: `${add_all ? 'git add -A && ' : ''}git -c user.name='BrowserAI Agent' -c user.email='agent@browserai.local' commit -m ${shellQuote(message)} && git status --short --branch`,
+        timeout_sec: 60,
+      })
+    },
+  },
+
+  git_clone: {
+    description: 'Clone a public git repository into the workspace. Prefer download_url for GitHub archives when git history is not needed.',
+    params: {
+      url: { type: 'string', required: true, description: 'Public git URL, e.g. https://github.com/user/repo.git' },
+      path: { type: 'string', optional: true, description: 'Destination parent folder relative to workspace root. Empty = root.' },
+      name: { type: 'string', optional: true, description: 'Optional destination folder name.' },
+      depth: { type: 'number', optional: true, description: 'Clone depth. Default 1.' },
+    },
+    handler: async ({ url, path = '', name = '', depth = 1 } = {}) => {
+      if (!url) return err('url is required')
+      const depthArg = Math.min(100, Math.max(1, Number(depth) || 1))
+      const nameArg = name ? ` ${shellQuote(name)}` : ''
+      return runGit({
+        path,
+        command: `git clone --depth ${depthArg} ${shellQuote(url)}${nameArg} && find . -maxdepth 2 -type f | sed 's#^./##' | head -80`,
+        timeout_sec: 120,
+      })
+    },
+  },
+
+  git_pull: {
+    description: 'Run git pull --ff-only in a workspace repository.',
+    params: {
+      path: { type: 'string', optional: true, description: 'Repository folder relative to workspace root.' },
+    },
+    handler: async ({ path = '' } = {}) => runGit({ path, command: 'git pull --ff-only', timeout_sec: 60 }),
   },
 
   // ── Web ────────────────────────────────────────────────────────────────

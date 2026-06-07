@@ -513,14 +513,18 @@ async function writeUploadedFile(targetRel, buffer, reason = 'create') {
   await saveRevisionSnapshot(targetRel, buffer, reason)
 }
 
-async function extractZipBuffer(parentRel, archiveRel, buffer) {
+async function extractZipBuffer(parentRel, archiveRel, buffer, options = {}) {
   const destRel = path.posix.join(normalizeRelativePath(parentRel), path.posix.dirname(archiveRel))
   const zip = new AdmZip(buffer)
+  const entries = zip.getEntries()
+  const topLevel = options.stripTopLevel
+    ? commonTopLevelDir(entries.map((entry) => entry.entryName))
+    : ''
   const written = []
 
-  for (const entry of zip.getEntries()) {
-    const rawName = String(entry.entryName || '')
-    if (!isSafeArchiveEntry(rawName)) continue
+  for (const entry of entries) {
+    const rawName = stripTopLevel(String(entry.entryName || ''), topLevel)
+    if (!rawName || !isSafeArchiveEntry(rawName)) continue
 
     const entryRel = path.posix.join(destRel, normalizeRelativePath(rawName))
     if (entry.isDirectory) {
@@ -536,7 +540,7 @@ async function extractZipBuffer(parentRel, archiveRel, buffer) {
   return written
 }
 
-async function extractTarBuffer(parentRel, archiveRel, buffer, archiveType = 'tar') {
+async function extractTarBuffer(parentRel, archiveRel, buffer, archiveType = 'tar', options = {}) {
   const destRel = path.posix.join(normalizeRelativePath(parentRel), path.posix.dirname(archiveRel))
   const destFull = safePath(destRel)
   await fs.mkdir(destFull, { recursive: true })
@@ -564,17 +568,24 @@ async function extractTarBuffer(parentRel, archiveRel, buffer, archiveType = 'ta
       },
     })
 
+    const topLevel = options.stripTopLevel
+      ? commonTopLevelDir(entries.map((entry) => entry.path))
+      : ''
+
     await tar.extract({
       file: tempFile,
       cwd: destFull,
       strict: true,
       preservePaths: false,
+      strip: topLevel ? 1 : 0,
       filter: (_entryPath, entry) => entry.type === 'File' || entry.type === 'Directory',
     })
 
     for (const entry of entries) {
       if (entry.type !== 'File') continue
-      const fileRel = path.posix.join(destRel, entry.path)
+      const stripped = stripTopLevel(entry.path, topLevel)
+      if (!stripped) continue
+      const fileRel = path.posix.join(destRel, stripped)
       const fileBuffer = await fs.readFile(safePath(fileRel))
       await saveRevisionSnapshot(fileRel, fileBuffer, 'create')
       extractedFiles.push(fileRel)
@@ -628,10 +639,79 @@ function fileNameFromResponse(url, response) {
   return path.posix.basename(parsed.pathname) || 'downloaded'
 }
 
-async function uploadFromUrl(parentRel, url) {
-  await assertPublicUrl(url)
+function commonTopLevelDir(entryNames = []) {
+  const files = entryNames
+    .map((name) => String(name || '').replace(/\\/g, '/').replace(/^\/+/, ''))
+    .filter(Boolean)
+    .filter((name) => !name.endsWith('/'))
+  if (!files.length) return ''
 
-  const response = await fetch(url, {
+  const first = files[0].split('/')[0]
+  if (!first) return ''
+  const allUnderFirst = files.every((name) => name === first || name.startsWith(`${first}/`))
+  return allUnderFirst ? first : ''
+}
+
+function stripTopLevel(entryName = '', topLevel = '') {
+  const clean = String(entryName || '').replace(/\\/g, '/').replace(/^\/+/, '')
+  if (!topLevel) return clean
+  if (clean === topLevel) return ''
+  return clean.startsWith(`${topLevel}/`) ? clean.slice(topLevel.length + 1) : clean
+}
+
+function normalizeGithubDownloadUrl(inputUrl, branch = '') {
+  const raw = String(inputUrl || '').trim()
+  if (!raw) return raw
+
+  let u
+  try {
+    u = new URL(raw)
+  } catch {
+    return raw
+  }
+
+  const host = u.hostname.toLowerCase().replace(/^www\./, '')
+  if (host !== 'github.com') return raw
+
+  const parts = u.pathname.split('/').filter(Boolean)
+  if (parts.length < 2) return raw
+
+  const owner = parts[0]
+  const repo = String(parts[1] || '').replace(/\.git$/i, '')
+  const kind = parts[2]
+
+  if ((kind === 'blob' || kind === 'raw') && parts.length >= 5) {
+    const ref = parts[3]
+    const filePath = parts.slice(4).join('/')
+    return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${filePath}`
+  }
+
+  if (!kind || kind === 'tree') {
+    const ref = branch || parts[3] || 'main'
+    return `https://codeload.github.com/${owner}/${repo}/zip/refs/heads/${encodeURIComponent(ref)}`
+  }
+
+  return raw
+}
+
+function isGithubRepositoryUrl(inputUrl = '') {
+  try {
+    const u = new URL(String(inputUrl || '').trim())
+    const host = u.hostname.toLowerCase().replace(/^www\./, '')
+    const parts = u.pathname.split('/').filter(Boolean)
+    const kind = parts[2]
+    return host === 'github.com' && parts.length >= 2 && (!kind || kind === 'tree')
+  } catch {
+    return false
+  }
+}
+
+async function uploadFromUrl(parentRel, url, options = {}) {
+  const originalUrl = String(url || '')
+  const normalizedUrl = normalizeGithubDownloadUrl(originalUrl, options.branch || '')
+  await assertPublicUrl(normalizedUrl)
+
+  const response = await fetch(normalizedUrl, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (compatible; BrowserAI/1.0)',
     },
@@ -640,21 +720,22 @@ async function uploadFromUrl(parentRel, url) {
   if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`)
 
   const buffer = Buffer.from(await response.arrayBuffer())
-  const filename = fileNameFromResponse(url, response)
+  const filename = fileNameFromResponse(normalizedUrl, response)
   const archiveType = detectArchiveType(filename, response.headers.get('content-type') || '')
+  const stripRoot = Boolean(options.stripTopLevel ?? isGithubRepositoryUrl(originalUrl))
 
   if (archiveType === 'zip') {
-    await extractZipBuffer(parentRel, filename, buffer)
-    return { filename, extracted: true }
+    const files = await extractZipBuffer(parentRel, filename, buffer, { stripTopLevel: stripRoot })
+    return { filename, extracted: true, files, fetchedUrl: normalizedUrl, strippedTopLevel: stripRoot }
   }
   if (archiveType === 'tar' || archiveType === 'tgz') {
-    await extractTarBuffer(parentRel, filename, buffer, archiveType)
-    return { filename, extracted: true }
+    const files = await extractTarBuffer(parentRel, filename, buffer, archiveType, { stripTopLevel: stripRoot })
+    return { filename, extracted: true, files, fetchedUrl: normalizedUrl, strippedTopLevel: stripRoot }
   }
 
   const targetRel = path.posix.join(normalizeRelativePath(parentRel), path.posix.basename(filename))
   await writeUploadedFile(targetRel, buffer, 'create')
-  return { filename, extracted: false }
+  return { filename, extracted: false, files: [targetRel], fetchedUrl: normalizedUrl }
 }
 
 async function searchWorkspaceContent(query, showHidden = false) {

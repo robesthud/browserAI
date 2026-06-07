@@ -61,6 +61,11 @@ Sidebar.
 | `web_search`   | `web.searchWeb` | DuckDuckGo, up to 10 results |
 | `web_fetch`    | `web.fetchWebPage` | Fetch + HTML strip, 12 KB cap |
 | `download_url` | `workspace.uploadFromUrl` | Download public files/archives into Workspace; GitHub blob/repo URLs supported |
+| `git_status`  | `git status` in sandbox | Branch + dirty state for a workspace repo |
+| `git_diff`    | `git diff` in sandbox | Review changes before patch/commit |
+| `git_commit`  | `git add` + `git commit` | Commit reviewed workspace changes |
+| `git_clone`   | `git clone --depth` | Clone public repos when git history is needed |
+| `git_pull`    | `git pull --ff-only` | Update an existing workspace repo |
 | `bash`         | `runSandboxCommand` | Shell in agent-sandbox container, 30 s default timeout |
 
 Every handler returns `{ok: boolean, result?: any, error?: string}`.

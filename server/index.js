@@ -1466,9 +1466,9 @@ app.post('/api/workspace/upload', requireAuth, async (req, res) => {
 
 app.post('/api/workspace/upload-url', requireAuth, async (req, res) => {
   try {
-    const { parentPath = '', url = '' } = req.body || {}
+    const { parentPath = '', url = '', branch = '', stripTopLevel } = req.body || {}
     if (!url) return res.status(400).json({ error: 'url required' })
-    const result = await uploadFromUrl(parentPath, url)
+    const result = await uploadFromUrl(parentPath, url, { branch, stripTopLevel })
     res.json({ ok: true, ...result })
   } catch (e) {
     res.status(400).json({ error: e.message || 'Не удалось загрузить по URL' })

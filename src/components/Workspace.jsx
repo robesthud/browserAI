@@ -87,6 +87,52 @@ function applyPatches(source, patches) {
   return result
 }
 
+function makePatchPreview(patches) {
+  return patches.map((patch, index) => {
+    const search = patch.search.length > 1200 ? `${patch.search.slice(0, 1200)}
+…` : patch.search
+    const replace = patch.replace.length > 1200 ? `${patch.replace.slice(0, 1200)}
+…` : patch.replace
+    return `#${index + 1}
+--- search
+${search}
++++ replace
+${replace}`
+  }).join('\n\n')
+}
+
+function PatchPreviewModal({ patch, onApply, onCancel }) {
+  if (!patch) return null
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4">
+      <div className="flex max-h-[82vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-graphite-850 shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b border-white/10 px-4 py-3">
+          <div>
+            <div className="text-sm font-medium text-cream">Предпросмотр AI patch</div>
+            <div className="mt-0.5 text-xs text-cream-faint">
+              {patch.file.path} · {patch.patches.length} измен.
+            </div>
+          </div>
+          <button onClick={onCancel} className="rounded-lg px-2 py-1 text-cream-dim hover:bg-white/10 hover:text-cream">
+            ×
+          </button>
+        </div>
+        <pre className="thin-scroll min-h-0 flex-1 overflow-auto whitespace-pre-wrap p-4 text-[11px] leading-relaxed text-cream-soft">
+          {patch.preview}
+        </pre>
+        <div className="flex justify-end gap-2 border-t border-white/10 px-4 py-3">
+          <button onClick={onCancel} className="rounded-lg border border-white/10 px-3 py-2 text-xs text-cream-soft hover:bg-white/5">
+            Отмена
+          </button>
+          <button onClick={onApply} className="rounded-lg bg-cream px-3 py-2 text-xs font-medium text-graphite-950 hover:bg-cream-soft">
+            Применить patch
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ContextMenu({ state, onClose, onAction }) {
   if (!state) return null
   return (
@@ -131,6 +177,7 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
   const [aiBusy, setAiBusy] = useState(false)
   const [error, setError] = useState('')
   const [menu, setMenu] = useState(null)
+  const [pendingPatch, setPendingPatch] = useState(null)
   const fileInputRef = useRef(null)
   const folderInputRef = useRef(null)
 
@@ -185,7 +232,7 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
   }
 
   const uploadByUrl = async (parentPath = '') => {
-    const url = prompt('Ссылка на файл или архив', 'https://')
+    const url = prompt('Ссылка на файл, архив или GitHub repo/blob', 'https://github.com/')
     if (!url) return
     setUploading(true)
     setError('')
@@ -194,6 +241,22 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
       await refresh()
     } catch (e) {
       setError(e.message || 'Не удалось загрузить по URL')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const importGithub = async (parentPath = '') => {
+    const url = prompt('GitHub репозиторий или blob-ссылка', 'https://github.com/user/repo')
+    if (!url) return
+    const branch = prompt('Branch/ref для repo URL (пусто = main или branch из /tree/...)', '') || ''
+    setUploading(true)
+    setError('')
+    try {
+      await workspaceApi.uploadFromUrl(parentPath, url, { branch, stripTopLevel: true })
+      await refresh()
+    } catch (e) {
+      setError(e.message || 'Не удалось импортировать GitHub')
     } finally {
       setUploading(false)
     }
@@ -324,10 +387,29 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
 
       const patches = parsePatchResponse(response)
       const next = applyPatches(source.text, patches)
-      await workspaceApi.saveFile(source.path, next)
-      const updated = await workspaceApi.readFile(source.path)
+      setPendingPatch({
+        file: source,
+        patches,
+        next,
+        preview: makePatchPreview(patches),
+      })
+    } catch (e) {
+      setError(e.message || 'Не удалось применить AI patch')
+    } finally {
+      setAiBusy(false)
+    }
+  }
+
+  const applyPendingPatch = async () => {
+    if (!pendingPatch) return
+    setAiBusy(true)
+    setError('')
+    try {
+      await workspaceApi.saveFile(pendingPatch.file.path, pendingPatch.next)
+      const updated = await workspaceApi.readFile(pendingPatch.file.path)
       setPreview(await withHistory(updated))
       setPreviewStartEditing(false)
+      setPendingPatch(null)
       await refresh()
     } catch (e) {
       setError(e.message || 'Не удалось применить AI patch')
@@ -369,6 +451,7 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
       { id: 'new-folder', label: 'Новая папка' },
       { id: 'new-file', label: 'Новый файл' },
       { id: 'upload-url', label: 'Загрузить по URL' },
+      { id: 'github-import', label: 'Импорт из GitHub' },
       { id: 'ai-create', label: 'Создать файл через AI' },
       node?.path ? { id: 'copy-path', label: 'Копировать путь' } : null,
     ]
@@ -446,6 +529,14 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
           ? node.path
           : node?.path?.split('/').slice(0, -1).join('/') || ''
         await uploadByUrl(base)
+        return
+      }
+
+      if (action === 'github-import') {
+        const base = node?.type === 'dir'
+          ? node.path
+          : node?.path?.split('/').slice(0, -1).join('/') || ''
+        await importGithub(base)
         return
       }
 
@@ -547,6 +638,13 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
                 title="Загрузить папку"
               >
                 <IconFolder />
+              </button>
+              <button
+                onClick={() => void importGithub('')}
+                className="grid h-7 min-w-7 place-items-center rounded-lg px-1 text-[11px] font-semibold text-cream-dim transition-colors hover:bg-graphite-750/60 hover:text-cream"
+                title="Импорт из GitHub"
+              >
+                GH
               </button>
               <button
                 onClick={() =>
@@ -686,6 +784,12 @@ export default function Workspace({ open, onClose, settings, onSendToChat, onAiB
       />
 
       <ContextMenu state={menu} onClose={() => setMenu(null)} onAction={handleMenuAction} />
+
+      <PatchPreviewModal
+        patch={pendingPatch}
+        onApply={() => void applyPendingPatch()}
+        onCancel={() => setPendingPatch(null)}
+      />
 
       <FilePreview
         key={preview ? `${preview.path}:${preview.modifiedAt}:${previewStartEditing ? 1 : 0}` : 'empty'}
