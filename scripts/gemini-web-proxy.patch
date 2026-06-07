@@ -1,5 +1,5 @@
 diff --git a/server.py b/server.py
-index 121bdc5..cb8227f 100644
+index 121bdc5..d8ff4fe 100644
 --- a/server.py
 +++ b/server.py
 @@ -6,6 +6,9 @@ import json
@@ -22,25 +22,26 @@ index 121bdc5..cb8227f 100644
  PROFILE_DIR = SERVICE_DIR / "chrome-profile"
  LOGIN_FLAG = SERVICE_DIR / "logged-in"
  
-@@ -70,6 +74,122 @@ def get_content_text(content: Any) -> str:
+@@ -70,6 +74,138 @@ def get_content_text(content: Any) -> str:
          ])
      return ""
  
 +def extract_image_urls(content: Any) -> List[str]:
-+    """Extract OpenAI-compatible image_url entries from message content."""
++    """Extract OpenAI-compatible image_url/file_url data URLs from message content."""
 +    urls = []
 +    if isinstance(content, list):
 +        for c in content:
 +            if not isinstance(c, dict):
 +                continue
++            url = None
 +            if c.get("type") == "image_url":
 +                image_url = c.get("image_url")
-+                if isinstance(image_url, dict):
-+                    url = image_url.get("url")
-+                else:
-+                    url = image_url
-+                if isinstance(url, str) and url:
-+                    urls.append(url)
++                url = image_url.get("url") if isinstance(image_url, dict) else image_url
++            elif c.get("type") in ("file_url", "file"):
++                file_url = c.get("file_url") or c.get("file")
++                url = file_url.get("url") if isinstance(file_url, dict) else file_url
++            if isinstance(url, str) and url.startswith('data:'):
++                urls.append(url)
 +    return urls
 +
 +
@@ -49,10 +50,25 @@ index 121bdc5..cb8227f 100644
 +    if not m:
 +        return None
 +    mime, payload = m.group(1), m.group(2)
-+    ext = 'png'
-+    if 'jpeg' in mime or 'jpg' in mime: ext = 'jpg'
++    ext = 'bin'
++    if 'png' in mime: ext = 'png'
++    elif 'jpeg' in mime or 'jpg' in mime: ext = 'jpg'
 +    elif 'webp' in mime: ext = 'webp'
 +    elif 'gif' in mime: ext = 'gif'
++    elif 'pdf' in mime: ext = 'pdf'
++    elif 'wordprocessingml' in mime: ext = 'docx'
++    elif 'presentationml' in mime or 'powerpoint' in mime: ext = 'pptx'
++    elif 'spreadsheetml' in mime or 'excel' in mime: ext = 'xlsx'
++    elif 'csv' in mime: ext = 'csv'
++    elif 'mp4' in mime: ext = 'mp4'
++    elif 'quicktime' in mime: ext = 'mov'
++    elif 'webm' in mime: ext = 'webm'
++    elif 'mpeg' in mime: ext = 'mp3'
++    elif 'wav' in mime: ext = 'wav'
++    elif 'ogg' in mime: ext = 'ogg'
++    elif 'flac' in mime: ext = 'flac'
++    elif 'zip' in mime: ext = 'zip'
++    elif 'text/plain' in mime: ext = 'txt'
 +    try:
 +        raw = base64.b64decode(payload)
 +    except Exception:
@@ -145,7 +161,7 @@ index 121bdc5..cb8227f 100644
  async def check_logged_in(page: Page) -> bool:
      try:
          await asyncio.sleep(3)
-@@ -101,10 +221,11 @@ async def init_browser():
+@@ -101,10 +237,11 @@ async def init_browser():
      context = await playwright_instance.chromium.launch_persistent_context(
          user_data_dir=str(PROFILE_DIR),
          headless=False,
@@ -158,7 +174,7 @@ index 121bdc5..cb8227f 100644
              *headless_args
          ],
          viewport={"width": 1280, "height": 900},
-@@ -383,12 +504,17 @@ def format_conversation(messages: List[Message], tools: Optional[List[Tool]] = N
+@@ -383,12 +520,17 @@ def format_conversation(messages: List[Message], tools: Optional[List[Tool]] = N
      return "\n\n".join(formatted)
  
  
@@ -177,7 +193,7 @@ index 121bdc5..cb8227f 100644
      
      # Count existing responses BEFORE sending
      existing_responses = await page.query_selector_all('div[id^="model-response-message-content"]')
-@@ -448,10 +574,35 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
+@@ -448,10 +590,35 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
      if not response_text:
          raise Exception(f"Timeout after {timeout}s")
      
@@ -216,7 +232,7 @@ index 121bdc5..cb8227f 100644
          
          // Try multiple selectors for code blocks in Gemini
          const selectors = [
-@@ -476,7 +627,7 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
+@@ -476,7 +643,7 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
          // Get full text content
          const text = lastResponse.innerText || lastResponse.textContent || '';
          
@@ -225,7 +241,7 @@ index 121bdc5..cb8227f 100644
      }''')
      
      text_content = extraction.get('text', '').replace('\\_', '_')
-@@ -560,6 +711,67 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
+@@ -560,6 +727,67 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
      
      # No tool calls - convert HTML to markdown
      response_text = md(response_text, heading_style="ATX", code_language_callback=lambda el: el.get('class', [''])[0].replace('language-', '') if el.get('class') else '')
@@ -293,7 +309,7 @@ index 121bdc5..cb8227f 100644
      
      return response_text.strip()
  
-@@ -672,10 +884,19 @@ async def chat_completions(request: ChatRequest):
+@@ -672,10 +900,19 @@ async def chat_completions(request: ChatRequest):
      
      async with page_locks[session_id]:
          conversation = format_conversation(request.messages, request.tools)
@@ -315,7 +331,7 @@ index 121bdc5..cb8227f 100644
              print(f"📤 [{time.strftime('%H:%M:%S')}] {response[:80]}...")
              
              # Check for tool calls
-@@ -824,12 +1045,17 @@ async def chat_completions(request: ChatRequest):
+@@ -824,12 +1061,17 @@ async def chat_completions(request: ChatRequest):
  
  @app.get("/v1/models")
  async def list_models():

@@ -47,7 +47,7 @@ function toChatAttachment(file) {
     size: file.size,
     type: file.mime || 'application/octet-stream',
     text: file.kind === 'text' ? file.text : null,
-    dataUrl: file.kind === 'image' || file.kind === 'pdf' ? file.dataUrl : null,
+    dataUrl: file.dataUrl || null,
     fromWorkspace: true,
     path: file.path,
   }

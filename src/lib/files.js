@@ -13,6 +13,39 @@ const TEXT_EXT = new Set([
 
 const MAX_TEXT_BYTES = 200 * 1024 // 200 КБ текста на файл, чтобы не раздувать контекст
 
+const MIME_BY_EXT = {
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  ppt: 'application/vnd.ms-powerpoint',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  csv: 'text/csv',
+  tsv: 'text/tab-separated-values',
+  rtf: 'application/rtf',
+  mp4: 'video/mp4',
+  mov: 'video/quicktime',
+  webm: 'video/webm',
+  avi: 'video/x-msvideo',
+  wmv: 'video/x-ms-wmv',
+  flv: 'video/x-flv',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  ogg: 'audio/ogg',
+  flac: 'audio/flac',
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif', gif: 'image/gif',
+  zip: 'application/zip',
+}
+
+function inferMime(file) {
+  if (file.type) return file.type
+  const ext = file.name.split('.').pop()?.toLowerCase() || ''
+  return MIME_BY_EXT[ext] || 'application/octet-stream'
+}
+
 function isTextFile(file) {
   const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
   if (TEXT_EXT.has(ext)) return true
@@ -44,7 +77,7 @@ export async function processFile(file) {
     id: uid(),
     name: file.name,
     size: file.size,
-    type: file.type || 'application/octet-stream',
+    type: inferMime(file),
     text: null,
     dataUrl: null,
     truncated: false,

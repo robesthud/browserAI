@@ -1,5 +1,5 @@
 import { backend } from './backend.js'
-import { getModelCapabilities, isImageAttachment } from './modelCapabilities.js'
+import { canSendAttachmentToModel, getAttachmentKind, getModelCapabilities, isImageAttachment } from './modelCapabilities.js'
 
 function normalizeBaseUrl(baseUrl = '') {
   return String(baseUrl || '').replace(/\/$/, '')
@@ -68,17 +68,29 @@ function messageToProviderContent(message, settings = {}) {
   const rawAttachments = Array.isArray(message?.attachments) ? message.attachments : []
   const caps = getModelCapabilities(settings?.model, settings?.baseUrl)
 
-  if (caps.imageInput && rawAttachments.some(isImageAttachment)) {
+  if (rawAttachments.some((a) => a.dataUrl && canSendAttachmentToModel(a, caps))) {
     const parts = []
     const textAttachments = []
     if (base) parts.push({ type: 'text', text: base })
 
     for (const attachment of rawAttachments) {
-      if (isImageAttachment(attachment) && attachment.dataUrl) {
-        parts.push({
-          type: 'image_url',
-          image_url: { url: attachment.dataUrl },
-        })
+      if (attachment.dataUrl && canSendAttachmentToModel(attachment, caps)) {
+        if (isImageAttachment(attachment)) {
+          parts.push({
+            type: 'image_url',
+            image_url: { url: attachment.dataUrl },
+          })
+        } else {
+          parts.push({
+            type: 'file_url',
+            file_url: {
+              url: attachment.dataUrl,
+              name: attachment.name || 'attachment',
+              mime_type: attachment.type || attachment.mime || 'application/octet-stream',
+              kind: getAttachmentKind(attachment),
+            },
+          })
+        }
         continue
       }
       const formatted = formatAttachment(attachment)
