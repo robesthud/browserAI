@@ -4,6 +4,7 @@ import { formatSize } from '../lib/files.js'
 import Markdown from '../lib/markdown.jsx'
 import AgentToolBlock from './AgentToolBlock.jsx'
 import usePullToRefresh from '../lib/usePullToRefresh.js'
+import useSwipeActions from '../lib/useSwipeActions.js'
 
 function Attachments({ items }) {
   if (!items?.length) return null
@@ -81,8 +82,57 @@ function WorkingSpinner() {
 
 function Message({ m, isLast, aiWorking, onEdit, onRegenerate }) {
   const isUser = m.role === 'user'
+
+  // Mobile swipe-left -> reveal action buttons (regenerate / copy).
+  // The hook is a no-op on desktop because there are no touch events.
+  const swipe = useSwipeActions()
+
+  const copyMessage = async () => {
+    try { await navigator.clipboard.writeText(m.content || '') } catch {}
+    swipe.reset()
+  }
+
   return (
-    <div className="group flex gap-3 px-4 py-5">
+    <div className="group relative overflow-hidden">
+      {/* Action panel revealed behind the message on swipe-left */}
+      {(swipe.open || swipe.offset < -2) && (
+        <div className="pointer-events-auto absolute inset-y-0 right-0 z-0 flex items-center gap-1 bg-graphite-900 px-2">
+          {m.content && (
+            <button
+              onClick={copyMessage}
+              className="grid h-9 w-9 place-items-center rounded-full bg-graphite-700 text-cream-soft hover:bg-graphite-600"
+              title="Копировать"
+            >
+              <IconCopy />
+            </button>
+          )}
+          {!isUser && onRegenerate && (
+            <button
+              onClick={() => { onRegenerate(m); swipe.reset() }}
+              disabled={aiWorking}
+              className="grid h-9 w-9 place-items-center rounded-full bg-graphite-700 text-cream-soft hover:bg-graphite-600 disabled:opacity-40"
+              title="Сгенерировать заново"
+            >
+              <IconRefresh />
+            </button>
+          )}
+          {isUser && onEdit && (
+            <button
+              onClick={() => { onEdit(m); swipe.reset() }}
+              className="grid h-9 w-9 place-items-center rounded-full bg-graphite-700 text-cream-soft hover:bg-graphite-600"
+              title="Редактировать"
+            >
+              <IconEdit />
+            </button>
+          )}
+        </div>
+      )}
+
+      <div
+        {...swipe.bind}
+        style={{ transform: `translateX(${swipe.offset}px)`, transition: swipe.offset === 0 || swipe.open ? 'transform 0.2s ease' : 'none' }}
+        className="relative z-10 flex gap-3 bg-graphite-900 px-4 py-5"
+      >
       <div
         className={`grid h-8 w-8 shrink-0 place-items-center rounded-full
           ${isUser ? 'bg-graphite-600 text-cream' : 'bg-cream text-graphite-900'}`}
@@ -182,6 +232,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate }) {
 
         <Attachments items={m.attachments} />
       </div>
+      </div>
     </div>
   )
 }
@@ -201,6 +252,20 @@ export default function MessageList({ messages, aiWorking, onEdit, onRegenerate,
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
   }, [messages])
+
+  // Auto-scroll when the last assistant message grows new tool calls or
+  // thoughts (the agent loop streams them in). We don't want to fight
+  // the user — only scroll if they're already close to the bottom.
+  const lastMsg = messages[messages.length - 1]
+  const lastToolCount = (lastMsg?.toolCalls?.length || 0) + (lastMsg?.thoughts?.length || 0)
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (distanceFromBottom < 200) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [lastToolCount, lastMsg?.content])
 
   const armed = pullDistance >= threshold
 

@@ -68,10 +68,11 @@ function toHtml(md) {
         codeLang = fence[1] || ''
         codeBuf = []
       } else {
+        const codeText = codeBuf.join('\n')
         out.push(
-          `<pre class="md-pre"><div class="md-pre-head">${escapeHtml(
+          `<pre class="md-pre code-block-wrap" data-code="${encodeURIComponent(codeText)}"><div class="md-pre-head">${escapeHtml(
             codeLang || 'code',
-          )}</div><code>${escapeHtml(codeBuf.join('\n'))}</code></pre>`,
+          )}</div><button type="button" class="code-copy-btn" data-copy-btn>Копировать</button><code>${escapeHtml(codeText)}</code></pre>`,
         )
         inCode = false
       }
@@ -143,10 +144,35 @@ export default function Markdown({ text }) {
   const html = useMemo(() => {
     const raw = toHtml(text || '')
     const clean = DOMPurify.sanitize(raw, {
-      ALLOWED_TAGS: ['h1','h2','h3','strong','em','code','pre','a','li','ul','ol','p','div','span','br'],
-      ALLOWED_ATTR: ['href','target','rel','class']
+      // 'button' added so the per-codeblock Copy button can render.
+      // data-* attrs let the delegated click handler find the source code.
+      ALLOWED_TAGS: ['h1','h2','h3','strong','em','code','pre','a','li','ul','ol','p','div','span','br','button'],
+      ALLOWED_ATTR: ['href','target','rel','class','data-code','data-copy-btn','type'],
     })
     return { __html: clean }
   }, [text])
-  return <div className="md" dangerouslySetInnerHTML={html} />
+
+  // Event delegation: any click on a [data-copy-btn] copies the
+  // sibling <pre>'s data-code attribute. Avoids attaching a listener
+  // per code block while keeping the markdown render purely string-based.
+  const onClick = (e) => {
+    const btn = e.target?.closest?.('[data-copy-btn]')
+    if (!btn) return
+    const pre = btn.closest('pre')
+    const encoded = pre?.getAttribute('data-code') || ''
+    let codeText
+    try { codeText = decodeURIComponent(encoded) } catch { codeText = encoded }
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(codeText).then(() => {
+        btn.textContent = 'Скопировано'
+        btn.classList.add('copied')
+        setTimeout(() => {
+          btn.textContent = 'Копировать'
+          btn.classList.remove('copied')
+        }, 1500)
+      }).catch(() => { btn.textContent = 'Ошибка' })
+    }
+  }
+
+  return <div className="md" onClick={onClick} dangerouslySetInnerHTML={html} />
 }

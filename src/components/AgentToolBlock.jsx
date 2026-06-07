@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { highlight, detectLangFromPath } from '../lib/syntaxHighlight.js'
 
 /**
  * Inline tool-call card — mobile-first compact layout that mirrors the
@@ -90,6 +91,18 @@ export default function AgentToolBlock({
     ? (ok ? formatResult(name, result) : (error || 'unknown error'))
     : ''
 
+  // Detect language for syntax highlighting on read_file / write_file / edit_file
+  let highlightedHtml = null
+  if (status === 'done' && ok && body) {
+    let lang = ''
+    if (name === 'write_file' || name === 'edit_file') lang = detectLangFromPath(args?.path || '')
+    else if (name === 'read_file') lang = detectLangFromPath(args?.path || '')
+    else if (name === 'bash')      lang = 'sh'
+    if (lang) {
+      highlightedHtml = highlight(body, lang)
+    }
+  }
+
   return (
     <div className="my-1.5 overflow-hidden rounded-lg border border-white/10 bg-graphite-800/60 text-[12px] md:text-[13px]">
       <button
@@ -137,9 +150,16 @@ export default function AgentToolBlock({
             </details>
           )}
           {status === 'done' ? (
-            <pre className={`thin-scroll max-h-72 overflow-auto whitespace-pre-wrap rounded bg-graphite-900 p-2 font-mono text-[11px] ${ok ? 'text-cream' : 'text-rose-200'}`}>
-              {body || (ok ? '(пустой результат)' : '(нет сообщения об ошибке)')}
-            </pre>
+            highlightedHtml ? (
+              <pre
+                className={`thin-scroll max-h-72 overflow-auto whitespace-pre-wrap rounded bg-graphite-900 p-2 font-mono text-[11px] ${ok ? 'text-cream' : 'text-rose-200'}`}
+                dangerouslySetInnerHTML={{ __html: highlightedHtml }}
+              />
+            ) : (
+              <pre className={`thin-scroll max-h-72 overflow-auto whitespace-pre-wrap rounded bg-graphite-900 p-2 font-mono text-[11px] ${ok ? 'text-cream' : 'text-rose-200'}`}>
+                {body || (ok ? '(пустой результат)' : '(нет сообщения об ошибке)')}
+              </pre>
+            )
           ) : (
             <div className="text-cream-faint">выполняется…</div>
           )}

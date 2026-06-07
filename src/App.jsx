@@ -19,6 +19,8 @@ import { useSettings } from './lib/useSettings.js'
 import { useChats } from './lib/useChats.js'
 import { backend } from './lib/backend.js'
 import { pickBestModel } from './lib/autoModel.js'
+import useEdgeSwipe from './lib/useEdgeSwipe.js'
+import haptics from './lib/haptics.js'
 
 // CloudSync работает только когда пользователь залогинен через аккаунт.
 // Сохраняет чаты + настройки (без ключей — ключи идут через /api/keys отдельно).
@@ -158,6 +160,14 @@ function BrowserApp({ user, reloadAuth }) {
   }
 
   const toggleSidebar = () => setCollapsed((v) => !v)
+
+  // iOS-style edge swipe: from the left edge opens the sidebar when
+  // collapsed. Only active on touch devices; harmless no-op on desktop.
+  useEdgeSwipe({
+    side: 'left',
+    enabled: collapsed,
+    onTrigger: () => { setCollapsed(false); haptics.tap() },
+  })
   const toggleWorkspace = () => setWorkspaceOpen((v) => !v)
   const logout = async () => {
     await backend.saveCloud({ settings, chats }).catch(() => {})

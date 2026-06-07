@@ -11,6 +11,7 @@ import {
 } from './storage.js'
 import { sendChat, summarizeConversation } from './api.js'
 import { resolveActive } from './settings.js'
+import haptics from './haptics.js'
 
 const SUMMARY_TRIGGER_MESSAGES = 14
 const SUMMARY_KEEP_RECENT = 8
@@ -237,14 +238,17 @@ export function useChats(settings) {
         // контент, уже отрисованный через onToken при стриминге
         if (acc) patchAssistant({ content: acc, pending: false })
         else patchAssistant({ pending: false })
+        haptics.success()
       } catch (err) {
         if (err.name === 'AbortError') {
           patchAssistant({ pending: false, stopped: true })
+          haptics.tap()
         } else {
           patchAssistant({
             pending: false,
             error: err.message || 'Неизвестная ошибка',
           })
+          haptics.error()
         }
       } finally {
         abortRef.current = null
@@ -375,6 +379,9 @@ export function useChats(settings) {
                         : tc,
                     ),
                   }))
+                  // Small haptic so the user can feel progress in long
+                  // agent runs even without looking at the screen.
+                  haptics.tap()
                   break
                 case 'thought':
                   // Streaming reasoning between tool calls — the model's
@@ -391,9 +398,11 @@ export function useChats(settings) {
                   break
                 case 'assistant':
                   patchAssistant({ content: data.text || '', pending: false })
+                  haptics.success()
                   break
                 case 'error':
                   patchAssistant((m) => ({ ...m, error: data.message || 'agent error', pending: false }))
+                  haptics.error()
                   break
                 case 'done':
                   patchAssistant({ pending: false })
@@ -405,6 +414,7 @@ export function useChats(settings) {
         })
       } catch (e) {
         patchAssistant({ pending: false, error: e?.message || 'agent crashed' })
+        haptics.error()
       } finally {
         abortRef.current = null
         setIsStreaming(false)

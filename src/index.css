@@ -171,3 +171,45 @@ input, textarea {
   -webkit-user-select: text;
   user-select: text;
 }
+
+/* ── Syntax highlighting tokens (lib/syntaxHighlight.js) ───────────────── */
+.tok-com   { color: #6b7280; font-style: italic; }
+.tok-str   { color: #a3e635; }                 /* lime-400 */
+.tok-num   { color: #fbbf24; }                 /* amber-400 */
+.tok-key   { color: #f472b6; }                 /* pink-400 */
+.tok-fn    { color: #60a5fa; }                 /* blue-400 */
+.tok-ttype { color: #34d399; }                 /* emerald-400 */
+
+/* ── Code block copy button hover container ──────────────────────────── */
+.code-block-wrap { position: relative; }
+.code-block-wrap > .code-copy-btn {
+  position: absolute; top: 6px; right: 6px;
+  padding: 2px 8px; font-size: 11px;
+  background: rgba(0,0,0,0.4); color: #d4d4d4;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px; cursor: pointer;
+  opacity: 0; transition: opacity 0.15s;
+}
+.code-block-wrap:hover > .code-copy-btn,
+.code-block-wrap:active > .code-copy-btn { opacity: 1; }
+.code-block-wrap > .code-copy-btn.copied { opacity: 1; background: rgba(16,185,129,0.3); }
+
+/* Mobile: always show copy button since hover doesn't work on touch */
+@media (max-width: 767px) {
+  .code-block-wrap > .code-copy-btn { opacity: 0.6; }
+}
+
+/* ── Light theme (minimal — invert with hue preservation) ──────────────── */
+html.theme-light {
+  filter: invert(0.92) hue-rotate(180deg);
+  background: #fff;
+}
+/* Keep images/videos in their original colours */
+html.theme-light img,
+html.theme-light video,
+html.theme-light .preserve-color {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+/* ── User-controlled base font size ───────────────────────────────────── */
+html { font-size: var(--browserai-base-fz, 16px); }

@@ -5,6 +5,7 @@ import {
   IconTrash,
   IconSettings,
 } from '../icons.jsx'
+import SidebarUserPrefs from './SidebarUserPrefs.jsx'
 
 export default function Sidebar({
   collapsed,
@@ -153,6 +154,9 @@ export default function Sidebar({
             <span>Настройки</span>
           </button>
         </div>
+
+        {/* UI preferences: theme / font-size / haptics */}
+        <SidebarUserPrefs />
       </div>
     </aside>
   )
