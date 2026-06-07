@@ -102,88 +102,102 @@ export default function FilePreview({
     <div className="fixed inset-0 z-40 flex">
       <div className="flex-1 bg-black/40 backdrop-blur-[1px]" onClick={onClose} />
 
-      <div className="flex h-full w-1/2 min-w-[320px] flex-col border-l border-white/10 bg-graphite-850 shadow-2xl">
-        <div className="flex items-center justify-between gap-2 border-b border-white/5 px-4 py-3">
-          <div className="min-w-0">
-            <div className="truncate text-[14px] text-cream">{file.name}</div>
-            <div className="text-[11px] text-cream-faint">
-              {file.mime || file.type || 'файл'} · {formatWorkspaceSize(file.size)}
-              {file.truncated ? ' · показан фрагмент' : ''}
+      <div className="flex h-full w-full max-w-2xl flex-col border-l border-white/10 bg-graphite-850 shadow-2xl md:w-1/2 md:min-w-[320px]">
+        {/* Шапка превью: две строки — имя+закрыть сверху, метаданные снизу.
+            Кнопки действий — отдельная панель ниже, чтобы не дробить заголовок
+            на мобильных экранах. */}
+        <div className="border-b border-white/5 px-4 py-2.5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[14px] font-medium text-cream">{file.name}</div>
+              <div className="mt-0.5 truncate text-[11px] text-cream-faint">
+                {file.mime || file.type || 'файл'} · {formatWorkspaceSize(file.size)}
+                {file.truncated ? ' · показан фрагмент' : ''}
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              <button
+                onClick={() => onDownload?.(file)}
+                title="Скачать"
+                className="grid h-8 w-8 place-items-center rounded-lg text-cream-dim transition-colors hover:bg-graphite-750 hover:text-cream"
+              >
+                <IconDownload />
+              </button>
+              <button
+                onClick={onClose}
+                title="Закрыть"
+                className="grid h-8 w-8 place-items-center rounded-lg text-cream-dim transition-colors hover:bg-graphite-750 hover:text-cream"
+              >
+                <IconClose />
+              </button>
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {isText && !editing && (
-              <>
-                <button
-                  onClick={() => setEditing(true)}
-                  title="Редактировать"
-                  className="rounded-lg px-2 py-1 text-[11px] text-cream-dim transition-colors hover:bg-graphite-750 hover:text-cream"
-                >
-                  Edit
-                </button>
-                <button
-                  onClick={() => setShowHistory((v) => !v)}
-                  title="История изменений"
-                  className="rounded-lg px-2 py-1 text-[11px] text-cream-dim transition-colors hover:bg-graphite-750 hover:text-cream"
-                >
-                  History
-                </button>
-                <button
-                  onClick={aiEdit}
-                  disabled={busy}
-                  title="Применить AI patch"
-                  className="rounded-lg px-2 py-1 text-[11px] text-cream-dim transition-colors hover:bg-graphite-750 hover:text-cream disabled:opacity-50"
-                >
-                  AI Patch
-                </button>
-              </>
-            )}
-            {isText && editing && (
-              <>
-                <button
-                  onClick={() => {
-                    setDraft(file.text || '')
-                    setEditing(false)
-                  }}
-                  title="Отмена"
-                  className="rounded-lg px-2 py-1 text-[11px] text-cream-dim transition-colors hover:bg-graphite-750 hover:text-cream"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={save}
-                  disabled={busy}
-                  title="Сохранить"
-                  className="rounded-lg bg-cream px-2.5 py-1 text-[11px] font-medium text-graphite-900 transition-colors disabled:opacity-50"
-                >
-                  Save
-                </button>
-              </>
-            )}
-            {isText && !editing && (
-              <button
-                onClick={() => setWrap((v) => !v)}
-                title={wrap ? 'Отключить перенос строк' : 'Включить перенос строк'}
-                className="rounded-lg px-2 py-1 text-[11px] text-cream-dim transition-colors hover:bg-graphite-750 hover:text-cream"
-              >
-                {wrap ? 'No wrap' : 'Wrap'}
-              </button>
-            )}
-            <button
-              onClick={() => onDownload?.(file)}
-              title="Скачать"
-              className="grid h-8 w-8 place-items-center rounded-lg text-cream-dim transition-colors hover:bg-graphite-750 hover:text-cream"
-            >
-              <IconDownload />
-            </button>
-            <button
-              onClick={onClose}
-              title="Закрыть"
-              className="grid h-8 w-8 place-items-center rounded-lg text-cream-dim transition-colors hover:bg-graphite-750 hover:text-cream"
-            >
-              <IconClose />
-            </button>
-          </div>
+
+          {isText && (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              {!editing && (
+                <>
+                  <button
+                    onClick={() => setEditing(true)}
+                    title="Редактировать"
+                    className="rounded-lg border border-white/10 bg-graphite-800 px-2.5 py-1 text-[11px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream"
+                  >
+                    ✏️ Изменить
+                  </button>
+                  <button
+                    onClick={() => setShowHistory((v) => !v)}
+                    title="История изменений"
+                    className={`rounded-lg border px-2.5 py-1 text-[11px] transition-colors ${
+                      showHistory
+                        ? 'border-cream/40 bg-graphite-700 text-cream'
+                        : 'border-white/10 bg-graphite-800 text-cream-soft hover:bg-graphite-750 hover:text-cream'
+                    }`}
+                  >
+                    🕘 История
+                  </button>
+                  {onAiEdit && (
+                    <button
+                      onClick={aiEdit}
+                      disabled={busy}
+                      title="Изменить через AI"
+                      className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] text-emerald-200 transition-colors hover:bg-emerald-500/15 disabled:opacity-50"
+                    >
+                      ✨ AI-правка
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setWrap((v) => !v)}
+                    title={wrap ? 'Отключить перенос строк' : 'Включить перенос строк'}
+                    className="ml-auto rounded-lg border border-white/10 bg-graphite-800 px-2.5 py-1 text-[11px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream"
+                  >
+                    {wrap ? '↩️ Перенос' : '➡️ Без переноса'}
+                  </button>
+                </>
+              )}
+              {editing && (
+                <>
+                  <button
+                    onClick={() => {
+                      setDraft(file.text || '')
+                      setEditing(false)
+                    }}
+                    title="Отмена"
+                    className="rounded-lg border border-white/10 bg-graphite-800 px-2.5 py-1 text-[11px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream"
+                  >
+                    Отмена
+                  </button>
+                  <button
+                    onClick={save}
+                    disabled={busy}
+                    title="Сохранить"
+                    className="rounded-lg bg-cream px-3 py-1 text-[11px] font-medium text-graphite-900 transition-colors disabled:opacity-50"
+                  >
+                    {busy ? 'Сохранение…' : '💾 Сохранить'}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="min-h-0 flex-1 overflow-hidden p-4">
@@ -258,7 +272,7 @@ export default function FilePreview({
                           onClick={() => onRestoreHistory?.(file, item.id)}
                           className="mt-2 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream"
                         >
-                          Restore
+                          Восстановить
                         </button>
                       </div>
                     ))}

@@ -15,6 +15,13 @@ export default function Sidebar({
   onSelect,
   onDelete,
   onOpenSettings,
+  // Перенесённые из Topbar тогглы — все «глобальные» переключатели режима
+  // должны жить в одном месте, иначе на мобилке шапка переполняется
+  // и часть кнопок уходит за край экрана.
+  agentMode,
+  onToggleAgentMode,
+  useWebAI,
+  onToggleWebAI,
 }) {
   return (
     <aside
@@ -94,8 +101,47 @@ export default function Sidebar({
           )}
         </div>
 
-        {/* низ: настройки */}
-        <div className="border-t border-white/5 px-2.5 py-2.5">
+        {/* низ: режимы + настройки */}
+        <div className="space-y-1 border-t border-white/5 px-2.5 py-2.5">
+          {/* Agent mode toggle */}
+          <button
+            onClick={() => onToggleAgentMode?.(!agentMode)}
+            className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors ${
+              agentMode
+                ? 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/20'
+                : 'text-cream-soft hover:bg-graphite-750 hover:text-cream'
+            }`}
+            title="Агентский режим: модель может читать/писать файлы, искать в вебе и запускать shell-команды"
+          >
+            <span className="flex items-center gap-3">
+              <span className="text-base leading-none">🤖</span>
+              <span>Агент</span>
+            </span>
+            <span className={`text-[11px] font-medium ${agentMode ? 'text-emerald-300' : 'text-cream-faint'}`}>
+              {agentMode ? 'Вкл' : 'Выкл'}
+            </span>
+          </button>
+
+          {/* Web AI toggle */}
+          <button
+            onClick={() => onToggleWebAI?.(!useWebAI)}
+            className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors ${
+              useWebAI
+                ? 'bg-cream/10 text-cream hover:bg-cream/15'
+                : 'text-cream-soft hover:bg-graphite-750 hover:text-cream'
+            }`}
+            title="Подмешивать результаты веб-поиска к ответам модели"
+          >
+            <span className="flex items-center gap-3">
+              <span className="text-base leading-none">🌐</span>
+              <span>Web AI</span>
+            </span>
+            <span className={`text-[11px] font-medium ${useWebAI ? 'text-cream' : 'text-cream-faint'}`}>
+              {useWebAI ? 'Вкл' : 'Выкл'}
+            </span>
+          </button>
+
+          {/* Settings */}
           <button
             onClick={onOpenSettings}
             className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left text-[13px]

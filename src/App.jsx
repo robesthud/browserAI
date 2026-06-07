@@ -258,6 +258,10 @@ function BrowserApp({ user, reloadAuth }) {
         onSelect={handleSelectChat}
         onDelete={deleteChat}
         onOpenSettings={() => setSettingsOpen(true)}
+        agentMode={agentMode}
+        onToggleAgentMode={setAgentMode}
+        useWebAI={settings.useWebAI}
+        onToggleWebAI={(next) => setParams({ useWebAI: next })}
       />
 
       {!collapsed && (
@@ -284,12 +288,9 @@ function BrowserApp({ user, reloadAuth }) {
           title={activeChat?.title ?? 'BrowserAI'}
           configured={configured}
           aiWorking={aiWorking}
-          useWebAI={settings.useWebAI}
-          onToggleWebAI={(next) => setParams({ useWebAI: next })}
           autoMode={autoMode}
           autoModelHint={autoHint ? `${autoHint.icon || ''} ${autoHint.reason}` : ''}
           agentMode={agentMode}
-          onToggleAgentMode={setAgentMode}
           workspaceOpen={workspaceOpen}
           onToggleWorkspace={toggleWorkspace}
           onOpenSettings={() => setSettingsOpen(true)}
