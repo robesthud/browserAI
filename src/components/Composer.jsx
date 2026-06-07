@@ -250,7 +250,7 @@ export default function Composer({
   }
 
   const wrapperClass = hasMessages
-    ? 'w-full border-t border-white/5 bg-graphite-900/80 px-4 pt-4 pb-4 backdrop-blur pb-safe'
+    ? 'w-full border-t border-white/5 bg-graphite-900/80 px-2 pt-2 pb-2 backdrop-blur pb-safe md:px-4 md:pt-4 md:pb-4'
     : 'flex flex-1 flex-col items-center justify-center px-4 md:px-6'
 
   const innerClass = hasMessages ? 'mx-auto w-full max-w-2xl' : 'w-full max-w-2xl'
@@ -272,7 +272,7 @@ export default function Composer({
             }}
             onDragLeave={() => setDragOver(false)}
             onDrop={onDrop}
-            className={`rounded-3xl border bg-graphite-800 p-4 shadow-[0_8px_40px_-12px_rgba(0,0,0,0.6)] transition-colors
+            className={`rounded-2xl border bg-graphite-800 p-2 shadow-[0_8px_40px_-12px_rgba(0,0,0,0.6)] transition-colors md:rounded-3xl md:p-4
               ${dragOver ? 'border-cream/40 bg-graphite-750' : 'border-white/[0.06]'}`}
           >
             {attachments.length > 0 && (
@@ -310,36 +310,38 @@ export default function Composer({
               onKeyDown={onKeyDown}
               rows={1}
               placeholder="Спросите что угодно…"
-              className="block w-full resize-none border-0 bg-transparent px-2 pb-3 pt-1 text-[15px]
-                         text-cream placeholder:text-cream-faint focus:outline-none focus:ring-0"
+              className="block w-full resize-none border-0 bg-transparent px-2 pb-2 pt-1 text-[14px]
+                         text-cream placeholder:text-cream-faint focus:outline-none focus:ring-0 md:pb-3 md:text-[15px]"
             />
 
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1 md:gap-2">
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   disabled={busyFiles}
-                  className="flex items-center gap-2 rounded-full border border-white/10 px-3.5 py-2 text-[13px]
+                  title={busyFiles ? 'Чтение…' : 'Прикрепить файл'}
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 text-[13px]
                            text-cream-soft transition-colors hover:border-white/20 hover:bg-graphite-750 hover:text-cream
-                           disabled:opacity-50 whitespace-nowrap"
+                           disabled:opacity-50 md:h-auto md:w-auto md:gap-2 md:px-3.5 md:py-2"
                 >
                   <IconPaperclip />
-                  <span>{busyFiles ? 'Чтение…' : 'Файлы'}</span>
+                  <span className="hidden md:inline">{busyFiles ? 'Чтение…' : 'Файлы'}</span>
                 </button>
 
                 <button
                   onClick={() => setWorkspacePickerOpen(true)}
-                  className="flex items-center gap-2 rounded-full border border-white/10 px-3.5 py-2 text-[13px]
+                  title="Прикрепить из Workspace"
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 text-[13px]
                            text-cream-soft transition-colors hover:border-white/20 hover:bg-graphite-750 hover:text-cream
-                           whitespace-nowrap"
+                           md:h-auto md:w-auto md:gap-2 md:px-3.5 md:py-2"
                 >
                   <IconFolder />
-                  <span>Workspace</span>
+                  <span className="hidden md:inline">Workspace</span>
                 </button>
 
                 <button
                   onClick={toggleRecording}
-                  className={`grid h-[38px] w-[38px] place-items-center rounded-full border border-white/10 text-[13px] transition-colors
+                  className={`grid h-9 w-9 place-items-center rounded-full border border-white/10 text-[13px] transition-colors md:h-[38px] md:w-[38px]
                            ${isRecording ? 'bg-red-500/20 text-red-400 border-red-500/30 animate-pulse' : 'text-cream-soft hover:border-white/20 hover:bg-graphite-750 hover:text-cream'}`}
                   title={isRecording ? "Остановить запись" : "Голосовой ввод"}
                 >

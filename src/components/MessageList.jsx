@@ -3,6 +3,7 @@ import { IconBot, IconUser, IconFile, IconCopy, IconEdit, IconRefresh } from '..
 import { formatSize } from '../lib/files.js'
 import Markdown from '../lib/markdown.jsx'
 import AgentToolBlock from './AgentToolBlock.jsx'
+import usePullToRefresh from '../lib/usePullToRefresh.js'
 
 function Attachments({ items }) {
   if (!items?.length) return null
@@ -118,23 +119,57 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate }) {
           </div>
         ) : (
           <div className="text-[14px] leading-relaxed text-cream-soft">
-            {/* Agent tool calls (if this assistant message is from the agent loop) */}
-            {Array.isArray(m.toolCalls) && m.toolCalls.length > 0 && (
+            {/* Agent loop: interleave intermediate thoughts and tool calls by step,
+                so the UI shows the model planning before each action — same UX as
+                Cursor / Arena. */}
+            {(Array.isArray(m.toolCalls) && m.toolCalls.length > 0) || (Array.isArray(m.thoughts) && m.thoughts.length > 0) ? (
               <div className="mb-2 space-y-1">
-                {m.toolCalls.map((tc) => (
-                  <AgentToolBlock
-                    key={tc.id}
-                    step={tc.step}
-                    name={tc.name}
-                    args={tc.args}
-                    status={tc.status}
-                    ok={tc.ok}
-                    result={tc.result}
-                    error={tc.error}
-                  />
-                ))}
+                {(() => {
+                  const items = []
+                  const thoughtsByStep = new Map()
+                  for (const t of m.thoughts || []) {
+                    if (!thoughtsByStep.has(t.step)) thoughtsByStep.set(t.step, [])
+                    thoughtsByStep.get(t.step).push(t)
+                  }
+                  for (const tc of m.toolCalls || []) {
+                    const ths = thoughtsByStep.get(tc.step) || []
+                    for (const t of ths) {
+                      items.push(
+                        <div key={`th-${tc.step}-${t.at}`} className="text-[13px] text-cream-soft">
+                          <Markdown text={t.text} />
+                        </div>,
+                      )
+                    }
+                    thoughtsByStep.delete(tc.step)
+                    items.push(
+                      <AgentToolBlock
+                        key={tc.id}
+                        step={tc.step}
+                        name={tc.name}
+                        args={tc.args}
+                        status={tc.status}
+                        ok={tc.ok}
+                        result={tc.result}
+                        error={tc.error}
+                        startedAt={tc.startedAt}
+                        finishedAt={tc.finishedAt}
+                      />,
+                    )
+                  }
+                  // any leftover thoughts (no matching tool) — render at the end
+                  for (const [step, ths] of thoughtsByStep) {
+                    for (const t of ths) {
+                      items.push(
+                        <div key={`th-late-${step}-${t.at}`} className="text-[13px] text-cream-soft">
+                          <Markdown text={t.text} />
+                        </div>,
+                      )
+                    }
+                  }
+                  return items
+                })()}
               </div>
-            )}
+            ) : null}
             {m.content ? <Markdown text={m.content} /> : null}
             {m.pending && (
               <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-cream/70 align-middle" />
@@ -151,9 +186,11 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate }) {
   )
 }
 
-export default function MessageList({ messages, aiWorking, onEdit, onRegenerate }) {
+export default function MessageList({ messages, aiWorking, onEdit, onRegenerate, onRefresh }) {
   const bottomRef = useRef(null)
+  const scrollRef = useRef(null)
   const prevLenRef = useRef(messages.length)
+  const { pullDistance, refreshing, threshold } = usePullToRefresh(scrollRef, onRefresh)
 
   // Скроллим вниз только когда появляется новое сообщение,
   // но НЕ при переключении чата из сайдбара (там длина может не меняться)
@@ -165,8 +202,22 @@ export default function MessageList({ messages, aiWorking, onEdit, onRegenerate 
     }
   }, [messages])
 
+  const armed = pullDistance >= threshold
+
   return (
-    <div className="thin-scroll flex-1 overflow-y-auto">
+    <div ref={scrollRef} className="thin-scroll relative flex-1 overflow-y-auto">
+      {/* Pull-to-refresh indicator */}
+      {(pullDistance > 0 || refreshing) && (
+        <div
+          className="pointer-events-none sticky top-0 z-10 flex items-center justify-center text-[12px] text-cream-faint transition-all"
+          style={{ height: refreshing ? 40 : pullDistance, opacity: Math.min(1, pullDistance / threshold) }}
+        >
+          {refreshing
+            ? <span className="animate-spin">⟳</span>
+            : <span className={armed ? 'text-cream' : ''}>{armed ? '↑ Отпусти, чтобы обновить' : '↓ Потяни, чтобы обновить'}</span>}
+        </div>
+      )}
+
       <div className="mx-auto w-full max-w-2xl divide-y divide-white/[0.04]">
         {messages.map((m, i) => (
           <Message key={m.id} m={m} isLast={i === messages.length - 1} aiWorking={aiWorking} onEdit={onEdit} onRegenerate={onRegenerate} />

@@ -1,15 +1,30 @@
 import { useState } from 'react'
 
-const ICONS = {
-  list_files:   '📂',
-  read_file:    '📄',
-  write_file:   '✏️',
-  edit_file:    '🔧',
-  delete_file:  '🗑️',
-  search_files: '🔎',
-  web_search:   '🌐',
-  web_fetch:    '📥',
-  bash:         '🖥️',
+/**
+ * Inline tool-call card — mobile-first compact layout that mirrors the
+ * Arena top bar style: a single-row pill with verb + name + status +
+ * duration + chevron. Expanding it reveals arguments and the result.
+ *
+ * Mobile gets the tighter visual, desktop just slightly larger.
+ */
+
+const VERBS = {
+  list_files:   { verb: 'used',  noun: 'List Files', icon: '📂' },
+  read_file:    { verb: 'used',  noun: 'Read File',  icon: '📄' },
+  write_file:   { verb: 'Write', noun: '',           icon: '✏️' },
+  edit_file:    { verb: 'Edit',  noun: '',           icon: '🔧' },
+  delete_file:  { verb: 'used',  noun: 'Delete',     icon: '🗑️' },
+  search_files: { verb: 'used',  noun: 'Search',     icon: '🔎' },
+  web_search:   { verb: 'used',  noun: 'Web Search', icon: '🌐' },
+  web_fetch:    { verb: 'used',  noun: 'Fetch',      icon: '📥' },
+  bash:         { verb: 'used',  noun: 'Bash',       icon: '>_' },
+}
+
+function fmtDuration(ms) {
+  if (ms == null || isNaN(ms)) return ''
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`
+  return `${Math.round(ms / 1000)}s`
 }
 
 function summarizeArgs(name, args = {}) {
@@ -22,18 +37,15 @@ function summarizeArgs(name, args = {}) {
     case 'search_files': return `"${args.query || ''}"`
     case 'web_search':  return `"${args.query || ''}"`
     case 'web_fetch':   return args.url || ''
-    case 'bash':        return args.command ? args.command.slice(0, 60) : ''
-    default: return JSON.stringify(args || {}).slice(0, 60)
+    case 'bash':        return args.command || ''
+    default: return ''
   }
 }
 
 function formatResult(name, result) {
   if (result == null) return ''
   if (typeof result === 'string') return result
-  // Pretty print known shapes
-  if (name === 'read_file' && result.content) {
-    return result.content
-  }
+  if (name === 'read_file' && result.content) return result.content
   if (name === 'bash' && (result.stdout || result.stderr)) {
     let out = ''
     if (result.stdout) out += result.stdout
@@ -42,54 +54,97 @@ function formatResult(name, result) {
     return out
   }
   if (name === 'web_search' && Array.isArray(result.results)) {
-    return result.results.map((r, i) => `${i + 1}. ${r.title || r.url}\n   ${r.url}\n   ${(r.snippet || '').slice(0, 200)}`).join('\n\n')
+    return result.results.map((r, i) =>
+      `${i + 1}. ${r.title || r.url}\n   ${r.url}\n   ${(r.snippet || '').slice(0, 200)}`,
+    ).join('\n\n')
   }
   try { return JSON.stringify(result, null, 2) } catch { return String(result) }
 }
 
-export default function AgentToolBlock({ name, args, status = 'running', ok, result, error, step }) {
+export default function AgentToolBlock({
+  name,
+  args,
+  status = 'running',
+  ok,
+  result,
+  error,
+  step,
+  startedAt,
+  finishedAt,
+}) {
   const [open, setOpen] = useState(false)
+  const spec = VERBS[name] || { verb: 'used', noun: name, icon: '⚙️' }
 
-  let stateLabel = '…'
-  let stateCls = 'text-amber-300'
+  // Status mark like Arena: ✓ / ✗ / spinning dot
+  let mark, markCls
   if (status === 'done') {
-    if (ok) { stateLabel = '✓'; stateCls = 'text-emerald-300' }
-    else    { stateLabel = '✗'; stateCls = 'text-rose-300' }
+    if (ok) { mark = '✓'; markCls = 'text-emerald-300' }
+    else    { mark = '✗'; markCls = 'text-rose-300' }
+  } else {
+    mark = '•'; markCls = 'text-amber-300 animate-pulse'
   }
 
-  const icon = ICONS[name] || '⚙️'
-  const summary = summarizeArgs(name, args)
+  const duration = startedAt && finishedAt ? fmtDuration(finishedAt - startedAt) : ''
+  const argSummary = summarizeArgs(name, args)
   const body = status === 'done'
     ? (ok ? formatResult(name, result) : (error || 'unknown error'))
     : ''
 
   return (
-    <div className="my-2 rounded-lg border border-white/10 bg-graphite-800/60 text-[12px]">
+    <div className="my-1.5 overflow-hidden rounded-lg border border-white/10 bg-graphite-800/60 text-[12px] md:text-[13px]">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-white/5"
+        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-white/5 md:gap-2 md:px-3 md:py-2"
       >
-        <span className="text-base leading-none">{icon}</span>
-        <span className="font-mono text-cream">{name}</span>
-        {summary && <span className="truncate text-cream-faint" title={summary}>· {summary}</span>}
-        <span className={`ml-auto ${stateCls}`}>{stateLabel}</span>
-        {step != null && <span className="text-[11px] text-cream-faint">#{step}</span>}
+        {/* Verb icon (terminal-like) */}
+        <span className="font-mono text-[11px] text-cream-faint shrink-0">{spec.icon}</span>
+
+        {/* Verb + noun (compact) */}
+        <span className="flex shrink-0 items-baseline gap-1">
+          <span className="text-cream-faint">{spec.verb}</span>
+          {spec.noun && <span className="font-medium text-cream">{spec.noun}</span>}
+        </span>
+
+        {/* Arg preview (truncated) */}
+        {argSummary && (
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-cream-faint md:text-[12px]" title={argSummary}>
+            {argSummary}
+          </span>
+        )}
+        {!argSummary && <span className="flex-1" />}
+
+        {/* Status mark */}
+        <span className={`shrink-0 text-[13px] leading-none ${markCls}`}>{mark}</span>
+
+        {/* Duration */}
+        {duration && (
+          <span className="shrink-0 font-mono text-[10px] text-cream-faint md:text-[11px]">{duration}</span>
+        )}
+
+        {/* Chevron */}
+        <svg width="10" height="10" viewBox="0 0 12 12" className={`shrink-0 opacity-50 transition-transform ${open ? 'rotate-180' : ''}`}>
+          <path d="M2 4 L6 8 L10 4" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
       </button>
+
       {open && (
-        <div className="border-t border-white/10 px-3 py-2">
+        <div className="border-t border-white/10 px-2.5 py-2 md:px-3">
           {args && Object.keys(args).length > 0 && (
-            <details className="mb-2 text-[11px] text-cream-faint">
-              <summary className="cursor-pointer">arguments</summary>
-              <pre className="mt-1 overflow-x-auto rounded bg-graphite-900 p-2 font-mono text-cream">{JSON.stringify(args, null, 2)}</pre>
+            <details className="mb-1.5 text-[11px] text-cream-faint" open={!body}>
+              <summary className="cursor-pointer">аргументы</summary>
+              <pre className="thin-scroll mt-1 max-h-32 overflow-auto rounded bg-graphite-900 p-2 font-mono text-[11px] text-cream">{JSON.stringify(args, null, 2)}</pre>
             </details>
           )}
           {status === 'done' ? (
-            <pre className={`max-h-80 overflow-auto rounded bg-graphite-900 p-2 font-mono text-[11px] whitespace-pre-wrap ${ok ? 'text-cream' : 'text-rose-200'}`}>
-              {body || (ok ? '(empty result)' : '(no error message)')}
+            <pre className={`thin-scroll max-h-72 overflow-auto whitespace-pre-wrap rounded bg-graphite-900 p-2 font-mono text-[11px] ${ok ? 'text-cream' : 'text-rose-200'}`}>
+              {body || (ok ? '(пустой результат)' : '(нет сообщения об ошибке)')}
             </pre>
           ) : (
-            <div className="text-cream-faint">running…</div>
+            <div className="text-cream-faint">выполняется…</div>
+          )}
+          {step != null && (
+            <div className="mt-1 text-right text-[10px] text-cream-faint">шаг #{step}</div>
           )}
         </div>
       )}

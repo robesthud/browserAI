@@ -296,22 +296,35 @@ function BrowserApp({ user, reloadAuth }) {
           onOpenSettings={() => setSettingsOpen(true)}
           user={user}
           onLogout={logout}
+          availableModels={availableModels}
+          selectedModel={selectedModel}
+          onSelectModel={setActiveModel}
+          onToggleAuto={handleToggleAuto}
         />
 
         {hasMessages ? (
           <>
-            <MessageList messages={messages} aiWorking={aiWorking} onEdit={handleEditMessage} onRegenerate={handleRegenerate} />
-            {/* ModelBar над полем ввода (когда есть сообщения) — дропдаун открывается вверх */}
+            <MessageList
+              messages={messages}
+              aiWorking={aiWorking}
+              onEdit={handleEditMessage}
+              onRegenerate={handleRegenerate}
+              onRefresh={() => location.reload()}
+            />
+            {/* ModelBar над полем ввода (когда есть сообщения) — только на десктопе.
+                На мобиле выбор модели живёт в шапке (MobileHeaderModelPicker). */}
             {availableModels.length > 0 && (
-              <ModelBar
-                models={availableModels}
-                selectedModel={selectedModel}
-                autoMode={autoMode}
-                autoHint={autoHint}
-                onSelectModel={setActiveModel}
-                onToggleAuto={handleToggleAuto}
-                dropUp={true}
-              />
+              <div className="hidden md:block">
+                <ModelBar
+                  models={availableModels}
+                  selectedModel={selectedModel}
+                  autoMode={autoMode}
+                  autoHint={autoHint}
+                  onSelectModel={setActiveModel}
+                  onToggleAuto={handleToggleAuto}
+                  dropUp={true}
+                />
+              </div>
             )}
             <Composer
               hasMessages

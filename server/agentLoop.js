@@ -252,6 +252,16 @@ export async function runAgent({
         convo.push({ role: 'assistant', content: reply.text || '' })
       }
 
+      // Stream the intermediate reasoning (everything in reply.text except
+      // the JSON envelope) to the UI so users see the model's plan in
+      // real time, the way Arena's agent UI does.
+      const thinkingText = call.nativeId
+        ? (reply.text || '').trim()
+        : (reply.text || '').replace(TOOL_FENCE_RE, '').trim()
+      if (thinkingText) {
+        sse(res, 'thought', { step, text: thinkingText })
+      }
+
       sse(res, 'tool_start', { step, name: call.tool, args: call.args })
 
       const result = await invokeTool(call.tool, call.args)

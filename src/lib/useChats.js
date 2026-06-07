@@ -361,6 +361,7 @@ export function useChats(settings) {
                         name: data.name,
                         args: data.args,
                         status: 'running',
+                        startedAt: Date.now(),
                       },
                     ],
                   }))
@@ -370,9 +371,22 @@ export function useChats(settings) {
                     ...m,
                     toolCalls: (m.toolCalls || []).map((tc) =>
                       tc.step === data.step && tc.name === data.name
-                        ? { ...tc, status: 'done', ok: data.ok, result: data.result, error: data.error }
+                        ? { ...tc, status: 'done', ok: data.ok, result: data.result, error: data.error, finishedAt: Date.now() }
                         : tc,
                     ),
+                  }))
+                  break
+                case 'thought':
+                  // Streaming reasoning between tool calls — the model's
+                  // intermediate "I'll do X next" / "Now I'll Y" text.
+                  // Appended to the assistant thoughts[] array so the UI
+                  // can interleave them with toolCalls in order.
+                  patchAssistant((m) => ({
+                    ...m,
+                    thoughts: [
+                      ...(m.thoughts || []),
+                      { step: data.step, text: data.text || '', at: Date.now() },
+                    ],
                   }))
                   break
                 case 'assistant':
