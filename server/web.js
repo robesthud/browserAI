@@ -80,18 +80,7 @@ async function searchWeb(query, limit = 5) {
 }
 
 // #13 FIX: проверяем URL перед fetch, чтобы исключить SSRF-атаки через fetchWebPage
-import { isIP as isIp } from 'is-ip'
-import ipaddr from 'ipaddr.js'
-
-function isPrivateIp(address) {
-  if (!isIp(address)) return false
-  try {
-    const addr = ipaddr.parse(address)
-    return addr.range() !== 'unicast' || addr.isLoopback() || addr.isLinkLocal()
-  } catch {
-    return true
-  }
-}
+import { isPrivateIp } from './ssrf.js'
 
 function assertPublicWebUrl(rawUrl) {
   let parsed

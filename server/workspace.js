@@ -4,11 +4,10 @@ import path from 'node:path'
 import os from 'node:os'
 import crypto from 'node:crypto'
 import dns from 'node:dns/promises'
-import net from 'node:net'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import AdmZip from 'adm-zip'
 import * as tar from 'tar'
-import ipaddr from 'ipaddr.js'
+import { isPrivateIp as isPrivateIpAddress } from './ssrf.js'
 
 const DEFAULT_DATA_DIR = '/data'
 const baseWorkspaceRoot = path.resolve(
@@ -454,12 +453,6 @@ async function deleteItem(relPath) {
   } else {
     await fs.unlink(full)
   }
-}
-
-function isPrivateIpAddress(address) {
-  if (!net.isIP(address)) return false
-  const parsed = ipaddr.parse(address)
-  return parsed.range() !== 'unicast' || parsed.isLoopback() || parsed.isLinkLocal()
 }
 
 async function assertPublicUrl(url) {
