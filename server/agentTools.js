@@ -22,6 +22,7 @@ import {
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
 import { runSandboxCommand } from './agentSandbox.js'
+import { listOpsServices, runOpsAction } from './ops.js'
 
 // ── Utility ─────────────────────────────────────────────────────────────────
 function truncate(str, max = 8000) {
@@ -364,6 +365,30 @@ export const TOOLS = {
       try {
         const page = await fetchWebPage(String(url))
         return ok({ url, title: page?.title || '', content: truncate(page?.content || page?.text || '', 12000) })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  // ── Ops / service connectors ──────────────────────────────────────────
+  ops_list_services: {
+    description: 'List configured external/service connectors and their allowed actions (GitHub/Timeweb/Docker/Telegram/etc. as configured on the server). Use this before ops_run_action.',
+    params: {},
+    handler: async () => ok({ services: listOpsServices() }),
+  },
+
+  ops_run_action: {
+    description: 'Run a safe or confirmed server-side service action without exposing secrets. Dangerous actions return requiresConfirmation unless args.confirm=true. For dangerous actions, ask_user for confirmation first.',
+    params: {
+      service: { type: 'string', required: true, description: 'Service id from ops_list_services, e.g. browserai or telegram.' },
+      action: { type: 'string', required: true, description: 'Action id from ops_list_services, e.g. health, docker_logs, deploy.' },
+      params: { type: 'object', optional: true, description: 'Action parameters, e.g. {service:"browserai", tail:120} or {text:"..."}.' },
+      confirm: { type: 'boolean', optional: true, description: 'Must be true for dangerous actions after explicit user confirmation.' },
+    },
+    handler: async ({ service, action, params = {}, confirm = false } = {}) => {
+      if (!service || !action) return err('service and action are required')
+      try {
+        const result = await runOpsAction({ service, action, params, confirm })
+        return ok(result)
       } catch (e) { return err(e.message) }
     },
   },

@@ -20,7 +20,7 @@ WORKDIR /app
 
 # Native deps for better-sqlite3 + docker-cli so the agent loop can
 # 'docker exec agent-sandbox …' through the mounted /var/run/docker.sock
-RUN apk add --no-cache python3 make g++ docker-cli \
+RUN apk add --no-cache python3 make g++ docker-cli openssh-client \
  && rm -rf /var/cache/apk/*
 
 # Copy app + built assets + production node_modules
