@@ -1993,23 +1993,93 @@ app.post('/api/debug/client-error', express.json({ limit: '256kb' }), (req, res)
 })
 
 // ── Agent mode ─────────────────────────────────────────────────────────────
-// SSE stream of an autonomous DeepSeek agent that can call workspace,
-// web and sandboxed bash tools. Body: { history: [{role, content}], model? }.
-// Events:
-//   thinking | tool_start | tool_result | assistant | done | error
+// SSE stream of an autonomous agent that can call workspace, web and
+// sandboxed bash tools. The agent loop is provider-agnostic — it works
+// with DeepSeek (managed), OpenAI, BigModel, Groq, Mistral, Together,
+// OpenRouter, Gemini's OpenAI proxy, etc.
+//
+// Body shape (same as /api/chat):
+//   {
+//     baseUrl, apiKey, model,
+//     authType?, authHeader?, extraHeaders?,
+//     history: [{role, content}],   // chat so far, last item is the new user turn
+//     extraSystem?: string,         // optional extra context for the system prompt
+//   }
+//
+// If baseUrl is chat.deepseek.com and apiKey is '__managed__' or empty,
+// the managed bearer + cookies are injected — exact same mechanism the
+// regular /api/chat uses, so the managed DeepSeek preset works in the
+// agent toggle out of the box.
 app.post('/api/agent/chat', requireAuth, async (req, res) => {
-  const { history = [], model = 'deepseek_chat', extraSystem = '' } = req.body || {}
+  const {
+    baseUrl,
+    authType = 'bearer',
+    authHeader = '',
+    extraHeaders = {},
+    model,
+    history = [],
+    extraSystem = '',
+    temperature = 0.3,
+  } = req.body || {}
+  let { apiKey } = req.body || {}
+
+  if (!baseUrl || !model) {
+    return res.status(400).json({ error: 'baseUrl and model are required' })
+  }
   if (!Array.isArray(history) || history.length === 0) {
     return res.status(400).json({ error: 'history must be a non-empty array' })
   }
-  // Normalise — drop fields the LLM does not need (attachments stay inline
-  // via the message content built by the client).
+
+  // Managed DeepSeek injection — same logic as /api/chat
+  let mergedExtraHeaders = extraHeaders
+  if (isDeepSeekWebUrl(baseUrl) && (!apiKey || apiKey === '__managed__')) {
+    const managedBearer = getDeepSeekBearer()
+    const managedCookies = getDeepSeekCookieHeader()
+    if (!managedBearer) {
+      return res.status(503).json({
+        error: 'DeepSeek session is not configured on the server. Provide a token via /admin/deepseek.',
+      })
+    }
+    apiKey = managedBearer
+    mergedExtraHeaders = { ...(extraHeaders || {}) }
+    if (managedCookies && !Object.keys(mergedExtraHeaders).some((k) => k.toLowerCase() === 'cookie')) {
+      mergedExtraHeaders.Cookie = managedCookies
+    }
+  }
+
+  if (!apiKey) {
+    return res.status(400).json({ error: 'apiKey is required' })
+  }
+
+  // SSRF guard (same as /api/chat)
+  let hostname
+  try { hostname = new URL(baseUrl).hostname } catch {
+    return res.status(400).json({ error: 'Invalid baseUrl' })
+  }
+  if ((isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')) && hostname !== 'host.docker.internal') {
+    return res.status(403).json({ error: 'Access to internal networks is not allowed' })
+  }
+
+  // Normalise history — drop empty messages, keep role+content
   const safeHistory = history
     .filter((m) => m && typeof m.content === 'string' && m.content.trim())
     .map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }))
 
   try {
-    await runAgent({ history: safeHistory, model, extraSystem, res })
+    await runAgent({
+      provider: {
+        baseUrl,
+        apiKey,
+        authType,
+        authHeader,
+        extraHeaders: mergedExtraHeaders,
+        model,
+        temperature,
+      },
+      history: safeHistory,
+      extraSystem,
+      res,
+    })
   } catch (e) {
     if (!res.headersSent) {
       res.status(500).json({ error: e.message })

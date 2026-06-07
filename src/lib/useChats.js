@@ -325,11 +325,24 @@ export function useChats(settings) {
           : (m.content || ''),
       }))
 
+      // Provider config — same resolution the regular chat uses, so the
+      // agent talks to whatever the user selected in Settings (DeepSeek
+      // managed, OpenAI, BigModel, Groq, etc.).
+      const active = resolveActive(settings) || {}
+
       try {
         await new Promise((resolve) => {
           streamAgent({
             history: llmHistory,
-            model: settings?.model || 'deepseek_chat',
+            provider: {
+              baseUrl:      active.baseUrl,
+              apiKey:       active.apiKey,
+              authType:     active.authType || 'bearer',
+              authHeader:   active.authHeader || '',
+              extraHeaders: active.extraHeaders || {},
+              model:        active.model,
+              temperature:  Number(active.temperature ?? 0.3),
+            },
             signal: controller.signal,
             onEvent: (kind, data) => {
               switch (kind) {

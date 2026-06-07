@@ -17,7 +17,12 @@
  *   })
  *   // call stop() to abort
  */
-export function streamAgent({ history, model = 'deepseek_chat', extraSystem = '', onEvent, signal }) {
+export function streamAgent({ history, provider, extraSystem = '', onEvent, signal }) {
+  if (!provider || !provider.baseUrl || !provider.model) {
+    onEvent?.('error', { message: 'Не выбран активный API-ключ или модель. Открой Настройки и выбери провайдера.' })
+    onEvent?.('done', { reason: 'no-provider' })
+    return () => {}
+  }
   const controller = signal ? null : new AbortController()
   const actualSignal = signal || controller.signal
 
@@ -27,7 +32,19 @@ export function streamAgent({ history, model = 'deepseek_chat', extraSystem = ''
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ history, model, extraSystem }),
+        body: JSON.stringify({
+          history,
+          extraSystem,
+          // Provider config — flatten into the body so /api/agent/chat
+          // can apply the same SSRF / managed-injection rules /api/chat uses.
+          baseUrl:      provider.baseUrl,
+          apiKey:       provider.apiKey || '',
+          authType:     provider.authType || 'bearer',
+          authHeader:   provider.authHeader || '',
+          extraHeaders: provider.extraHeaders || {},
+          model:        provider.model,
+          temperature:  Number(provider.temperature ?? 0.3),
+        }),
         signal: actualSignal,
       })
       if (!res.ok) {
