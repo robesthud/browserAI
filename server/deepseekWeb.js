@@ -220,12 +220,43 @@ function messagesToPrompt(messages = []) {
 }
 
 function extractDeltaText(payload) {
+  // DeepSeek Web minified streaming format (2024+) — the production
+  // format we hit from chat.deepseek.com today:
+  //
+  //   data: {"v":{"response":{...,"content":""}}}                       — bootstrap frame (object, ignore)
+  //   data: {"p":"response/content","o":"APPEND","v":"Hello"}           — first chunk for content path
+  //   data: {"v":" world"}                                              — subsequent chunks (implicit path)
+  //   data: {"p":"response/status","v":"FINISHED"}                      — status update for status path
+  //   data: {"p":"response/accumulated_token_usage","o":"SET","v":52}   — metric for usage path
+  //
+  // The "v" field is *the* delta value; "p" tells us which path it
+  // targets. Without "p" the delta implicitly continues the most
+  // recent path the model wrote to (typically response/content).
+  // Earlier we also accepted root-level "content"/"text" as a fallback,
+  // but that mis-fired on the trailing `event: title  data: {"content":
+  // "Greeting response"}` named-event frame DeepSeek emits to set the
+  // chat title — the SSE line-based parser fed the title's data line
+  // here and we treated 'Greeting response' as the entire model output.
+  //
+  // So: only forward "v" when it is a string AND the path (if any) is
+  // the actual content channel. We let unknown paths through too, but
+  // strictly never touch root .content/.text/.choices anymore.
+  const path = typeof payload?.p === 'string' ? payload.p : ''
+  if (typeof payload?.v === 'string') {
+    if (!path || path === 'response/content' || path.endsWith('/content')) {
+      return payload.v
+    }
+    // Other paths (status, accumulated_token_usage, ...) — ignore.
+    return ''
+  }
+
+  // OpenAI-style fallback for proxies that wrap DeepSeek's stream in
+  // a classic {choices:[{delta:{content}}]} envelope.
   const choice = payload?.choices?.[0]
   const delta = choice?.delta
   if (typeof delta?.content === 'string') return delta.content
   if (typeof choice?.message?.content === 'string') return choice.message.content
-  if (typeof payload?.content === 'string') return payload.content
-  if (typeof payload?.text === 'string') return payload.text
+
   return ''
 }
 
