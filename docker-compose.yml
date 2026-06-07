@@ -23,6 +23,9 @@ services:
       # App-level secrets
       - SESSION_SECRET=${SESSION_SECRET:-change-me}
       - APP_URL=${APP_URL:-http://localhost}
+      # Workspace path shared by API and agent-sandbox. Without this the API
+      # defaults to /data/workspace while bash tools write to /workspace.
+      - WORKSPACE_ROOT=${WORKSPACE_ROOT:-/workspace}
       # Agent sandbox
       - AGENT_SANDBOX_CONTAINER=agent-sandbox
     # Bind-mounts: state lives on the host filesystem, visible with plain ls,

@@ -34,6 +34,7 @@ COPY --from=builder /app/public ./public
 RUN mkdir -p /data /workspace
 ENV NODE_ENV=production
 ENV PORT=8080
+ENV WORKSPACE_ROOT=/workspace
 EXPOSE 8080
 
 CMD ["node", "server/index.js"]

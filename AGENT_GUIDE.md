@@ -60,6 +60,7 @@ Sidebar.
 | `search_files` | `workspace.searchWorkspaceContent` | grep-style search across workspace |
 | `web_search`   | `web.searchWeb` | DuckDuckGo, up to 10 results |
 | `web_fetch`    | `web.fetchWebPage` | Fetch + HTML strip, 12 KB cap |
+| `download_url` | `workspace.uploadFromUrl` | Download public files/archives into Workspace; GitHub blob/repo URLs supported |
 | `bash`         | `runSandboxCommand` | Shell in agent-sandbox container, 30 s default timeout |
 
 Every handler returns `{ok: boolean, result?: any, error?: string}`.
@@ -128,6 +129,11 @@ agent-sandbox:
 in its alpine image (added to `Dockerfile`), which is how
 `runSandboxCommand` reaches the sandbox via plain `docker exec --user
 1000:1000 -w /workspace agent-sandbox sh -c <cmd>`.
+
+The API and sandbox must point at the same mounted workspace. Docker sets
+`WORKSPACE_ROOT=/workspace`; without it the API may default to
+`/data/workspace` while `bash` writes to `/workspace`, making downloaded
+files invisible in the UI.
 
 Output is capped at **8 KB stdout + 4 KB stderr** per command; everything
 above gets the marker `... [truncated, N more bytes]`.

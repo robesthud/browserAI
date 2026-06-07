@@ -17,6 +17,7 @@ import {
   createFolder,
   writeFileContent,
   deleteItem,
+  uploadFromUrl,
   searchWorkspaceContent,
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
@@ -30,6 +31,56 @@ function truncate(str, max = 8000) {
 
 function ok(result) { return { ok: true, result } }
 function err(message) { return { ok: false, error: String(message || 'unknown error') } }
+
+function drillTree(tree, relPath = '') {
+  const parts = String(relPath || '').split('/').filter(Boolean)
+  let node = tree
+  for (const part of parts) {
+    const children = Array.isArray(node?.children) ? node.children : []
+    const next = children.find((c) => c.name === part)
+    if (!next) return null
+    node = next
+  }
+  return node
+}
+
+function normalizeGithubDownloadUrl(inputUrl, branch = '') {
+  const raw = String(inputUrl || '').trim()
+  const u = new URL(raw)
+  const host = u.hostname.toLowerCase().replace(/^www\./, '')
+  if (host !== 'github.com') return raw
+
+  const parts = u.pathname.split('/').filter(Boolean)
+  if (parts.length < 2) return raw
+
+  const owner = parts[0]
+  const repo = String(parts[1] || '').replace(/\.git$/i, '')
+  const kind = parts[2]
+
+  // https://github.com/owner/repo/blob/main/path/file.js -> raw.githubusercontent.com
+  if (kind === 'blob' && parts.length >= 5) {
+    const ref = parts[3]
+    const filePath = parts.slice(4).join('/')
+    return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${filePath}`
+  }
+
+  // https://github.com/owner/repo/raw/main/path/file.js -> raw.githubusercontent.com
+  if (kind === 'raw' && parts.length >= 5) {
+    const ref = parts[3]
+    const filePath = parts.slice(4).join('/')
+    return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${filePath}`
+  }
+
+  // Full repository URL. Download as zip; workspace upload auto-extracts it.
+  // Branch defaults to main; callers can pass branch:"master" etc.
+  if (!kind || kind === 'tree') {
+    const ref = branch || parts[3] || 'main'
+    return `https://codeload.github.com/${owner}/${repo}/zip/refs/heads/${encodeURIComponent(ref)}`
+  }
+
+  return raw
+}
+
 
 // ── Tool registry ───────────────────────────────────────────────────────────
 export const TOOLS = {
@@ -161,6 +212,32 @@ export const TOOLS = {
       try {
         await deleteItem(path)
         return ok({ deleted: path })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  download_url: {
+    description: 'Download a public URL into the workspace. Supports binary files and auto-extracts ZIP/TAR/TGZ archives. For GitHub blob URLs it downloads the raw file; for GitHub repo/tree URLs it downloads and extracts the repository archive.',
+    params: {
+      url: { type: 'string', required: true, description: 'Public http(s) URL. Examples: raw file URL, GitHub blob URL, GitHub repo URL.' },
+      path: { type: 'string', optional: true, description: 'Destination folder relative to workspace root. Empty = root.' },
+      branch: { type: 'string', optional: true, description: 'Branch/ref for GitHub repo/tree URLs. Default: main.' },
+    },
+    handler: async ({ url, path = '', branch = '' } = {}) => {
+      if (!url) return err('url is required')
+      try {
+        const targetUrl = normalizeGithubDownloadUrl(String(url), String(branch || ''))
+        const parentPath = String(path || '')
+        const saved = await uploadFromUrl(parentPath, targetUrl)
+        const tree = await getWorkspaceTree(false)
+        const node = drillTree(tree, parentPath) || tree
+        return ok({
+          url,
+          fetchedUrl: targetUrl,
+          destination: parentPath || '/',
+          ...saved,
+          tree: node,
+        })
       } catch (e) { return err(e.message) }
     },
   },
