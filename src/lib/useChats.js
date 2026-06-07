@@ -19,6 +19,44 @@ const SUMMARY_KEEP_RECENT = 8
 const RECENT_CONTEXT_MESSAGES = 10
 const MAX_CONTEXT_CHARS = 18000
 
+
+function dataUrlToWorkspaceFile(dataUrl, index = 0) {
+  const match = String(dataUrl || '').match(/^data:([^;,]+)(?:;[^,]*)?,(.*)$/s)
+  if (!match) return null
+  const mime = match[1] || 'application/octet-stream'
+  const b64 = match[2] || ''
+  const ext =
+    mime.includes('png') ? 'png' :
+    mime.includes('jpeg') || mime.includes('jpg') ? 'jpg' :
+    mime.includes('webp') ? 'webp' :
+    mime.includes('gif') ? 'gif' :
+    mime.includes('pdf') ? 'pdf' :
+    mime.includes('presentation') || mime.includes('powerpoint') ? 'pptx' :
+    mime.includes('mp4') ? 'mp4' :
+    'bin'
+  const stamp = String(Date.now())
+  return {
+    path: `generated-${stamp}-${index + 1}.${ext}`,
+    name: `generated-${stamp}-${index + 1}.${ext}`,
+    content: b64,
+    type: mime,
+  }
+}
+
+async function saveGeneratedMediaToWorkspace(chatId, text = '') {
+  const urls = []
+  const re = /(?:!\[[^\]]*\]\(|\[[^\]]+\]\()?(data:(?:image|application|video)\/[^)\s]+)\)?/g
+  let m
+  while ((m = re.exec(String(text || '')))) {
+    if (!urls.includes(m[1])) urls.push(m[1])
+  }
+  if (!urls.length) return
+  const files = urls.map(dataUrlToWorkspaceFile).filter(Boolean)
+  if (!files.length) return
+  workspaceApi.setChatId(chatId)
+  await workspaceApi.uploadFiles('generated', files)
+}
+
 function messageSize(m) {
   let size = String(m.content || '').length
   for (const a of m.attachments || []) {
@@ -242,8 +280,10 @@ export function useChats(settings) {
         })
         // #10 FIX: обновляем только если acc непустой, чтобы не затирать
         // контент, уже отрисованный через onToken при стриминге
-        if (acc) patchAssistant({ content: acc, pending: false })
-        else patchAssistant({ pending: false })
+        if (acc) {
+          patchAssistant({ content: acc, pending: false })
+          saveGeneratedMediaToWorkspace(chatId, acc).catch(() => {})
+        } else patchAssistant({ pending: false })
         haptics.success()
       } catch (err) {
         if (err.name === 'AbortError') {
@@ -430,6 +470,7 @@ export function useChats(settings) {
                   break
                 case 'assistant':
                   patchAssistant({ content: data.text || '', pending: false })
+                  saveGeneratedMediaToWorkspace(chatId, data.text || '').catch(() => {})
                   haptics.success()
                   break
                 case 'error':
