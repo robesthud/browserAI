@@ -18,7 +18,7 @@ import crypto from 'node:crypto'
 import nodemailer from 'nodemailer'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import {
   listKeys,
   getActiveKeyId,
@@ -93,6 +93,19 @@ import { startUserTelegramBot } from './userTelegramBot.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 8787
+
+// Версия веб-приложения. Берём из package.json один раз при старте, потому что
+// process.env.npm_package_version пуст при запуске через `node server/index.js`
+// (без npm). Раньше из-за этого /api/app-version всегда отдавал захардкоженную
+// устаревшую версию.
+const APP_WEB_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'))
+    return pkg.version || process.env.npm_package_version || '0.0.0'
+  } catch {
+    return process.env.npm_package_version || '0.0.0'
+  }
+})()
 
 function isPrivateIp(address) {
   if (!isIp(address)) return false
@@ -2020,8 +2033,8 @@ app.get('/api/app-version', (req, res) => {
     releaseUrl,
     // Что нового
     releaseNotes,
-    // Версия веб-приложения (для инфо)
-    webVersion: process.env.npm_package_version || '1.0.12',
+    // Версия веб-приложения (для инфо) — читается из package.json при старте
+    webVersion: APP_WEB_VERSION,
     // Timestamp последнего деплоя
     deployedAt: process.env.RAILWAY_DEPLOYMENT_ID
       ? new Date().toISOString()
