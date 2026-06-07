@@ -88,6 +88,7 @@ const PROVIDER_PRESETS = [
     baseUrl: 'https://chat.deepseek.com/api/v0',
     model: 'deepseek_chat',
     apiKey: '__managed__',
+    availableModels: ['deepseek_chat', 'deepseek_reasoner'],
     extraHeaders: {
       'Referer': 'https://chat.deepseek.com/',
       'Origin': 'https://chat.deepseek.com',
@@ -100,9 +101,9 @@ const PROVIDER_PRESETS = [
     label: '✨ Gemini Web Proxy',
     name: 'Gemini Web Proxy',
     baseUrl: 'http://host.docker.internal:8080/v1',
-    model: '00bx-gemini-web',
+    model: 'gemini-2.5-pro',
     apiKey: 'not-needed',
-    availableModels: ['00bx-gemini-web'],
+    availableModels: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
     hint: 'Бесплатно через Google Gemini Web. На Timeweb должен быть запущен gemini-web-proxy; первый логин выполняется через временный noVNC.',
   },
 ]
@@ -240,8 +241,8 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
       // '__managed__' marker for server-side managed sessions). Otherwise
       // keep whatever the user had typed.
       apiKey: preset.apiKey !== undefined ? preset.apiKey : f.apiKey,
-      availableModels: [],
-      model: preset.model || '',
+      availableModels: Array.isArray(preset.availableModels) ? preset.availableModels : [],
+      model: preset.model || preset.availableModels?.[0] || '',
       authType: preset.authType || 'bearer',
       authHeader: preset.authHeader !== undefined ? preset.authHeader : f.authHeader,
       extraHeaders: preset.extraHeaders !== undefined ? preset.extraHeaders : (f.extraHeaders || {}),

@@ -719,6 +719,19 @@ function rankModels(models = [], requestedModel = '') {
   })
 }
 
+
+function isGeminiWebProxyUrl(baseUrl = '') {
+  try {
+    const u = new URL(String(baseUrl || ''))
+    return (u.hostname === 'host.docker.internal' && u.port === '8080')
+      || /gemini-web-proxy/i.test(u.hostname)
+  } catch {
+    return false
+  }
+}
+
+const GEMINI_WEB_PROXY_MODELS = ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash']
+
 async function probeChatModel(root, apiKey, model) {
   const r = await fetch(`${root}/chat/completions`, {
     method: 'POST',
@@ -759,6 +772,13 @@ async function fetchModels(baseUrl, apiKey, requestedModel = '') {
   }
 
   const root = String(baseUrl).replace(/\/$/, '')
+  if (isGeminiWebProxyUrl(baseUrl)) {
+    const probeModel = requestedModel && GEMINI_WEB_PROXY_MODELS.includes(requestedModel)
+      ? requestedModel
+      : GEMINI_WEB_PROXY_MODELS[0]
+    const probe = await probeChatModel(root, apiKey || 'not-needed', probeModel)
+    return { ok: probe.ok, status: probe.status || 0, models: GEMINI_WEB_PROXY_MODELS, preferredModel: probe.ok ? probeModel : GEMINI_WEB_PROXY_MODELS[0] }
+  }
   const r = await fetch(`${root}/models`, {
     headers: { Authorization: `Bearer ${apiKey}` },
   })
