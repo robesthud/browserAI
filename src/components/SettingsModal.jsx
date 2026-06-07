@@ -80,6 +80,17 @@ const PROVIDER_PRESETS = [
   // автоматически обновляет сам сервер. Клиент ничего не вводит —
   // выбирает пресет и сразу общается.
   {
+    id: 'free-gateway',
+    group: 'free',
+    label: '☁️ Free Gateway',
+    name: 'BrowserAI Free Gateway',
+    baseUrl: 'https://browserai.local/free-gateway',
+    model: 'deepseek_chat',
+    apiKey: '__gateway__',
+    availableModels: ['deepseek_chat', 'deepseek_reasoner', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+    hint: 'Один простой бесплатный режим: DeepSeek + Gemini Web. Авто само выбирает модель под запрос; вручную можно выбрать любую модель в чате.',
+  },
+  {
     id: 'deepseek-managed',
     group: 'free',
     label: '✨ DeepSeek',
@@ -296,8 +307,8 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
   const [activeTab, setActiveTab] = useState(presetGroup)
   
   const providerGroups = [
-    { title: 'Официальные API', group: 'api',  cls: 'border-white/10 text-cream-soft hover:border-white/20 hover:bg-graphite-750 hover:text-cream' },
-    { title: 'Бесплатно',       group: 'free', cls: 'border-emerald-400/20 bg-emerald-400/5 text-emerald-300 hover:border-emerald-400/40 hover:bg-emerald-400/10' },
+    { title: 'Official API', group: 'api',  cls: 'border-white/10 text-cream-soft hover:border-white/20 hover:bg-graphite-750 hover:text-cream' },
+    { title: 'Free',       group: 'free', cls: 'border-emerald-400/20 bg-emerald-400/5 text-emerald-300 hover:border-emerald-400/40 hover:bg-emerald-400/10' },
   ]
 
   return (
@@ -334,9 +345,9 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
         ))}
       </div>
 
-      {form.apiKey === '__managed__' ? (
+      {(form.apiKey === '__managed__' || form.apiKey === '__gateway__') ? (
         <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-3 py-2.5 text-[12px] text-emerald-200">
-          🔒 Серверная сессия — ключ хранится на сервере и обновляется автоматически.
+          🔒 Серверный режим — ключи и web-сессии хранятся на сервере.
           Ничего вводить не нужно, просто нажми <b>Сохранить</b>.
         </div>
       ) : (

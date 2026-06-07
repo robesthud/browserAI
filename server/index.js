@@ -68,6 +68,7 @@ import {
   deleteWorkspaceScope,
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
+import { getGatewayModels, getGatewayStatus, isGatewayUrl, resolveGatewayModel } from './gateway.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
 import { isDeepSeekWebUrl, handleDeepSeekWebChat, validateDeepSeekWebKey } from './deepseekWeb.js'
@@ -1125,6 +1126,16 @@ app.post('/api/validate', requireAuth, async (req, res) => {
     }
   }
 
+  if (isGatewayUrl(baseUrl)) {
+    const models = getGatewayModels()
+    return res.json({
+      ok: true,
+      message: `Free Gateway готов · моделей: ${models.length}`,
+      models,
+      preferredModel: models.includes(model) ? model : models[0],
+    })
+  }
+
   if (!baseUrl || !apiKey) {
     return res.json({ ok: false, message: 'Укажите Base URL и ключ', models: [], preferredModel: '' })
   }
@@ -1575,6 +1586,15 @@ app.get('/api/web/search', requireAuth, async (req, res) => {
   }
 })
 
+
+app.get('/api/gateway/models', requireAuth, (_req, res) => {
+  res.json({ models: getGatewayModels(), items: getGatewayStatus().models })
+})
+
+app.get('/api/gateway/status', requireAuth, (_req, res) => {
+  res.json(getGatewayStatus())
+})
+
 app.get('/api/web/fetch', requireAuth, async (req, res) => {
   try {
     const url = String(req.query.url || '')
@@ -1650,7 +1670,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     if (!res.writableEnded) chatDebugLog('RES_CLOSED', { status: res._dbgStatus || res.statusCode, aborted: true })
   })
 
-  const {
+  let {
     baseUrl,
     authType = 'bearer',
     authHeader = '',
@@ -1661,6 +1681,16 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     stream = false,
   } = req.body || {}
   let { apiKey } = req.body || {}
+
+  if (isGatewayUrl(baseUrl)) {
+    const routed = resolveGatewayModel(model)
+    baseUrl = routed.baseUrl
+    apiKey = routed.apiKey
+    authType = routed.authType
+    authHeader = ''
+    extraHeaders = routed.extraHeaders || {}
+    model = routed.model
+  }
 
   // Managed DeepSeek: if client omits apiKey (or passes '__managed__'),
   // inject the server-managed Bearer token + cookies from the refresher.
@@ -2066,7 +2096,7 @@ app.post('/api/debug/client-error', express.json({ limit: '256kb' }), (req, res)
 // regular /api/chat uses, so the managed DeepSeek preset works in the
 // agent toggle out of the box.
 app.post('/api/agent/chat', requireAuth, async (req, res) => {
-  const {
+  let {
     baseUrl,
     authType = 'bearer',
     authHeader = '',
@@ -2078,6 +2108,16 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
     chatId = '',
   } = req.body || {}
   let { apiKey } = req.body || {}
+
+  if (isGatewayUrl(baseUrl)) {
+    const routed = resolveGatewayModel(model)
+    baseUrl = routed.baseUrl
+    apiKey = routed.apiKey
+    authType = routed.authType
+    authHeader = ''
+    extraHeaders = routed.extraHeaders || {}
+    model = routed.model
+  }
 
   if (!baseUrl || !model) {
     return res.status(400).json({ error: 'baseUrl and model are required' })

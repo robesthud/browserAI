@@ -27,9 +27,9 @@ import {
   getActiveBearer as getDeepSeekBearer,
   getCookieHeader as getDeepSeekCookieHeader,
   isSessionValid as isDeepSeekValid,
-  getCachedModels as getDeepSeekModels,
 } from './deepseekTokenRefresher.js'
 import { callLLM } from './llmClient.js'
+import { GATEWAY_API_KEY, GATEWAY_BASE_URL, getGatewayModels, resolveGatewayModel } from './gateway.js'
 
 const TG_TOKEN = process.env.TG_USER_BOT_TOKEN || process.env.TG_BOT_TOKEN || ''
 const POLL_TIMEOUT_SEC = 25
@@ -42,8 +42,8 @@ const MAX_MESSAGE_LEN = 4000
 const DEFAULT_MODE = 'chat'           // 'chat' | 'agent'
 const DEFAULT_MODEL = 'deepseek_chat'
 const DEFAULT_PROVIDER = {
-  baseUrl: 'https://chat.deepseek.com/api/v0',
-  apiKey: '__managed__',
+  baseUrl: GATEWAY_BASE_URL,
+  apiKey: GATEWAY_API_KEY,
 }
 
 // ── State (in memory; durable bits in SQLite via tgDb) ─────────────────────
@@ -65,8 +65,8 @@ function initTables(db) {
       user_id TEXT,             -- linked browserai user_id (NULL until /link)
       mode TEXT NOT NULL DEFAULT 'chat',
       model TEXT NOT NULL DEFAULT 'deepseek_chat',
-      provider_base_url TEXT NOT NULL DEFAULT 'https://chat.deepseek.com/api/v0',
-      provider_api_key TEXT NOT NULL DEFAULT '__managed__',
+      provider_base_url TEXT NOT NULL DEFAULT 'https://browserai.local/free-gateway',
+      provider_api_key TEXT NOT NULL DEFAULT '__gateway__',
       active_chat_id TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
@@ -216,12 +216,7 @@ async function sendChatAction(chatId, action = 'typing') {
 
 // ── Inline keyboards ──────────────────────────────────────────────────────
 function modelsKeyboard(currentModel) {
-  // Static + dynamic
-  const candidates = []
-  const ds = getDeepSeekModels?.() || []
-  for (const m of ds) candidates.push(m.id)
-  if (!candidates.includes('deepseek_chat')) candidates.push('deepseek_chat')
-  if (!candidates.includes('deepseek_reasoner')) candidates.push('deepseek_reasoner')
+  const candidates = getGatewayModels()
 
   const rows = candidates.map((m) => ([{
     text: (m === currentModel ? '✓ ' : '  ') + m,
@@ -255,6 +250,12 @@ function settingsKeyboard(user) {
 
 // ── LLM calls ─────────────────────────────────────────────────────────────
 async function getProvider(user) {
+  const requestedModel = user.model || DEFAULT_MODEL
+  if (user.provider_base_url === GATEWAY_BASE_URL || user.provider_api_key === GATEWAY_API_KEY) {
+    const routed = resolveGatewayModel(requestedModel)
+    user = { ...user, provider_base_url: routed.baseUrl, provider_api_key: routed.apiKey, model: routed.model }
+  }
+
   const apiKey = user.provider_api_key === '__managed__'
     ? (isDeepSeekValid() ? getDeepSeekBearer() : '')
     : user.provider_api_key
@@ -269,7 +270,7 @@ async function getProvider(user) {
     baseUrl: user.provider_base_url,
     apiKey,
     authType: 'bearer',
-    model: user.model,
+    model: user.model || DEFAULT_MODEL,
     extraHeaders,
     temperature: 0.7,
   }
@@ -534,7 +535,7 @@ async function handleCallback(cb) {
     await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: cb.message.message_id, reply_markup: modeKeyboard(fresh.mode) })
   } else if (data.startsWith('set_model:')) {
     const model = data.slice(10)
-    updateUser(chatId, { model })
+    updateUser(chatId, { model, provider_base_url: GATEWAY_BASE_URL, provider_api_key: GATEWAY_API_KEY })
     const fresh = tgDb.prepare('SELECT * FROM tg_users WHERE chat_id = ?').get(chatId)
     await answerCallbackQuery(cb.id, `Модель: ${model}`)
     await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: cb.message.message_id, reply_markup: settingsKeyboard(fresh) })
