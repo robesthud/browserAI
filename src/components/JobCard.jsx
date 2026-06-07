@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react'
 import { getJob } from '../lib/jobs.js'
 
+function downloadHref(path, chatId) {
+  return `/api/workspace/download?path=${encodeURIComponent(path)}${chatId ? `&chatId=${encodeURIComponent(chatId)}` : ''}`
+}
+
 function statusText(status) {
   return {
     queued: 'В очереди', running: 'Выполняется', waiting: 'Ожидание', succeeded: 'Готово', failed: 'Ошибка', cancelled: 'Отменено'
@@ -44,7 +48,12 @@ export default function JobCard({ job: initial }) {
       {job.result?.content && <div className="mt-2 whitespace-pre-wrap">{String(job.result.content).slice(0, 1500)}</div>}
       {files.length > 0 && (
         <div className="mt-2 space-y-1">
-          {files.map((f) => <div key={f} className="font-mono text-[12px] text-emerald-300">📁 {f}</div>)}
+          {files.map((f) => (
+            <div key={f} className="flex flex-wrap items-center gap-2 font-mono text-[12px] text-emerald-300">
+              <span>📁 {f}</span>
+              <a href={downloadHref(f, job.chatId)} className="rounded border border-emerald-400/30 px-2 py-0.5 text-[11px] text-emerald-200 hover:bg-emerald-400/10">Скачать</a>
+            </div>
+          ))}
         </div>
       )}
       {job.logs?.length > 0 && (

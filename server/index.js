@@ -70,6 +70,7 @@ import {
 import { searchWeb, fetchWebPage } from './web.js'
 import { getGatewayModels, getGatewayStatus, isGatewayUrl, resolveGatewayModel } from './gateway.js'
 import { createJob, getJob, initJobs, listJobs, startJob } from './jobs.js'
+import { listOpsServices, runOpsAction } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
 import { isDeepSeekWebUrl, handleDeepSeekWebChat, validateDeepSeekWebKey } from './deepseekWeb.js'
@@ -1594,6 +1595,20 @@ app.get('/api/gateway/models', requireAuth, (_req, res) => {
 
 app.get('/api/gateway/status', requireAuth, (_req, res) => {
   res.json(getGatewayStatus())
+})
+
+app.get('/api/ops/services', requireAuth, (_req, res) => {
+  res.json({ services: listOpsServices() })
+})
+
+app.post('/api/ops/action', requireAuth, async (req, res) => {
+  try {
+    const { service, action, params = {}, confirm = false } = req.body || {}
+    const result = await runOpsAction({ service, action, params, confirm })
+    res.json({ ok: true, result })
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message || 'ops action failed' })
+  }
 })
 
 app.post('/api/jobs', requireAuth, (req, res) => {

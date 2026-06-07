@@ -7,6 +7,7 @@ import MessageList from './components/MessageList.jsx'
 import SettingsModal from './components/SettingsModal.jsx'
 import AuthGate from './components/AuthGate.jsx'
 import DeepSeekAdmin from './components/DeepSeekAdmin.jsx'
+import OpsAdmin from './components/OpsAdmin.jsx'
 import ModelBar from './components/ModelBar.jsx'
 import { IconExpand } from './icons.jsx'
 import {
@@ -468,6 +469,13 @@ export default function App() {
     return (
       <AuthGate>
         {() => <DeepSeekAdmin />}
+      </AuthGate>
+    )
+  }
+  if (pathname === '/admin/ops') {
+    return (
+      <AuthGate>
+        {() => <OpsAdmin />}
       </AuthGate>
     )
   }

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import AdmZip from 'adm-zip'
 
 const DEFAULT_TIMEOUT_MS = 180_000
@@ -12,10 +12,17 @@ const TG_ADMIN_CHAT_ID = process.env.TG_ADMIN_CHAT_ID || process.env.TG_CHAT_ID 
 const OPS_SERVICES_FILE = process.env.OPS_SERVICES_FILE || '/data/ops/services.json'
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || ''
 const GITHUB_REPO = process.env.GITHUB_REPO || 'robesthud/browserAI'
+const OPS_AUDIT_LOG = process.env.OPS_AUDIT_LOG || '/data/ops-audit.log'
 
 function clip(s = '', max = 12000) {
   const str = String(s || '')
   return str.length > max ? str.slice(0, max) + `\n... [truncated ${str.length - max} chars]` : str
+}
+
+function auditOps(event = {}) {
+  try {
+    appendFileSync(OPS_AUDIT_LOG, JSON.stringify({ ts: new Date().toISOString(), ...event }) + '\n')
+  } catch { /* audit log best effort */ }
 }
 
 function shQuote(value = '') {
@@ -254,24 +261,36 @@ export async function runOpsAction({ service, action, params = {}, confirm = fal
   const meta = svc.actions[action]
   if (!meta) throw new Error(`Unknown action ${action} for service ${service}`)
   if (!meta.safe && confirm !== true) {
+    auditOps({ service, action, status: 'needs_confirmation' })
     return {
       requiresConfirmation: true,
       message: `Action ${service}.${action} is potentially dangerous. Re-run with confirm:true after user confirmation.`,
     }
   }
 
-  if (dynamicServices[service]?.type === 'rest') {
-    return runRestServiceAction(dynamicServices[service], action, params)
+  const started = Date.now()
+  try {
+    let result
+    if (dynamicServices[service]?.type === 'rest') {
+      result = await runRestServiceAction(dynamicServices[service], action, params)
+    } else if (service === 'telegram' && action === 'notify_admin') {
+      result = await telegramNotify({ text: params.text || params.message || '' })
+    } else if (service === 'github') {
+      result = await githubAction(action, params)
+    } else if (service === 'browserai') {
+      result = null
+    } else {
+      throw new Error(`Unsupported service: ${service}`)
+    }
+    if (result) {
+      auditOps({ service, action, status: result.exitCode === 0 ? 'ok' : 'error', exitCode: result.exitCode, ms: Date.now() - started })
+      return result
+    }
+  } catch (e) {
+    auditOps({ service, action, status: 'throw', error: e.message, ms: Date.now() - started })
+    throw e
   }
 
-  if (service === 'telegram' && action === 'notify_admin') {
-    return telegramNotify({ text: params.text || params.message || '' })
-  }
-  if (service === 'github') {
-    return githubAction(action, params)
-  }
-
-  if (service !== 'browserai') throw new Error(`Unsupported service: ${service}`)
   const tail = Math.min(500, Math.max(20, Number(params.tail) || 120))
   const serviceName = String(params.service || 'browserai').replace(/[^a-zA-Z0-9_-]/g, '') || 'browserai'
 
@@ -302,5 +321,8 @@ exit 0`,
   }
   const command = commands[action]
   if (!command) throw new Error(`Action not implemented: ${service}.${action}`)
-  return runSsh(command, { timeoutMs: (action === 'deploy' || action === 'repair_deploy') ? 20 * 60_000 : DEFAULT_TIMEOUT_MS })
+  const result = await runSsh(command, { timeoutMs: (action === 'deploy' || action === 'repair_deploy') ? 20 * 60_000 : DEFAULT_TIMEOUT_MS })
+  auditOps({ service, action, status: result.exitCode === 0 ? 'ok' : 'error', exitCode: result.exitCode, ms: Date.now() - started })
+  return result
 }
+
