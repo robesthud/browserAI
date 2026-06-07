@@ -20,7 +20,7 @@ import {
 import { useSettings } from './lib/useSettings.js'
 import { useChats } from './lib/useChats.js'
 import { backend } from './lib/backend.js'
-import { pickBestModel } from './lib/autoModel.js'
+import { getTaskType, pickBestModel } from './lib/autoModel.js'
 import useEdgeSwipe from './lib/useEdgeSwipe.js'
 import haptics from './lib/haptics.js'
 
@@ -253,16 +253,12 @@ function BrowserApp({ user, reloadAuth }) {
   // БАГ 3 ИСПРАВЛЕН: передаём выбранную модель напрямую в sendMessage (overrideModel),
   // не ждём пока React обновит settings — это устраняет гонку данных
   const handleSendMessage = async (text, attachments = []) => {
-    // Agent mode short-circuits the regular chat flow. It streams /api/agent/chat
-    // (tool calls + final answer) instead of a plain LLM completion.
-    if (agentMode) {
-      return sendAgentMessage(text, attachments)
-    }
-
     let overrideModel = null
+    let routedTaskType = getTaskType(text || '')
 
     if (autoMode && availableModels.length > 1 && text?.trim()) {
       const result = pickBestModel(text, availableModels, selectedModel)
+      routedTaskType = result.taskType || routedTaskType
       if (result.changed) {
         overrideModel = providerOverrideForModel(result.model) || result.model
         // Обновляем настройки в фоне (без await — не блокируем отправку)
@@ -276,6 +272,13 @@ function BrowserApp({ user, reloadAuth }) {
       } else {
         setAutoHint(null)
       }
+    }
+
+    // Agent mode is for tool/code/workspace tasks. Image-generation prompts
+    // must go through the normal multimodal chat route, otherwise the agent
+    // system prompt makes models answer as a coding agent instead of drawing.
+    if (agentMode && routedTaskType !== 'image') {
+      return sendAgentMessage(text, attachments, overrideModel)
     }
 
     return sendMessage(text, attachments, overrideModel)

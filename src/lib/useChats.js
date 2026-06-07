@@ -309,7 +309,7 @@ export function useChats(settings) {
   // sent to the server is just role+content; tool calls live on the
   // *client* assistant message as m.toolCalls[].
   const sendAgentMessage = useCallback(
-    async (text, attachments = []) => {
+    async (text, attachments = [], overrideProvider = null) => {
       const trimmed = (text || '').trim()
       if (!trimmed && attachments.length === 0) return
 
@@ -378,7 +378,9 @@ export function useChats(settings) {
       // Provider config — same resolution the regular chat uses, so the
       // agent talks to whatever the user selected in Settings (DeepSeek
       // managed, OpenAI, BigModel, Groq, etc.).
-      const active = resolveActive(settings) || {}
+      const active = overrideProvider && typeof overrideProvider === 'object'
+        ? { ...resolveActive(settings), ...overrideProvider }
+        : (resolveActive(settings) || {})
 
       try {
         await new Promise((resolve) => {
