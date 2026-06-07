@@ -22,11 +22,6 @@ cookies.txt
 *.pem
 *.key
 
-# Railway (not used — deployed on Timeweb VPS)
-.railway/
-nixpacks.toml
-railway-start.sh
-
 # Android build artifacts
 android-app/.gradle/
 android-app/**/build/

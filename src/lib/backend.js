@@ -7,7 +7,7 @@ const DEFAULT_TIMEOUT_MS = 12000
 
 async function req(path, options = {}) {
   // Если снаружи уже передан signal (например, из validateKey) — используем его,
-  // иначе ставим дефолтный таймаут 12 секунд чтобы не зависать при спящем Railway
+  // иначе ставим дефолтный таймаут 12 секунд чтобы не зависать при недоступном бэкенде
   const hasExternalSignal = Boolean(options.signal)
   const controller = hasExternalSignal ? null : new AbortController()
   const timer = controller

@@ -154,7 +154,6 @@ app.use(limiter)
 // APP_URL объявляется ниже, поэтому читаем из env напрямую здесь
 const _corsOrigin = process.env.CORS_ORIGIN
   || (process.env.APP_URL ? process.env.APP_URL : null)
-  || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : null)
 const corsOptions = _corsOrigin
   ? { origin: _corsOrigin, credentials: true }
   : { origin: true, credentials: true }
@@ -165,12 +164,14 @@ app.use(express.json({ limit: '50mb' }))
 const AUTH_COOKIE = 'browserai_session'
 const SESSION_DAYS = 30
 const APP_URL = (process.env.APP_URL
-  || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '')
   || 'http://localhost:8787').replace(/\/$/, '')
 const AUTH_SECRET = process.env.AUTH_SECRET || 'browserai-dev-secret-change-me'
 if (!process.env.AUTH_SECRET) {
-  console.warn('⚠ AUTH_SECRET is not set. Set a long random AUTH_SECRET in Railway Variables for production.')
+  console.warn('⚠ AUTH_SECRET is not set. Set a long random AUTH_SECRET in the .env / environment for production.')
 }
+
+// Время старта процесса — отдаётся в /api/app-version как ориентир «когда задеплоено».
+const DEPLOYED_AT = new Date().toISOString()
 
 function now() {
   return Date.now()
@@ -443,7 +444,7 @@ function smtpConfigured() {
 
 async function sendPasswordResetEmail(email, resetUrl) {
   if (!smtpConfigured()) {
-    throw new Error('SMTP не настроен. Добавьте SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM в Railway Variables.')
+    throw new Error('SMTP не настроен. Добавьте SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM в окружение (.env).')
   }
   const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
@@ -1990,7 +1991,7 @@ app.get('/api/debug/chat-test', requireAuth, async (req, res) => {
 // Возвращает минимальный требуемый versionCode и ссылку на APK.
 // Если APK пользователя >= minNativeVersion — обновление не нужно.
 //
-// Как обновить: просто измени APP_NATIVE_VERSION в Railway Variables.
+// Как обновить: просто измени APP_NATIVE_VERSION в окружении (.env).
 // Например: APP_NATIVE_VERSION=4
 // Все установленные приложения с versionCode < 4 получат уведомление.
 app.get('/api/app-version', (req, res) => {
@@ -2021,10 +2022,8 @@ app.get('/api/app-version', (req, res) => {
     releaseNotes,
     // Версия веб-приложения (для инфо) — читается из package.json при старте
     webVersion: APP_WEB_VERSION,
-    // Timestamp последнего деплоя
-    deployedAt: process.env.RAILWAY_DEPLOYMENT_ID
-      ? new Date().toISOString()
-      : null,
+    // Время старта текущего процесса сервера (ориентир последнего деплоя)
+    deployedAt: DEPLOYED_AT,
   })
 })
 

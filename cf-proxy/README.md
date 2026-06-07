@@ -1,6 +1,6 @@
 # BrowserAI Cloudflare Proxy
 
-Решает проблему гео-блокировки: DeepSeek и другие провайдеры блокируют IP датацентров (Railway, Heroku и т.д.), но пропускают Cloudflare Workers.
+Решает проблему гео-блокировки: DeepSeek и другие провайдеры блокируют IP датацентров (VPS, Heroku и т.д.), но пропускают Cloudflare Workers.
 
 ## Деплой
 
@@ -12,7 +12,7 @@
 
 ## Настройка BrowserAI
 
-Добавьте переменные в Railway:
+Добавьте переменные в окружение сервера (.env):
 - `CF_PROXY_URL` = `https://browserai-proxy.your.workers.dev`
 - `CF_PROXY_SECRET` = тот же секрет что в шаге 4
 

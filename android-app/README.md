@@ -1,6 +1,6 @@
 # BrowserAI Android
 
-Android-обёртка для BrowserAI на Railway. Это WebView-приложение, поэтому интерфейс, стиль и функции остаются такими же, как в web-версии:
+Android-обёртка для BrowserAI (production-сервер). Это WebView-приложение, поэтому интерфейс, стиль и функции остаются такими же, как в web-версии:
 
 - чаты;
 - настройки API-ключей;
@@ -21,13 +21,13 @@ app/src/main/res/values/strings.xml
 И замените:
 
 ```xml
-<string name="app_url">https://YOUR-RAILWAY-APP.up.railway.app</string>
+<string name="app_url">https://YOUR-SERVER.example</string>
 ```
 
-на ваш URL Railway, например:
+на ваш production URL, например:
 
 ```xml
-<string name="app_url">https://browserai-production.up.railway.app</string>
+<string name="app_url">http://72.56.116.15</string>
 ```
 
 ## Сборка APK
@@ -52,4 +52,4 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## Важно
 
-Backend должен быть задеплоен на Railway и доступен по HTTPS. Локальный Node/SQLite внутри APK не запускается — это сделано специально, чтобы сохранить все текущие функции без переписывания backend под Android.
+Backend должен быть задеплоен на сервере и доступен по HTTPS. Локальный Node/SQLite внутри APK не запускается — это сделано специально, чтобы сохранить все текущие функции без переписывания backend под Android.

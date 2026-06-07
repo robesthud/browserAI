@@ -145,5 +145,5 @@ jobs:
           echo "- **Скачать:** https://github.com/robesthud/browserAI/releases/latest/download/BrowserAI-latest.apk" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Следующий шаг" >> $GITHUB_STEP_SUMMARY
-          echo "Обнови \`APP_NATIVE_VERSION=${{ github.run_number }}\` в Railway Variables" >> $GITHUB_STEP_SUMMARY
+          echo "Обнови \`APP_NATIVE_VERSION=${{ github.run_number }}\` в окружении сервера (.env)" >> $GITHUB_STEP_SUMMARY
           echo "чтобы старые APK получили уведомление об обновлении." >> $GITHUB_STEP_SUMMARY

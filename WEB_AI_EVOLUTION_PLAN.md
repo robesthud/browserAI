@@ -191,7 +191,7 @@
 - React
 - Vite
 - Express
-- Railway
+- Docker / Timeweb
 - Tailwind
 - SQLite / better-sqlite3
 - Nodemailer

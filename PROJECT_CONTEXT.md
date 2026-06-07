@@ -114,7 +114,7 @@ The canonical deployment is via Docker:
 - `.env.example` documents all environment variables; copy to `.env`
   next to `docker-compose.yml` on the deploy host.
 
-For Railway-style deployments the same `Dockerfile` works as-is; just
+The same `Dockerfile` works on any Docker host as-is; just
 point the platform at the repo and mount a persistent volume at `/data`.
 
 ## Auth/cloud-sync status
@@ -131,18 +131,18 @@ Frontend auth gate: `src/components/AuthGate.jsx`.
 Important behavior:
 
 - First registered user becomes `owner`.
-- After the first user exists, registration is closed unless request includes `registrationSecret` equal to Railway env `REGISTRATION_SECRET`.
+- After the first user exists, registration is closed unless request includes `registrationSecret` equal to env `REGISTRATION_SECRET`.
 - Sessions use HttpOnly cookie `browserai_session`.
 - `user_cloud_data.payload` is encrypted with AES-256-GCM using `AUTH_SECRET`.
 - Synced data currently includes settings/API keys and chats, not full Workspace files.
 - `useSettings` skips legacy global `/api/settings` DB sync when `localStorage['browserai.auth.enabled'] === '1'`; cloud data is saved through `/api/cloud` from `CloudSync` in `App.jsx`.
 - Password reset is real but requires SMTP env vars. Without SMTP it returns a configuration error.
 
-Required Railway variables for production auth:
+Required environment variables for production auth:
 
 ```text
 AUTH_SECRET=<long random secret>
-APP_URL=https://browserai-production.up.railway.app
+APP_URL=https://your.domain.example
 ```
 
 Optional for more registrations/password reset:
@@ -163,13 +163,13 @@ SMTP_FROM=BrowserAI <noreply@example.com>
    - Do not use `app.get('*')`; Express 5/path-to-regexp crashes.
    - Current code uses regex route for non-API paths.
 
-2. Railway static asset CORS:
+2. Static asset CORS:
    - Do not hard-code `http://localhost:5173` for production.
    - Current code uses wildcard CORS unless `CORS_ORIGIN` is set.
 
 3. Android/WebView blank screen:
    - Vite legacy plugin is installed and configured in `vite.config.js`.
-   - Railway HTML should include both modern assets and legacy `nomodule` assets.
+   - Production HTML should include both modern assets and legacy `nomodule` assets.
    - Helmet CSP must allow Vite legacy inline loader scripts:
      - `script-src 'self' 'unsafe-inline'`
    - Without this, older Android System WebView may show only a grey screen.
@@ -207,12 +207,12 @@ The Android app checks GitHub Releases on startup:
 ## When changing web code
 
 1. Commit and push to `main`.
-2. Wait for Railway to deploy the new commit.
+2. Push to `main`; deploy via GitHub Actions `deploy-timeweb.yml` (or run docker compose on the VPS).
 3. Verify production HTML:
 
 ```bash
-curl -fsS https://browserai-production.up.railway.app/ | grep -E 'legacy|nomodule|assets/'
-curl -sS -D - https://browserai-production.up.railway.app/ -o /dev/null | grep -i content-security-policy
+curl -fsS http://72.56.116.15/ | grep -E 'legacy|nomodule|assets/'
+curl -sS -D - http://72.56.116.15/ -o /dev/null | grep -i content-security-policy
 ```
 
 Expected:
@@ -229,8 +229,8 @@ Expected:
 
 ## Known Android/UI caveats
 
-- The app is a WebView wrapper around the Railway web app. Backend still runs on Railway.
-- Web UI updates over the air after Railway redeploy; APK updates are needed only when `android-app/` native wrapper code changes.
+- The app is a WebView wrapper around the production web app. Backend runs on the Timeweb VPS.
+- Web UI updates over the air after server redeploy; APK updates are needed only when `android-app/` native wrapper code changes.
 - Android cannot silently install APK updates outside Google Play. Current native updater checks GitHub Releases, downloads the APK inside the app, then opens the Android package installer. User still must approve installation.
 - Direct in-app APK update requires the new APK to be signed with the same key as the installed APK. Workflows now create/cache `android-app/app/debug.keystore` with key `browserai-android-debug-keystore-v1`. After this change the user should install one APK manually from `Release Android APK`; future releases can be updated from the in-app dialog.
 

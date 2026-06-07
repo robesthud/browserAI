@@ -58,7 +58,7 @@ import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
     private static final int FILE_CHOOSER_REQUEST = 1001;
-    // Наш сервер на Railway — быстрее, без rate-limit GitHub, мы контролируем версию
+    // Наш сервер — быстрее, без rate-limit GitHub, мы контролируем версию
     // /api/app-version возвращает: minNativeVersion, apkUrl, releaseNotes
     private static final String APP_VERSION_API = "/api/app-version";
     // FIX: макс размер APK 150 МБ
@@ -160,7 +160,7 @@ public class MainActivity extends Activity {
             settings.setSafeBrowsingEnabled(true);
         }
 
-        // Cookies — разрешаем включая third-party (нужно для Railway + сессий)
+        // Cookies — разрешаем включая third-party (нужно для сессий)
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -402,7 +402,7 @@ public class MainActivity extends Activity {
 
     // ── OTA обновления ───────────────────────────────────────────────────────
 
-    // Проверяем наш Railway-сервер — быстрее GitHub, без rate-limit
+    // Проверяем наш сервер — быстрее GitHub, без rate-limit
     // GET {appUrl}/api/app-version -> { minNativeVersion, apkUrl, releaseNotes }
     private void checkForUpdates() {
         new Thread(() -> {
@@ -596,8 +596,8 @@ public class MainActivity extends Activity {
     }
 
     private void loadApp() {
-        if (appUrl == null || appUrl.contains("YOUR-RAILWAY-APP")) {
-            showError("В android-app/app/src/main/res/values/strings.xml\nнужно заменить app_url на Railway URL.");
+        if (appUrl == null || appUrl.contains("YOUR-SERVER")) {
+            showError("В android-app/app/src/main/res/values/strings.xml\nнужно заменить app_url на ваш production URL.");
             return;
         }
         if (!isOnline()) {
