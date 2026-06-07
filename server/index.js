@@ -69,6 +69,7 @@ import {
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
 import { getGatewayModels, getGatewayStatus, isGatewayUrl, resolveGatewayModel } from './gateway.js'
+import { createJob, getJob, initJobs, listJobs, startJob } from './jobs.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
 import { isDeepSeekWebUrl, handleDeepSeekWebChat, validateDeepSeekWebKey } from './deepseekWeb.js'
@@ -1595,6 +1596,33 @@ app.get('/api/gateway/status', requireAuth, (_req, res) => {
   res.json(getGatewayStatus())
 })
 
+app.post('/api/jobs', requireAuth, (req, res) => {
+  try {
+    const { type, title = '', prompt = '', chatId = '', model = '', attachments = [], input = {} } = req.body || {}
+    const job = createJob({
+      userId: req.user?.id || '',
+      chatId,
+      type,
+      title: title || type,
+      input: { ...input, prompt, model, attachments },
+    })
+    startJob(job.id)
+    res.json({ ok: true, job: getJob(job.id) })
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message || 'Не удалось создать задачу' })
+  }
+})
+
+app.get('/api/jobs/:id', requireAuth, (req, res) => {
+  const job = getJob(req.params.id)
+  if (!job) return res.status(404).json({ error: 'job not found' })
+  res.json({ job })
+})
+
+app.get('/api/jobs', requireAuth, (req, res) => {
+  res.json({ jobs: listJobs({ chatId: String(req.query.chatId || ''), userId: req.user?.id || '', limit: req.query.limit || 50 }) })
+})
+
 app.get('/api/web/fetch', requireAuth, async (req, res) => {
   try {
     const url = String(req.query.url || '')
@@ -2015,6 +2043,7 @@ if (existsSync(distDir)) {
 
 try {
   await ensureWorkspaceRoot();
+  initJobs();
 } catch (err) {
   console.error('FATAL: Failed to initialize workspace:', err.message);
   process.exit(1);

@@ -4,6 +4,7 @@ import { formatSize } from '../lib/files.js'
 import Markdown from '../lib/markdown.jsx'
 import AgentToolBlock from './AgentToolBlock.jsx'
 import AgentAskUser from './AgentAskUser.jsx'
+import JobCard from './JobCard.jsx'
 import usePullToRefresh from '../lib/usePullToRefresh.js'
 import useSwipeActions from '../lib/useSwipeActions.js'
 
@@ -240,6 +241,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser }
               </div>
             )}
 
+            {m.job ? <JobCard job={m.job} /> : null}
             {m.content ? <Markdown text={m.content} /> : null}
             {m.pending && (
               <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-cream/70 align-middle" />

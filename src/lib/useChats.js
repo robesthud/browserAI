@@ -13,6 +13,7 @@ import { sendChat, summarizeConversation } from './api.js'
 import { resolveActive } from './settings.js'
 import haptics from './haptics.js'
 import { workspaceApi } from './workspace.js'
+import { createJob, detectLongJobType } from './jobs.js'
 
 const SUMMARY_TRIGGER_MESSAGES = 14
 const SUMMARY_KEEP_RECENT = 8
@@ -232,6 +233,20 @@ export function useChats(settings) {
       }
 
       try {
+        const longJobType = detectLongJobType(trimmed, attachments)
+        if (longJobType) {
+          const data = await createJob({
+            type: longJobType,
+            title: longJobType.replace(/_/g, ' '),
+            prompt: trimmed,
+            chatId,
+            model: 'gemini-2.5-pro',
+            attachments,
+          })
+          patchAssistant({ pending: false, job: data.job, content: '' })
+          return
+        }
+
         // БАГ 3 ИСПРАВЛЕН: если авторежим передал overrideModel — используем его,
         // не дожидаясь пока React обновит settings через setState
         const baseResolved = resolveActive(settings)
