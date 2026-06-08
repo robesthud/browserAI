@@ -296,7 +296,6 @@ export const OPS_SERVICES = {
       deploy_safe: { safe: false, description: 'Deploy with automatic rollback: record current commit, pull+build+up, health-check; if health fails, reset to the previous commit, rebuild and restart, then re-check. Mirrors a careful deploy-and-revert-on-failure flow.' },
       repair_deploy: { safe: false, description: 'Run a deploy with diagnostics: pre-status, build/up, health checks, and failure logs. Use after confirmation when user asks to deploy/fix deploy.' },
       restart: { safe: false, description: 'Restart browserai container' },
-      gemini_restart: { safe: false, description: 'Restart gemini-web-proxy.service' },
     },
   },
   telegram: {
@@ -372,12 +371,11 @@ if [ "$LOCAL" = "$REMOTE" ]; then echo "in_sync: yes"; else echo "in_sync: NO (d
 DIRTY=$(git status --short); if [ -n "$DIRTY" ]; then echo "dirty_files:"; echo "$DIRTY"; else echo "dirty_files: none"; fi
 echo -n "health: "; curl -fsS http://localhost/api/health && echo || echo "UNHEALTHY"
 [ "$LOCAL" = "$REMOTE" ]`,
-    deploy: `set -e; cd ${shQuote(APP_DIR)}; git fetch --quiet origin main; git reset --hard origin/main; git log -1 --oneline; scripts/apply-gemini-web-proxy-patch.sh /opt/gemini-web-proxy || true; systemctl restart gemini-web-proxy.service; docker compose build; docker compose up -d; sleep 8; curl -fsS http://localhost/api/health; echo; curl -fsS http://172.17.0.1:8080/health; echo`,
+    deploy: `set -e; cd ${shQuote(APP_DIR)}; git fetch --quiet origin main; git reset --hard origin/main; git log -1 --oneline; docker compose build; docker compose up -d; sleep 8; curl -fsS http://localhost/api/health; echo`,
     deploy_safe: `cd ${shQuote(APP_DIR)}
 set +e
 PREV=$(git rev-parse HEAD); echo "== prev commit == $PREV"
 git fetch --quiet origin main; git reset --hard origin/main; NEW=$(git rev-parse HEAD); echo "== new commit == $NEW"; git log -1 --oneline
-scripts/apply-gemini-web-proxy-patch.sh /opt/gemini-web-proxy || true
 echo "== build =="; docker compose build; BUILD=$?
 echo "== up =="; docker compose up -d; UP=$?
 sleep 8
@@ -404,19 +402,16 @@ set +e
 echo '== pre git =='; git log -1 --oneline; git status --short
 echo '== pre containers =='; docker compose ps
 echo '== fetch/reset =='; git fetch origin main; FETCH=$?; git reset --hard origin/main; RESET=$?; git log -1 --oneline
-echo '== apply gemini patch =='; scripts/apply-gemini-web-proxy-patch.sh /opt/gemini-web-proxy; PATCH=$?; systemctl restart gemini-web-proxy.service; GEMINI_RESTART=$?
 echo '== build =='; docker compose build; BUILD=$?
 echo '== up =='; docker compose up -d; UP=$?
 sleep 8
-echo '== health =='; curl -fsS http://localhost/api/health; H1=$?; echo; curl -fsS http://172.17.0.1:8080/health; H2=$?; echo
+echo '== health =='; curl -fsS http://localhost/api/health; H1=$?; echo
 echo '== containers =='; docker compose ps
 echo '== browserai logs =='; docker compose logs --tail=160 browserai
-echo '== gemini logs =='; journalctl -u gemini-web-proxy.service -n 120 --no-pager
-echo "== summary == fetch:$FETCH reset:$RESET patch:$PATCH gemini_restart:$GEMINI_RESTART build:$BUILD up:$UP health_browserai:$H1 health_gemini:$H2"
-if [ $FETCH -ne 0 ] || [ $RESET -ne 0 ] || [ $BUILD -ne 0 ] || [ $UP -ne 0 ] || [ $H1 -ne 0 ] || [ $H2 -ne 0 ]; then exit 1; fi
+echo "== summary == fetch:$FETCH reset:$RESET build:$BUILD up:$UP health_browserai:$H1"
+if [ $FETCH -ne 0 ] || [ $RESET -ne 0 ] || [ $BUILD -ne 0 ] || [ $UP -ne 0 ] || [ $H1 -ne 0 ]; then exit 1; fi
 exit 0`,
     restart: `cd ${shQuote(APP_DIR)} && docker compose restart browserai && sleep 5 && curl -fsS http://localhost/api/health`,
-    gemini_restart: `systemctl restart gemini-web-proxy.service && sleep 10 && curl -fsS http://172.17.0.1:8080/health`,
   }
   const command = commands[action]
   if (!command) throw new Error(`Action not implemented: ${service}.${action}`)

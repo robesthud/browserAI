@@ -25,9 +25,8 @@ Actions:
 | `git_status` | yes | Show current commit and dirty files in `/opt/browserai` |
 | `deploy` | no | Reset to `origin/main`, rebuild, restart, health-check |
 | `deploy_safe` | no | Deploy with **automatic rollback**: records current commit, pull+build+up+health-check; if health fails, resets to the previous commit, rebuilds and re-checks |
-| `repair_deploy` | no | Deploy plus diagnostics: pre-status, build/up, health, browserai logs, gemini logs, summary exit codes |
+| `repair_deploy` | no | Deploy plus diagnostics: pre-status, build/up, health, browserai logs, summary exit codes |
 | `restart` | no | Restart BrowserAI container |
-| `gemini_restart` | no | Restart `gemini-web-proxy.service` |
 
 Dangerous actions return `requiresConfirmation` unless called with `confirm:true`. The agent should use `ask_user` before running them.
 
@@ -119,34 +118,19 @@ neutral, dangerous ones are marked ⚠), recent jobs, and an output pane.
 Dangerous actions trigger a confirmation dialog and are only sent with
 `confirm:true` after the operator agrees.
 
-## Free Gateway
+## Built-in free providers
 
-The Free Gateway (`server/gateway.js`) is the virtual provider users can pick
-in Settings (`baseUrl=https://browserai.local/free-gateway`,
-`apiKey=__gateway__`). The server routes each model id to a concrete backend:
+- **DeepSeek managed** — `chat.deepseek.com` with server-managed bearer
+  token + cookies refreshed by `deepseekTokenRefresher` (see admin
+  `/admin/deepseek` and Telegram bot for re-auth).
+- **Google AI Studio** — direct REST against
+  `generativelanguage.googleapis.com`. User pastes their free `AIza…`
+  key from <https://aistudio.google.com/apikey> into Settings; no
+  card needed. 100 requests/day free tier covers vision + image gen.
 
-- `deepseek_chat`, `deepseek_reasoner` → `chat.deepseek.com` with the
-  server-managed bearer + cookies from `deepseekTokenRefresher`.
-- `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.0-flash` →
-  `GEMINI_WEB_PROXY_URL` (default `http://host.docker.internal:8080/v1`).
-
-Configuration via env (also in `.env.example`):
-
-```env
-GEMINI_WEB_PROXY_URL=http://host.docker.internal:8080/v1
-GEMINI_WEB_PROXY_TOKEN=not-needed     # if set, sent as Bearer + X-Proxy-Token
-```
-
-Health endpoints (auth required):
-
-- `GET /api/gateway/status` — fast, cached (15 s TTL).
-- `GET /api/gateway/health?force=1` — forced end-to-end probe of both
-  DeepSeek session and Gemini proxy; returns HTTP 503 if **both** are down.
-
-Unknown / unavailable models no longer silently fall back to another
-provider — `resolveGatewayModel()` returns `{ok:false, error, suggestion}`
-and the API responds with `400 unknown_model` or `503 deepseek_unavailable`
-plus a `suggestion` field.
+The legacy `gemini-web-proxy` (headless Chrome bot) and `free-gateway`
+virtual provider were removed; image generation now goes through the
+official `generate_image` tool which calls the Google API directly.
 
 ## What is still missing
 

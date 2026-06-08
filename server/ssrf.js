@@ -26,14 +26,12 @@ export function isPrivateIp(address) {
 
 /**
  * Единая проверка «можно ли ходить на этот хост».
- * Блокирует localhost, *.local и приватные IP — но разрешает
- * host.docker.internal (нужен для Gemini Web Proxy внутри docker-сети).
+ * Блокирует localhost, *.local и приватные IP.
  *
  * @param {string} hostname  — hostname из new URL(...).hostname
  * @returns {boolean} true, если запрос к хосту должен быть запрещён
  */
 export function isBlockedHost(hostname) {
   if (!hostname) return true
-  if (hostname === 'host.docker.internal') return false
   return isPrivateIp(hostname) || hostname === 'localhost' || hostname.endsWith('.local')
 }

@@ -1062,8 +1062,8 @@ export const TOOLS = {
   analyze_image: {
     description:
       'Look at an image (workspace file OR direct data: URL) and ask a vision model about it. ' +
-      'Tries Gemini Web Proxy first, falls back to OpenAI / Anthropic vision when keys are set on the server. ' +
-      'Use this to inspect UI screenshots from browser_open, diagrams, photos the user attached, etc.',
+      'Tries (in order): (1) any vision-capable key stored in the DB, (2) OPENAI_API_KEY env, (3) ANTHROPIC_API_KEY env. ' +
+      'Use this for screenshots from browser_open / computer_screenshot, diagrams, user-attached photos, etc.',
     params: {
       path:     { type: 'string', optional: true, description: 'Workspace file path. Use this OR data_url.' },
       data_url: { type: 'string', optional: true, description: 'data:image/...;base64,... URL. Use this for one-shot analysis without saving the file.' },
@@ -1084,18 +1084,32 @@ export const TOOLS = {
 
       const attempts = []
       const want = String(model || '').toLowerCase()
-      const tryGemini = !want || want === 'gemini'
-      const tryOpenAI = (!want || want === 'openai') && process.env.OPENAI_API_KEY
-      const tryAnth   = (!want || want === 'anthropic') && process.env.ANTHROPIC_API_KEY
 
-      if (tryGemini) {
+      // Discover vision-capable keys stored in the DB. We treat keys
+      // whose model name matches gemini/gpt-4o/claude-*-sonnet|opus|haiku
+      // as eligible. Anything else is a text-only LLM and we skip it.
+      let dbKeys = []
+      try {
+        const dbModule = await import('./db.js')
+        const dbHandle = dbModule.default
+        const rows = dbHandle.prepare("SELECT base_url, api_key, model, auth_type FROM keys").all()
+        dbKeys = rows.filter((r) => /gemini|gpt-4o|claude/i.test(String(r.model || '')))
+      } catch (e) {
+        attempts.push(`db lookup failed: ${e.message}`)
+      }
+
+      // 1. DB-stored vision-capable provider (typically the user's own
+      //    Google AI Studio / OpenAI / Anthropic key).
+      for (const k of dbKeys) {
+        if (want && !String(k.model).toLowerCase().includes(want)) continue
         try {
-          const url = (process.env.GEMINI_WEB_PROXY_URL || 'http://host.docker.internal:8080/v1').replace(/\/$/, '')
+          const url = String(k.base_url || '').replace(/\/$/, '')
+          if (!url) continue
           const r = await fetch(`${url}/chat/completions`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer not-needed' },
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${k.api_key}` },
             body: JSON.stringify({
-              model: process.env.GEMINI_WEB_MODEL || 'gemini-2.5-flash',
+              model: k.model,
               messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: dataUrl } }] }],
             }),
             signal: AbortSignal.timeout(90_000),
@@ -1103,11 +1117,14 @@ export const TOOLS = {
           const raw = await r.text()
           if (r.ok) {
             const answer = JSON.parse(raw)?.choices?.[0]?.message?.content || ''
-            if (answer) return ok({ path, question: prompt, answer: truncate(answer, 6000), via: 'gemini-web-proxy' })
+            if (answer) return ok({ path, question: prompt, answer: truncate(answer, 6000), via: `db:${k.model}` })
           }
-          attempts.push(`gemini: HTTP ${r.status} ${truncate(raw, 200)}`)
-        } catch (e) { attempts.push(`gemini: ${e.message}`) }
+          attempts.push(`db ${k.model}: HTTP ${r.status} ${truncate(raw, 150)}`)
+        } catch (e) { attempts.push(`db ${k.model}: ${e.message}`) }
       }
+
+      const tryOpenAI = (!want || want === 'openai') && process.env.OPENAI_API_KEY
+      const tryAnth   = (!want || want === 'anthropic') && process.env.ANTHROPIC_API_KEY
 
       if (tryOpenAI) {
         try {
@@ -1420,84 +1437,111 @@ export const TOOLS = {
 
   // ── Image generation (Arena-style: file_path + prompt) ────────────────
   // Mirrors my generate_image signature. Submits a job to the local
-  // image-generation pipeline (Gemini Web Proxy under the hood), polls
-  // until done, copies the produced image to the requested file_path,
-  // and surfaces a preview in the chat. The polling loop honours the
-  // agent's AbortSignal so a Stop click cancels cleanly.
+  // Generate an image from a text prompt via Google's official
+  // generativelanguage.googleapis.com API (no headless browser, no
+  // proxy). Auto-discovers a Google API key in either:
+  //   • env GEMINI_API_KEY / GOOGLE_API_KEY
+  //   • a key row in the DB whose base_url contains 'googleapis.com'
+  //     OR whose api_key starts with 'AIza' (the Google API key shape).
+  // If no key is found, returns a clear error pointing the user at
+  // https://aistudio.google.com/apikey (free, no billing required).
   generate_image: {
     description:
-      'Generate an image from a text prompt and save it to the workspace. The image is saved to the specified file path, which must end in .jpg, .jpeg, or .png. Use when the user requests an image, illustration, icon, or visual asset. The generated image will be visible in the workspace preview.',
+      'Generate an image from a text prompt and save it to the workspace. The image is saved to the specified file path, which must end in .jpg, .jpeg, or .png. Use when the user requests an image, illustration, icon, or visual asset. The generated image will be visible in the workspace preview. Requires a Google AI Studio API key (free tier: 100 images/day) either in env GEMINI_API_KEY or stored in Settings.',
     params: {
       file_path: { type: 'string', required: true, description: "Relative path to save the generated image (e.g. 'images/hero.jpg', 'logo.png'). Must end in .jpg, .jpeg, or .png." },
       prompt:    { type: 'string', required: true, description: 'Text prompt describing the image to generate.' },
+      model:     { type: 'string', optional: true, description: 'Optional override. Default: gemini-2.5-flash-image-preview ("Nano Banana"). Try imagen-4.0-generate-001 for higher quality.' },
     },
-    handler: async ({ file_path, prompt, _signal, _userId = '', _chatId = '' } = {}) => {
+    handler: async ({ file_path, prompt, model, _signal } = {}) => {
       if (!file_path) return err('file_path is required')
       if (!prompt)    return err('prompt is required')
       if (!/\.(jpe?g|png)$/i.test(file_path)) {
         return err('file_path must end in .jpg, .jpeg, or .png')
       }
-      try {
-        const { createJob, startJob, getJob } = await import('./jobs.js')
-        const job = createJob({
-          userId: _userId,
-          chatId: _chatId,
-          type: 'gemini_image',
-          title: String(prompt).slice(0, 80),
-          input: { prompt: String(prompt), targetPath: String(file_path) },
-        })
-        startJob(job.id)
 
-        // Poll until done OR aborted, with adaptive backoff (1s → 5s).
-        const deadline = Date.now() + 5 * 60_000   // 5-min hard cap
-        let delay = 1000
-        while (Date.now() < deadline) {
-          if (_signal?.aborted) {
-            try { (await import('./jobs.js')).cancelJob(job.id) } catch { /* ignore */ }
-            return err('cancelled')
-          }
-          await new Promise((r) => setTimeout(r, delay))
-          delay = Math.min(5000, Math.round(delay * 1.4))
-          const cur = getJob(job.id)
-          if (!cur) return err(`job ${job.id} disappeared`)
-          if (cur.status === 'failed') return err(`image gen failed: ${cur.error || 'unknown error'}`)
-          if (cur.status === 'done') {
-            // Copy produced file → file_path inside the chat workspace.
-            const files = cur.result?.files || []
-            const produced = files.find((f) => /\.(jpe?g|png|webp)$/i.test(f)) || files[0]
-            if (!produced) return err('image generated but no output file was found in job result')
-            try {
-              const { readFile, writeFile, mkdir } = await import('node:fs/promises')
-              const path_ = await import('node:path')
-              const ws = await import('./workspace.js')
-              const safe = ws.default?.safePath || ws.safePath
-              const srcAbs = path_.isAbsolute(produced) ? produced : (
-                typeof safe === 'function'
-                  ? safe(produced)
-                  : path_.join(process.env.WORKSPACE_ROOT || '/workspace', produced)
-              )
-              const buf = await readFile(srcAbs)
-              const destAbs = typeof safe === 'function'
-                ? safe(file_path)
-                : path_.join(process.env.WORKSPACE_ROOT || '/workspace', file_path)
-              await mkdir(path_.dirname(destAbs), { recursive: true })
-              await writeFile(destAbs, buf)
-              return ok({
-                file_path,
-                bytes: buf.length,
-                jobId: job.id,
-                source: produced,
-                note: 'Image saved to workspace; UI shows it in the file preview.',
-              })
-            } catch (copyErr) {
-              return err(`image generated but could not be written to ${file_path}: ${copyErr.message}`)
-            }
-          }
-          // running/queued — keep polling
+      // Discover a Google API key.
+      let apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || ''
+      if (!apiKey) {
+        try {
+          const dbModule = await import('./db.js')
+          const rows = dbModule.default.prepare(
+            "SELECT api_key, model FROM keys WHERE base_url LIKE '%googleapis.com%' OR api_key LIKE 'AIza%' LIMIT 1"
+          ).all()
+          if (rows.length) apiKey = rows[0].api_key
+        } catch { /* fall through */ }
+      }
+      if (!apiKey) {
+        return err(
+          'Нет Google API key. Получи бесплатный на https://aistudio.google.com/apikey (без карты, 100 картинок/день) ' +
+          'и добавь его в Settings → API Keys с base_url https://generativelanguage.googleapis.com/v1beta/openai/'
+        )
+      }
+
+      const targetModel = model || 'gemini-2.5-flash-image-preview'
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent`
+      try {
+        const r = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey,
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: String(prompt) }] }],
+            generationConfig: { responseModalities: ['Image'] },
+          }),
+          signal: _signal || AbortSignal.timeout(120_000),
+        })
+        const text = await r.text()
+        if (!r.ok) {
+          return err(`Google API HTTP ${r.status}: ${truncate(text, 400)}`)
         }
-        try { (await import('./jobs.js')).cancelJob(job.id) } catch { /* ignore */ }
-        return err('image generation timed out after 5 minutes')
-      } catch (e) { return err(e?.message || String(e)) }
+        let data
+        try { data = JSON.parse(text) } catch { return err(`Google API returned non-JSON: ${truncate(text, 200)}`) }
+
+        // Find image bytes in response — Google returns them under
+        // candidates[0].content.parts[*].inlineData.data (base64).
+        let b64 = ''
+        let mime = 'image/png'
+        const parts = data?.candidates?.[0]?.content?.parts || []
+        for (const p of parts) {
+          if (p?.inlineData?.data) {
+            b64 = p.inlineData.data
+            mime = p.inlineData.mimeType || mime
+            break
+          }
+        }
+        if (!b64) {
+          const finishReason = data?.candidates?.[0]?.finishReason || 'unknown'
+          const promptFeedback = data?.promptFeedback ? JSON.stringify(data.promptFeedback) : ''
+          return err(`Google API returned no image (finish=${finishReason}). ${promptFeedback}`.trim())
+        }
+
+        // Save to workspace.
+        const { writeFile, mkdir } = await import('node:fs/promises')
+        const pathMod = await import('node:path')
+        const ws = await import('./workspace.js')
+        const safe = ws.default?.safePath || ws.safePath
+        const destAbs = typeof safe === 'function'
+          ? safe(file_path)
+          : pathMod.join(process.env.WORKSPACE_ROOT || '/workspace', file_path)
+        await mkdir(pathMod.dirname(destAbs), { recursive: true })
+        const buf = Buffer.from(b64, 'base64')
+        await writeFile(destAbs, buf)
+
+        return ok({
+          file_path,
+          bytes: buf.length,
+          mime,
+          model: targetModel,
+          via: 'google-ai-studio',
+          dataUrl: `data:${mime};base64,${b64}`,    // inline preview in chat
+          note: 'Image saved to workspace and shown inline.',
+        })
+      } catch (e) {
+        return err(`generate_image: ${e?.message || String(e)}`)
+      }
     },
   },
 }

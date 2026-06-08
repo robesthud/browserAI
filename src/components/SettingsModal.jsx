@@ -81,17 +81,6 @@ const PROVIDER_PRESETS = [
   // автоматически обновляет сам сервер. Клиент ничего не вводит —
   // выбирает пресет и сразу общается.
   {
-    id: 'free-gateway',
-    group: 'free',
-    label: '☁️ Free Gateway',
-    name: 'BrowserAI Free Gateway',
-    baseUrl: 'https://browserai.local/free-gateway',
-    model: 'deepseek_chat',
-    apiKey: '__gateway__',
-    availableModels: ['deepseek_chat', 'deepseek_reasoner', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
-    hint: 'Один простой бесплатный режим: DeepSeek + Gemini Web. Авто само выбирает модель под запрос; вручную можно выбрать любую модель в чате.',
-  },
-  {
     id: 'deepseek-managed',
     group: 'free',
     label: '✨ DeepSeek',
@@ -107,15 +96,15 @@ const PROVIDER_PRESETS = [
     hint: 'Бесплатно. Токен и cookies хранятся на сервере и обновляются автоматически. Управление: /admin/deepseek или Telegram-бот.',
   },
   {
-    id: 'gemini-web-proxy',
+    id: 'google-ai-studio',
     group: 'free',
-    label: '✨ Gemini Web Proxy',
-    name: 'Gemini Web Proxy',
-    baseUrl: 'http://host.docker.internal:8080/v1',
-    model: 'gemini-2.5-pro',
-    apiKey: 'not-needed',
-    availableModels: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
-    hint: 'Бесплатно через Google Gemini Web. На Timeweb должен быть запущен gemini-web-proxy; первый логин выполняется через временный noVNC.',
+    label: '🔑 Google AI Studio',
+    name: 'Google AI Studio',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    model: 'gemini-2.5-flash',
+    apiKey: '',     // user pastes their AIza... key
+    availableModels: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-image-preview'],
+    hint: 'Бесплатный ключ на https://aistudio.google.com/apikey — без карты, 100 запросов/день. Поддерживает vision и генерацию картинок (модель gemini-2.5-flash-image-preview).',
   },
 ]
 

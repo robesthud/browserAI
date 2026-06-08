@@ -74,8 +74,8 @@ function initTables(db) {
       user_id TEXT,             -- linked browserai user_id (NULL until /link)
       mode TEXT NOT NULL DEFAULT 'chat',
       model TEXT NOT NULL DEFAULT 'deepseek_chat',
-      provider_base_url TEXT NOT NULL DEFAULT 'https://browserai.local/free-gateway',
-      provider_api_key TEXT NOT NULL DEFAULT '__gateway__',
+      provider_base_url TEXT NOT NULL DEFAULT 'https://chat.deepseek.com/api/v0',
+      provider_api_key TEXT NOT NULL DEFAULT '__managed__',
       active_chat_id TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL

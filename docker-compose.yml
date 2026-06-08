@@ -35,10 +35,11 @@ services:
       # computer up -d to enable.
       - COMPUTER_SANDBOX_CONTAINER=computer-sandbox
       - BROWSERAI_COMPUTER_USE=${BROWSERAI_COMPUTER_USE:-off}
-      # Free Gateway → Gemini Web Proxy. Defaults assume the proxy runs on
-      # the host at 127.0.0.1:8080 (reached via host.docker.internal).
-      - GEMINI_WEB_PROXY_URL=${GEMINI_WEB_PROXY_URL:-http://host.docker.internal:8080/v1}
-      - GEMINI_WEB_PROXY_TOKEN=${GEMINI_WEB_PROXY_TOKEN:-not-needed}
+      # Optional: Google AI Studio API key for generate_image + Gemini calls.
+      # Get a free key at https://aistudio.google.com/apikey — no card needed.
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     # Bind-mounts: state lives on the host filesystem, visible with plain ls,
     # easy to rsync / backup, completely independent from docker volumes so
     # `docker compose down -v` does NOT touch it.
@@ -51,10 +52,6 @@ services:
       - ${WORKSPACE_DIR:-./workspace}:/workspace
       # Allows `docker exec agent-sandbox ...` from inside this container.
       - /var/run/docker.sock:/var/run/docker.sock
-    extra_hosts:
-      # Allows BrowserAI container to reach host-local services such as
-      # gemini-web-proxy running on 127.0.0.1:8080 on the VPS.
-      - "host.docker.internal:host-gateway"
     depends_on:
       - agent-sandbox
 

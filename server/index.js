@@ -70,14 +70,9 @@ import {
   deleteWorkspaceScope,
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
-import {
-  getGatewayModels,
-  getGatewayStatus,
-  getGatewayStatusSync,
-  isGatewayUrl,
-  resolveGatewayModel,
-} from './gateway.js'
-import { createJob, getJob, initJobs, listJobs, startJob, cancelJob, retryVideoJob } from './jobs.js'
+// gateway.js (free-gateway routing) удалён вместе с gemini-web-proxy.
+// retryVideoJob удалён вместе с gemini_video runner.
+import { createJob, getJob, initJobs, listJobs, startJob, cancelJob } from './jobs.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
@@ -768,18 +763,6 @@ function rankModels(models = [], requestedModel = '') {
 }
 
 
-function isGeminiWebProxyUrl(baseUrl = '') {
-  try {
-    const u = new URL(String(baseUrl || ''))
-    return (u.hostname === 'host.docker.internal' && u.port === '8080')
-      || /gemini-web-proxy/i.test(u.hostname)
-  } catch {
-    return false
-  }
-}
-
-const GEMINI_WEB_PROXY_MODELS = ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash']
-
 async function probeChatModel(root, apiKey, model) {
   const r = await fetch(`${root}/chat/completions`, {
     method: 'POST',
@@ -821,13 +804,6 @@ async function fetchModels(baseUrl, apiKey, requestedModel = '') {
   }
 
   const root = String(baseUrl).replace(/\/$/, '')
-  if (isGeminiWebProxyUrl(baseUrl)) {
-    const probeModel = requestedModel && GEMINI_WEB_PROXY_MODELS.includes(requestedModel)
-      ? requestedModel
-      : GEMINI_WEB_PROXY_MODELS[0]
-    const probe = await probeChatModel(root, apiKey || 'not-needed', probeModel)
-    return { ok: probe.ok, status: probe.status || 0, models: GEMINI_WEB_PROXY_MODELS, preferredModel: probe.ok ? probeModel : GEMINI_WEB_PROXY_MODELS[0] }
-  }
   const r = await fetch(`${root}/models`, {
     headers: { Authorization: `Bearer ${apiKey}` },
     signal: AbortSignal.timeout(15000),
@@ -1175,24 +1151,8 @@ app.post('/api/validate', requireAuth, async (req, res) => {
     }
   }
 
-  if (isGatewayUrl(baseUrl)) {
-    const models = getGatewayModels()
-    const snap = getGatewayStatusSync()
-    const dsOk = snap?.deepseek?.alive
-    const gemOk = snap?.gemini?.alive
-    const aliveBits = []
-    if (dsOk) aliveBits.push('DeepSeek')
-    if (gemOk === true) aliveBits.push('Gemini')
-    const message = aliveBits.length
-      ? `Free Gateway готов · ${aliveBits.join(' + ')} · моделей: ${models.length}`
-      : `Free Gateway: провайдеры пока не отвечают (Gemini=${gemOk ?? '?'}, DeepSeek=${dsOk ? 'ok' : 'down'}). Запусти /api/gateway/health.`
-    return res.json({
-      ok: true,
-      message,
-      models,
-      preferredModel: models.includes(model) ? model : models[0],
-    })
-  }
+  // free-gateway routing удалён вместе с gemini-web-proxy — DeepSeek
+  // теперь обслуживается напрямую через handleDeepSeekWebChat (см. выше).
 
   if (!baseUrl || !apiKey) {
     return res.json({ ok: false, message: 'Укажите Base URL и ключ', models: [], preferredModel: '' })
@@ -1684,34 +1644,8 @@ app.get('/api/web/search', requireAuth, async (req, res) => {
 })
 
 
-app.get('/api/gateway/models', requireAuth, (_req, res) => {
-  const snap = getGatewayStatusSync()
-  res.json({ models: getGatewayModels(), items: snap.models })
-})
-
-// Лёгкий статус (быстрый, из 15-сек кэша; если кэш пуст — поднимет фоновый
-// пинг и вернёт sync-снимок).
-app.get('/api/gateway/status', requireAuth, async (_req, res) => {
-  try {
-    const status = await getGatewayStatus()
-    res.json(status)
-  } catch (e) {
-    res.status(500).json({ error: e?.message || 'gateway status failed' })
-  }
-})
-
-// Полный health: принудительный пинг (force=1 → сбросить кэш).
-app.get('/api/gateway/health', requireAuth, async (req, res) => {
-  try {
-    const force = String(req.query?.force || '').match(/^(1|true|yes)$/i)
-    const status = await getGatewayStatus({ force: Boolean(force) })
-    const httpCode =
-      status.deepseek?.alive || status.gemini?.alive ? 200 : 503
-    res.status(httpCode).json(status)
-  } catch (e) {
-    res.status(500).json({ error: e?.message || 'gateway health failed' })
-  }
-})
+// /api/gateway/* endpoints удалены вместе с gemini-web-proxy. DeepSeek
+// managed теперь обслуживается через handleDeepSeekWebChat напрямую.
 
 app.get('/api/ops/services', requireAuth, (_req, res) => {
   res.json({ services: listOpsServices() })
@@ -1958,23 +1892,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   } = req.body || {}
   let { apiKey } = req.body || {}
 
-  if (isGatewayUrl(baseUrl)) {
-    const routed = resolveGatewayModel(model)
-    if (!routed.ok) {
-      const code = routed.error === 'unknown_model' ? 400 : 503
-      return res.status(code).json({
-        error: routed.message,
-        code: routed.error,
-        suggestion: routed.suggestion,
-      })
-    }
-    baseUrl = routed.baseUrl
-    apiKey = routed.apiKey
-    authType = routed.authType
-    authHeader = ''
-    extraHeaders = routed.extraHeaders || {}
-    model = routed.model
-  }
+  // gateway routing удалён вместе с gemini-web-proxy
 
   // Managed DeepSeek: if client omits apiKey (or passes '__managed__'),
   // inject the server-managed Bearer token + cookies from the refresher.
@@ -2575,23 +2493,7 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
   } = req.body || {}
   let { apiKey } = req.body || {}
 
-  if (isGatewayUrl(baseUrl)) {
-    const routed = resolveGatewayModel(model)
-    if (!routed.ok) {
-      const code = routed.error === 'unknown_model' ? 400 : 503
-      return res.status(code).json({
-        error: routed.message,
-        code: routed.error,
-        suggestion: routed.suggestion,
-      })
-    }
-    baseUrl = routed.baseUrl
-    apiKey = routed.apiKey
-    authType = routed.authType
-    authHeader = ''
-    extraHeaders = routed.extraHeaders || {}
-    model = routed.model
-  }
+  // gateway routing удалён вместе с gemini-web-proxy
 
   if (!baseUrl || !model) {
     return res.status(400).json({ error: 'baseUrl and model are required' })
