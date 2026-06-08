@@ -23,7 +23,17 @@
  * 60 s wall-clock, 12 KB final answer.
  */
 import { callLLM, supportsNativeTools } from './llmClient.js'
-import { TOOLS, invokeTool } from './agentTools.js'
+// NB: avoid a static `import { invokeTool } from './agentTools.js'` —
+// agentTools.js dynamically registers OUR exported USE_SUBAGENTS_TOOL,
+// which makes the import graph cyclic. We resolve invokeTool lazily
+// at call-time instead.
+let _invokeTool = null
+async function getInvoke() {
+  if (_invokeTool) return _invokeTool
+  const mod = await import('./agentTools.js')
+  _invokeTool = mod.invokeTool
+  return _invokeTool
+}
 
 const SUBAGENT_TOOLS = new Set([
   'list_files', 'find_projects', 'read_file', 'search_files',
@@ -111,6 +121,7 @@ async function runOneSubagent({ prompt, provider, signal, userId }) {
     }
     convo.push({ role: 'assistant', content: text })
 
+    const invokeTool = await getInvoke()
     const results = await Promise.all(allowed.map(async (c) => {
       stats.tools += 1
       try {

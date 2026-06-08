@@ -1076,15 +1076,23 @@ export const TOOLS = {
   },
 }
 
-// Lazy-register use_subagents to avoid a circular import (subAgents.js
-// re-imports invokeTool from this file). Done at module-load time but
-// AFTER the TOOLS literal is sealed.
-try {
-  const { USE_SUBAGENTS_TOOL } = await import('./subAgents.js')
-  TOOLS.use_subagents = USE_SUBAGENTS_TOOL
-} catch (e) {
-  console.warn('[agentTools] use_subagents registration failed:', e?.message || e)
-}
+// Register use_subagents lazily on first read of TOOLS — avoids the
+// circular dep with subAgents.js (which imports invokeTool from this
+// file). Done by patching the TOOLS object after a microtask so that
+// our own module finishes loading first.
+//
+// IMPORTANT: do NOT use top-level await here. It deadlocks Node ESM
+// because subAgents.js -> agentTools.js (this file) -> top-level await
+// on subAgents.js again. Production observed:
+//   "Warning: Detected unsettled top-level await at agentTools.js:1083"
+// and the container never reached app.listen().
+import('./subAgents.js')
+  .then(({ USE_SUBAGENTS_TOOL }) => {
+    if (USE_SUBAGENTS_TOOL && !TOOLS.use_subagents) {
+      TOOLS.use_subagents = USE_SUBAGENTS_TOOL
+    }
+  })
+  .catch((e) => console.warn('[agentTools] use_subagents registration failed:', e?.message || e))
 
 // ── Schema for the system prompt ────────────────────────────────────────────
 /**
