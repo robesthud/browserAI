@@ -16,6 +16,10 @@ export function getJob(id) {
   return req(`/${encodeURIComponent(id)}`)
 }
 
+export function cancelJob(id) {
+  return req(`/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+}
+
 export function listJobs(chatId = '') {
   return req(`?chatId=${encodeURIComponent(chatId)}`)
 }

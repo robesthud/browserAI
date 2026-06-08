@@ -1,5 +1,5 @@
 diff --git a/server.py b/server.py
-index 121bdc5..7751442 100644
+index 121bdc5..586a4ad 100644
 --- a/server.py
 +++ b/server.py
 @@ -6,6 +6,9 @@ import json
@@ -277,7 +277,7 @@ index 121bdc5..7751442 100644
      }''')
      
      text_content = extraction.get('text', '').replace('\\_', '_')
-@@ -560,6 +763,78 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
+@@ -560,6 +763,89 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
      
      # No tool calls - convert HTML to markdown
      response_text = md(response_text, heading_style="ATX", code_language_callback=lambda el: el.get('class', [''])[0].replace('language-', '') if el.get('class') else '')
@@ -305,17 +305,28 @@ index 121bdc5..7751442 100644
 +        if v_data not in response_text:
 +            response_text += f"\n\n[generated video]({v_data})"
 +
-+    # Last-resort fallback: Gemini image responses can be rendered in a
-+    # component that hides the real image URL. If markdown contains an empty
-+    # image or a leftover generated-image marker, return a screenshot of the
-+    # response block so BrowserAI can display/save something useful.
++    # Last-resort fallback: screenshot ONLY the largest img/canvas/video inside
++    # the response (NOT the whole block, which would include the Gemini input
++    # bar / UI chrome). If no such element exists, do not fake an image.
 +    if 'data:image' not in response_text and ('![]()' in response_text or 'создано искусственным интеллектом' in response_text or 'created with AI' in response_text.lower()):
 +        try:
-+            shot = await last_response.screenshot(type='png')
-+            data_url = 'data:image/png;base64,' + base64.b64encode(shot).decode('ascii')
-+            response_text = re.sub(r'!\[[^\]]*\]\([^)]*\)', f'![generated image]({data_url})', response_text)
-+            if data_url not in response_text:
-+                response_text += f"\n\n![generated image]({data_url})"
++            target = await last_response.evaluate_handle('''(el) => {
++  const cands = [...el.querySelectorAll('img, canvas, video')];
++  let best = null, bestArea = 0;
++  for (const c of cands) {
++    const r = c.getBoundingClientRect();
++    const area = r.width * r.height;
++    if (area > bestArea && r.width > 80 && r.height > 80) { best = c; bestArea = area; }
++  }
++  return best;
++}''')
++            elem = target.as_element()
++            if elem:
++                shot = await elem.screenshot(type='png')
++                data_url = 'data:image/png;base64,' + base64.b64encode(shot).decode('ascii')
++                response_text = re.sub(r'!\[[^\]]*\]\([^)]*\)', f'![generated image]({data_url})', response_text)
++                if data_url not in response_text:
++                    response_text += f"\n\n![generated image]({data_url})"
 +        except Exception:
 +            pass
 +
@@ -356,7 +367,7 @@ index 121bdc5..7751442 100644
      
      return response_text.strip()
  
-@@ -672,10 +947,19 @@ async def chat_completions(request: ChatRequest):
+@@ -672,10 +958,19 @@ async def chat_completions(request: ChatRequest):
      
      async with page_locks[session_id]:
          conversation = format_conversation(request.messages, request.tools)
@@ -378,7 +389,7 @@ index 121bdc5..7751442 100644
              print(f"📤 [{time.strftime('%H:%M:%S')}] {response[:80]}...")
              
              # Check for tool calls
-@@ -824,12 +1108,17 @@ async def chat_completions(request: ChatRequest):
+@@ -824,12 +1119,17 @@ async def chat_completions(request: ChatRequest):
  
  @app.get("/v1/models")
  async def list_models():

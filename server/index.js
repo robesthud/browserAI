@@ -68,7 +68,7 @@ import {
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
 import { getGatewayModels, getGatewayStatus, isGatewayUrl, resolveGatewayModel } from './gateway.js'
-import { createJob, getJob, initJobs, listJobs, startJob } from './jobs.js'
+import { createJob, getJob, initJobs, listJobs, startJob, cancelJob } from './jobs.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
@@ -1644,6 +1644,12 @@ app.get('/api/jobs/:id', requireAuth, (req, res) => {
 
 app.get('/api/jobs', requireAuth, (req, res) => {
   res.json({ jobs: listJobs({ chatId: String(req.query.chatId || ''), userId: req.user?.id || '', limit: req.query.limit || 50 }) })
+})
+
+app.post('/api/jobs/:id/cancel', requireAuth, (req, res) => {
+  const job = cancelJob(req.params.id)
+  if (!job) return res.status(404).json({ error: 'job not found' })
+  res.json({ ok: true, job })
 })
 
 app.get('/api/web/fetch', requireAuth, async (req, res) => {

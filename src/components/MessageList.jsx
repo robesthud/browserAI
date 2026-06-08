@@ -82,7 +82,7 @@ function WorkingSpinner() {
   )
 }
 
-function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser }) {
+function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, onJobDone }) {
   const isUser = m.role === 'user'
 
   // Mobile swipe-left -> reveal action buttons (regenerate / copy).
@@ -241,7 +241,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser }
               </div>
             )}
 
-            {m.job ? <JobCard job={m.job} /> : null}
+            {m.job ? <JobCard job={m.job} onJobDone={onJobDone} /> : null}
             {m.content ? <Markdown text={m.content} /> : null}
             {m.pending && (
               <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-cream/70 align-middle" />
@@ -259,7 +259,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser }
   )
 }
 
-export default function MessageList({ messages, aiWorking, onEdit, onRegenerate, onRefresh, onAnswerAskUser }) {
+export default function MessageList({ messages, aiWorking, onEdit, onRegenerate, onRefresh, onAnswerAskUser, onJobDone }) {
   const bottomRef = useRef(null)
   const scrollRef = useRef(null)
   const prevLenRef = useRef(messages.length)
@@ -314,6 +314,7 @@ export default function MessageList({ messages, aiWorking, onEdit, onRegenerate,
             aiWorking={aiWorking}
             onEdit={onEdit}
             onRegenerate={onRegenerate}
+            onJobDone={onJobDone}
             onAnswerAskUser={(questionId, payload) => onAnswerAskUser?.(m.id, questionId, payload)}
           />
         ))}

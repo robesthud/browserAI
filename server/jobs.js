@@ -11,6 +11,7 @@ const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS || 10 * 60 * 1000)
 
 let initialized = false
 const running = new Set()
+const cancelled = new Set()  // job ids the user asked to cancel
 
 function now() { return Date.now() }
 function uid(prefix = 'job') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}` }
@@ -110,6 +111,19 @@ function setJobPatch(id, patch = {}) {
   return getJob(id)
 }
 
+// Mark a job for cancellation. The runner checks this between steps and stops.
+export function cancelJob(id) {
+  const job = getJob(id)
+  if (!job) return null
+  if (['succeeded', 'failed', 'cancelled'].includes(job.status)) return job
+  cancelled.add(id)
+  return setJobPatch(id, { status: 'cancelled', error: 'Отменено пользователем', finishedAt: now() })
+}
+
+function isCancelled(id) {
+  return cancelled.has(id)
+}
+
 export function appendJobLog(id, message) {
   const job = getJob(id)
   if (!job) return null
@@ -190,8 +204,10 @@ async function pollGeminiVideo(job, model) {
   const deadline = Date.now() + VIDEO_POLL_MAX_MS
   let attempt = 0
   while (Date.now() < deadline) {
+    if (isCancelled(job.id)) return { content: '', dataUrls: [], cancelled: true }
     attempt += 1
     await new Promise((res) => setTimeout(res, VIDEO_POLL_INTERVAL_MS))
+    if (isCancelled(job.id)) return { content: '', dataUrls: [], cancelled: true }
     appendJobLog(job.id, `Проверяю готовность видео (попытка ${attempt})…`)
     // Bump progress slowly between 75 and 95 while polling
     setJobPatch(job.id, { progress: Math.min(95, 75 + attempt * 3) })
@@ -231,6 +247,10 @@ async function runGeminiJob(job) {
   if (isVideo && dataUrls.length === 0 && VIDEO_PENDING_RE.test(content)) {
     appendJobLog(job.id, 'Видео генерируется асинхронно — ожидаю готовности…')
     const polled = await pollGeminiVideo(job, model)
+    if (polled.cancelled) {
+      appendJobLog(job.id, 'Задача отменена пользователем во время ожидания видео')
+      return
+    }
     if (polled.dataUrls.length) {
       content = polled.content
       dataUrls = polled.dataUrls
@@ -462,6 +482,7 @@ export function startJob(id) {
       setJobPatch(id, { status: 'failed', error: e.message || String(e), finishedAt: now() })
     } finally {
       running.delete(id)
+      cancelled.delete(id)
     }
   })()
   return getJob(id)

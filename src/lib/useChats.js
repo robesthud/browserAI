@@ -13,7 +13,7 @@ import { sendChat, summarizeConversation } from './api.js'
 import { resolveActive } from './settings.js'
 import haptics from './haptics.js'
 import { workspaceApi } from './workspace.js'
-import { createJob, detectLongJobType } from './jobs.js'
+import { createJob, detectLongJobType, cancelJob } from './jobs.js'
 
 const SUMMARY_TRIGGER_MESSAGES = 14
 const SUMMARY_KEEP_RECENT = 8
@@ -101,6 +101,9 @@ export function useChats(settings) {
     return initial.length > 0 ? initial[0].id : null
   })
   const [isStreaming, setIsStreaming] = useState(false)
+  // Ids of long-running background jobs (gemini video/image, document gen).
+  // The UI treats an active job like streaming: progress, locked input, Stop.
+  const [activeJobs, setActiveJobs] = useState([])
   const abortRef = useRef(null)
   const saveTimeoutRef = useRef(null)
 
@@ -151,11 +154,20 @@ export function useChats(settings) {
     )
   }, [])
 
+  // Remove a job id from the active set (called by JobCard on terminal state).
+  const markJobDone = useCallback((jobId) => {
+    setActiveJobs((prev) => prev.filter((id) => id !== jobId))
+  }, [])
+
   const stop = useCallback(() => {
     if (abortRef.current) {
       abortRef.current.abort()
       abortRef.current = null
     }
+    setActiveJobs((prev) => {
+      prev.forEach((id) => { void cancelJob(id).catch(() => {}) })
+      return []
+    })
     setIsStreaming(false)
   }, [])
 
@@ -244,6 +256,7 @@ export function useChats(settings) {
             attachments,
           })
           patchAssistant({ pending: false, job: data.job, content: '' })
+          if (data?.job?.id) setActiveJobs((prev) => prev.includes(data.job.id) ? prev : [...prev, data.job.id])
           return
         }
 
@@ -557,6 +570,8 @@ export function useChats(settings) {
     activeChat,
     activeId,
     isStreaming,
+    jobBusy: activeJobs.length > 0,
+    markJobDone,
     newChat,
     selectChat,
     deleteChat,

@@ -133,6 +133,8 @@ function BrowserApp({ user, reloadAuth }) {
     activeChat,
     activeId,
     isStreaming,
+    jobBusy,
+    markJobDone,
     newChat,
     selectChat,
     deleteChat,
@@ -149,7 +151,7 @@ function BrowserApp({ user, reloadAuth }) {
   // referenced in App but never declared (the inline expression existed
   // only in the Topbar prop), which produced a runtime ReferenceError
   // ('aiWorking is not defined') the moment a chat had any messages.
-  const aiWorking = isStreaming || workspaceAiBusy
+  const aiWorking = isStreaming || workspaceAiBusy || jobBusy
 
   const closeSidebarOnMobile = () => {
     if (typeof window !== 'undefined' && window.innerWidth < 768) {
@@ -372,6 +374,7 @@ function BrowserApp({ user, reloadAuth }) {
               onEdit={handleEditMessage}
               onRegenerate={handleRegenerate}
               onRefresh={() => location.reload()}
+              onJobDone={markJobDone}
               onAnswerAskUser={(messageId, questionId, payload) =>
                 answerAgentQuestion(activeChat.id, messageId, questionId, payload)
               }
@@ -393,7 +396,7 @@ function BrowserApp({ user, reloadAuth }) {
             )}
             <Composer
               hasMessages
-              isStreaming={isStreaming}
+              isStreaming={aiWorking}
               onSend={handleSendMessage}
               onStop={stop}
             />
@@ -402,7 +405,7 @@ function BrowserApp({ user, reloadAuth }) {
           <>
             <Composer
               hasMessages={false}
-              isStreaming={isStreaming}
+              isStreaming={aiWorking}
               onSend={handleSendMessage}
               onStop={stop}
             />
