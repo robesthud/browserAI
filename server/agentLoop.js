@@ -36,6 +36,7 @@ import { TOOLS, renderToolsForPrompt, invokeTool } from './agentTools.js'
 import { withWorkspaceScope } from './workspace.js'
 import { callLLM, supportsNativeTools } from './llmClient.js'
 import { registerQuestion } from './askUserRegistry.js'
+import { buildClineSystemPrompt } from './clinePrompt.js'
 
 const DEFAULT_MAX_STEPS = 15
 const DEFAULT_DEADLINE_MS = 5 * 60 * 1000
@@ -43,7 +44,33 @@ const DEFAULT_DEADLINE_MS = 5 * 60 * 1000
 const TOOL_FENCE_RE = /```(?:json|tool|tool_call)?\s*\n?\s*(\{[\s\S]*?\})\s*\n?\s*```/i
 
 // ── System prompt ───────────────────────────────────────────────────────────
+//
+// Two implementations live side by side:
+//   • buildClineSystemPrompt() — the big Cline-style prompt with 12+
+//     dedicated sections (AGENT_ROLE, TOOL_USE, TOOL_USE_FORMATTING,
+//     TOOL_USE_GUIDELINES, AVAILABLE_TOOLS, EDITING_FILES, TASK_PROGRESS,
+//     CAPABILITIES, RULES, SYSTEM_INFORMATION, MEMORY, OBJECTIVE,
+//     USER_INSTRUCTIONS). Default. Used by `buildSystemPrompt` below.
+//   • buildSystemPromptLegacy() — the previous concise prompt. Kept for
+//     emergency rollback via `BROWSERAI_PROMPT_STYLE=legacy`.
+//
+// Switching: set env BROWSERAI_PROMPT_STYLE=legacy to revert.
 function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null } = {}) {
+  if (String(process.env.BROWSERAI_PROMPT_STYLE || 'cline').toLowerCase() === 'legacy') {
+    return buildSystemPromptLegacy({ extraSystem, native, extraTools })
+  }
+  // The Cline prompt already knows how to format the extraSystem (modelHint
+  // + recall + projectRules + recentActivity are concatenated by the caller
+  // in server/index.js and passed in as a single extraSystem string).
+  return buildClineSystemPrompt({
+    extraSystem,
+    native,
+    extraTools,
+    cwd: '/workspace',
+  })
+}
+
+function buildSystemPromptLegacy({ extraSystem = '', native = false, extraTools = null } = {}) {
   const head = [
     'You are BrowserAI — an autonomous coding agent that thinks, plans, uses',
     'tools, verifies its own work, and reports honestly. You operate inside',
