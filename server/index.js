@@ -2333,7 +2333,7 @@ app.get('/api/admin/deepseek/models', requireAuth, (req, res) => {
 // Writes one JSON line per crash to CLIENT_ERROR_LOG (default
 // /data/client-errors.log) so we can debug grey screens via SSH:
 //   tail -f /opt/browserai-data/client-errors.log
-app.post('/api/debug/client-error', express.json({ limit: '256kb' }), (req, res) => {
+app.post('/api/debug/client-error', express.json({ limit: '256kb' }), async (req, res) => {
   const file = process.env.CLIENT_ERROR_LOG || '/data/client-errors.log'
   try {
     const body = req.body || {}
@@ -2343,10 +2343,24 @@ app.post('/api/debug/client-error', express.json({ limit: '256kb' }), (req, res)
       ...body,
     })
     _appendFileSyncDebug(file, line + '\n')
+    // Also fan out to monitoring so a wave of grey screens pings the admin.
+    try {
+      const { captureClientError } = await import('./monitoring.js')
+      captureClientError(body)
+    } catch { /* monitoring optional */ }
   } catch {
     // Swallow — we never want this endpoint to throw back at the browser.
   }
   res.status(204).end()
+})
+
+// Lightweight metrics endpoint for uptime checks / dashboards.
+// Unauthenticated on purpose — only reveals process info, no secrets.
+app.get('/api/health/metrics', async (_req, res) => {
+  try {
+    const { snapshotMetrics } = await import('./monitoring.js')
+    res.json(snapshotMetrics())
+  } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
 // ── Agent mode ─────────────────────────────────────────────────────────────
@@ -2568,9 +2582,30 @@ app.use((err, req, res, next) => {
   res.status(err?.status || 500).json({ error: 'Внутренняя ошибка сервера' })
 })
 
-app.listen(PORT, () => {
+// Process-level error handlers + graceful shutdown (monitoring).
+try {
+  const { installProcessErrorHandlers, installGracefulShutdown } = await import('./monitoring.js')
+  installProcessErrorHandlers()
+  // installGracefulShutdown wires SIGTERM/SIGINT after app.listen below.
+  globalThis.__ba_install_graceful = installGracefulShutdown
+} catch (e) {
+  console.warn('[monitoring] bootstrap failed:', e.message)
+}
+
+const httpServer = app.listen(PORT, () => {
   console.log(`BrowserAI API + SQLite + Workspace на http://localhost:${PORT}`)
 })
+try {
+  globalThis.__ba_install_graceful?.({ server: httpServer })
+} catch { /* ignore */ }
+
+// Daily auto-backup (DB + workspace tarball; optional S3 push).
+try {
+  const { startBackupScheduler } = await import('./backup.js')
+  startBackupScheduler()
+} catch (e) {
+  console.warn('[backup] bootstrap failed:', e.message)
+}
 
 // ── DeepSeek session auto-refresh bootstrap ────────────────────────────────
 // Loads persisted token from /data/deepseek_session.json (or env vars on

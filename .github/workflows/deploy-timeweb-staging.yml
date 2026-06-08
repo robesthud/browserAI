@@ -1,0 +1,64 @@
+name: Deploy to Timeweb (staging)
+
+# Same flow as deploy-timeweb.yml but targets the STAGING host. Use to test
+# changes before promoting to prod. Triggered manually OR on push to the
+# `staging` branch.
+on:
+  push:
+    branches: [staging]
+    paths-ignore:
+      - '**/*.md'
+      - 'android-app/**'
+      - 'cf-proxy/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-timeweb-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Pull + rebuild on Timeweb STAGING
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - name: Checkout (for audit only)
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          DEPLOY_KEY:  ${{ secrets.TIMEWEB_STAGING_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.TIMEWEB_STAGING_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: git pull + docker compose up -d --build
+        env:
+          DEPLOY_HOST: ${{ secrets.TIMEWEB_STAGING_HOST }}
+          DEPLOY_USER: ${{ secrets.TIMEWEB_STAGING_USER }}
+          APP_DIR:     ${{ secrets.TIMEWEB_STAGING_APP_DIR }}
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "set -euo pipefail
+               cd '${APP_DIR}'
+               git fetch --quiet origin staging
+               git reset --hard origin/staging
+               docker compose build
+               docker compose up -d
+               docker image prune -f
+               sleep 5
+               curl -fsS http://localhost/api/health"
+
+      - name: Post-deploy summary
+        if: always()
+        run: |
+          echo "### Timeweb staging deploy" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "* commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "* status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
