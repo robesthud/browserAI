@@ -19,22 +19,25 @@ export default function OpsAdmin() {
   const [gateway, setGateway] = useState(null)
   const [agentHealth, setAgentHealth] = useState(null)
   const [jobs, setJobs] = useState([])
+  const [audit, setAudit] = useState([])
   const [result, setResult] = useState('')
   const [loading, setLoading] = useState(false)
 
   const load = async () => {
     setLoading(true)
     try {
-      const [ops, gw, ah, js] = await Promise.all([
+      const [ops, gw, ah, js, au] = await Promise.all([
         api('/api/ops/services').catch(() => ({ services: [] })),
         api('/api/gateway/status').catch(() => null),
         api('/api/agent/health').catch(() => null),
         api('/api/jobs?limit=20').catch(() => ({ jobs: [] })),
+        api('/api/ops/audit?limit=100').catch(() => ({ entries: [] })),
       ])
       setServices(ops.services || [])
       setGateway(gw)
       setAgentHealth(ah)
       setJobs(js.jobs || [])
+      setAudit(au.entries || [])
     } finally {
       setLoading(false)
     }
@@ -126,6 +129,44 @@ export default function OpsAdmin() {
               </div>
             ))}
           </div>
+        </section>
+
+        <section className="rounded-2xl border border-white/10 bg-graphite-900/70 p-4">
+          <h2 className="mb-3 text-lg font-medium">Audit log <span className="text-xs text-cream-faint">(последние {audit.length})</span></h2>
+          {audit.length === 0 ? (
+            <div className="text-sm text-cream-faint">Нет записей</div>
+          ) : (
+            <div className="thin-scroll max-h-80 overflow-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="text-cream-faint">
+                  <tr>
+                    <th className="py-1 pr-2">Время</th>
+                    <th className="py-1 pr-2">Сервис.действие</th>
+                    <th className="py-1 pr-2">Статус</th>
+                    <th className="py-1 pr-2">exit</th>
+                    <th className="py-1 pr-2">мс</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {audit.map((e, i) => {
+                    const st = e.status || ''
+                    const stCls = st === 'ok' ? 'text-emerald-300'
+                      : st === 'error' || st === 'throw' ? 'text-red-300'
+                      : st === 'needs_confirmation' ? 'text-amber-300' : 'text-cream-faint'
+                    return (
+                      <tr key={i} className="border-t border-white/5">
+                        <td className="py-1 pr-2 text-cream-faint">{(e.ts || '').replace('T', ' ').slice(0, 19)}</td>
+                        <td className="py-1 pr-2 font-mono">{e.service ? `${e.service}.${e.action}` : (e.raw || '—')}</td>
+                        <td className={`py-1 pr-2 ${stCls}`}>{st}{e.error ? ` — ${String(e.error).slice(0, 60)}` : ''}</td>
+                        <td className="py-1 pr-2 text-cream-faint">{e.exitCode ?? '—'}</td>
+                        <td className="py-1 pr-2 text-cream-faint">{e.ms ?? '—'}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
 
         {result && (

@@ -25,6 +25,20 @@ function auditOps(event = {}) {
   } catch { /* audit log best effort */ }
 }
 
+// Read the most recent audit-log entries (JSON-lines), newest first.
+// Best-effort: returns [] if the log doesn't exist yet.
+export function readOpsAudit({ limit = 100 } = {}) {
+  try {
+    if (!existsSync(OPS_AUDIT_LOG)) return []
+    const max = Math.min(1000, Math.max(1, Number(limit) || 100))
+    const lines = readFileSync(OPS_AUDIT_LOG, 'utf8').split('\n').filter(Boolean)
+    const recent = lines.slice(-max).reverse()
+    return recent.map((l) => { try { return JSON.parse(l) } catch { return { raw: l.slice(0, 500) } } })
+  } catch {
+    return []
+  }
+}
+
 function shQuote(value = '') {
   return `'${String(value).replace(/'/g, `'"'"'`)}'`
 }

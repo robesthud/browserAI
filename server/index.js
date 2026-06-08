@@ -69,7 +69,7 @@ import {
 import { searchWeb, fetchWebPage } from './web.js'
 import { getGatewayModels, getGatewayStatus, isGatewayUrl, resolveGatewayModel } from './gateway.js'
 import { createJob, getJob, initJobs, listJobs, startJob } from './jobs.js'
-import { listOpsServices, runOpsAction } from './ops.js'
+import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
 import { isDeepSeekWebUrl, handleDeepSeekWebChat, validateDeepSeekWebKey } from './deepseekWeb.js'
@@ -1613,6 +1613,10 @@ app.post('/api/ops/action', requireAuth, async (req, res) => {
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message || 'ops action failed' })
   }
+})
+
+app.get('/api/ops/audit', requireAuth, (req, res) => {
+  res.json({ entries: readOpsAudit({ limit: req.query.limit || 100 }) })
 })
 
 app.post('/api/jobs', requireAuth, (req, res) => {
