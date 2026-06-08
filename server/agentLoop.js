@@ -8,14 +8,12 @@
  * Groq, Mistral, Together, OpenRouter, Gemini's OpenAI proxy, Grok
  * (managed/web), etc. The actual transport lives in llmClient.js.
  *
- * Two tool-calling strategies, picked per call:
- *   - NATIVE: providers that speak OpenAI's tools[] / tool_calls schema
- *     (see supportsNativeTools()) get the structured channel — more
- *     reliable, no JSON-parsing-from-text required.
- *   - TEXT:   everyone else (DeepSeek managed in particular) sees a
- *     plain-text system prompt that asks for a single fenced JSON
- *     envelope per tool invocation. We parse that envelope out of
- *     the model reply.
+ * Tool calling strategy (Arena.ai style):
+ *   Primary: XML format <xai:function_call> with <xai:tool_name> and
+ *            <parameter name="..."> tags. Supports multiple calls
+ *            in a single response for parallel execution.
+ *   Fallbacks: Native OpenAI tool_calls (when supported) and
+ *            legacy JSON-in-fenced-block format.
  *
  * Flow:
  *   1. Build system prompt that documents every tool.
@@ -107,10 +105,15 @@ function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null
     : [
         '# Calling tools',
         '',
-        'When you need to use a tool, reply with EXACTLY one fenced JSON block — nothing else in the message:',
-        '```json',
-        '{"tool":"<tool_name>","args":{...}}',
-        '```',
+        'When you need to use a tool, ALWAYS use this exact XML format:',
+        '<xai:function_call>',
+        '<xai:tool_name>tool_name_here</xai:tool_name>',
+        '<parameter name="arg_name">value</parameter>',
+        '</xai:function_call>',
+        '',
+        'You can output MULTIPLE <xai:function_call> blocks one after another',
+        'to call several tools in parallel in a single response.',
+        'Do NOT escape any arguments. The arguments will be parsed as normal text.',
         '',
         'After you receive a tool result you may either:',
         '  • call another tool (same JSON envelope), or',
@@ -200,6 +203,55 @@ function callFingerprint(call) {
   return `${call.tool}::${normalised}`
 }
 
+
+// ── XML Function Call Parser (Arena.ai style) ────────────────────────────────
+const XML_TOOL_CALL_RE = /<xai:function_call[^>]*>([\s\S]*?)<\/xai:function_call>/gi
+const XML_PARAM_RE = /<parameter name="([^"]+)">([\s\S]*?)<\/parameter>/gi
+
+function parseXmlFunctionCalls(text) {
+  const calls = []
+  let match
+  while ((match = XML_TOOL_CALL_RE.exec(text)) !== null) {
+    const content = match[1]
+    const nameMatch = content.match(/<xai:tool_name>([^<]+)<\/xai:tool_name>/i) ||
+                      content.match(/name=["']([^"']+)["']/i)
+    if (!nameMatch) continue
+    const name = nameMatch[1].trim()
+    const args = {}
+    let paramMatch
+    while ((paramMatch = XML_PARAM_RE.exec(content)) !== null) {
+      args[paramMatch[1]] = paramMatch[2].trim()
+    }
+    calls.push({ tool: name, args })
+  }
+  return calls
+function extractToolCalls(text, nativeToolCalls = null) {
+  // Приоритет: native tool_calls от провайдера
+  if (nativeToolCalls && Array.isArray(nativeToolCalls) && nativeToolCalls.length > 0) {
+    return nativeToolCalls.map(tc => ({
+      tool: tc.function?.name || tc.name,
+      args: tc.function?.arguments ? JSON.parse(tc.function.arguments) : (tc.args || {})
+    }))
+  }
+  
+  // XML формат (Arena.ai style) - поддержка нескольких вызовов
+  const xmlCalls = parseXmlFunctionCalls(text)
+  if (xmlCalls.length > 0) return xmlCalls
+  
+  // Fallback: JSON в кодовых блоках
+  const jsonMatch = text.match(/```(?:json|tool|tool_call)?\s*\n?\s*(\{[\s\S]*?\})\s*\n?\s*```/i)
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[1])
+      if (parsed.tool) return [{ tool: parsed.tool, args: parsed.args || {} }]
+      if (Array.isArray(parsed)) return parsed
+    } catch {}
+  }
+  
+  return []
+}
+
+}
 /**
  * Detect a tool-call loop: the model has called the SAME (tool, args)
  * triple ≥3 times in a row across recent turns. When this happens we
