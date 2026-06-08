@@ -67,6 +67,74 @@ function messageSize(m) {
   return size
 }
 
+// Render a SHORT, model-readable description of a single tool call so it
+// can be replayed into the next turn's history. Without this, the agent
+// loses the memory of what it actually did last turn (read_file paths,
+// edit_file paths, bash commands, etc.) and starts inventing "вот код
+// который надо вставить" instead of editing the files it already touched.
+function summarizeToolCallForHistory(tc) {
+  if (!tc?.name) return ''
+  const args = tc.args || {}
+  let preview = ''
+  if (args.path)         preview = args.path
+  else if (args.command) preview = String(args.command).replace(/\s+/g, ' ').slice(0, 200)
+  else if (args.query)   preview = `"${String(args.query).slice(0, 120)}"`
+  else if (args.url)     preview = args.url
+  else preview = Object.keys(args).slice(0, 3).map((k) => `${k}=…`).join(', ')
+
+  const status = tc.status === 'done' ? (tc.ok ? '✓' : '✗') : '…'
+  let outline = `${status} ${tc.name}(${preview})`
+
+  // For some tools, include a few facts from the result so the model
+  // knows what the disk now looks like.
+  const r = tc.result
+  if (tc.name === 'edit_file' && r?.bytesWritten) outline += `  → ${r.bytesWritten}b written`
+  else if (tc.name === 'write_file' && r?.bytesWritten) outline += `  → ${r.bytesWritten}b written`
+  else if (tc.name === 'list_files' && Array.isArray(r?.entries)) outline += `  → ${r.entries.length} entries`
+  else if (tc.name === 'read_file' && typeof r?.content === 'string') outline += `  → ${r.content.length}b read`
+  else if (tc.name === 'bash' && r?.exitCode != null) outline += `  → exit ${r.exitCode}`
+  else if (tc.name === 'web_search' && Array.isArray(r?.results)) outline += `  → ${r.results.length} results`
+  else if (tc.name === 'download_url' && r?.savedPath) outline += `  → ${r.savedPath}`
+  if (tc.error) outline += `  ! ${String(tc.error).slice(0, 120)}`
+  return outline
+}
+
+// Convert one stored chat message into the {role, content} pair we send
+// to the LLM. For assistant messages, we PREPEND the tool-call history
+// from the previous turn so the agent remembers what it already did
+// (edit_file paths, bash commands, search results, …). This is the
+// fix that lets the agent answer "что ты сделал?" honestly and stops it
+// from re-running the same tools again because it forgot.
+function messageToHistoryEntry(m) {
+  if (m.role === 'user') {
+    const content = m.attachments?.length
+      ? `${m.content || ''}\n\nAttachments:\n${m.attachments.map((a) => `- ${a.name} (${a.type})`).join('\n')}`
+      : (m.content || '')
+    return { role: 'user', content }
+  }
+  // assistant
+  const lines = []
+  const tcs = Array.isArray(m.toolCalls) ? m.toolCalls : []
+  if (tcs.length) {
+    lines.push('[Tool calls I made on this turn:]')
+    for (const tc of tcs) {
+      const s = summarizeToolCallForHistory(tc)
+      if (s) lines.push('  ' + s)
+    }
+    lines.push('')
+  }
+  if (m.content) lines.push(m.content)
+  const job = m.job
+  if (job) {
+    const files = job.result?.files || []
+    if (files.length) {
+      lines.push('')
+      lines.push(`[Job ${job.type} ${job.status}: produced ${files.join(', ')}]`)
+    }
+  }
+  return { role: 'assistant', content: lines.join('\n').trim() || '(empty)' }
+}
+
 function buildContextWindow(history, memorySummary = '') {
   const recent = []
   let total = 0
@@ -404,14 +472,12 @@ export function useChats(settings) {
       // Build the LLM history: same as chat but agent loop wants strict
       // role,content only. Drop the empty assistant placeholder we just
       // pushed.
-      const llmHistory = history.map((m) => ({
-        role: m.role,
-        content: m.role === 'user'
-          ? (m.attachments?.length
-              ? `${m.content || ''}\n\nAttachments:\n${m.attachments.map((a) => `- ${a.name} (${a.type})`).join('\n')}`
-              : (m.content || ''))
-          : (m.content || ''),
-      }))
+      // CRITICAL: replay the assistant's tool calls inside the content
+      // string (via messageToHistoryEntry) so the model REMEMBERS what
+      // it actually did last turn — which files it edited, which bash
+      // commands it ran, which downloads succeeded — instead of forgetting
+      // and re-running everything or hallucinating a summary.
+      const llmHistory = history.map(messageToHistoryEntry)
 
       // Provider config — same resolution the regular chat uses, so the
       // agent talks to whatever the user selected in Settings (DeepSeek
