@@ -1279,10 +1279,17 @@ async function runAgentInner({
         // means we get the same answer-channel infra for free.
         const cat = categoryOf(call.tool)
         if (call.tool !== 'ask_user' && requiresApproval(call.tool, userId)) {
-          const { id: aqId, promise: aqPromise } = registerQuestion()
+          const { id: aqId, promise: aqPromise, expiresAt } = registerQuestion({
+            kind: 'tool_approval', userId, chatId, step, sub: idx,
+            tool: call.tool, category: cat, argsPreview: JSON.stringify(call.args || {}).slice(0, 2000),
+            question: `Approve ${call.tool}?`,
+            options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }],
+            multi: false, allowCustom: true,
+          })
           sse(res, 'tool_approval', {
             step, sub: idx,
             question_id: aqId,
+            expiresAt,
             tool: call.tool,
             category: cat,
             args: call.args,
@@ -1333,12 +1340,18 @@ async function runAgentInner({
             allowCustom: q.allowCustomResponse !== false && q.allow_custom !== false,
           }))
           const promises = normalised.map((q) => {
-            const { id: questionId, promise } = registerQuestion()
+            const { id: questionId, promise, expiresAt } = registerQuestion({
+              kind: 'ask_user', userId, chatId, step, sub: idx,
+              question: q.question || '(no question)',
+              options: q.options, multi: q.multi, allowCustom: q.allowCustom,
+              groupId: normalised.length > 1 ? q.id : undefined,
+            })
             updateAgentStateFromTool(agentState, 'ask_user', { ok: true, result: { pending: true } }, { question: q.question })
             sse(res, 'agent_state', agentState)
             sse(res, 'ask_user', {
               step, sub: idx,
               question_id: questionId,
+              expiresAt,
               question: q.question || '(no question)',
               options: q.options,
               multi: q.multi,

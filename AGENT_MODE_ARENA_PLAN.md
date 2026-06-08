@@ -51,7 +51,7 @@ Final Answer or Ask User / Resume
 | 3 | Tool Router hardening | ✅ Выполнено | см. журнал выполнения |
 | 4 | Provider adapters 2.0 | ✅ Выполнено | см. журнал выполнения |
 | 5 | Streaming Protocol | ✅ Выполнено | см. журнал выполнения |
-| 6 | Ask User pause/resume | частично ✅ | есть promise registry, нужно усилить state |
+| 6 | Ask User pause/resume | ✅ Выполнено | см. журнал выполнения |
 | 7 | Workspace / sandbox policy | частично ✅ | есть workspace scope/sandbox, нужен audit |
 | 8 | Context memory / summarization | частично ✅ | есть contextManager, нужен agent state digest |
 | 9 | UI parity с Arena Agent Mode | частично ✅ | есть tool cards/thoughts, нужно показывать agent_context/state |
@@ -524,24 +524,82 @@ npm run build
 
 ## Этап 6. Ask User pause/resume
 
-### Уже есть
+### Цель
 
-- `askUserRegistry.js`
-- `/api/agent/answer`
-- SSE `ask_user`
-- UI card
-
-### Осталось
-
-- State transition:
+Сделать интерактивные вопросы агента полноценным lifecycle, как в Arena.ai Agent Mode:
 
 ```text
-running → waiting_for_user → running
+running → waiting_for_user → answered/cancelled/timeout → running/recover
 ```
 
-- Timeout/cancel.
-- Сохранение pending question в state.
-- Поддержка нескольких вопросов как в Arena.
+### Сделано
+
+Обновлён `server/askUserRegistry.js`:
+
+- pending questions теперь хранят metadata;
+- у каждого вопроса есть:
+  - `id`
+  - `status`
+  - `createdAt`
+  - `expiresAt`
+  - `remainingMs`
+  - `meta`
+- добавлен timeout через `BROWSERAI_ASK_TIMEOUT_MS`;
+- timer теперь корректно очищается при answer/cancel;
+- answer/cancel проверяют user scope;
+- добавлены public helpers:
+  - `listPendingQuestions(...)`
+  - `getPendingQuestion(...)`
+  - `cancelQuestion(...)`
+
+Agent loop теперь регистрирует metadata для:
+
+- обычных `ask_user`;
+- `tool_approval`;
+- multi-question Arena-style форм.
+
+SSE `ask_user` и `tool_approval` теперь содержат:
+
+```js
+{
+  question_id,
+  expiresAt,
+  ...
+}
+```
+
+Добавлены API endpoints:
+
+```text
+GET  /api/agent/questions
+GET  /api/agent/questions/:id
+POST /api/agent/questions/:id/cancel
+POST /api/agent/answer
+```
+
+`POST /api/agent/answer` теперь учитывает user scope и возвращает ошибку, если вопрос:
+
+- не найден;
+- истёк;
+- уже отвечен;
+- принадлежит другому пользователю.
+
+### Проверки
+
+```bash
+node --check server/askUserRegistry.js
+node --check server/agentLoop.js
+node --check server/index.js
+npx eslint server/askUserRegistry.js server/agentCore.js server/llmClient.js
+npm run build
+```
+
+### Осталось после этапа 6
+
+- UI: показывать `expiresAt` / countdown.
+- UI: добавить кнопку cancel на question card.
+- Persist pending state across process restart — сейчас pending registry in-memory.
+- Добавить e2e тест ask_user lifecycle.
 
 ---
 
@@ -678,3 +736,9 @@ TIMEWEB_APP_DIR
   - добавлены поля `schema`, `event`, `seq`, `timestamp`, `payload`;
   - сохранена обратная совместимость с текущим UI;
   - добавлено событие `stream_protocol` со списком поддерживаемых events.
+- Выполнен этап 6 — Ask User pause/resume:
+  - pending questions получили metadata, expiresAt и remainingMs;
+  - answer/cancel теперь scoped по userId;
+  - добавлены endpoints для list/get/cancel pending questions;
+  - `ask_user` и `tool_approval` SSE теперь содержат `expiresAt`;
+  - timeout задаётся через `BROWSERAI_ASK_TIMEOUT_MS`.

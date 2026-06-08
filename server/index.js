@@ -94,7 +94,7 @@ import {
 } from './llmClient.js'
 import { sandboxHealth } from './agentSandbox.js'
 import { browserHealth } from './browserTools.js'
-import { answerQuestion } from './askUserRegistry.js'
+import { answerQuestion, cancelQuestion, listPendingQuestions, getPendingQuestion } from './askUserRegistry.js'
 import { startUserTelegramBot } from './userTelegramBot.js'
 
 
@@ -2861,11 +2861,29 @@ app.get('/api/agent/health', requireAuth, async (req, res) => {
 // Submit an answer to a pending ask_user question. The body is the answer
 // payload the LLM will see as the tool result, typically
 // { selected: ['opt1','opt2'], custom: 'optional free-form text' }.
+app.get('/api/agent/questions', requireAuth, (req, res) => {
+  const chatId = String(req.query?.chatId || '')
+  res.json({ questions: listPendingQuestions({ userId: req.user?.id || '', chatId }) })
+})
+
+app.get('/api/agent/questions/:id', requireAuth, (req, res) => {
+  const q = getPendingQuestion(String(req.params.id || ''), { userId: req.user?.id || '' })
+  if (!q) return res.status(404).json({ error: 'question_id not found' })
+  res.json({ question: q })
+})
+
 app.post('/api/agent/answer', requireAuth, (req, res) => {
   const { question_id, answer } = req.body || {}
   if (!question_id) return res.status(400).json({ error: 'question_id is required' })
-  const ok = answerQuestion(String(question_id), answer ?? null)
-  if (!ok) return res.status(404).json({ error: 'question_id not found or already answered' })
+  const ok = answerQuestion(String(question_id), answer ?? null, { userId: req.user?.id || '' })
+  if (!ok) return res.status(404).json({ error: 'question_id not found, expired, already answered, or belongs to another user' })
+  res.json({ ok: true })
+})
+
+app.post('/api/agent/questions/:id/cancel', requireAuth, (req, res) => {
+  const reason = String(req.body?.reason || 'cancelled by user').slice(0, 300)
+  const ok = cancelQuestion(String(req.params.id || ''), reason, { userId: req.user?.id || '' })
+  if (!ok) return res.status(404).json({ error: 'question_id not found, expired, or belongs to another user' })
   res.json({ ok: true })
 })
 

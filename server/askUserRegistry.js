@@ -1,61 +1,122 @@
 /**
- * Shared registry of pending `ask_user` tool invocations.
+ * Shared registry of pending `ask_user` / approval invocations.
  *
- * When the agent loop calls the `ask_user` tool, it doesn't execute
- * anything — instead it:
- *   1. Generates a question_id
- *   2. Emits an SSE 'ask_user' event with {question_id, spec}
- *   3. Awaits the promise stored under that id (with a long timeout)
+ * Lifecycle:
+ *   running → waiting_for_user → answered/cancelled/timeout → running
  *
- * The client's UI renders the question card. When the user submits an
- * answer, the client POSTs it to `/api/agent/answer` with the
- * question_id, which resolves the promise here. The loop then receives
- * the answer and feeds it back to the LLM as the tool's result.
- *
- * Pending questions older than ASK_TIMEOUT_MS auto-reject so we don't
- * leak memory on abandoned conversations.
+ * The registry stores metadata so the UI/debug endpoints can restore pending
+ * questions for the current user/chat without exposing secrets.
  */
-const PENDING = new Map()      // id -> {resolve, reject, createdAt}
-const ASK_TIMEOUT_MS = 10 * 60 * 1000  // 10 min
+const PENDING = new Map() // id -> {resolve,reject,timer,createdAt,expiresAt,meta,status}
+const ASK_TIMEOUT_MS = Number(process.env.BROWSERAI_ASK_TIMEOUT_MS || 10 * 60 * 1000)
 
 function genId() {
   return 'ask-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8)
 }
 
-export function registerQuestion() {
+function publicEntry(id, entry) {
+  if (!entry) return null
+  return {
+    id,
+    status: entry.status || 'pending',
+    createdAt: entry.createdAt,
+    expiresAt: entry.expiresAt,
+    remainingMs: Math.max(0, entry.expiresAt - Date.now()),
+    meta: entry.meta || {},
+  }
+}
+
+export function registerQuestion(meta = {}) {
   const id = genId()
+  const createdAt = Date.now()
+  const timeoutMs = Math.min(
+    60 * 60 * 1000,
+    Math.max(5_000, Number(meta.timeoutMs || ASK_TIMEOUT_MS) || ASK_TIMEOUT_MS),
+  )
+  const expiresAt = createdAt + timeoutMs
   let resolveFn, rejectFn
   const promise = new Promise((resolve, reject) => {
     resolveFn = resolve
     rejectFn = reject
   })
   const timer = setTimeout(() => {
-    if (PENDING.has(id)) {
+    const entry = PENDING.get(id)
+    if (entry) {
       PENDING.delete(id)
-      rejectFn(new Error('ask_user timeout: user did not answer within 10 minutes'))
+      entry.status = 'timeout'
+      rejectFn(new Error(`ask_user timeout: user did not answer within ${Math.round(timeoutMs / 1000)} seconds`))
     }
-  }, ASK_TIMEOUT_MS)
+  }, timeoutMs)
   timer.unref?.()
-  PENDING.set(id, { resolve: resolveFn, reject: rejectFn, createdAt: Date.now() })
-  return { id, promise }
+  PENDING.set(id, {
+    resolve: resolveFn,
+    reject: rejectFn,
+    timer,
+    createdAt,
+    expiresAt,
+    timeoutMs,
+    status: 'pending',
+    meta: {
+      kind: meta.kind || 'ask_user',
+      userId: meta.userId || '',
+      chatId: meta.chatId || '',
+      step: meta.step ?? null,
+      sub: meta.sub ?? null,
+      question: meta.question || '',
+      options: Array.isArray(meta.options) ? meta.options : [],
+      multi: Boolean(meta.multi),
+      allowCustom: meta.allowCustom !== false,
+      groupId: meta.groupId || undefined,
+      tool: meta.tool || undefined,
+      category: meta.category || undefined,
+      argsPreview: meta.argsPreview || undefined,
+    },
+  })
+  return { id, promise, expiresAt, timeoutMs }
 }
 
-export function answerQuestion(id, answer) {
+export function answerQuestion(id, answer, scope = {}) {
   const entry = PENDING.get(id)
   if (!entry) return false
+  if (scope.userId && entry.meta?.userId && scope.userId !== entry.meta.userId) return false
+  clearTimeout(entry.timer)
   PENDING.delete(id)
-  entry.resolve(answer)
+  entry.status = 'answered'
+  entry.resolve({
+    ...(answer && typeof answer === 'object' && !Array.isArray(answer) ? answer : { value: answer }),
+    answeredAt: Date.now(),
+  })
   return true
 }
 
-export function cancelQuestion(id, reason = 'cancelled') {
+export function cancelQuestion(id, reason = 'cancelled', scope = {}) {
   const entry = PENDING.get(id)
   if (!entry) return false
+  if (scope.userId && entry.meta?.userId && scope.userId !== entry.meta.userId) return false
+  clearTimeout(entry.timer)
   PENDING.delete(id)
+  entry.status = 'cancelled'
   entry.reject(new Error(reason))
   return true
 }
 
-export function pendingCount() {
-  return PENDING.size
+export function listPendingQuestions(filter = {}) {
+  const out = []
+  for (const [id, entry] of PENDING.entries()) {
+    if (filter.userId && entry.meta?.userId && entry.meta.userId !== filter.userId) continue
+    if (filter.chatId && entry.meta?.chatId && entry.meta.chatId !== filter.chatId) continue
+    out.push(publicEntry(id, entry))
+  }
+  return out.sort((a, b) => a.createdAt - b.createdAt)
+}
+
+export function getPendingQuestion(id, scope = {}) {
+  const entry = PENDING.get(id)
+  if (!entry) return null
+  if (scope.userId && entry.meta?.userId && scope.userId !== entry.meta.userId) return null
+  return publicEntry(id, entry)
+}
+
+export function pendingCount(filter = {}) {
+  return listPendingQuestions(filter).length
 }
