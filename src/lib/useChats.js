@@ -628,7 +628,18 @@ export function useChats(settings) {
                   }))
                   haptics.warning()
                   break
+                case 'assistant_delta':
+                  // Streaming chunk of the final answer — appended to
+                  // the bubble live to give a typing-animation feel even
+                  // when the upstream provider didn't expose true SSE.
+                  patchAssistant((m) => ({
+                    ...m,
+                    content: (m.content || '') + String(data.chunk || ''),
+                  }))
+                  break
                 case 'assistant':
+                  // Snap to the canonical final string (may differ from
+                  // the concatenated deltas by 1-2 chars due to chunk-split).
                   patchAssistant({ content: data.text || '', pending: false })
                   saveGeneratedMediaToWorkspace(chatId, data.text || '').catch(() => {})
                   haptics.success()

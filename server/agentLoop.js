@@ -175,6 +175,104 @@ function clipForLLM(s) {
   return `${head}\n\n… [${hidden} characters omitted to keep context small — run with a more specific filter to see the middle] …\n\n${tail}`
 }
 
+// ── Programmatic safety nets (IQ+20 patches) ────────────────────────────────
+// These run alongside the system prompt; they catch failure modes that
+// instruction-following alone is unreliable about.
+
+/**
+ * Identify a tool call by its key+args fingerprint so we can detect when
+ * the model spams the exact same call repeatedly (e.g. read_file the same
+ * path 5 times because it forgot it already did). Args are JSON-stringified
+ * with sorted keys for stability across runs.
+ */
+function callFingerprint(call) {
+  if (!call) return ''
+  const args = call.args || {}
+  let normalised
+  try {
+    normalised = JSON.stringify(args, Object.keys(args).sort())
+  } catch { normalised = '{}' }
+  return `${call.tool}::${normalised}`
+}
+
+/**
+ * Detect a tool-call loop: the model has called the SAME (tool, args)
+ * triple ≥3 times in a row across recent turns. When this happens we
+ * push back instead of running it for the 4th time.
+ */
+const STUCK_THRESHOLD = 3
+function isStuckLoop(recentCalls, currentFingerprint) {
+  if (!currentFingerprint) return false
+  let count = 0
+  for (let i = recentCalls.length - 1; i >= 0; i -= 1) {
+    if (recentCalls[i] === currentFingerprint) count += 1
+    else break
+  }
+  return count + 1 >= STUCK_THRESHOLD
+}
+
+/**
+ * Force a read-back after every edit_file / write_file. The model often
+ * "applies an edit and moves on" — but the edit may have failed silently,
+ * or it may have matched the wrong place in a near-duplicate file. A
+ * follow-up read_file is the only way to be sure. We inject the read on
+ * the SAME turn so it joins the parallel batch without an extra LLM round.
+ */
+function makeReadBackForEdits(calls) {
+  const out = []
+  const seen = new Set()
+  for (const call of calls || []) {
+    if (call.tool !== 'edit_file' && call.tool !== 'write_file') continue
+    const p = call.args?.path
+    if (!p || seen.has(p)) continue
+    seen.add(p)
+    out.push({ tool: 'read_file', args: { path: p }, nativeId: null, nativeRaw: null, _readBack: true })
+  }
+  return out
+}
+
+/**
+ * Did the user just receive an UNcommittable change (or a recent
+ * verify_code FAIL) but the model is now asking for git_push?
+ * Refuse and push back. Keeps "fixed→pushed broken code" loops from
+ * shipping.
+ */
+function violatesPreDeployVerify(call, recentToolHistory) {
+  if (call.tool !== 'git_push' && call.tool !== 'git_commit') return false
+  // Look at the last ~10 tool calls in this conversation for a successful
+  // verify_code. If there's none — or the most recent verify failed —
+  // block the push.
+  let sawOk = false
+  for (let i = recentToolHistory.length - 1; i >= Math.max(0, recentToolHistory.length - 10); i -= 1) {
+    const h = recentToolHistory[i]
+    if (h?.tool === 'verify_code') {
+      if (h.ok) sawOk = true
+      else return true // most recent verify failed
+      break
+    }
+  }
+  return !sawOk
+}
+
+/**
+ * The model called plan_check([1,1,1]) or plan_check on already-done
+ * indices. Dedupe + drop already-done before invoking, so the plan
+ * card progress doesn't show 'done' on the same step twice.
+ */
+function dedupePlanCheck(call, planState) {
+  if (call.tool !== 'plan_check') return call
+  let indices = []
+  try {
+    indices = Array.isArray(call.args?.indices)
+      ? call.args.indices
+      : JSON.parse(String(call.args?.indices || '[]'))
+  } catch { return call }
+  const unique = [...new Set(indices.map(Number).filter((n) => Number.isInteger(n)))]
+  const fresh = unique.filter((n) => !planState.done.has(n))
+  if (fresh.length === unique.length && unique.length === indices.length) return call
+  return { ...call, args: { ...call.args, indices: fresh } }
+}
+
 // Heuristic: did the user ask for an edit-style change ("исправь",
 // "поправь", "оживи код", "сделай так чтобы…", "fix the bug",
 // "refactor", etc) AND the model's reply contains a substantial code
@@ -197,26 +295,69 @@ function looksLikeUnapplliedCodeReply(text = '', history = []) {
 }
 
 // ── Parse a JSON-in-text tool call ──────────────────────────────────────────
+// Returns { tool, args, malformed? } — `malformed:true` when the response
+// CLEARLY tried to call a tool (had a fenced JSON or trailing brace) but
+// the JSON didn't parse. The loop uses that flag to trigger a single
+// "fix your JSON" push-back instead of silently dropping the call.
 function extractTextToolCall(text = '') {
   const fence = TOOL_FENCE_RE.exec(text)
   const candidates = []
   if (fence) candidates.push(fence[1])
   const trimmed = String(text).trim()
   if (trimmed.startsWith('{') && trimmed.endsWith('}')) candidates.push(trimmed)
+  let sawToolish = candidates.length > 0
   for (const raw of candidates) {
     try {
       const obj = JSON.parse(raw)
       if (obj && typeof obj.tool === 'string' && TOOLS[obj.tool]) {
         return { tool: obj.tool, args: obj.args || {} }
       }
-    } catch { /* try next */ }
+      // Parsed but wrong shape — still counts as "the model tried to
+      // call a tool but failed", so the loop can push back.
+      sawToolish = true
+    } catch {
+      sawToolish = true
+    }
   }
-  return null
+  return sawToolish ? { malformed: true } : null
 }
 
 // ── SSE helper ──────────────────────────────────────────────────────────────
 function sse(res, event, data) {
   try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) } catch { /* closed */ }
+}
+
+/**
+ * Emit the final assistant text as a sequence of small 'assistant_delta'
+ * events plus a final 'assistant' event with the complete text. The
+ * frontend appends each delta into the message bubble live, then snaps
+ * to the canonical final string. Stays under 100 events per response.
+ */
+async function streamFinalAnswer(res, fullText) {
+  const text = String(fullText || '')
+  if (!text) {
+    sse(res, 'assistant', { text: '' })
+    return
+  }
+  // Group into chunks of roughly 24-40 characters, breaking on whitespace
+  // when possible so words don't split mid-character.
+  const targetChunk = 32
+  const parts = []
+  let buf = ''
+  for (let i = 0; i < text.length; i += 1) {
+    buf += text[i]
+    if (buf.length >= targetChunk && /[\s.,;:!?\n)\]}»]/.test(buf[buf.length - 1])) {
+      parts.push(buf); buf = ''
+    }
+  }
+  if (buf) parts.push(buf)
+  for (const chunk of parts) {
+    sse(res, 'assistant_delta', { chunk })
+    // Tiny pause to let the UI render — caps at ~12ms per word, so a
+    // 500-char answer feels like fast typing (~250ms total).
+    if (parts.length > 4) await new Promise((r) => setTimeout(r, 12))
+  }
+  sse(res, 'assistant', { text })
 }
 
 // Convenience: send 'done' with the latest token totals attached. Always
@@ -290,6 +431,18 @@ async function runAgentInner({
   const abortCtl = new AbortController()
   res.on('close', () => { aborted = true; try { abortCtl.abort('client closed') } catch { /* ignore */ } })
 
+  // ── Tracked state for safety nets (Agent IQ +20)
+  // recentCallFingerprints: rolling list of [tool::args] strings — used by
+  // the stuck-in-loop detector. recentToolHistory: per-call {tool,ok,result}
+  // — used by the pre-deploy verify guard. planState.done: a Set of plan
+  // step indices already marked complete — used by dedupePlanCheck.
+  const recentCallFingerprints = []
+  const recentToolHistory = []
+  const planState = { done: new Set() }
+  // Whether we've already pushed back this turn — we cap at ONE push-back
+  // per LLM turn to avoid ping-pong.
+  let pushedBackThisTurn = false
+
   try {
     while (step < maxSteps) {
       if (aborted) return
@@ -300,6 +453,7 @@ async function runAgentInner({
         return
       }
       step += 1
+      pushedBackThisTurn = false
       sse(res, 'thinking', { step })
 
       // Call the LLM. Some OpenAI-compatible endpoints advertise a familiar
@@ -370,15 +524,33 @@ async function runAgentInner({
           }
         }
       }
+      let malformedToolCall = false
       if (calls.length === 0) {
         const textCall = extractTextToolCall(reply.text)
-        if (textCall) calls = [textCall]
+        if (textCall?.malformed) malformedToolCall = true
+        else if (textCall) calls = [textCall]
       }
 
       if (calls.length === 0) {
+        // Malformed-JSON safety net: model tried to call a tool but the
+        // envelope was broken. Ask for a clean retry once instead of
+        // silently treating it as a final answer.
+        if (malformedToolCall && !pushedBackThisTurn && !aborted) {
+          pushedBackThisTurn = true
+          sse(res, 'thought', { step, text: 'JSON tool-вызова сломан, прошу повторить.' })
+          convo.push({
+            role: 'user',
+            content:
+              'Твой предыдущий ответ выглядел как tool-вызов, но JSON не парсится. ' +
+              'Повтори ответ строго одним fenced-блоком ```json {"tool":"...","args":{...}} ``` ' +
+              'без лишнего текста до или после.',
+          })
+          continue
+        }
         // Heuristic safety net: did the user ask to fix/edit code but the
         // model dumped a fenced code block instead of calling edit_file?
-        if (looksLikeUnapplliedCodeReply(reply.text, history) && !aborted) {
+        if (looksLikeUnapplliedCodeReply(reply.text, history) && !aborted && !pushedBackThisTurn) {
+          pushedBackThisTurn = true
           sse(res, 'thought', {
             step,
             text: 'Заметил: ты прислал код в чат, но не применил его через edit_file/write_file. Перезапрашиваю с напоминанием.',
@@ -393,7 +565,11 @@ async function runAgentInner({
           continue
         }
         // Final answer
-        sse(res, 'assistant', { text: reply.text || '' })
+        // Stream the final answer in word-sized chunks instead of one
+        // giant payload. Gives the UI a perceived typing animation even
+        // when the provider didn't expose true token-by-token streaming
+        // for this call. Cheap (~80 chunks for a typical paragraph).
+        await streamFinalAnswer(res, reply.text || '')
         sseDone(res, { steps: step, reason: 'final' }, tokens)
         res.end()
         return
@@ -423,11 +599,63 @@ async function runAgentInner({
         sse(res, 'thought', { step, text: thinkingText })
       }
 
+      // ── Safety nets pass: stuck-loop, pre-deploy verify, plan dedupe.
+      // Pre-deploy verify can short-circuit the whole turn (push-back).
+      const blockedReasons = []
+      for (const c of calls) {
+        if (violatesPreDeployVerify(c, recentToolHistory)) {
+          blockedReasons.push(
+            `Прежде чем ${c.tool === 'git_push' ? 'пушить' : 'коммитить'} — запусти verify_code и убедись что код проходит. ` +
+            `Текущий запрос на ${c.tool} заблокирован.`,
+          )
+          break
+        }
+      }
+      if (blockedReasons.length && !pushedBackThisTurn) {
+        pushedBackThisTurn = true
+        sse(res, 'thought', { step, text: 'Заблокировал git_push/commit — нет успешного verify_code за последние шаги. Перезапрашиваю.' })
+        convo.push({ role: 'user', content: blockedReasons.join('\n') })
+        continue
+      }
+
+      // Stuck-loop detector: same exact (tool, args) called STUCK_THRESHOLD
+      // times in a row. Push back ONCE per turn, telling the model to vary.
+      for (const c of calls) {
+        const fp = callFingerprint(c)
+        if (isStuckLoop(recentCallFingerprints, fp) && !pushedBackThisTurn) {
+          pushedBackThisTurn = true
+          sse(res, 'thought', { step, text: `Цикл: тот же вызов ${c.tool} повторяется. Прошу попробовать другой подход.` })
+          convo.push({
+            role: 'user',
+            content:
+              `Ты уже звал ${c.tool} с теми же аргументами ${STUCK_THRESHOLD} раз подряд и результат не помогает. ` +
+              `Попробуй другой инструмент или другие параметры; не повторяй идентичный вызов.`,
+          })
+          break
+        }
+      }
+      if (pushedBackThisTurn) continue
+
+      // Dedupe plan_check before invocation.
+      for (let i = 0; i < calls.length; i += 1) {
+        if (calls[i].tool === 'plan_check') calls[i] = dedupePlanCheck(calls[i], planState)
+      }
+
+      // Read-back injection: every edit_file / write_file gets a paired
+      // read_file in the same batch so the loop sees the result on disk
+      // (catches silent edit failures and bad replacements).
+      const readBacks = makeReadBackForEdits(calls)
+      for (const rb of readBacks) calls.push(rb)
+
       // Run all tools in parallel. ask_user is sequential within its own
       // dispatch (it blocks waiting for the user) — it should rarely be
       // batched with other calls, but if a model does it, we await both.
       const results = await Promise.all(calls.map(async (call, idx) => {
-        sse(res, 'tool_start', { step, sub: idx, name: call.tool, args: call.args })
+        // Record fingerprint BEFORE running so the next turn sees it
+        // (otherwise the very next call could match itself and trigger).
+        recentCallFingerprints.push(callFingerprint(call))
+        if (recentCallFingerprints.length > 20) recentCallFingerprints.shift()
+        sse(res, 'tool_start', { step, sub: idx, name: call.tool, args: call.args, readBack: Boolean(call._readBack) })
         let r
         if (call.tool === 'ask_user') {
           const { id: questionId, promise } = registerQuestion()
@@ -470,6 +698,18 @@ async function runAgentInner({
         })
         return { call, r }
       }))
+
+      // Update tracking state from THIS round's results so the next
+      // iteration's safety nets have fresh data.
+      for (const { call, r } of results) {
+        recentToolHistory.push({ tool: call.tool, ok: Boolean(r.ok), at: Date.now() })
+        if (call.tool === 'plan_set' && r.ok && Array.isArray(r.result?.plan)) {
+          planState.done = new Set()
+        } else if (call.tool === 'plan_check' && r.ok && Array.isArray(r.result?.checked)) {
+          for (const i of r.result.checked) planState.done.add(Number(i))
+        }
+      }
+      if (recentToolHistory.length > 40) recentToolHistory.splice(0, recentToolHistory.length - 40)
 
       // Feed every observation back into the conversation — one message
       // per native-tool call (so tool_call_id matches), or a single
