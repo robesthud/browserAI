@@ -88,6 +88,7 @@ import {
 } from './deepseekTokenRefresher.js'
 import { startDeepSeekBot } from './deepseekBot.js'
 import { runAgent } from './agentLoop.js'
+import { callLLM, callLLMStream, isAnthropicOfficialUrl, isGoogleGenerativeNativeUrl } from './llmClient.js'
 import { sandboxHealth } from './agentSandbox.js'
 import { browserHealth } from './browserTools.js'
 import { answerQuestion } from './askUserRegistry.js'
@@ -1186,6 +1187,56 @@ app.post('/api/validate', requireAuth, async (req, res) => {
     return res.json(result)
   }
 
+
+  // ── Official Anthropic API (not OpenAI-compatible) ──────────────────────
+  if (isAnthropicOfficialUrl(baseUrl)) {
+    try {
+      const r = await fetch(`${root}/models`, {
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
+        },
+        signal: AbortSignal.timeout(15000),
+      })
+      const raw = await r.text()
+      if (!r.ok) {
+        return res.json({ ok: false, message: `Anthropic ответил ${r.status}: ${raw.slice(0, 300)}`, models: [], preferredModel: '' })
+      }
+      const data = JSON.parse(raw)
+      const models = Array.isArray(data?.data) ? data.data.map((m) => m.id).filter(Boolean) : []
+      const preferred = model && models.includes(model) ? model : (models.find((m) => /sonnet|opus|haiku/i.test(m)) || models[0] || model || '')
+      return res.json({ ok: true, message: `Anthropic API ключ валиден · моделей: ${models.length}`, models, preferredModel: preferred })
+    } catch (e) {
+      return res.json({ ok: false, message: `Anthropic validate: ${e.message || 'ошибка'}`, models: [], preferredModel: '' })
+    }
+  }
+
+  // ── Official Google Gemini GenerateContent API (not OpenAI-compatible) ──
+  if (isGoogleGenerativeNativeUrl(baseUrl)) {
+    try {
+      const r = await fetch(`${root}/models?key=${encodeURIComponent(apiKey)}`, {
+        signal: AbortSignal.timeout(15000),
+      })
+      const raw = await r.text()
+      if (!r.ok) {
+        return res.json({ ok: false, message: `Google ответил ${r.status}: ${raw.slice(0, 300)}`, models: [], preferredModel: '' })
+      }
+      const data = JSON.parse(raw)
+      const models = Array.isArray(data?.models)
+        ? data.models
+            .filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+            .map((m) => String(m.name || '').replace(/^models\//, ''))
+            .filter(Boolean)
+        : []
+      const preferred = model && models.includes(String(model).replace(/^models\//, ''))
+        ? String(model).replace(/^models\//, '')
+        : (models.find((m) => /gemini-2\.5|gemini-2\.0|gemini-1\.5/i.test(m)) || models[0] || model || '')
+      return res.json({ ok: true, message: `Google Gemini API ключ валиден · моделей: ${models.length}`, models, preferredModel: preferred })
+    } catch (e) {
+      return res.json({ ok: false, message: `Google validate: ${e.message || 'ошибка'}`, models: [], preferredModel: '' })
+    }
+  }
+
   // ── Сессионный токен (cookie, custom заголовок, или bearer-JWT с известного сайта) ──
   // Признак сессии: authType !== bearer ИЛИ это известный веб-сайт (isBearerSession)
   const isSession = authType === 'cookie' || authType === 'custom' || profile.isBearerSession
@@ -1942,6 +1993,60 @@ app.post('/api/chat', requireAuth, async (req, res) => {
       chatDebugLog('DEEPSEEK_THROW', { message: e?.message, stack: String(e?.stack || '').slice(0, 800) })
       console.error('[deepseek] handler threw:', e)
       if (!res.headersSent) res.status(500).json({ error: e?.message || 'DeepSeek handler error' })
+      return
+    }
+  }
+
+
+  // Official Anthropic / Google Gemini APIs are not OpenAI-compatible.
+  // Convert them to the OpenAI-ish response shape expected by the frontend
+  // so normal chat and Agent Mode both work with the same saved key.
+  if (isAnthropicOfficialUrl(baseUrl) || isGoogleGenerativeNativeUrl(baseUrl)) {
+    try {
+      const providerArgs = {
+        baseUrl, apiKey, model, messages,
+        temperature: Number(temperature ?? 0.7),
+        authType, authHeader, extraHeaders: mergedExtraHeaders,
+      }
+      if (stream) {
+        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+        res.setHeader('Cache-Control', 'no-cache')
+        res.setHeader('Connection', 'keep-alive')
+        res.setHeader('X-Accel-Buffering', 'no')
+        res.flushHeaders?.()
+        const reply = await callLLMStream({
+          ...providerArgs,
+          onTextDelta: (chunk) => {
+            res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`)
+          },
+        })
+        if (reply?.usage) {
+          res.write(`data: ${JSON.stringify({ choices: [], usage: {
+            prompt_tokens: reply.usage.prompt || 0,
+            completion_tokens: reply.usage.completion || 0,
+            total_tokens: reply.usage.total || 0,
+          } })}\n\n`)
+        }
+        res.write('data: [DONE]\n\n')
+        res.end()
+        return
+      }
+      const reply = await callLLM(providerArgs)
+      return res.json({
+        id: `browserai-${Date.now()}`,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [{ index: 0, message: { role: 'assistant', content: reply.text || '' }, finish_reason: 'stop' }],
+        usage: reply.usage ? {
+          prompt_tokens: reply.usage.prompt || 0,
+          completion_tokens: reply.usage.completion || 0,
+          total_tokens: reply.usage.total || 0,
+        } : undefined,
+      })
+    } catch (e) {
+      if (!res.headersSent) return res.status(502).json({ error: e.message || 'Official provider adapter failed' })
+      res.end()
       return
     }
   }

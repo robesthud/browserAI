@@ -34,6 +34,37 @@ function safeJsonParse(text) {
   try { return JSON.parse(text) } catch { return null }
 }
 
+function hostOf(baseUrl = '') {
+  try { return new URL(baseUrl).hostname.toLowerCase() } catch { return '' }
+}
+
+function pathOf(baseUrl = '') {
+  try { return new URL(baseUrl).pathname.toLowerCase() } catch { return '' }
+}
+
+export function isAnthropicOfficialUrl(baseUrl = '') {
+  const host = hostOf(baseUrl)
+  return host === 'api.anthropic.com' || host.endsWith('.api.anthropic.com')
+}
+
+export function isGoogleGenerativeNativeUrl(baseUrl = '') {
+  const host = hostOf(baseUrl)
+  const pathname = pathOf(baseUrl)
+  return host === 'generativelanguage.googleapis.com' && !pathname.includes('/openai')
+}
+
+function dataUrlToAnthropicSource(dataUrl = '') {
+  const m = String(dataUrl || '').match(/^data:(image\/[a-z0-9+.-]+);base64,(.*)$/i)
+  if (!m) return null
+  return { type: 'base64', media_type: m[1], data: m[2] }
+}
+
+function dataUrlToGeminiPart(dataUrl = '') {
+  const m = String(dataUrl || '').match(/^data:(image\/[a-z0-9+.-]+);base64,(.*)$/i)
+  if (!m) return null
+  return { inline_data: { mime_type: m[1], data: m[2] } }
+}
+
 // ── DeepSeek managed transport ──────────────────────────────────────────────
 async function callDeepSeekManaged({ baseUrl, apiKey, model, messages, extraHeaders }) {
   let captured = null
@@ -133,6 +164,316 @@ async function callOpenAICompatible({
       total: Number(data.usage.total_tokens || 0),
     } : null,
   }
+}
+
+
+// ── Anthropic official Messages API transport ───────────────────────────────
+function splitSystemMessages(messages = []) {
+  const system = []
+  const rest = []
+  for (const m of messages || []) {
+    if (m?.role === 'system') system.push(String(m.content || ''))
+    else rest.push(m)
+  }
+  return { system: system.filter(Boolean).join('\n\n'), rest }
+}
+
+function toAnthropicContent(content) {
+  if (Array.isArray(content)) {
+    const out = []
+    for (const part of content) {
+      if (part?.type === 'text') out.push({ type: 'text', text: String(part.text || '') })
+      else if (part?.type === 'image_url' && part.image_url?.url) {
+        const src = dataUrlToAnthropicSource(part.image_url.url)
+        if (src) out.push({ type: 'image', source: src })
+        else out.push({ type: 'text', text: '[image_url omitted: Anthropic official API accepts base64 data URLs only here]' })
+      } else if (part?.type === 'image' && part.source) {
+        out.push(part)
+      }
+    }
+    return out.length ? out : [{ type: 'text', text: '' }]
+  }
+  return String(content || '')
+}
+
+function toAnthropicBlockArray(content) {
+  const c = toAnthropicContent(content)
+  return Array.isArray(c) ? c : [{ type: 'text', text: String(c || '') }]
+}
+
+function toAnthropicMessages(messages = []) {
+  const out = []
+  for (const m of messages || []) {
+    if (!m || m.role === 'system') continue
+    const role = m.role === 'assistant' ? 'assistant' : 'user'
+    const blocks = toAnthropicBlockArray(m.content)
+    const prev = out[out.length - 1]
+    if (prev?.role === role) {
+      prev.content.push({ type: 'text', text: '\n\n' })
+      prev.content.push(...blocks)
+    } else {
+      out.push({ role, content: blocks })
+    }
+  }
+  return out
+}
+
+async function callAnthropicOfficial({
+  baseUrl, apiKey, model, messages, temperature = 0.7,
+}) {
+  const { system, rest } = splitSystemMessages(messages)
+  const body = {
+    model,
+    messages: toAnthropicMessages(rest),
+    max_tokens: Number(process.env.BROWSERAI_MAX_OUTPUT_TOKENS || 4096),
+    temperature,
+  }
+  if (system) body.system = system
+  const r = await fetch(joinUrl(baseUrl, 'messages'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120_000),
+  })
+  const raw = await r.text()
+  if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${raw.slice(0, 500)}`)
+  const data = safeJsonParse(raw)
+  if (!data) throw new Error(`Anthropic returned non-JSON: ${raw.slice(0, 400)}`)
+  const text = Array.isArray(data.content)
+    ? data.content.map((b) => b?.text || '').join('')
+    : ''
+  return {
+    text,
+    toolCalls: [],
+    usage: data?.usage ? {
+      prompt: Number(data.usage.input_tokens || 0),
+      completion: Number(data.usage.output_tokens || 0),
+      total: Number(data.usage.input_tokens || 0) + Number(data.usage.output_tokens || 0),
+    } : null,
+  }
+}
+
+async function callAnthropicOfficialStream({
+  baseUrl, apiKey, model, messages, temperature = 0.7, signal,
+  onTextDelta, onUsage,
+}) {
+  const { system, rest } = splitSystemMessages(messages)
+  const body = {
+    model,
+    messages: toAnthropicMessages(rest),
+    max_tokens: Number(process.env.BROWSERAI_MAX_OUTPUT_TOKENS || 4096),
+    temperature,
+    stream: true,
+  }
+  if (system) body.system = system
+  const r = await fetch(joinUrl(baseUrl, 'messages'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream',
+      'x-api-key': apiKey,
+      'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
+    },
+    body: JSON.stringify(body),
+    signal: signal || AbortSignal.timeout(180_000),
+  })
+  if (!r.ok) {
+    const raw = await r.text().catch(() => '')
+    throw new Error(`Anthropic HTTP ${r.status}: ${raw.slice(0, 500)}`)
+  }
+  if (!r.body) throw new Error('Anthropic returned no body for stream')
+
+  const reader = r.body.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  let text = ''
+  let usage = null
+
+  function handleData(payload) {
+    if (!payload || payload === '[DONE]') return
+    const evt = safeJsonParse(payload)
+    if (!evt) return
+    const delta = evt.delta || {}
+    if (evt.type === 'content_block_delta') {
+      const t = delta.text || delta.thinking || ''
+      if (t) {
+        text += t
+        try { onTextDelta?.(t, delta.thinking ? { kind: 'thinking' } : undefined) } catch { /* ignore */ }
+      }
+    }
+    if (evt.type === 'message_delta' && delta.usage) {
+      const out = Number(delta.usage.output_tokens || 0)
+      usage = { ...(usage || {}), completion: out }
+    }
+    if (evt.type === 'message_start' && evt.message?.usage) {
+      const input = Number(evt.message.usage.input_tokens || 0)
+      usage = { ...(usage || {}), prompt: input }
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    const blocks = buf.split('\n\n')
+    buf = blocks.pop() || ''
+    for (const block of blocks) {
+      for (const line of block.split('\n')) {
+        const trimmed = line.trim()
+        if (trimmed.startsWith('data:')) handleData(trimmed.slice(5).trim())
+      }
+    }
+  }
+  if (usage) {
+    usage.total = Number(usage.prompt || 0) + Number(usage.completion || 0)
+    try { onUsage?.(usage) } catch { /* ignore */ }
+  }
+  return { text, toolCalls: [], usage }
+}
+
+// ── Google Gemini official GenerateContent transport ────────────────────────
+function normalizeGeminiModel(model = '') {
+  const m = String(model || '').trim()
+  return m.startsWith('models/') ? m : `models/${m}`
+}
+
+function toGeminiParts(content) {
+  if (Array.isArray(content)) {
+    const parts = []
+    for (const part of content) {
+      if (part?.type === 'text') parts.push({ text: String(part.text || '') })
+      else if (part?.type === 'image_url' && part.image_url?.url) {
+        const p = dataUrlToGeminiPart(part.image_url.url)
+        if (p) parts.push(p)
+        else parts.push({ text: '[image_url omitted: Gemini official API accepts base64 data URLs only here]' })
+      }
+    }
+    return parts.length ? parts : [{ text: '' }]
+  }
+  return [{ text: String(content || '') }]
+}
+
+function toGeminiContents(messages = []) {
+  const out = []
+  for (const m of messages || []) {
+    if (!m || m.role === 'system') continue
+    const role = m.role === 'assistant' ? 'model' : 'user'
+    const parts = toGeminiParts(m.content)
+    const prev = out[out.length - 1]
+    if (prev?.role === role) {
+      prev.parts.push({ text: '\n\n' })
+      prev.parts.push(...parts)
+    } else {
+      out.push({ role, parts })
+    }
+  }
+  return out
+}
+
+async function callGeminiOfficial({ baseUrl, apiKey, model, messages, temperature = 0.7 }) {
+  const { system } = splitSystemMessages(messages)
+  const body = {
+    contents: toGeminiContents(messages),
+    generationConfig: {
+      temperature,
+      maxOutputTokens: Number(process.env.BROWSERAI_MAX_OUTPUT_TOKENS || 4096),
+    },
+  }
+  if (system) body.systemInstruction = { parts: [{ text: system }] }
+  const url = `${joinUrl(baseUrl, normalizeGeminiModel(model) + ':generateContent')}?key=${encodeURIComponent(apiKey)}`
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120_000),
+  })
+  const raw = await r.text()
+  if (!r.ok) throw new Error(`Gemini HTTP ${r.status}: ${raw.slice(0, 500)}`)
+  const data = safeJsonParse(raw)
+  if (!data) throw new Error(`Gemini returned non-JSON: ${raw.slice(0, 400)}`)
+  const parts = data?.candidates?.[0]?.content?.parts || []
+  const text = parts.map((p) => p.text || '').join('')
+  const usage = data?.usageMetadata ? {
+    prompt: Number(data.usageMetadata.promptTokenCount || 0),
+    completion: Number(data.usageMetadata.candidatesTokenCount || 0),
+    total: Number(data.usageMetadata.totalTokenCount || 0),
+  } : null
+  return { text, toolCalls: [], usage }
+}
+
+async function callGeminiOfficialStream({
+  baseUrl, apiKey, model, messages, temperature = 0.7, signal,
+  onTextDelta, onUsage,
+}) {
+  const { system } = splitSystemMessages(messages)
+  const body = {
+    contents: toGeminiContents(messages),
+    generationConfig: {
+      temperature,
+      maxOutputTokens: Number(process.env.BROWSERAI_MAX_OUTPUT_TOKENS || 4096),
+    },
+  }
+  if (system) body.systemInstruction = { parts: [{ text: system }] }
+  const url = `${joinUrl(baseUrl, normalizeGeminiModel(model) + ':streamGenerateContent')}?alt=sse&key=${encodeURIComponent(apiKey)}`
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+    body: JSON.stringify(body),
+    signal: signal || AbortSignal.timeout(180_000),
+  })
+  if (!r.ok) {
+    const raw = await r.text().catch(() => '')
+    throw new Error(`Gemini HTTP ${r.status}: ${raw.slice(0, 500)}`)
+  }
+  if (!r.body) throw new Error('Gemini returned no body for stream')
+
+  const reader = r.body.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  let text = ''
+  let usage = null
+
+  function handleData(payload) {
+    if (!payload || payload === '[DONE]') return
+    const chunk = safeJsonParse(payload)
+    if (!chunk) return
+    const parts = chunk?.candidates?.[0]?.content?.parts || []
+    for (const p of parts) {
+      if (p.text) {
+        text += p.text
+        try { onTextDelta?.(p.text) } catch { /* ignore */ }
+      }
+    }
+    if (chunk.usageMetadata) {
+      usage = {
+        prompt: Number(chunk.usageMetadata.promptTokenCount || 0),
+        completion: Number(chunk.usageMetadata.candidatesTokenCount || 0),
+        total: Number(chunk.usageMetadata.totalTokenCount || 0),
+      }
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    const blocks = buf.split('\n\n')
+    buf = blocks.pop() || ''
+    for (const block of blocks) {
+      for (const line of block.split('\n')) {
+        const trimmed = line.trim()
+        if (trimmed.startsWith('data:')) handleData(trimmed.slice(5).trim())
+      }
+    }
+  }
+  if (usage) {
+    try { onUsage?.(usage) } catch { /* ignore */ }
+  }
+  return { text, toolCalls: [], usage }
 }
 
 // ── OpenAI-compatible STREAMING transport ────────────────────────────────────
@@ -325,6 +666,8 @@ export async function callLLM(opts) {
       extraHeaders: opts.extraHeaders || {},
     })
   }
+  if (isAnthropicOfficialUrl(opts.baseUrl)) return callAnthropicOfficial(opts)
+  if (isGoogleGenerativeNativeUrl(opts.baseUrl)) return callGeminiOfficial(opts)
   return callOpenAICompatible(opts)
 }
 
@@ -351,6 +694,8 @@ export async function callLLMStream(opts) {
     try { if (res?.usage) opts.onUsage?.(res.usage) } catch { /* ignore */ }
     return res
   }
+  if (isAnthropicOfficialUrl(opts.baseUrl)) return callAnthropicOfficialStream(opts)
+  if (isGoogleGenerativeNativeUrl(opts.baseUrl)) return callGeminiOfficialStream(opts)
   return callOpenAICompatibleStream(opts)
 }
 
@@ -382,6 +727,8 @@ export function supportsNativeTools(baseUrl = '') {
     u.includes('api.mistral.ai')    ||
     u.includes('api.together.xyz')  ||
     u.includes('openrouter.ai')     ||
-    u.includes('generativelanguage.googleapis.com')
+    // Google only supports OpenAI-style tools on its /openai compatibility endpoint.
+    // The official GenerateContent endpoint is handled by the universal XML protocol.
+    (u.includes('generativelanguage.googleapis.com') && u.includes('/openai'))
   )
 }

@@ -197,12 +197,17 @@ function buildNativeToolsSpec(extraTools = null) {
     const properties = {}
     const required = []
     for (const [pName, pMeta] of Object.entries(def.params || {})) {
+      const schemaType = pMeta.type === 'number' ? 'number'
+        : pMeta.type === 'boolean' ? 'boolean'
+        : pMeta.type === 'array' ? 'array'
+        : pMeta.type === 'object' ? 'object'
+        : 'string'
       properties[pName] = {
-        type: pMeta.type === 'number' ? 'number'
-              : pMeta.type === 'boolean' ? 'boolean'
-              : 'string',
+        type: schemaType,
         description: pMeta.description || '',
       }
+      if (schemaType === 'array') properties[pName].items = { type: 'object' }
+      if (schemaType === 'object') properties[pName].additionalProperties = true
       if (pMeta.required) required.push(pName)
     }
     return {
@@ -947,7 +952,7 @@ async function runAgentInner({
         if (useNativeTools) {
           useNativeTools = false
           toolsSpec = undefined
-          systemPrompt = buildSystemPrompt({ extraSystem, native: false })
+          systemPrompt = buildSystemPrompt({ extraSystem, native: false, extraTools })
           convo[0] = { role: 'system', content: systemPrompt }
           sse(res, 'thought', {
             step,
