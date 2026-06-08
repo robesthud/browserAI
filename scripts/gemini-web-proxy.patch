@@ -339,51 +339,61 @@ index 121bdc5..154fca5 100644
      }''')
      
      text_content = extraction.get('text', '').replace('\\_', '_')
-@@ -560,6 +822,107 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
+@@ -560,6 +822,117 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
      
      # No tool calls - convert HTML to markdown
      response_text = md(response_text, heading_style="ATX", code_language_callback=lambda el: el.get('class', [''])[0].replace('language-', '') if el.get('class') else '')
 +
++    # Prefer ORIGINAL files first: Gemini often renders a compressed preview
++    # as <img>/<video>, while the native download button yields the real file
++    # (full size image, final mp4, PDF, etc.).  Older code tried native
++    # download only when no data:image/video existed; that meant a thumbnail
++    # data URL prevented the original-file path entirely.
++    downloaded_media = []
++    try:
++        downloaded_media = await download_media_via_buttons(page, last_response)
++    except Exception:
++        downloaded_media = []
++    for item in downloaded_media:
++        du = item.get('data_url') or ''
++        mime = item.get('mime') or ''
++        name = item.get('name') or 'generated file'
++        if not du:
++            continue
++        if mime.startswith('image/'):
++            response_text += f"\n\n![{name}]({du})"
++        else:
++            # video/audio/pdf/xlsx/csv/... -> plain link (not an <img>),
++            # so BrowserAI saves it as a real downloadable file.
++            response_text += f"\n\n[{name}]({du})"
++
++    have_downloaded_media = bool(downloaded_media)
++
 +    # Gemini generated images often appear as blob: URLs inside the browser.
 +    # Those blob URLs are not readable by BrowserAI clients, so replace them
-+    # with data:image/... URLs extracted in the page context above.
-+    for image in extraction.get('images', []) or []:
-+        src = image.get('src') or ''
-+        data_url = image.get('dataUrl') or ''
-+        alt = image.get('alt') or 'generated image'
-+        if src and data_url:
-+            response_text = response_text.replace(src, data_url)
-+        if data_url and data_url not in response_text:
-+            response_text += f"\n\n![{alt}]({data_url})"
++    # with data:image/... URLs extracted in the page context above.  Use this
++    # only as fallback when native original download did not work.
++    if not have_downloaded_media:
++        for image in extraction.get('images', []) or []:
++            src = image.get('src') or ''
++            data_url = image.get('dataUrl') or ''
++            alt = image.get('alt') or 'generated image'
++            if src and data_url:
++                response_text = response_text.replace(src, data_url)
++            if data_url and data_url not in response_text:
++                response_text += f"\n\n![{alt}]({data_url})"
 +
 +    # Inline generated videos as data: URLs so BrowserAI can save them.
-+    for video in extraction.get('videos', []) or []:
-+        v_src = video.get('src') or ''
-+        v_data = video.get('dataUrl') or ''
-+        if not (v_data and v_data.startswith('data:video/')):
-+            continue
-+        if v_src and v_src in response_text:
-+            response_text = response_text.replace(v_src, v_data)
-+        if v_data not in response_text:
-+            response_text += f"\n\n[generated video]({v_data})"
-+
-+    # Prefer ORIGINAL files: if no media data URL has been extracted yet, try
-+    # clicking Gemini's native download buttons to grab the real generated
-+    # image/video file (full quality) instead of a screenshot.
-+    if ('data:image' not in response_text and 'data:video' not in response_text):
-+        try:
-+            downloaded = await download_media_via_buttons(page, last_response)
-+        except Exception:
-+            downloaded = []
-+        for item in downloaded:
-+            du = item.get('data_url') or ''
-+            mime = item.get('mime') or ''
-+            if not du:
++    if not have_downloaded_media:
++        for video in extraction.get('videos', []) or []:
++            v_src = video.get('src') or ''
++            v_data = video.get('dataUrl') or ''
++            if not (v_data and v_data.startswith('data:video/')):
 +                continue
-+            if mime.startswith('video/'):
-+                response_text += f"\n\n[generated video]({du})"
-+            else:
-+                response_text += f"\n\n![generated file]({du})"
++            if v_src and v_src in response_text:
++                response_text = response_text.replace(v_src, v_data)
++            if v_data not in response_text:
++                response_text += f"\n\n[generated video]({v_data})"
 +
 +    # Last-resort fallback: screenshot ONLY the largest img/canvas/video inside
 +    # the response (NOT the whole block, which would include the Gemini input

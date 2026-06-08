@@ -211,7 +211,7 @@ async function pollGeminiVideo(job, model) {
     appendJobLog(job.id, `Проверяю готовность видео (попытка ${attempt})…`)
     // Bump progress slowly between 75 and 95 while polling
     setJobPatch(job.id, { progress: Math.min(95, 75 + attempt * 3) })
-    let reply = ''
+    let reply
     try {
       reply = await callGeminiProxy({ prompt: 'Готово ли видео? Если да, покажи/вставь его.', model })
     } catch (e) {
