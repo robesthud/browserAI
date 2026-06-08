@@ -383,9 +383,9 @@ async function pollGeminiVideo(job, model, sessionId) {
     if (videos.length) {
       const viaBtn = (data.via_download_button || []).some((x) => x.kind === 'video') ? ' (через кнопку Download)' : ' (inline)'
       appendJobLog(job.id, `Видео готово, получено ${videos.length} файл(ов)${viaBtn}`)
-      // Compose markdown so saveDataUrlsToWorkspace finds all data: URLs.
-      const md = videos.map((u, i) => `[generated video ${i + 1}](${u})`).join('\n')
-      return { content: `Ваше видео готово!\n\n${md}`, dataUrls: videos }
+      // Clean content: NO markdown data:URL link (the file is shown inline
+      // by JobCard via the saved workspace file). Just a friendly status.
+      return { content: 'Ваше видео готово!', dataUrls: videos }
     }
     if (images.length && !videos.length) {
       // Gemini sometimes regenerates a still poster while encoding the video.

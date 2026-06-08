@@ -35,11 +35,34 @@ function kindOf(path) {
   return 'file'
 }
 
+// Auto-generated names like `generated-1780897102124-1.mp4` are noise to
+// the user. Show a friendly label ("Видео", "Изображение", …) but keep
+// the real filename in `title=` for ops debugging.
+const KIND_LABEL = {
+  video: 'Видео',
+  image: 'Изображение',
+  audio: 'Аудио',
+  file:  'Файл',
+}
+const KIND_ICON = {
+  video: '🎬',
+  image: '🖼',
+  audio: '🎧',
+  file:  '📁',
+}
+function friendlyFileLabel(name, kind) {
+  // Hide auto-generated technical names; show real human-given names verbatim.
+  if (/^generated-\d{6,}/i.test(name)) return KIND_LABEL[kind] || KIND_LABEL.file
+  return name
+}
+
 function FileTile({ path, chatId }) {
   const kind = kindOf(path)
   const inlineHref = downloadHref(path, chatId, { inline: true })
   const downloadH = downloadHref(path, chatId)
   const name = path.split('/').pop()
+  const label = friendlyFileLabel(name, kind)
+  const icon = KIND_ICON[kind] || KIND_ICON.file
   return (
     <div className="rounded-lg border border-white/10 bg-graphite-900/60 p-2">
       {kind === 'video' && (
@@ -57,7 +80,7 @@ function FileTile({ path, chatId }) {
         // eslint-disable-next-line jsx-a11y/img-redundant-alt
         <img
           src={inlineHref}
-          alt={name}
+          alt={label}
           loading="lazy"
           className="mb-2 w-full rounded-md bg-graphite-950 object-contain"
           style={{ maxHeight: 360 }}
@@ -66,12 +89,12 @@ function FileTile({ path, chatId }) {
       {kind === 'audio' && (
         <audio src={inlineHref} controls preload="metadata" className="mb-2 w-full" />
       )}
-      <div className="flex flex-wrap items-center gap-2 font-mono text-[12px] text-emerald-300">
-        <span className="break-all">📁 {name}</span>
+      <div className="flex flex-wrap items-center gap-2 text-[12px] text-emerald-300">
+        <span className="font-medium" title={name}>{icon} {label}</span>
         <a
           href={downloadH}
           download={name}
-          className="rounded border border-emerald-400/30 px-2 py-0.5 text-[11px] text-emerald-200 hover:bg-emerald-400/10"
+          className="ml-auto rounded border border-emerald-400/30 px-2.5 py-1 text-[11px] text-emerald-200 hover:bg-emerald-400/10"
         >
           Скачать
         </a>
@@ -79,7 +102,7 @@ function FileTile({ path, chatId }) {
           href={inlineHref}
           target="_blank"
           rel="noreferrer"
-          className="rounded border border-white/15 px-2 py-0.5 text-[11px] text-cream-soft hover:bg-white/5"
+          className="rounded border border-white/15 px-2.5 py-1 text-[11px] text-cream-soft hover:bg-white/5"
         >
           Открыть
         </a>
@@ -125,6 +148,17 @@ export default function JobCard({ job: initial, onJobDone }) {
   const files = job.result?.files || []
   const retryable = Boolean(job.result?.retryable) && (job.result?.kind === 'video' || job.type === 'gemini_video')
 
+  // Friendly title instead of raw job.type like "gemini_video".
+  const JOB_TYPE_LABEL = {
+    gemini_video:           '🎬 Видео',
+    gemini_image:           '🖼 Изображение',
+    generate_pdf:           '📄 PDF',
+    generate_docx:          '📝 Документ',
+    generate_xlsx:          '📊 Таблица',
+    generate_presentation:  '🎯 Презентация',
+  }
+  const friendlyTitle = JOB_TYPE_LABEL[job.type] || job.title || job.type
+
   const onRetry = async () => {
     setRetryBusy(true)
     setRetryError('')
@@ -148,7 +182,7 @@ export default function JobCard({ job: initial, onJobDone }) {
               <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
             </svg>
           )}
-          {job.title || job.type}
+          {friendlyTitle}
         </div>
         <div className="text-[11px] text-cream-faint">{statusText(job.status)}</div>
       </div>
@@ -176,11 +210,26 @@ export default function JobCard({ job: initial, onJobDone }) {
         </div>
       )}
 
-      {job.result?.content && (
-        <div className="mt-2 whitespace-pre-wrap text-cream-soft">
-          {String(job.result.content).slice(0, 1500)}
-        </div>
-      )}
+      {(() => {
+        // Sanitise the job message before display:
+        //  - drop markdown links to data: / blob: / http(s) URLs (the actual
+        //    file is rendered inline via FileTile below — showing a raw
+        //    base64 data-URL link would be a 12-MB eyesore);
+        //  - drop bare data:/blob: strings;
+        //  - collapse 3+ blank lines.
+        const raw = String(job.result?.content || '')
+        const cleaned = raw
+          .replace(/!?\[[^\]]*\]\((?:data:|blob:|https?:)[^)\s]+\)/gi, '')
+          .replace(/\b(?:data:|blob:)[^\s)]+/gi, '')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim()
+        if (!cleaned) return null
+        return (
+          <div className="mt-2 whitespace-pre-wrap text-cream-soft">
+            {cleaned.slice(0, 1500)}
+          </div>
+        )
+      })()}
 
       {files.length > 0 && (
         <div className="mt-3 grid gap-2">
