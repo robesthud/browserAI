@@ -29,13 +29,14 @@ import {
   isSessionValid as isDeepSeekValid,
 } from './deepseekTokenRefresher.js'
 import { callLLM } from './llmClient.js'
-import {
-  GATEWAY_API_KEY,
-  GATEWAY_BASE_URL,
-  getGatewayModels,
-  isGatewayProvider,
-  resolveGatewayModel,
-} from './gateway.js'
+// gateway.js удалён вместе с gemini-web-proxy. Telegram-бот теперь
+// напрямую использует DeepSeek managed по умолчанию.
+const DEFAULT_BASE_URL = 'https://chat.deepseek.com/api/v0'
+const DEFAULT_API_KEY  = '__managed__'
+// Список моделей, которые бот предлагает в меню — те, что мы реально
+// можем обслуживать через DeepSeek managed.
+const KNOWN_MODELS = ['deepseek_chat', 'deepseek_reasoner']
+function getKnownModels() { return [...KNOWN_MODELS] }
 
 const TG_TOKEN = process.env.TG_USER_BOT_TOKEN || process.env.TG_BOT_TOKEN || ''
 const POLL_TIMEOUT_SEC = 25
@@ -51,8 +52,8 @@ const APP_PUBLIC_URL = (process.env.APP_URL || process.env.APP_PUBLIC_URL || 'ht
 const DEFAULT_MODE = 'chat'           // 'chat' | 'agent'
 const DEFAULT_MODEL = 'deepseek_chat'
 const DEFAULT_PROVIDER = {
-  baseUrl: GATEWAY_BASE_URL,
-  apiKey: GATEWAY_API_KEY,
+  baseUrl: DEFAULT_BASE_URL,
+  apiKey: DEFAULT_API_KEY,
 }
 
 // ── State (in memory; durable bits in SQLite via tgDb) ─────────────────────
@@ -225,7 +226,7 @@ async function sendChatAction(chatId, action = 'typing') {
 
 // ── Inline keyboards ──────────────────────────────────────────────────────
 function modelsKeyboard(currentModel) {
-  const candidates = getGatewayModels()
+  const candidates = getKnownModels()
 
   const rows = candidates.map((m) => ([{
     text: (m === currentModel ? '✓ ' : '  ') + m,
@@ -259,54 +260,46 @@ function settingsKeyboard(user) {
 
 // ── LLM calls ─────────────────────────────────────────────────────────────
 /**
- * Build the provider config for a TG user. Returns either:
- *   { ok: true, baseUrl, apiKey, authType, model, extraHeaders, temperature }
- * or, when the gateway can't satisfy the request:
- *   { ok: false, error, message, suggestion }
+ * Build the provider config for a TG user.
+ *   Returns { ok: true, baseUrl, apiKey, authType, model, extraHeaders, temperature }
+ *   Or     { ok: false, error, message, suggestion } on misconfiguration.
  *
- * Используем строгую связку isGatewayProvider(baseUrl ∧ apiKey), чтобы
- * случайный импорт ключа с apiKey="__gateway__" не активировал gateway-маршрут
- * на произвольном baseUrl.
+ * Раньше тут была gateway-маршрутизация (gemini-web-proxy + DeepSeek через
+ * единый эндпоинт). После удаления gateway оставлен только прямой путь:
+ *   • DeepSeek managed (apiKey="__managed__")  — server-managed bearer/cookies;
+ *   • любая другая конфигурация — используется как есть.
  */
 async function getProvider(user) {
   const requestedModel = user.model || DEFAULT_MODEL
 
-  // Gateway: route to a concrete provider and merge headers.
-  if (isGatewayProvider(user.provider_base_url, user.provider_api_key)) {
-    const routed = resolveGatewayModel(requestedModel)
-    if (!routed.ok) {
-      return { ok: false, error: routed.error, message: routed.message, suggestion: routed.suggestion }
-    }
-    const extraHeaders = { ...(routed.extraHeaders || {}) }
-    let apiKey = routed.apiKey
-    if (routed.provider === 'deepseek') {
-      // For managed DeepSeek inject the live bearer + cookies here.
-      if (apiKey === '__managed__') {
-        if (!isDeepSeekValid()) {
-          return {
-            ok: false,
-            error: 'deepseek_unavailable',
-            message: 'DeepSeek session is not configured / expired on the server.',
-            suggestion: routed.suggestion || 'gemini-2.5-flash',
-          }
-        }
-        apiKey = getDeepSeekBearer()
+  // DeepSeek managed (api_key='__managed__') — подставляем bearer + cookies.
+  if (user.provider_api_key === '__managed__') {
+    if (!isDeepSeekValid()) {
+      return {
+        ok: false,
+        error: 'deepseek_unavailable',
+        message: 'DeepSeek session is not configured / expired on the server.',
+        suggestion: 'Привяжи ключ через /api/keys в веб-UI.',
       }
-      const cookie = getDeepSeekCookieHeader()
-      if (cookie) extraHeaders.Cookie = cookie
     }
+    const extraHeaders = {
+      Referer: 'https://chat.deepseek.com/',
+      Origin:  'https://chat.deepseek.com',
+    }
+    const cookie = getDeepSeekCookieHeader()
+    if (cookie) extraHeaders.Cookie = cookie
     return {
       ok: true,
-      baseUrl: routed.baseUrl,
-      apiKey,
-      authType: routed.authType || 'bearer',
-      model: routed.model,
+      baseUrl: user.provider_base_url || DEFAULT_BASE_URL,
+      apiKey: getDeepSeekBearer(),
+      authType: 'bearer',
+      model: requestedModel,
       extraHeaders,
       temperature: 0.7,
     }
   }
 
-  // Non-gateway: user picked a custom provider/key directly.
+  // Non-managed: user picked a custom provider/key directly.
   const apiKey = user.provider_api_key === '__managed__'
     ? (isDeepSeekValid() ? getDeepSeekBearer() : '')
     : user.provider_api_key
@@ -600,7 +593,7 @@ async function handleCallback(cb) {
     await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: cb.message.message_id, reply_markup: modeKeyboard(fresh.mode) })
   } else if (data.startsWith('set_model:')) {
     const model = data.slice(10)
-    updateUser(chatId, { model, provider_base_url: GATEWAY_BASE_URL, provider_api_key: GATEWAY_API_KEY })
+    updateUser(chatId, { model, provider_base_url: DEFAULT_BASE_URL, provider_api_key: DEFAULT_API_KEY })
     const fresh = tgDb.prepare('SELECT * FROM tg_users WHERE chat_id = ?').get(chatId)
     await answerCallbackQuery(cb.id, `Модель: ${model}`)
     await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: cb.message.message_id, reply_markup: settingsKeyboard(fresh) })
