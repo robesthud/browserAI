@@ -429,6 +429,45 @@ export const TOOLS = {
     },
   },
 
+  // ── Vision: let the (text) agent actually "see" an image/screenshot ──
+  analyze_image: {
+    description: 'Look at an image in the workspace (e.g. a screenshot saved by browser_open) and get a text description/answer from a vision model. Use this to inspect UI screenshots, diagrams, photos. Returns the vision model\'s textual answer.',
+    params: {
+      path: { type: 'string', required: true, description: 'Path to an image file in the workspace (png/jpg/webp/gif), e.g. "browser-screenshots/screenshot-….png".' },
+      question: { type: 'string', optional: true, description: 'What to ask about the image. Default: describe it.' },
+    },
+    handler: async ({ path, question = '' } = {}) => {
+      if (!path) return err('path is required')
+      try {
+        const file = await readWorkspaceFile(path)
+        if (file?.kind !== 'image' || !file?.dataUrl) {
+          return err(`Not an image or unreadable: ${path} (kind=${file?.kind}, mime=${file?.mime})`)
+        }
+        const visionUrl = process.env.GEMINI_WEB_PROXY_URL || 'http://host.docker.internal:8080/v1'
+        const visionModel = process.env.GEMINI_WEB_MODEL || 'gemini-2.5-flash'
+        const prompt = String(question || '').trim() || 'Опиши, что изображено на этом изображении, подробно.'
+        const r = await fetch(`${visionUrl.replace(/\/$/, '')}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer not-needed' },
+          body: JSON.stringify({
+            model: visionModel,
+            messages: [{ role: 'user', content: [
+              { type: 'text', text: prompt },
+              { type: 'image_url', image_url: { url: file.dataUrl } },
+            ] }],
+          }),
+          signal: AbortSignal.timeout(120_000),
+        })
+        const raw = await r.text()
+        if (!r.ok) return err(`Vision backend ${r.status}: ${truncate(raw, 500)}`)
+        let answer = ''
+        try { answer = JSON.parse(raw)?.choices?.[0]?.message?.content || '' } catch { /* ignore */ }
+        if (!answer) return err('Vision backend returned no text')
+        return ok({ path, question: prompt, answer: truncate(answer, 6000) })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
   // ── Ops / service connectors ──────────────────────────────────────────
   ops_list_services: {
     description: 'List configured external/service connectors and their allowed actions (GitHub/Timeweb/Docker/Telegram/etc. as configured on the server). Use this before ops_run_action.',
