@@ -30,6 +30,11 @@ services:
       - WORKSPACE_ROOT=${WORKSPACE_ROOT:-/workspace}
       # Agent sandbox
       - AGENT_SANDBOX_CONTAINER=agent-sandbox
+      # Computer-use sandbox (Xvfb + Firefox + xdotool). Disabled by
+      # default — set BROWSERAI_COMPUTER_USE=on AND docker compose --profile
+      # computer up -d to enable.
+      - COMPUTER_SANDBOX_CONTAINER=computer-sandbox
+      - BROWSERAI_COMPUTER_USE=${BROWSERAI_COMPUTER_USE:-off}
       # Free Gateway → Gemini Web Proxy. Defaults assume the proxy runs on
       # the host at 127.0.0.1:8080 (reached via host.docker.internal).
       - GEMINI_WEB_PROXY_URL=${GEMINI_WEB_PROXY_URL:-http://host.docker.internal:8080/v1}
@@ -76,4 +81,40 @@ services:
     mem_limit: 256m
     cpus: 0.5
     pids_limit: 128
+
+  # ──────────────────────────────────────────────────────────────────────
+  # computer-sandbox — virtual X11 desktop for Computer Use tools.
+  #
+  # OPT-IN: lives under the `computer` compose profile so plain
+  # `docker compose up` does NOT start it. Activate with:
+  #
+  #     docker compose --profile computer up -d computer-sandbox
+  #
+  # plus set BROWSERAI_COMPUTER_USE=on for the browserai container so
+  # the computer_* tools register at boot. RAM cap is 400 MB — fits on
+  # a 1 GB VPS alongside browserai (~120 MB) and agent-sandbox (~80 MB).
+  # ──────────────────────────────────────────────────────────────────────
+  computer-sandbox:
+    build:
+      context: ./docker/computer-sandbox
+      dockerfile: Dockerfile
+    image: browserai-computer-sandbox:latest
+    container_name: computer-sandbox
+    profiles: ["computer"]
+    restart: unless-stopped
+    # SHM size matters for Firefox — too small and pages crash.
+    shm_size: 256m
+    environment:
+      - DISPLAY=:99
+      - SCREEN_WIDTH=${COMPUTER_SCREEN_WIDTH:-1280}
+      - SCREEN_HEIGHT=${COMPUTER_SCREEN_HEIGHT:-720}
+      - SCREEN_DEPTH=24
+    working_dir: /home/computer
+    # Share the same workspace so files the LLM downloads via Firefox
+    # show up in the UI immediately.
+    volumes:
+      - ${WORKSPACE_DIR:-./workspace}:/workspace
+    mem_limit: 400m
+    cpus: 0.5
+    pids_limit: 256
 

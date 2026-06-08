@@ -1520,6 +1520,99 @@ import('./subAgents.js')
   })
   .catch((e) => console.warn('[agentTools] use_subagents registration failed:', e?.message || e))
 
+// ── Computer Use tools (Claude-style; opt-in) ─────────────────────────────
+//
+// Registered only when BROWSERAI_COMPUTER_USE=on AND
+// computer-sandbox container is reachable. Otherwise the tool list
+// stays clean and the LLM never tries to call them.
+//
+// Each tool returns a {dataUrl} that the AgentToolBlock UI renders as
+// an inline screenshot, so the chat shows the screen state after every
+// action — same UX as Claude's Computer Use reference implementation.
+if (String(process.env.BROWSERAI_COMPUTER_USE || '').toLowerCase() === 'on') {
+  import('./computerUse.js')
+    .then(({
+      computerScreenshot, computerClick, computerDoubleClick, computerMove,
+      computerScroll, computerType, computerKey, computerOpenApp, computerStatus,
+    }) => {
+      const wrap = (fn) => async (args = {}) => {
+        try {
+          const r = await fn({ ...(args || {}), signal: args._signal })
+          return r?.ok === false ? err(r.error || 'computer tool failed') : ok(r)
+        } catch (e) { return err(e?.message || String(e)) }
+      }
+      TOOLS.computer_screenshot = {
+        description: 'Take a screenshot of the virtual desktop. Returns a PNG data URL the model can SEE. Use as the first step of any Computer Use sequence so you know what the screen currently shows.',
+        params: {},
+        handler: wrap(computerScreenshot),
+      }
+      TOOLS.computer_click = {
+        description: 'Click the mouse at pixel coordinates (x, y) on the virtual desktop. The screen is 1280x720 by default. Returns a fresh screenshot showing the result.',
+        params: {
+          x:      { type: 'number', required: true, description: 'X pixel coordinate (0..screen_width).' },
+          y:      { type: 'number', required: true, description: 'Y pixel coordinate (0..screen_height).' },
+          button: { type: 'string', optional: true, description: '"left" (default), "middle", "right".' },
+        },
+        handler: wrap(computerClick),
+      }
+      TOOLS.computer_double_click = {
+        description: 'Double-click at (x, y).',
+        params: {
+          x: { type: 'number', required: true, description: 'X pixel coordinate.' },
+          y: { type: 'number', required: true, description: 'Y pixel coordinate.' },
+        },
+        handler: wrap(computerDoubleClick),
+      }
+      TOOLS.computer_move = {
+        description: 'Move the mouse to (x, y) without clicking (useful for hover effects). Does NOT return a screenshot — call computer_screenshot afterwards if needed.',
+        params: {
+          x: { type: 'number', required: true, description: 'X pixel coordinate.' },
+          y: { type: 'number', required: true, description: 'Y pixel coordinate.' },
+        },
+        handler: wrap(computerMove),
+      }
+      TOOLS.computer_scroll = {
+        description: 'Scroll the mouse wheel at (x, y) — useful for long pages / lists. Direction is "up" or "down"; amount = number of wheel ticks (default 3).',
+        params: {
+          x:         { type: 'number', optional: true, description: 'X coordinate to move mouse to first (optional).' },
+          y:         { type: 'number', optional: true, description: 'Y coordinate.' },
+          direction: { type: 'string', optional: true, description: '"up" or "down" (default "down").' },
+          amount:    { type: 'number', optional: true, description: 'Number of wheel ticks. Default 3, max 20.' },
+        },
+        handler: wrap(computerScroll),
+      }
+      TOOLS.computer_type = {
+        description: 'Type a literal string of text into the currently-focused element on the virtual desktop. Use computer_key for special keys (Return, Tab, Escape, ctrl+l, …).',
+        params: {
+          text: { type: 'string', required: true, description: 'Text to type. Up to 5000 characters. Plain text only — special keys via computer_key.' },
+        },
+        handler: wrap(computerType),
+      }
+      TOOLS.computer_key = {
+        description: 'Press a key or key combination on the virtual desktop. Uses X11 keysym names: Return, BackSpace, Tab, Escape, Page_Down, Home, ctrl+a, ctrl+l, ctrl+shift+t, alt+F4, etc.',
+        params: {
+          key: { type: 'string', required: true, description: 'Key name. Examples: "Return", "Escape", "ctrl+l", "alt+Tab".' },
+        },
+        handler: wrap(computerKey),
+      }
+      TOOLS.computer_open_app = {
+        description: 'Spawn an application on the virtual desktop. Currently allowed: "firefox" (with optional url), "xterm". Returns a screenshot after the window has rendered.',
+        params: {
+          name: { type: 'string', optional: true, description: '"firefox" (default) or "xterm".' },
+          url:  { type: 'string', optional: true, description: 'Initial URL for firefox (http/https only).' },
+        },
+        handler: wrap(computerOpenApp),
+      }
+      TOOLS.computer_status = {
+        description: 'Diagnostic: returns whether the virtual desktop is up and the current mouse / window state. Use this BEFORE the first screenshot to confirm computer-sandbox is reachable.',
+        params: {},
+        handler: wrap(computerStatus),
+      }
+      console.log(`[agentTools] Computer Use enabled (${Object.keys(TOOLS).filter((k) => k.startsWith('computer_')).length} tools)`)
+    })
+    .catch((e) => console.warn('[agentTools] Computer Use registration failed:', e?.message || e))
+}
+
 // ── Schema for the system prompt ────────────────────────────────────────────
 /**
  * Render a tool catalogue (built-in TOOLS plus any extra map of

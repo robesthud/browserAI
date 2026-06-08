@@ -31,6 +31,15 @@ const VERBS = {
   web_fetch:       { verb: 'used',  noun: 'Fetch',       icon: '📥' },
   fetch_page:      { verb: 'used',  noun: 'Fetch Page',  icon: '📥' },
   generate_image:  { verb: 'Generate', noun: 'Image',    icon: '🎨' },
+  computer_screenshot:  { verb: 'used',  noun: 'Computer Screenshot', icon: '🖥️' },
+  computer_click:       { verb: 'used',  noun: 'Computer Click',      icon: '🖱️' },
+  computer_double_click:{ verb: 'used',  noun: 'Computer Double-Click', icon: '🖱️' },
+  computer_move:        { verb: 'used',  noun: 'Computer Move',       icon: '🖱️' },
+  computer_scroll:      { verb: 'used',  noun: 'Computer Scroll',     icon: '🖱️' },
+  computer_type:        { verb: 'used',  noun: 'Computer Type',       icon: '⌨️' },
+  computer_key:         { verb: 'used',  noun: 'Computer Key',        icon: '⌨️' },
+  computer_open_app:    { verb: 'Open',  noun: 'App',                 icon: '🖥️' },
+  computer_status:      { verb: 'used',  noun: 'Computer Status',     icon: '🖥️' },
   bash:            { verb: 'used',  noun: 'Bash',        icon: '>_' },
   bash_bg:         { verb: 'Spawn', noun: 'background',   icon: '↻' },
   bash_logs:       { verb: 'used',  noun: 'bg logs',      icon: '📜' },
@@ -179,6 +188,11 @@ export default function AgentToolBlock({
   const screenshotPath = status === 'done' && ok && result && typeof result === 'object'
     ? (result.screenshotPath || result.screenshot || (typeof result.path === 'string' && /\.(png|jpg|jpeg|webp)$/i.test(result.path) ? result.path : ''))
     : ''
+  // Computer Use tools return their screenshot as an inline data URL so
+  // the UI can render it without going through /api/workspace/download.
+  const inlineDataUrl = status === 'done' && ok && result && typeof result === 'object'
+    ? (typeof result.dataUrl === 'string' && result.dataUrl.startsWith('data:image/') ? result.dataUrl : '')
+    : ''
 
   // Detect language for syntax highlighting on read_file / write_file / edit_file
   let highlightedHtml = null
@@ -258,7 +272,7 @@ export default function AgentToolBlock({
               <pre className="thin-scroll mt-1 max-h-32 overflow-auto rounded bg-graphite-900 p-2 font-mono text-[11px] text-cream">{JSON.stringify(args, null, 2)}</pre>
             </details>
           )}
-          {/* Inline screenshot preview for browser_* tools */}
+          {/* Inline screenshot preview for browser_* / computer_* tools */}
           {screenshotPath && (
             // eslint-disable-next-line jsx-a11y/img-redundant-alt
             <img
@@ -267,6 +281,20 @@ export default function AgentToolBlock({
               loading="lazy"
               className="mb-2 w-full rounded border border-white/5 bg-graphite-950 object-contain"
               style={{ maxHeight: 360 }}
+            />
+          )}
+          {inlineDataUrl && (
+            // Computer Use returns base64 directly so we don't have to
+            // round-trip through workspace download. Useful especially
+            // for short-lived screenshots (no point persisting every
+            // mouse-click snapshot to disk).
+            // eslint-disable-next-line jsx-a11y/img-redundant-alt
+            <img
+              src={inlineDataUrl}
+              alt={`computer-sandbox screen at ${name}`}
+              loading="lazy"
+              className="mb-2 w-full rounded border border-violet-500/30 bg-graphite-950 object-contain"
+              style={{ maxHeight: 480 }}
             />
           )}
           {diagnostic && (

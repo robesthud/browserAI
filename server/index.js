@@ -2412,6 +2412,28 @@ app.get('/api/cost/chat/:chatId', requireAuth, async (req, res) => {
 // ── MCP (Model Context Protocol) ───────────────────────────────────────────
 // All endpoints require admin (we only allow management for the owner of
 // the box because MCP servers can read filesystem / call out / etc.).
+// ── Computer Use status ──────────────────────────────────────────────────
+// Tells the UI whether computer-sandbox is reachable and enabled. The
+// frontend can show a "Computer Use available" indicator and a hint for
+// how to turn it on.
+app.get('/api/computer/status', requireAuth, async (_req, res) => {
+  const enabled = String(process.env.BROWSERAI_COMPUTER_USE || '').toLowerCase() === 'on'
+  if (!enabled) {
+    return res.json({
+      enabled: false,
+      reachable: false,
+      hint: 'BROWSERAI_COMPUTER_USE is off. Set it to "on" in .env and start the sandbox: `docker compose --profile computer up -d computer-sandbox`.',
+    })
+  }
+  try {
+    const { computerStatus } = await import('./computerUse.js')
+    const s = await computerStatus({})
+    res.json({ enabled: true, reachable: Boolean(s?.ok), info: s?.info || null, error: s?.error || null })
+  } catch (e) {
+    res.json({ enabled: true, reachable: false, error: e?.message || String(e) })
+  }
+})
+
 app.get('/api/mcp/status', requireAuth, async (_req, res) => {
   try {
     const { getMcpServerStatus } = await import('./mcpClient.js')

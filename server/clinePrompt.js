@@ -438,6 +438,29 @@ export function buildClineSystemPrompt({
         Legacy single-question form {question, options} also accepted.
 `,
     '',
+    // Computer-Use playbook — only emitted when the computer_* tools are
+    // actually registered (BROWSERAI_COMPUTER_USE=on + sandbox running).
+    // Without this models tend to try to do everything from bash; this
+    // hint nudges them to take a screenshot first and reason from
+    // pixels for genuinely GUI tasks.
+    (String(process.env.BROWSERAI_COMPUTER_USE || '').toLowerCase() === 'on'
+      ? `## Computer Use (virtual desktop, opt-in)
+
+You have a virtual 1280x720 X11 desktop available via the computer_* tools.
+Use it when a task genuinely requires a GUI (login walls / 2FA, captcha,
+desktop apps, visual debugging of a rendered UI). For pure web reading
+prefer web_fetch; for headless browser steps prefer browser_* tools —
+they're cheaper.
+
+  ALWAYS start with computer_status, then computer_screenshot. Reason
+  about pixels from the screenshot before clicking. Coordinates are in
+  px; (0,0) is top-left. After EVERY action you get a fresh screenshot
+  in the result.dataUrl — check it before the next step.
+
+  Use computer_open_app("firefox", url="https://...") to launch a real
+  browser. xterm is the only other allowed app right now.
+`
+      : ''),
     renderToolsForPrompt(extraTools),
     mcpServersBlock || '',
     EDITING_FILES,
