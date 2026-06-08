@@ -33,14 +33,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       openbox \
       firefox-esr \
       xterm \
+      wmctrl \
       fonts-dejavu \
       fonts-noto-color-emoji \
+      fonts-liberation \
       ca-certificates \
       curl \
-      ttf-mscorefonts-installer \
       psmisc \
       procps \
   && rm -rf /var/lib/apt/lists/*
+# Note: ttf-mscorefonts-installer lives in contrib (not main); we use
+# fonts-liberation as a free metric-compatible substitute so web pages
+# render the way the model expects (Arial/Times/Courier widths).
 
 # Optional: a non-root user for apps that refuse to run as root (Firefox is
 # fine as root in a container, but having :1000 lets us match agent-sandbox
