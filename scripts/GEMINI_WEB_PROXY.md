@@ -30,6 +30,16 @@ as a local OpenAI-compatible bridge to Gemini Web.
     polls the same Gemini session until the finished file appears, then saves
     it to the workspace
 
+- **passive `poll-media` endpoint** (`scripts/gemini-web-proxy-poll-media.py`,
+  appended to the proxy's `server.py` by the same install script):
+  - `POST /v1/sessions/{session_id}/poll-media` — re-reads the LAST already
+    existing Gemini reply (does NOT send a new chat message) and returns
+    any media that has appeared since. Used by `server/jobs.js` to poll
+    Veo video generation every 20s without spamming Gemini with "ready?"
+    messages (which it would just answer with "still working" forever).
+  - `GET  /v1/sessions/{session_id}/last-reply-meta` — lightweight
+    liveness check returning a snippet of the latest assistant text.
+
 ## Apply patch on VPS
 
 ```bash
@@ -37,6 +47,11 @@ cd /opt/browserai
 scripts/apply-gemini-web-proxy-patch.sh /opt/gemini-web-proxy
 systemctl restart gemini-web-proxy.service
 ```
+
+The install script is idempotent: it re-stamps the `poll-media` snippet
+on every run, runs `py_compile` to catch syntax errors before you hit
+restart, and keeps timestamped backups (`server.py.bak.poll-media.<ts>`)
+next to `server.py` so you can roll back in seconds.
 
 ## Service expectations
 

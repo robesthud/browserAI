@@ -207,73 +207,130 @@ async function callGeminiProxy({ prompt, model = DEFAULT_GEMINI_MODEL, attachmen
   return json?.choices?.[0]?.message?.content || ''
 }
 
-// Gemini video generation (Veo) is asynchronous: the first reply is a
-// "creating video, come back later" placeholder with no media. We must keep
-// asking the SAME chat session until the finished video appears. The proxy
-// returns a usable data:video/ URL once the <video> element is present
-// (raw googleusercontent links are 404 outside the authenticated browser,
-// so we either inline as data: or trigger the proxy's download-button flow).
-const VIDEO_PENDING_RE = /создаю видео|создание видео|вернитесь позже|может занять|generating video|creating video|come back|готовлю видео|in progress|идёт генерация|пожалуйста подождите/i
-const VIDEO_READY_HINT_RE = /(видео\s+готово|готов|finished|complete|ready|вот\s+(?:ваше\s+)?видео|here\s+is\s+the\s+video)/i
-const VIDEO_POLL_INTERVAL_MS = 15_000
-// Veo can take 12-18 min on busy hours — bump default ceiling to 25 min.
-const VIDEO_POLL_MAX_MS = Number(process.env.GEMINI_VIDEO_POLL_MAX_MS || 25 * 60 * 1000)
+// ── Non-destructive video poll via the upstream proxy's
+// `/v1/sessions/{id}/poll-media` endpoint (added by
+// scripts/gemini-web-proxy-poll-media.py). Re-reads the SAME existing
+// Gemini reply without sending another chat message, so Gemini can
+// actually surface the finished Veo file inside its original reply.
+const PROXY_ROOT = DEFAULT_GEMINI_URL.replace(/\/v1\/?$/, '').replace(/\/$/, '')
 
-// Prompts cycled across polling rounds. We avoid hammering Gemini with the
-// same wording so it doesn't reply "I already told you it's processing".
-const POLL_PROMPTS = [
-  'Готово ли видео? Если да — выведи готовый ролик в виде <video> и не пиши ничего лишнего.',
-  'Проверь статус видео и, как только оно завершено, отправь сам файл (mp4) в этом сообщении.',
-  'Если ролик готов — открой нативный download-button и приложи финальный mp4 как вложение.',
-  'Покажи готовое видео сейчас, без вступительного текста. Только медиа.',
-]
+async function listGeminiSessions() {
+  try {
+    const r = await fetch(`${PROXY_ROOT}/v1/sessions`, { signal: AbortSignal.timeout(5000) })
+    if (!r.ok) return []
+    const j = await r.json().catch(() => null)
+    return Array.isArray(j?.sessions) ? j.sessions : []
+  } catch { return [] }
+}
+
+/**
+ * Ask the proxy to re-extract media from the LAST assistant reply for
+ * a given session. Returns the parsed JSON or null on error.
+ *
+ *   { ready, videos:[data:video/...], images:[data:image/...],
+ *     remote_links:[...], via_download_button:[...] }
+ */
+async function pollMediaForSession(sessionId) {
+  try {
+    const r = await fetch(`${PROXY_ROOT}/v1/sessions/${encodeURIComponent(sessionId)}/poll-media`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(45_000),
+    })
+    if (!r.ok) {
+      if (r.status === 404) return { notFound: true }
+      return { error: `HTTP ${r.status}` }
+    }
+    return await r.json().catch(() => null)
+  } catch (e) {
+    return { error: e?.message || String(e) }
+  }
+}
+
+// Pick a session id to poll. The proxy currently uses
+//   session_id = hash(system_msg[:100])[:8]   if a system msg is present
+//   session_id = "default"                    otherwise.
+// Our gemini_video job has no system message, so its session is "default".
+// As a safety net, if "default" is gone we fall back to any active session.
+async function pickVideoSessionId() {
+  const sessions = await listGeminiSessions()
+  if (sessions.includes('default')) return 'default'
+  if (sessions.length === 1) return sessions[0]
+  // Multiple sessions: prefer the most recent (proxy keeps insertion order).
+  return sessions[sessions.length - 1] || 'default'
+}
+
+// Gemini video generation (Veo) is asynchronous: the first reply is a
+// "creating video, come back later" placeholder with no media. The finished
+// <video> appears INSIDE that SAME reply 8–18 minutes later. Sending a new
+// chat message ("готово?") just creates a new reply where Gemini answers
+// "уже работаю" — we never see the file.
+//
+// Fix: use the non-destructive `POST /v1/sessions/{id}/poll-media` endpoint
+// (added to gemini-web-proxy by scripts/gemini-web-proxy-poll-media.py).
+// It re-reads the SAME reply, runs the same <video>/<img>/download-button
+// extraction, and returns ready media without disturbing Gemini.
+const VIDEO_PENDING_RE = /создаю видео|создание видео|вернитесь позже|может занять|generating video|creating video|come back|готовлю видео|in progress|идёт генерация|пожалуйста подождите/i
+// Poll every 20s (matches the chef's request). Cheap because no Gemini round-trip.
+const VIDEO_POLL_INTERVAL_MS = Number(process.env.GEMINI_VIDEO_POLL_INTERVAL_MS || 20_000)
+// Veo can take 12-18 min on busy hours — keep 25 min ceiling.
+const VIDEO_POLL_MAX_MS = Number(process.env.GEMINI_VIDEO_POLL_MAX_MS || 25 * 60 * 1000)
 
 async function pollGeminiVideo(job, model) {
   const deadline = Date.now() + VIDEO_POLL_MAX_MS
   let attempt = 0
-  let lastContent = ''
   let lastRemoteUrls = []
+  let sessionId = await pickVideoSessionId()
+  appendJobLog(job.id, `Опрашиваю Gemini-сессию: ${sessionId} (интервал ${Math.round(VIDEO_POLL_INTERVAL_MS / 1000)}с)`)
+
+  // Compute how many ticks we have left and how to grow the progress bar.
+  const totalTicks = Math.max(1, Math.floor(VIDEO_POLL_MAX_MS / VIDEO_POLL_INTERVAL_MS))
+
   while (Date.now() < deadline) {
     if (isCancelled(job.id)) return { content: '', dataUrls: [], cancelled: true }
     attempt += 1
     await new Promise((res) => setTimeout(res, VIDEO_POLL_INTERVAL_MS))
     if (isCancelled(job.id)) return { content: '', dataUrls: [], cancelled: true }
-    appendJobLog(job.id, `Проверяю готовность видео (попытка ${attempt})…`)
-    // Bump progress slowly between 75 and 96 while polling
-    setJobPatch(job.id, { progress: Math.min(96, 75 + attempt * 2) })
-    const prompt = POLL_PROMPTS[(attempt - 1) % POLL_PROMPTS.length]
-    let reply
-    try {
-      reply = await callGeminiProxy({ prompt, model })
-    } catch (e) {
-      appendJobLog(job.id, `Опрос не удался: ${e.message || e}`)
+
+    // Progress 75 → 96 evenly across the polling window.
+    const pct = Math.min(96, 75 + Math.round(((attempt / totalTicks) * 21)))
+    setJobPatch(job.id, { progress: pct })
+
+    const data = await pollMediaForSession(sessionId)
+    if (!data) {
+      appendJobLog(job.id, `Опрос #${attempt}: пустой ответ от прокси`)
       continue
     }
-    lastContent = reply
-    const urls = extractDataUrls(reply)
-    if (urls.length) {
-      const vids = urls.filter((u) => u.startsWith('data:video/'))
-      if (vids.length) return { content: reply, dataUrls: urls }
-      // Maybe Gemini returned just a poster image — keep waiting.
+    if (data.notFound) {
+      // Session was reaped — try to refresh once.
+      appendJobLog(job.id, `Сессия ${sessionId} исчезла — ищу новую`)
+      sessionId = await pickVideoSessionId()
+      continue
     }
-    const remote = extractRemoteMediaUrls(reply).filter((u) => /video|generated_video|veo/i.test(u))
-    if (remote.length) lastRemoteUrls = remote
-    if (VIDEO_READY_HINT_RE.test(reply) && !VIDEO_PENDING_RE.test(reply) && !urls.length) {
-      // Gemini insists it's ready but the proxy didn't extract media — try
-      // one more explicit poll forcing it to attach the file.
-      appendJobLog(job.id, 'Gemini пишет «готово», но медиа не пришло — прошу приложить mp4 ещё раз')
-      try {
-        const last = await callGeminiProxy({ prompt: 'Открой меню «⋮» под видео, нажми Download и приложи готовый mp4 сюда как файл.', model })
-        const urls2 = extractDataUrls(last).filter((u) => u.startsWith('data:video/'))
-        if (urls2.length) return { content: last, dataUrls: urls2 }
-        const remote2 = extractRemoteMediaUrls(last).filter((u) => /video|generated_video|veo/i.test(u))
-        if (remote2.length) lastRemoteUrls = [...new Set([...lastRemoteUrls, ...remote2])]
-      } catch (e) {
-        appendJobLog(job.id, `Финальный опрос упал: ${e.message || e}`)
-      }
+    if (data.error) {
+      appendJobLog(job.id, `Опрос #${attempt}: ошибка прокси (${data.error})`)
+      continue
+    }
+
+    const videos = Array.isArray(data.videos) ? data.videos : []
+    const images = Array.isArray(data.images) ? data.images : []
+    const links = Array.isArray(data.remote_links) ? data.remote_links : []
+    if (links.length) lastRemoteUrls = links
+
+    if (videos.length) {
+      const viaBtn = (data.via_download_button || []).some((x) => x.kind === 'video') ? ' (через кнопку Download)' : ' (inline)'
+      appendJobLog(job.id, `Видео готово, получено ${videos.length} файл(ов)${viaBtn}`)
+      // Compose markdown so saveDataUrlsToWorkspace finds all data: URLs.
+      const md = videos.map((u, i) => `[generated video ${i + 1}](${u})`).join('\n')
+      return { content: `Ваше видео готово!\n\n${md}`, dataUrls: videos }
+    }
+    if (images.length && !videos.length) {
+      // Gemini sometimes regenerates a still poster while encoding the video.
+      appendJobLog(job.id, `Опрос #${attempt}: пока есть только poster (${images.length}), жду видео`)
+    } else {
+      appendJobLog(job.id, `Опрос #${attempt}: видео ещё не готово`)
     }
   }
-  return { content: lastContent, dataUrls: [], remoteUrls: lastRemoteUrls, timedOut: true }
+  return { content: '', dataUrls: [], remoteUrls: lastRemoteUrls, timedOut: true }
 }
 
 async function runGeminiJob(job) {
@@ -292,10 +349,16 @@ async function runGeminiJob(job) {
   let dataUrls = extractDataUrls(content)
   let remoteUrls = []
 
-  // Async video: if no media yet but Gemini said it's generating, poll.
-  if (isVideo && dataUrls.filter((u) => u.startsWith('data:video/')).length === 0
-      && (VIDEO_PENDING_RE.test(content) || dataUrls.length === 0)) {
-    appendJobLog(job.id, 'Видео генерируется асинхронно — ожидаю готовности…')
+  // Async video: if no usable video came back on the first call, poll the
+  // SAME chat reply via the proxy's /poll-media endpoint until Veo finishes.
+  // We no longer gate on the "creating video…" wording because Gemini also
+  // sometimes returns just a poster image or an empty placeholder.
+  if (isVideo && dataUrls.filter((u) => u.startsWith('data:video/')).length === 0) {
+    if (VIDEO_PENDING_RE.test(content)) {
+      appendJobLog(job.id, 'Видео генерируется асинхронно — ожидаю готовности…')
+    } else {
+      appendJobLog(job.id, 'Видео не пришло в первом ответе — переключаюсь на passive polling')
+    }
     const polled = await pollGeminiVideo(job, model)
     if (polled.cancelled) {
       appendJobLog(job.id, 'Задача отменена пользователем во время ожидания видео')
