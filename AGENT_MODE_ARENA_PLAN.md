@@ -48,7 +48,7 @@ Final Answer or Ask User / Resume
 |---|---|---|---|
 | 1 | Жёсткие базовые слои Agent Runtime | ✅ Выполнено | `6f44b85` |
 | 2 | Model Planner / Agent Loop hardening | ✅ Выполнено | см. журнал выполнения |
-| 3 | Tool Router hardening | ⬜ Не начато | — |
+| 3 | Tool Router hardening | ✅ Выполнено | см. журнал выполнения |
 | 4 | Provider adapters 2.0 | частично ✅ | `802665c`, требуется расширение |
 | 5 | Настоящий streaming protocol | частично ✅ | есть SSE, нужно унифицировать события |
 | 6 | Ask User pause/resume | частично ✅ | есть promise registry, нужно усилить state |
@@ -241,14 +241,71 @@ npm run build
 
 ## Этап 3. Tool Router hardening
 
-### Нужно
+### Цель
 
-- Единый contract всех tools:
+Сделать маршрутизацию tools строгой и предсказуемой независимо от модели/провайдера.
+
+### Сделано
+
+Добавлено в `server/agentCore.js`:
+
+- `validateToolCall(...)`
+- `makeToolErrorResult(...)`
+- argument coercion по schema tools:
+  - `string`
+  - `number`
+  - `boolean`
+  - `array`
+  - `object`
+- проверка обязательных параметров;
+- базовая защита path-like аргументов:
+  - запрет NUL byte;
+  - запрет `../` traversal;
+  - запрет encoded traversal `%2e`;
+  - запрет absolute paths для workspace-relative path параметров;
+- лимит строковых аргументов;
+- router-level SSE warning:
+
+```text
+event: tool_router
+```
+
+В `server/agentLoop.js` tool call теперь проходит этапы:
+
+```text
+raw model tool call
+  ↓
+validateToolCall / coerce args
+  ↓
+tool_router warning, если были coercions
+  ↓
+approval gate
+  ↓
+tool_start
+  ↓
+invokeTool
+  ↓
+normalizeToolResult
+  ↓
+agent_state update
+```
+
+Если аргументы tool некорректны, tool не выполняется. Агент получает structured error result и может исправиться на следующем шаге.
+
+Единый structured contract уже есть через:
+
+```js
+normalizeToolResult(...)
+```
+
+Формат:
 
 ```js
 {
+  schema: "browserai.tool_result.v1",
   ok,
   type,
+  tool,
   data,
   error,
   display,
@@ -256,20 +313,22 @@ npm run build
 }
 ```
 
-- Tool categories:
-  - read
-  - write
-  - command
-  - web
-  - browser
-  - computer
-  - ops
-  - memory
-  - git
-- Permission gates по категориям.
-- Structured retries.
-- Better validation arguments.
-- Защита от tool hallucination.
+### Проверки
+
+```bash
+node --check server/agentCore.js
+node --check server/agentLoop.js
+npx eslint server/agentCore.js server/llmClient.js
+npm run build
+```
+
+### Осталось после этапа 3
+
+- Добавить более глубокую validation schema для сложных tools.
+- Добавить retry policy по типам ошибок.
+- Показать `tool_router` warning во фронтенде.
+- Синхронизировать категории из `approvalGate.js` с будущим центральным registry.
+- Добавить regression tests на bad tool args/path traversal.
 
 ---
 
@@ -464,3 +523,10 @@ TIMEWEB_APP_DIR
   - state обновляется после tool results;
   - `ask_user` переводит state в `waiting_for_user` и обратно в `running`;
   - подготовлен следующий этап: Tool Router hardening.
+- Выполнен этап 3 — Tool Router hardening:
+  - добавлен `validateToolCall`;
+  - добавлен `makeToolErrorResult`;
+  - добавлена coercion/validation аргументов tools;
+  - добавлена path traversal защита на уровне router;
+  - добавлено SSE-событие `tool_router`;
+  - некорректные tool calls теперь возвращают structured error без выполнения tool.

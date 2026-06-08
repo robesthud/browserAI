@@ -45,6 +45,7 @@ import { recordCheckpoint } from './checkpoints.js'
 import {
   buildAgentContext, normalizeToolResult, createAgentState,
   buildPlanningDirective, updateAgentStateFromTool,
+  validateToolCall, makeToolErrorResult,
 } from './agentCore.js'
 
 const DEFAULT_MAX_STEPS = 15
@@ -1212,6 +1213,29 @@ async function runAgentInner({
         // (otherwise the very next call could match itself and trigger).
         recentCallFingerprints.push(callFingerprint(call))
         if (recentCallFingerprints.length > 20) recentCallFingerprints.shift()
+
+        // ── Tool Router hardening ─────────────────────────────────
+        // Validate and coerce arguments BEFORE approval/execution. This
+        // catches hallucinated shapes, missing required params and path
+        // traversal uniformly for every provider/tool protocol.
+        const combinedTools = extraTools && typeof extraTools === 'object' ? { ...TOOLS, ...extraTools } : TOOLS
+        const toolDef = combinedTools[call.tool] || null
+        const validation = validateToolCall(call.tool, call.args || {}, toolDef)
+        if (!validation.ok) {
+          const r0 = makeToolErrorResult(validation.error, { warnings: validation.warnings })
+          const structuredResult = normalizeToolResult(call.tool, r0, { step, sub: idx, readBack: Boolean(call._readBack) })
+          updateAgentStateFromTool(agentState, call.tool, r0, call.args || {})
+          sse(res, 'tool_result', {
+            step, sub: idx, name: call.tool, ok: false,
+            error: r0.error, structured: structuredResult, router: { validation },
+          })
+          sse(res, 'agent_state', agentState)
+          return { call, r: r0 }
+        }
+        call.args = validation.args
+        if (validation.warnings.length) {
+          sse(res, 'tool_router', { step, sub: idx, name: call.tool, warnings: validation.warnings })
+        }
 
         // ── Approval gate (Cline-style) ────────────────────────────
         // If the user's policy says this tool category needs explicit

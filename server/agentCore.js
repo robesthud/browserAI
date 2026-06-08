@@ -303,3 +303,114 @@ export function updateAgentStateFromTool(state, toolName, rawResult, args = {}) 
   if (state.nextActions.length === 0) state.nextActions = ['continue with the next required step']
   return state
 }
+
+const PATH_PARAM_RE = /^(path|file|file_path|cwd|parentPath|sourcePath|targetDirPath)$/i
+
+function typeLabel(value) {
+  if (Array.isArray(value)) return 'array'
+  if (value === null) return 'null'
+  return typeof value
+}
+
+function coerceToolValue(value, schema = {}) {
+  const expected = schema.type || 'string'
+  if (value === undefined || value === null) return { ok: true, value }
+
+  if (expected === 'string') {
+    if (typeof value === 'string') return { ok: true, value }
+    return { ok: true, value: String(value), warning: `coerced ${typeLabel(value)} to string` }
+  }
+  if (expected === 'number') {
+    if (typeof value === 'number' && Number.isFinite(value)) return { ok: true, value }
+    const n = Number(value)
+    if (Number.isFinite(n)) return { ok: true, value: n, warning: `coerced ${typeLabel(value)} to number` }
+    return { ok: false, error: `expected number, got ${typeLabel(value)}` }
+  }
+  if (expected === 'boolean') {
+    if (typeof value === 'boolean') return { ok: true, value }
+    const s = String(value).toLowerCase().trim()
+    if (['true', '1', 'yes', 'y', 'да'].includes(s)) return { ok: true, value: true, warning: `coerced ${typeLabel(value)} to boolean` }
+    if (['false', '0', 'no', 'n', 'нет'].includes(s)) return { ok: true, value: false, warning: `coerced ${typeLabel(value)} to boolean` }
+    return { ok: false, error: `expected boolean, got ${typeLabel(value)}` }
+  }
+  if (expected === 'array') {
+    if (Array.isArray(value)) return { ok: true, value }
+    if (typeof value === 'string' && value.trim()) {
+      try {
+        const parsed = JSON.parse(value)
+        if (Array.isArray(parsed)) return { ok: true, value: parsed, warning: 'parsed JSON string to array' }
+      } catch { /* fall through */ }
+    }
+    return { ok: false, error: `expected array, got ${typeLabel(value)}` }
+  }
+  if (expected === 'object') {
+    if (value && typeof value === 'object' && !Array.isArray(value)) return { ok: true, value }
+    if (typeof value === 'string' && value.trim()) {
+      try {
+        const parsed = JSON.parse(value)
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return { ok: true, value: parsed, warning: 'parsed JSON string to object' }
+      } catch { /* fall through */ }
+    }
+    return { ok: false, error: `expected object, got ${typeLabel(value)}` }
+  }
+
+  return { ok: true, value }
+}
+
+function validatePathLike(name, value) {
+  if (value === undefined || value === null || value === '') return null
+  const s = String(value)
+  if (s.includes('\0')) return `${name}: NUL byte is not allowed`
+  // Allow absolute sandbox paths only for cwd-like params.
+  if (s.startsWith('/') && name !== 'cwd') return `${name}: absolute paths are not allowed; use workspace-relative paths`
+  const normalised = s.replace(/\\/g, '/')
+  if (normalised === '..' || normalised.startsWith('../') || normalised.includes('/../')) {
+    return `${name}: path traversal is not allowed`
+  }
+  if (normalised.includes('%2e') || normalised.includes('%2E')) return `${name}: encoded traversal is not allowed`
+  return null
+}
+
+export function validateToolCall(toolName, args = {}, toolDef = null) {
+  if (!toolName || typeof toolName !== 'string') {
+    return { ok: false, args: {}, error: 'tool name must be a string', warnings: [] }
+  }
+  // MCP/custom tools may not have a local schema; still apply generic safety.
+  const params = toolDef?.params || {}
+  const clean = { ...(args || {}) }
+  const warnings = []
+
+  for (const [pName, meta] of Object.entries(params)) {
+    const aliases = pName === 'path' ? ['path', 'file'] : [pName]
+    const hasValue = aliases.some((a) => clean[a] !== undefined && clean[a] !== null && clean[a] !== '')
+    if (meta.required && !hasValue) {
+      return { ok: false, args: clean, error: `missing required parameter: ${pName}`, warnings }
+    }
+    if (!hasValue) continue
+    const actualName = aliases.find((a) => clean[a] !== undefined && clean[a] !== null && clean[a] !== '') || pName
+    const coerced = coerceToolValue(clean[actualName], meta)
+    if (!coerced.ok) return { ok: false, args: clean, error: `${actualName}: ${coerced.error}`, warnings }
+    clean[actualName] = coerced.value
+    if (coerced.warning) warnings.push(`${actualName}: ${coerced.warning}`)
+  }
+
+  for (const [k, v] of Object.entries(clean)) {
+    if (PATH_PARAM_RE.test(k)) {
+      const e = validatePathLike(k, v)
+      if (e) return { ok: false, args: clean, error: e, warnings }
+    }
+    if (typeof v === 'string' && v.length > 1_000_000) {
+      return { ok: false, args: clean, error: `${k}: string argument is too large`, warnings }
+    }
+  }
+
+  return { ok: true, args: clean, error: null, warnings }
+}
+
+export function makeToolErrorResult(message, details = {}) {
+  return {
+    ok: false,
+    error: String(message || 'tool routing error'),
+    details,
+  }
+}
