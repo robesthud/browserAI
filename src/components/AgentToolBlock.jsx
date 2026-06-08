@@ -29,6 +29,8 @@ const VERBS = {
   github_pr_create:{ verb: 'used',  noun: 'GitHub PR',   icon: '🔀' },
   web_search:      { verb: 'used',  noun: 'Web Search',  icon: '🌐' },
   web_fetch:       { verb: 'used',  noun: 'Fetch',       icon: '📥' },
+  fetch_page:      { verb: 'used',  noun: 'Fetch Page',  icon: '📥' },
+  generate_image:  { verb: 'Generate', noun: 'Image',    icon: '🎨' },
   bash:            { verb: 'used',  noun: 'Bash',        icon: '>_' },
   bash_bg:         { verb: 'Spawn', noun: 'background',   icon: '↻' },
   bash_logs:       { verb: 'used',  noun: 'bg logs',      icon: '📜' },

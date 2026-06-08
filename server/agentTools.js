@@ -105,6 +105,53 @@ function collectProjectsFromTree(tree) {
   return projects
 }
 
+// ── Fuzzy text matching for edit_file ─────────────────────────────────────
+//
+// Mirrors Arena-style edit behaviour: first try an EXACT substring match;
+// if that fails, try matching after normalising runs of whitespace and
+// per-line indentation. Returns { start, end, kind } where kind ∈
+// { 'exact', 'whitespace', 'trim-lines' }. start/end are indexes into
+// the ORIGINAL source (not the normalised form) so the slice/replace
+// arithmetic in edit_file works cleanly.
+function fuzzyFindMatch(haystack, needle) {
+  if (!haystack || !needle) return null
+  // 1. Exact match (cheap fast path).
+  const ex = haystack.indexOf(needle)
+  if (ex !== -1) return { start: ex, end: ex + needle.length, kind: 'exact' }
+
+  // 2. Whitespace-normalised match — collapse any run of \s+ in the needle
+  //    to a single \s+ regex, escape everything else.
+  try {
+    const pattern = needle
+      .split(/\s+/)
+      .map((tok) => tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .filter(Boolean)
+      .join('\\s+')
+    if (pattern) {
+      const re = new RegExp(pattern, 'm')
+      const m = re.exec(haystack)
+      if (m) return { start: m.index, end: m.index + m[0].length, kind: 'whitespace' }
+    }
+  } catch { /* ignore regex build failure */ }
+
+  // 3. Per-line indentation-tolerant match — match the needle ignoring
+  //    leading whitespace on every line independently. Useful when the
+  //    LLM forgot 2 spaces of indent but otherwise wrote a perfect block.
+  try {
+    const needleLines = String(needle).split('\n').map((l) => l.replace(/^\s+/, ''))
+    if (needleLines.length >= 2) {
+      const escaped = needleLines.map((l) =>
+        l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      const pattern = escaped.join('\\n[ \\t]*')
+      const re = new RegExp('[ \\t]*' + pattern, 'm')
+      const m = re.exec(haystack)
+      if (m) return { start: m.index, end: m.index + m[0].length, kind: 'trim-lines' }
+    }
+  } catch { /* ignore */ }
+
+  return null
+}
+
 // ── Auto-diagnostics after a write ─────────────────────────────────────────
 //
 // Cline-style "what changed → what broke" feedback loop. After a successful
@@ -243,18 +290,58 @@ export const TOOLS = {
   },
 
   read_file: {
-    description: 'Read the full contents of a text file from the workspace.',
+    description:
+      'Read a file from the workspace. Text files return their content. Images (jpg, png, webp, gif, bmp) return as visible content. Other binary types return metadata only.',
     params: {
-      path: { type: 'string', required: true, description: 'Path relative to workspace root, e.g. "src/app.js".' },
+      path: { type: 'string', required: true, description: 'Path relative to workspace root, e.g. "src/app.js" or "images/dog.jpg".' },
     },
     handler: async ({ path } = {}) => {
       if (!path) return err('path is required')
       try {
         const file = await readWorkspaceFile(path)
-        if (!file?.text && !file?.content) {
-          return err(`File is binary or empty: ${path} (mime=${file?.mime})`)
+        const mime = file?.mime || ''
+        // Image: surface base64 + dataUrl so the LLM (vision) and the UI
+        // can both see it without a separate analyze_image call.
+        if (/^image\//i.test(mime) || /\.(jpe?g|png|webp|gif|bmp)$/i.test(path)) {
+          // readWorkspaceFile returns either `text` (decoded), `content`
+          // (utf8 sample of binary) or a buffer-like field. We re-fetch
+          // bytes from disk to get the binary unchanged.
+          let dataUrl = ''
+          let bytes = 0
+          try {
+            const { readFile } = await import('node:fs/promises')
+            const path_ = await import('node:path')
+            const ws = await import('./workspace.js')
+            const safe = ws.default?.safePath || ws.safePath
+            const abs = typeof safe === 'function'
+              ? safe(path)
+              : path_.join(process.env.WORKSPACE_ROOT || '/workspace', path)
+            const buf = await readFile(abs)
+            bytes = buf.length
+            dataUrl = `data:${mime || 'image/png'};base64,${buf.toString('base64')}`
+          } catch { /* fall back to whatever readWorkspaceFile gave us */ }
+          return ok({
+            path,
+            mime,
+            kind: 'image',
+            bytes,
+            // Visible content for the chat — UI renders the image inline.
+            dataUrl,
+            // Hint for the LLM observation when the provider isn't vision-capable.
+            note: dataUrl ? 'Image attached; vision-capable models will see it inline.' : 'Image present but not readable as bytes.',
+          })
         }
-        return ok({ path, content: truncate(file.text ?? file.content, 20000), mime: file.mime })
+        if (!file?.text && !file?.content) {
+          // Other binary file — still useful to acknowledge its presence.
+          return ok({
+            path,
+            mime,
+            kind: 'binary',
+            bytes: file?.size || 0,
+            note: 'Binary file — content not extracted. Use download_url or a specialised tool.',
+          })
+        }
+        return ok({ path, content: truncate(file.text ?? file.content, 20000), mime, kind: 'text' })
       } catch (e) { return err(e.message) }
     },
   },
@@ -312,21 +399,20 @@ export const TOOLS = {
 
   edit_file: {
     description:
-      'Replace one or more substrings inside an existing text file. ' +
-      'For a single edit pass old_text + new_text. ' +
-      'For multiple surgical edits in the same file pass `edits: [{old_text, new_text}, …]` — all are applied in order, each old_text must appear exactly once at the moment its turn comes (no race). This avoids round-tripping the LLM 5 times for 5 small changes in one file.',
+      'Edit a file by searching for existing text and replacing it. It uses fuzzy matching that tolerates whitespace and indentation differences. Only the first match is replaced. For multiple surgical edits in the same file pass `edits: [{old_text, new_text}, …]` — applied in order.',
     params: {
-      path: { type: 'string', required: true, description: 'Path relative to workspace root.' },
-      old_text: { type: 'string', optional: true, description: 'Exact substring to find (single-edit mode). Must appear exactly once.' },
-      new_text: { type: 'string', optional: true, description: 'Replacement text (single-edit mode). Use empty string to delete.' },
+      path: { type: 'string', required: true, description: 'Relative file path in the workspace (e.g. \'notes.txt\', \'src/app.js\', \'index.html\').' },
+      old_text: { type: 'string', optional: true, description: 'The text to find in the file. Uses fuzzy matching that tolerates whitespace and indentation differences. Only the first match is replaced.' },
+      new_text: { type: 'string', optional: true, description: 'The replacement text. Use an empty string to delete the matched text.' },
       edits: { type: 'string', optional: true, description: 'JSON array of { old_text, new_text } objects for multiple edits in one call.' },
     },
-    handler: async ({ path, old_text, new_text = '', edits } = {}) => {
-      if (!path) return err('path is required')
+    handler: async ({ path, file, old_text, new_text = '', edits } = {}) => {
+      const filePath = path || file   // backward-compat alias
+      if (!filePath) return err('path is required')
       try {
-        const file = await readWorkspaceFile(path)
-        const original = file?.text ?? file?.content
-        if (typeof original !== 'string') return err(`File is binary or unreadable: ${path}`)
+        const f = await readWorkspaceFile(filePath)
+        const original = f?.text ?? f?.content
+        if (typeof original !== 'string') return err(`File is binary or unreadable: ${filePath}`)
 
         // Normalise to a list of {old_text, new_text}.
         let list = []
@@ -348,16 +434,22 @@ export const TOOLS = {
           const o = String(e.old_text ?? '')
           const n = String(e.new_text ?? '')
           if (!o) return err(`edit #${i + 1}: old_text is empty`)
-          const count = current.split(o).length - 1
-          if (count === 0) return err(`edit #${i + 1}: old_text not found in ${path}`)
-          if (count > 1) return err(`edit #${i + 1}: old_text appears ${count} times in ${path}; refine to make it unique`)
-          current = current.replace(o, n)
-          applied.push({ idx: i + 1, deltaBytes: n.length - o.length })
+          const match = fuzzyFindMatch(current, o)
+          if (!match) {
+            return err(`edit #${i + 1}: old_text not found in ${filePath} (tried exact + fuzzy whitespace match)`)
+          }
+          current = current.slice(0, match.start) + n + current.slice(match.end)
+          applied.push({
+            idx: i + 1,
+            deltaBytes: n.length - (match.end - match.start),
+            matchStart: match.start,
+            matchKind: match.kind,
+          })
         }
-        await writeFileContent(path, current)
-        const diagnostics = await quickSyntaxCheck(path, current)
+        await writeFileContent(filePath, current)
+        const diagnostics = await quickSyntaxCheck(filePath, current)
         return ok({
-          path,
+          path: filePath,
           replaced: applied.length,
           deltaBytes: current.length - original.length,
           newLength: current.length,
@@ -836,32 +928,69 @@ export const TOOLS = {
 
   // ── Web ────────────────────────────────────────────────────────────────
   web_search: {
-    description: 'Search the public web via DuckDuckGo. Returns up to 5 results with title, url and snippet.',
+    description:
+      'Search the web for current information. Returns relevant results with titles, URLs, and content snippets. Use when you need facts, recent events, or information beyond your training data. Each result has a numeric id and url that should be cited in the form [id](url) for every claim taken from search results.',
     params: {
-      query: { type: 'string', required: true, description: 'Search query.' },
-      limit: { type: 'number', optional: true, description: 'Max results, default 5, max 10.' },
+      query: { type: 'string', required: true, description: 'The search query.' },
+      depth: { type: 'string', optional: true, description: 'Controls how many results are fetched and how much content is extracted from each. "1" — fewer results / shorter excerpts (fast); "2" — middle; "3" — more results / longer excerpts (uses more context). Default "2".' },
     },
-    handler: async ({ query, limit = 5 } = {}) => {
+    handler: async ({ query, depth = '2', limit } = {}) => {
       if (!query) return err('query is required')
       try {
-        const data = await searchWeb(String(query), Math.min(10, Math.max(1, Number(limit) || 5)))
-        return ok({ query, results: data?.results || [] })
+        // Map my-style depth to a numeric limit. Caller can still pass
+        // explicit `limit` to override (backward-compat).
+        const depthToLimit = { '1': 3, '2': 6, '3': 10 }
+        const cap = Number.isFinite(Number(limit))
+          ? Number(limit)
+          : depthToLimit[String(depth)] || 6
+        const data = await searchWeb(String(query), Math.min(10, Math.max(1, cap)))
+        // Tag every result with a stable numeric id so the model can
+        // cite as [id](url) following my convention.
+        const results = (data?.results || []).map((r, i) => ({ id: i + 1, ...r }))
+        return ok({ query, depth: String(depth || '2'), results })
       } catch (e) { return err(e.message) }
     },
   },
 
   web_fetch: {
-    description: 'Fetch a web page and return its text content (HTML stripped).',
+    description:
+      'Retrieve the text content of a web page as markdown. Content may be returned in chunks. If hasMore is true, call again with the same url and the next chunkIndex to continue reading. PDFs are parsed up to 30 pages; content beyond that will not be returned.',
     params: {
-      url: { type: 'string', required: true, description: 'Full URL starting with http:// or https://' },
+      url:        { type: 'string', required: true, description: 'The URL of the page to fetch.' },
+      chunkIndex: { type: 'number', optional: true, description: 'Which chunk to return (0-indexed). Omit or pass 0 for the first chunk. Default 0.' },
     },
-    handler: async ({ url } = {}) => {
+    handler: async ({ url, chunkIndex = 0 } = {}) => {
       if (!url) return err('url is required')
       try {
         const page = await fetchWebPage(String(url))
-        return ok({ url, title: page?.title || '', content: truncate(page?.content || page?.text || '', 12000) })
+        const full = String(page?.content || page?.text || '')
+        const CHUNK = 12_000
+        const idx = Math.max(0, Number(chunkIndex) || 0)
+        const start = idx * CHUNK
+        const end = Math.min(full.length, start + CHUNK)
+        const slice = full.slice(start, end)
+        const hasMore = end < full.length
+        return ok({
+          url,
+          title: page?.title || '',
+          chunkIndex: idx,
+          totalChunks: Math.max(1, Math.ceil(full.length / CHUNK)),
+          hasMore,
+          content: slice,
+        })
       } catch (e) { return err(e.message) }
     },
+  },
+
+  // Alias of web_fetch following my own naming. Same behaviour, same params,
+  // present so models trained on Arena-style names find it.
+  fetch_page: {
+    description: 'Retrieve the text content of a web page as markdown. Content may be returned in chunks. If hasMore is true, call again with the same url and the next chunkIndex. Alias of web_fetch.',
+    params: {
+      url:        { type: 'string', required: true, description: 'The URL of the page to fetch.' },
+      chunkIndex: { type: 'number', optional: true, description: 'Which chunk to return (0-indexed). Omit or pass 0 for the first chunk.' },
+    },
+    handler: async (args = {}) => TOOLS.web_fetch.handler(args),
   },
 
   // ── Browser automation ───────────────────────────────────────────────
@@ -1072,36 +1201,54 @@ export const TOOLS = {
   // Because of that round-trip the handler here is just a *marker* —
   // the loop intercepts the call before invokeTool() is reached.
   ask_user: {
-    description: 'Ask the user a multi-select question with optional custom text. Use this when you need clarification or a decision from the user. Returns the user\'s selection as { selected: [option_id, ...], custom?: string }.',
+    description:
+      'Surfaces a UI component to the user with the purpose of asking clarifying questions with predefined options. Each question supports 2-6 predefined options plus an optional free-text input. Use this to help resolve important ambiguities and questions that impede the successful completion of the given task. Accepts either a single {question, options[]} (legacy form) OR an array of {questions:[{id, question, options[2-6], allowCustomResponse}]} (Arena form).',
     params: {
-      question:    { type: 'string', required: true, description: 'The question text shown to the user.' },
-      options:     { type: 'array',  required: true, description: 'Array of {id: string, label: string, description?: string} — choices the user can pick.' },
-      multi:       { type: 'boolean', optional: true, description: 'Allow multiple selections. Default: true.' },
-      allow_custom: { type: 'boolean', optional: true, description: 'Allow the user to type additional free-form text. Default: true.' },
+      question:     { type: 'string', optional: true, description: 'Single-question form: the question text shown to the user.' },
+      options:      { type: 'array',  optional: true, description: 'Single-question form: array of {id, label, description?} — choices the user can pick. 2-6 options.' },
+      multi:        { type: 'boolean', optional: true, description: 'Single-question form: allow multiple selections. Default: true.' },
+      allow_custom: { type: 'boolean', optional: true, description: 'Single-question form: allow free-text answer. Default: true.' },
+      questions:    { type: 'array', optional: true, description: 'Multi-question form (Arena style): array of {id, question, options:[{id,label,description?}], allowCustomResponse?}. 1-6 questions per call.' },
     },
-    // Placeholder handler — never actually invoked because the loop
-    // short-circuits this tool. Kept so the schema validates.
+    // Placeholder handler — the agent loop short-circuits this tool and
+    // resolves it via askUserRegistry. Kept so the schema validates and
+    // so a stray ask_user invocation from outside the loop doesn't error.
     handler: async () => ok({ pending: true }),
   },
 
   // ── Shell (sandboxed, persistent) ─────────────────────────────────────
   bash: {
     description:
-      'Run a shell command inside an isolated Linux sandbox that has the workspace mounted at /workspace. By default uses a PERSISTENT session per chat — cd, env vars, exports, activated virtualenvs survive across calls (just like a real terminal). Pass persist:false to spawn a fresh one-shot shell (legacy behaviour). For long-running processes (dev server, watcher, tail -F) prefer bash_bg instead — it returns immediately and you read logs separately.',
+      'Run a bash command in the sandboxed workspace. Commands run in the provided cwd, defaulting to /workspace, without a controlling terminal and with stdin closed. Working directory changes, shell variables, aliases, functions, history, exported environment changes, and background process state are not preserved across calls UNLESS persist=true (default — uses a per-chat persistent shell session). The workspace is at /workspace; files outside that root are not persisted in snapshots.',
     params: {
-      command:     { type: 'string',  required: true,  description: 'Shell command, e.g. "ls -la /workspace" or "cd subdir && npm test"' },
-      timeout_sec: { type: 'number',  optional: true,  description: 'Max seconds, default 60, max 300.' },
-      persist:     { type: 'boolean', optional: true,  description: 'Default true — use the per-chat persistent session. Set false for a fresh one-shot shell.' },
+      command: { type: 'string',  required: true, description: 'The bash command to execute.' },
+      cwd:     { type: 'string',  optional: true, description: 'Working directory for this command. Defaults to /workspace.' },
+      timeout: { type: 'number',  optional: true, description: 'Maximum seconds before the command is terminated. Default 120, max 1800.' },
+      persist: { type: 'boolean', optional: true, description: 'Default true — use the per-chat persistent session. Set false for a fresh one-shot shell.' },
     },
-    handler: async ({ command, timeout_sec = 60, persist = true, _signal, _onStdout, _onStderr, _chatId } = {}) => {
+    handler: async ({
+      command, cwd = '/workspace',
+      timeout, timeout_sec,            // accept both my-style `timeout` and legacy `timeout_sec`
+      persist = true,
+      _signal, _onStdout, _onStderr, _chatId,
+    } = {}) => {
       if (!command) return err('command is required')
-      const timeoutMs = Math.min(300_000, Math.max(1_000, Number(timeout_sec) * 1000 || 60_000))
+      const rawSecs = Number(timeout ?? timeout_sec ?? 120)
+      const timeoutMs = Math.min(1_800_000, Math.max(1_000, (Number.isFinite(rawSecs) ? rawSecs : 120) * 1000))
       try {
+        // For persistent sessions cwd is enforced via a 'cd' prefix so the
+        // session's own cwd doesn't get clobbered (a bare `cd /tmp && cmd`
+        // would still leave the session in /tmp afterwards if the user
+        // intended otherwise). For one-shot we pass it to the sandbox as
+        // its working directory directly.
         if (persist && _chatId) {
           const { runInSession } = await import('./shellSession.js')
+          const wrappedCommand = (cwd && cwd !== '/workspace')
+            ? `( cd ${JSON.stringify(cwd)} && ${command} )`
+            : String(command)
           const r = await runInSession({
             chatId: _chatId,
-            command: String(command),
+            command: wrappedCommand,
             timeoutMs,
             signal: _signal,
             onStdout: _onStdout,
@@ -1113,12 +1260,14 @@ export const TOOLS = {
             exitCode: r.exitCode,
             durationMs: r.durationMs,
             persistent: true,
+            cwd,
             cancelled: r.cancelled || false,
             killed: r.killed || false,
           })
         }
         const r = await runSandboxCommand({
           command: String(command),
+          cwd: cwd || '/workspace',
           timeoutMs,
           signal: _signal,
           onStdout: _onStdout,
@@ -1129,6 +1278,7 @@ export const TOOLS = {
           stderr: truncate(r.stderr, 3000),
           exitCode: r.exitCode,
           persistent: false,
+          cwd: cwd || '/workspace',
           truncated: r.truncated || false,
           cancelled: r.cancelled || false,
         })
@@ -1265,6 +1415,89 @@ export const TOOLS = {
       }
       const allPassed = checks.every((c) => c.passed)
       return ok({ allPassed, checks })
+    },
+  },
+
+  // ── Image generation (Arena-style: file_path + prompt) ────────────────
+  // Mirrors my generate_image signature. Submits a job to the local
+  // image-generation pipeline (Gemini Web Proxy under the hood), polls
+  // until done, copies the produced image to the requested file_path,
+  // and surfaces a preview in the chat. The polling loop honours the
+  // agent's AbortSignal so a Stop click cancels cleanly.
+  generate_image: {
+    description:
+      'Generate an image from a text prompt and save it to the workspace. The image is saved to the specified file path, which must end in .jpg, .jpeg, or .png. Use when the user requests an image, illustration, icon, or visual asset. The generated image will be visible in the workspace preview.',
+    params: {
+      file_path: { type: 'string', required: true, description: "Relative path to save the generated image (e.g. 'images/hero.jpg', 'logo.png'). Must end in .jpg, .jpeg, or .png." },
+      prompt:    { type: 'string', required: true, description: 'Text prompt describing the image to generate.' },
+    },
+    handler: async ({ file_path, prompt, _signal, _userId = '', _chatId = '' } = {}) => {
+      if (!file_path) return err('file_path is required')
+      if (!prompt)    return err('prompt is required')
+      if (!/\.(jpe?g|png)$/i.test(file_path)) {
+        return err('file_path must end in .jpg, .jpeg, or .png')
+      }
+      try {
+        const { createJob, startJob, getJob } = await import('./jobs.js')
+        const job = createJob({
+          userId: _userId,
+          chatId: _chatId,
+          type: 'gemini_image',
+          title: String(prompt).slice(0, 80),
+          input: { prompt: String(prompt), targetPath: String(file_path) },
+        })
+        startJob(job.id)
+
+        // Poll until done OR aborted, with adaptive backoff (1s → 5s).
+        const deadline = Date.now() + 5 * 60_000   // 5-min hard cap
+        let delay = 1000
+        while (Date.now() < deadline) {
+          if (_signal?.aborted) {
+            try { (await import('./jobs.js')).cancelJob(job.id) } catch { /* ignore */ }
+            return err('cancelled')
+          }
+          await new Promise((r) => setTimeout(r, delay))
+          delay = Math.min(5000, Math.round(delay * 1.4))
+          const cur = getJob(job.id)
+          if (!cur) return err(`job ${job.id} disappeared`)
+          if (cur.status === 'failed') return err(`image gen failed: ${cur.error || 'unknown error'}`)
+          if (cur.status === 'done') {
+            // Copy produced file → file_path inside the chat workspace.
+            const files = cur.result?.files || []
+            const produced = files.find((f) => /\.(jpe?g|png|webp)$/i.test(f)) || files[0]
+            if (!produced) return err('image generated but no output file was found in job result')
+            try {
+              const { readFile, writeFile, mkdir } = await import('node:fs/promises')
+              const path_ = await import('node:path')
+              const ws = await import('./workspace.js')
+              const safe = ws.default?.safePath || ws.safePath
+              const srcAbs = path_.isAbsolute(produced) ? produced : (
+                typeof safe === 'function'
+                  ? safe(produced)
+                  : path_.join(process.env.WORKSPACE_ROOT || '/workspace', produced)
+              )
+              const buf = await readFile(srcAbs)
+              const destAbs = typeof safe === 'function'
+                ? safe(file_path)
+                : path_.join(process.env.WORKSPACE_ROOT || '/workspace', file_path)
+              await mkdir(path_.dirname(destAbs), { recursive: true })
+              await writeFile(destAbs, buf)
+              return ok({
+                file_path,
+                bytes: buf.length,
+                jobId: job.id,
+                source: produced,
+                note: 'Image saved to workspace; UI shows it in the file preview.',
+              })
+            } catch (copyErr) {
+              return err(`image generated but could not be written to ${file_path}: ${copyErr.message}`)
+            }
+          }
+          // running/queued — keep polling
+        }
+        try { (await import('./jobs.js')).cancelJob(job.id) } catch { /* ignore */ }
+        return err('image generation timed out after 5 minutes')
+      } catch (e) { return err(e?.message || String(e)) }
     },
   },
 }

@@ -400,6 +400,44 @@ export function buildClineSystemPrompt({
     TOOL_USE_GUIDELINES,
     '# Available Tools',
     '',
+    // Quick-reference card with Arena-style signatures. Keeps the most
+    // commonly mis-typed parameter names in the model's head BEFORE the
+    // long descriptor catalog. This is the same set you'd see in any
+    // Arena-style agent prompt — kept verbatim for parity.
+    `## Quick-reference (Arena-style canonical signatures)
+
+  bash(command, cwd='/workspace', timeout=120)
+      — runs in a per-chat persistent shell (cd/env/exports survive).
+      — set persist=false for a fresh one-shot shell.
+      — for long-running processes use bash_bg / bash_logs / bash_stop.
+
+  read_file(path)
+      — text files return content; image files (jpg/png/webp/gif/bmp)
+        come back with a data URL the vision model can see directly.
+
+  write_file(path, content)
+      — create or overwrite a file; parent folders are auto-created.
+
+  edit_file(path, old_text, new_text)
+      — fuzzy-matched search-and-replace (tolerates whitespace +
+        indentation differences). Only the first match is replaced.
+        For several edits in one file pass edits=[{old_text,new_text},…].
+
+  web_search(query, depth='1'|'2'|'3')
+      — returns numbered results. Cite as [id](url) for every claim.
+
+  web_fetch(url, chunkIndex=0)   (alias: fetch_page)
+      — markdown of the page; large pages come in chunks (hasMore + chunkIndex).
+
+  generate_image(file_path, prompt)
+      — file_path must end in .jpg/.jpeg/.png; the image is saved to the
+        workspace and previewed in the chat.
+
+  ask_user({questions:[{id, question, options:[{id,label}], allowCustomResponse}]})
+      — surfaces a multi-question UI card and waits for the answer.
+        Legacy single-question form {question, options} also accepted.
+`,
+    '',
     renderToolsForPrompt(extraTools),
     mcpServersBlock || '',
     EDITING_FILES,

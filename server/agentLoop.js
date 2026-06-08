@@ -1214,17 +1214,49 @@ async function runAgentInner({
         sse(res, 'tool_start', { step, sub: idx, name: call.tool, args: call.args, readBack: Boolean(call._readBack) })
         let r
         if (call.tool === 'ask_user') {
-          const { id: questionId, promise } = registerQuestion()
-          sse(res, 'ask_user', {
-            step, sub: idx,
-            question_id: questionId,
-            question: call.args?.question || '(no question)',
-            options: Array.isArray(call.args?.options) ? call.args.options : [],
-            multi: call.args?.multi !== false,
-            allow_custom: call.args?.allow_custom !== false,
+          // Two input shapes are accepted:
+          //   • legacy: { question, options[], multi?, allow_custom? }
+          //   • arena:  { questions: [{id, question, options[], allowCustomResponse?}, …] }
+          // We normalise to an array of questions internally, register
+          // one promise per question, and resolve with an array of
+          // answers (or a single answer for the legacy single-q form).
+          const aArgs = call.args || {}
+          const rawList = Array.isArray(aArgs.questions) && aArgs.questions.length
+            ? aArgs.questions
+            : [{
+                id: 'q1',
+                question: aArgs.question || '(no question)',
+                options: Array.isArray(aArgs.options) ? aArgs.options : [],
+                allowCustomResponse: aArgs.allow_custom !== false,
+                multi: aArgs.multi !== false,
+              }]
+          const normalised = rawList.slice(0, 6).map((q, qi) => ({
+            id: String(q.id || `q${qi + 1}`),
+            question: String(q.question || ''),
+            options: Array.isArray(q.options) ? q.options.slice(0, 6) : [],
+            multi: q.multi !== false,
+            allowCustom: q.allowCustomResponse !== false && q.allow_custom !== false,
+          }))
+          const promises = normalised.map((q) => {
+            const { id: questionId, promise } = registerQuestion()
+            sse(res, 'ask_user', {
+              step, sub: idx,
+              question_id: questionId,
+              question: q.question || '(no question)',
+              options: q.options,
+              multi: q.multi,
+              allow_custom: q.allowCustom,
+              groupId: normalised.length > 1 ? q.id : undefined,
+            })
+            return promise.then(
+              (ans) => ({ id: q.id, ok: true, answer: ans }),
+              (e)   => ({ id: q.id, ok: false, error: e?.message || 'cancelled' }),
+            )
           })
-          try { r = { ok: true, result: await promise } }
-          catch (e) { r = { ok: false, error: e?.message || 'ask_user cancelled' } }
+          const answers = await Promise.all(promises)
+          // Preserve single-question legacy shape when only one question.
+          const single = answers.length === 1
+          r = { ok: true, result: single ? answers[0].answer : { answers } }
         } else {
           // AUTO-RECOVERY: a tool can return ok:false but a string error
           // hint that's actually recoverable (e.g. "old_text not found in
