@@ -429,11 +429,13 @@ export function useChats(settings) {
       }
 
       let history = []
+      let chatSummary = ''
       setChats((prev) =>
         prev.map((c) => {
           if (c.id !== chatId) return c
           const isFirst = c.messages.length === 0
           history = [...c.messages, userMsg]
+          chatSummary = c.summary || ''
           return {
             ...c,
             title: isFirst ? deriveTitle(trimmed) : c.title,
@@ -486,11 +488,25 @@ export function useChats(settings) {
         ? { ...resolveActive(settings), ...overrideProvider }
         : (resolveActive(settings) || {})
 
+      // Persistent extraSystem: chat-level summary if it exists (we re-use
+      // the same one chat-mode computes), plus an early-turn marker so the
+      // server knows it can auto-read project rules (AGENTS.md, README.md,
+      // package.json) before the model starts working.
+      const extraSystemParts = []
+      if (chatSummary) {
+        extraSystemParts.push(`# Earlier conversation summary\n\n${chatSummary}`)
+      }
+      if (history.length <= 2) {
+        // First user turn → ask the server to inject project context.
+        extraSystemParts.push('[browserai-first-turn]')
+      }
+
       try {
         await new Promise((resolve) => {
           streamAgent({
             chatId,
             history: llmHistory,
+            extraSystem: extraSystemParts.join('\n\n'),
             provider: {
               baseUrl:      active.baseUrl,
               apiKey:       active.apiKey,

@@ -64,6 +64,7 @@ import {
   getDownloadName,
   fileNameToMime,
   listRecentWorkspaceActivity,
+  readProjectRules,
   safePath,
   withWorkspaceScope,
   deleteWorkspaceScope,
@@ -2372,6 +2373,7 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
   // instead of hallucinating one out of its chat memory. Limited to the
   // current chat's workspace scope and the last 60 minutes.
   let realActivityNote = ''
+  let projectRulesNote = ''
   try {
     if (chatId) {
       const events = await withWorkspaceScope(chatId, () => listRecentWorkspaceActivity({ sinceMs: 60 * 60 * 1000, limit: 50 }))
@@ -2384,11 +2386,26 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
       } else {
         realActivityNote = '# Recently-applied changes in /workspace (last 60 min)\n\n(none — no files were created or modified yet)\n\nIf the user thinks you "fixed" something, be honest: nothing has been applied to disk yet. Either apply it now via edit_file/write_file, or say so plainly.'
       }
+
+      // First-turn auto-read of project rules. The frontend marks the very
+      // first message of a chat with a `[browserai-first-turn]` token in
+      // extraSystem — when we see it we briefly look in the workspace for
+      // commonly-used "rules for AI agents" files and inject up to 8 KB of
+      // them as project context. Saves the model from having to run
+      // list_files + read_file before it even understands the codebase.
+      if (String(extraSystem || '').includes('[browserai-first-turn]')) {
+        const rules = await withWorkspaceScope(chatId, () => readProjectRules())
+        if (rules) projectRulesNote = rules
+      }
     }
   } catch (e) {
     console.warn('[agent] workspace activity digest failed:', e?.message || e)
   }
-  const extraSystemFinal = [extraSystem, realActivityNote].filter(Boolean).join('\n\n')
+  const extraSystemFinal = [
+    String(extraSystem || '').replace(/\[browserai-first-turn\]/g, '').trim(),
+    projectRulesNote,
+    realActivityNote,
+  ].filter(Boolean).join('\n\n')
 
   try {
     await runAgent({

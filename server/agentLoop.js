@@ -158,6 +158,23 @@ function buildNativeToolsSpec() {
   })
 }
 
+// Clip a tool result before injecting it into the LLM conversation.
+// Without this, a single `bash` call with 100 KB of output can push us
+// past every provider's context window in 2-3 turns. We keep the head
+// + tail so the model sees both the start of the output and the most
+// recent (often most useful) lines, with a clear gap marker.
+const TOOL_OUTPUT_HEAD = Number(process.env.TOOL_OUTPUT_HEAD || 6000)
+const TOOL_OUTPUT_TAIL = Number(process.env.TOOL_OUTPUT_TAIL || 2000)
+function clipForLLM(s) {
+  const str = String(s || '')
+  const max = TOOL_OUTPUT_HEAD + TOOL_OUTPUT_TAIL + 200
+  if (str.length <= max) return str
+  const head = str.slice(0, TOOL_OUTPUT_HEAD)
+  const tail = str.slice(-TOOL_OUTPUT_TAIL)
+  const hidden = str.length - TOOL_OUTPUT_HEAD - TOOL_OUTPUT_TAIL
+  return `${head}\n\n… [${hidden} characters omitted to keep context small — run with a more specific filter to see the middle] …\n\n${tail}`
+}
+
 // Heuristic: did the user ask for an edit-style change ("исправь",
 // "поправь", "оживи код", "сделай так чтобы…", "fix the bug",
 // "refactor", etc) AND the model's reply contains a substantial code
@@ -314,25 +331,27 @@ async function runAgentInner({
         }
       }
 
-      // Decide which tool path to follow
-      let call = null
-      if (useNativeTools && reply.toolCalls?.length > 0) {
-        // Take the first tool call; loop handles them one at a time so the
-        // model sees each result before deciding what's next.
-        const tc = reply.toolCalls[0]
-        if (TOOLS[tc.name]) {
-          call = { tool: tc.name, args: tc.args || {}, nativeId: tc.id, nativeRaw: tc.raw }
+      // Decide which tool path(s) to follow.
+      // PARALLEL TOOLS: when the provider returns more than one tool_calls
+      // entry in a single assistant message, we run them ALL concurrently
+      // and feed every result back before the next LLM round. This is a
+      // 3-5x speed-up on read-heavy turns ("read these 5 files").
+      let calls = []
+      if (useNativeTools && Array.isArray(reply.toolCalls) && reply.toolCalls.length > 0) {
+        for (const tc of reply.toolCalls) {
+          if (TOOLS[tc.name]) {
+            calls.push({ tool: tc.name, args: tc.args || {}, nativeId: tc.id, nativeRaw: tc.raw })
+          }
         }
       }
-      if (!call) {
-        call = extractTextToolCall(reply.text)
+      if (calls.length === 0) {
+        const textCall = extractTextToolCall(reply.text)
+        if (textCall) calls = [textCall]
       }
 
-      if (!call) {
+      if (calls.length === 0) {
         // Heuristic safety net: did the user ask to fix/edit code but the
         // model dumped a fenced code block instead of calling edit_file?
-        // This is the single most common 'agent gave up' failure mode —
-        // especially on smaller models. Push back ONCE per turn.
         if (looksLikeUnapplliedCodeReply(reply.text, history) && !aborted) {
           sse(res, 'thought', {
             step,
@@ -355,13 +374,14 @@ async function runAgentInner({
       }
 
       // Echo the assistant turn so the model sees its own request next round.
-      // For native tools we have to preserve the tool_calls structure so the
-      // observation message can reference it via tool_call_id.
-      if (call.nativeId) {
+      // For native tools we have to preserve the full tool_calls structure
+      // so each observation can reference its own tool_call_id.
+      const anyNative = calls.some((c) => c.nativeId)
+      if (anyNative) {
         convo.push({
           role: 'assistant',
           content: reply.text || '',
-          tool_calls: [call.nativeRaw],
+          tool_calls: calls.filter((c) => c.nativeId).map((c) => c.nativeRaw),
         })
       } else {
         convo.push({ role: 'assistant', content: reply.text || '' })
@@ -370,64 +390,72 @@ async function runAgentInner({
       // Stream the intermediate reasoning (everything in reply.text except
       // the JSON envelope) to the UI so users see the model's plan in
       // real time, the way Arena's agent UI does.
-      const thinkingText = call.nativeId
+      const thinkingText = anyNative
         ? (reply.text || '').trim()
         : (reply.text || '').replace(TOOL_FENCE_RE, '').trim()
       if (thinkingText) {
         sse(res, 'thought', { step, text: thinkingText })
       }
 
-      sse(res, 'tool_start', { step, name: call.tool, args: call.args })
-
-      let result
-      if (call.tool === 'ask_user') {
-        // Special-case: don't actually invoke the (no-op) handler. Open a
-        // pending question, push it to the client UI via an SSE event,
-        // and await the user's answer (or timeout).
-        const { id: questionId, promise } = registerQuestion()
-        sse(res, 'ask_user', {
-          step,
-          question_id: questionId,
-          question: call.args?.question || '(no question)',
-          options: Array.isArray(call.args?.options) ? call.args.options : [],
-          multi: call.args?.multi !== false,
-          allow_custom: call.args?.allow_custom !== false,
-        })
-        try {
-          const answer = await promise
-          result = { ok: true, result: answer }
-        } catch (e) {
-          result = { ok: false, error: e?.message || 'ask_user cancelled' }
+      // Run all tools in parallel. ask_user is sequential within its own
+      // dispatch (it blocks waiting for the user) — it should rarely be
+      // batched with other calls, but if a model does it, we await both.
+      const results = await Promise.all(calls.map(async (call, idx) => {
+        sse(res, 'tool_start', { step, sub: idx, name: call.tool, args: call.args })
+        let r
+        if (call.tool === 'ask_user') {
+          const { id: questionId, promise } = registerQuestion()
+          sse(res, 'ask_user', {
+            step, sub: idx,
+            question_id: questionId,
+            question: call.args?.question || '(no question)',
+            options: Array.isArray(call.args?.options) ? call.args.options : [],
+            multi: call.args?.multi !== false,
+            allow_custom: call.args?.allow_custom !== false,
+          })
+          try { r = { ok: true, result: await promise } }
+          catch (e) { r = { ok: false, error: e?.message || 'ask_user cancelled' } }
+        } else {
+          // AUTO-RECOVERY: a tool can return ok:false but a string error
+          // hint that's actually recoverable (e.g. "old_text not found in
+          // X — refine to make it unique"). We don't retry blindly here —
+          // the loop pushes the error back into context and the model
+          // decides. But we DO clip outsized payloads so a 5 MB bash log
+          // doesn't blow up the next LLM call.
+          r = await invokeTool(call.tool, call.args)
         }
-      } else {
-        result = await invokeTool(call.tool, call.args)
-      }
-
-      sse(res, 'tool_result', {
-        step,
-        name: call.tool,
-        ok: Boolean(result.ok),
-        result: result.ok ? result.result : undefined,
-        error: result.ok ? undefined : result.error,
-      })
-
-      // Feed the observation back. Two flavours depending on call path.
-      const obsContent = result.ok
-        ? (typeof result.result === 'string' ? result.result : JSON.stringify(result.result, null, 2))
-        : 'ERROR: ' + result.error
-
-      if (call.nativeId) {
-        convo.push({
-          role: 'tool',
-          tool_call_id: call.nativeId,
+        sse(res, 'tool_result', {
+          step, sub: idx,
           name: call.tool,
-          content: obsContent,
+          ok: Boolean(r.ok),
+          result: r.ok ? r.result : undefined,
+          error: r.ok ? undefined : r.error,
         })
-      } else {
-        convo.push({
-          role: 'user',
-          content: `[tool_result name="${call.tool}" ok=${result.ok}]\n${obsContent}\n[/tool_result]`,
-        })
+        return { call, r }
+      }))
+
+      // Feed every observation back into the conversation — one message
+      // per native-tool call (so tool_call_id matches), or a single
+      // textual block for the text protocol.
+      for (const { call, r } of results) {
+        const obsRaw = r.ok
+          ? (typeof r.result === 'string' ? r.result : JSON.stringify(r.result, null, 2))
+          : 'ERROR: ' + r.error
+        const obsContent = clipForLLM(obsRaw)
+
+        if (call.nativeId) {
+          convo.push({
+            role: 'tool',
+            tool_call_id: call.nativeId,
+            name: call.tool,
+            content: obsContent,
+          })
+        } else {
+          convo.push({
+            role: 'user',
+            content: `[tool_result name="${call.tool}" ok=${r.ok}]\n${obsContent}\n[/tool_result]`,
+          })
+        }
       }
     }
 

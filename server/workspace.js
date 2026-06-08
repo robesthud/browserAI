@@ -854,6 +854,80 @@ async function getFileHistory(relPath) {
 }
 
 /**
+ * Read a small bundle of "AI agent rules" / project context files at the
+ * top of the current workspace scope. Used by /api/agent/chat on the very
+ * first turn of a chat to give the agent a head-start instead of forcing
+ * it to discover the codebase from scratch. Returns a string ready to be
+ * pasted into the system prompt, or '' if nothing relevant is found.
+ *
+ * Picks up (in this order, first match per filename wins, recursive
+ * scan limited to depth 4 to support extracted ZIPs like
+ * workspace/some-repo-main/README.md):
+ *   AGENTS.md, AGENT.md, CLAUDE.md, .cursorrules, .ai-rules,
+ *   README.md, package.json (truncated to {name,version,scripts}).
+ *
+ * Per-file caps + total cap keep us well under 8 KB so we never blow
+ * up the LLM context.
+ */
+async function readProjectRules() {
+  const RULES_PRIORITY = [
+    'AGENTS.md', 'AGENT.md', 'CLAUDE.md',
+    '.cursorrules', '.ai-rules',
+    'README.md', 'package.json',
+  ]
+  const PER_FILE_CAP = 1600
+  const TOTAL_CAP = 8 * 1024
+  const root = getScopedWorkspaceRoot()
+
+  // Build a map of basename → absolute path (only first match).
+  const found = new Map()
+  async function walk(dir, depth) {
+    if (depth > 4) return
+    let entries
+    try { entries = await fs.readdir(dir, { withFileTypes: true }) }
+    catch { return }
+    for (const entry of entries) {
+      if (entry.name.startsWith('.history') || entry.name === 'node_modules' || entry.name === '.git') continue
+      const abs = path.join(dir, entry.name)
+      if (entry.isDirectory()) { await walk(abs, depth + 1); continue }
+      if (RULES_PRIORITY.includes(entry.name) && !found.has(entry.name)) {
+        found.set(entry.name, abs)
+      }
+    }
+  }
+  await walk(root, 0).catch(() => {})
+  if (found.size === 0) return ''
+
+  const chunks = []
+  let used = 0
+  for (const name of RULES_PRIORITY) {
+    const abs = found.get(name)
+    if (!abs) continue
+    let body
+    try { body = await fs.readFile(abs, 'utf-8') } catch { continue }
+    let snippet
+    if (name === 'package.json') {
+      try {
+        const pkg = JSON.parse(body)
+        snippet = JSON.stringify({
+          name: pkg.name, version: pkg.version,
+          scripts: pkg.scripts, dependencies: Object.keys(pkg.dependencies || {}).slice(0, 20),
+        }, null, 2)
+      } catch { snippet = body.slice(0, PER_FILE_CAP) }
+    } else {
+      snippet = body.slice(0, PER_FILE_CAP)
+      if (body.length > PER_FILE_CAP) snippet += `\n… [truncated, ${body.length - PER_FILE_CAP} more chars]`
+    }
+    if (used + snippet.length > TOTAL_CAP) break
+    const rel = path.relative(root, abs).replace(/\\/g, '/')
+    chunks.push(`## ${rel}\n\n${snippet}`)
+    used += snippet.length
+  }
+  if (!chunks.length) return ''
+  return `# Project context (auto-read at session start)\n\n${chunks.join('\n\n')}\n\nUse these to understand the codebase BEFORE running list_files. If a file you need isn't here, fall back to list_files / read_file as usual.`
+}
+
+/**
  * Walk .history/ inside the current workspace scope and return a list of
  * recent revision events (file path, reason: create|edit|restore, timestamp).
  * Used by the agent loop to inject a real "what was actually done" report
@@ -946,6 +1020,7 @@ export {
   getDownloadName,
   fileNameToMime,
   listRecentWorkspaceActivity,
+  readProjectRules,
   safePath,
   withWorkspaceScope,
   deleteWorkspaceScope,

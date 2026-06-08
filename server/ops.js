@@ -236,6 +236,24 @@ async function githubAction(action, params = {}) {
     await githubApi(`/repos/${repo}/actions/runs/${runId}/rerun`, { method: 'POST' })
     return { stdout: `Requested rerun for ${runId}`, stderr: '', exitCode: 0 }
   }
+  if (action === 'create_pull_request') {
+    const head = params.head
+    const base = params.base || 'main'
+    const title = params.title
+    const body  = params.body || ''
+    if (!head || !title) throw new Error('head and title required')
+    const r = await githubApi(`/repos/${repo}/pulls`, {
+      method: 'POST',
+      body: { head, base, title, body },
+    })
+    const j = await r.json()
+    return {
+      stdout: JSON.stringify({ number: j.number, url: j.html_url, head: j.head?.ref, base: j.base?.ref }, null, 2),
+      stderr: '',
+      exitCode: 0,
+      pull_request: { number: j.number, url: j.html_url, head: j.head?.ref, base: j.base?.ref, state: j.state },
+    }
+  }
   throw new Error(`GitHub action not implemented: ${action}`)
 }
 
@@ -263,6 +281,7 @@ export const OPS_SERVICES = {
       get_file: { safe: true, description: 'Read a file from GitHub repo. params: path, ref?, repo?' },
       put_file: { safe: false, description: 'Create/update a file in GitHub repo. params: path, content, message?, branch?, repo?' },
       rerun_workflow: { safe: false, description: 'Rerun a GitHub Actions workflow run. params: run_id, repo?' },
+      create_pull_request: { safe: false, description: 'Open a pull request. params: head, title, body?, base?, repo?' },
     },
   },
   browserai: {

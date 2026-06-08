@@ -19,6 +19,8 @@ import {
   deleteItem,
   uploadFromUrl,
   searchWorkspaceContent,
+  getFileHistory,
+  restoreFileRevision,
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
 import { runSandboxCommand } from './agentSandbox.js'
@@ -211,24 +213,61 @@ export const TOOLS = {
   },
 
   edit_file: {
-    description: 'Replace a specific substring inside an existing file. Use this for small surgical edits instead of rewriting the whole file. Fails if the old_text is not found exactly once.',
+    description:
+      'Replace one or more substrings inside an existing text file. ' +
+      'For a single edit pass old_text + new_text. ' +
+      'For multiple surgical edits in the same file pass `edits: [{old_text, new_text}, …]` — all are applied in order, each old_text must appear exactly once at the moment its turn comes (no race). This avoids round-tripping the LLM 5 times for 5 small changes in one file.',
     params: {
       path: { type: 'string', required: true, description: 'Path relative to workspace root.' },
-      old_text: { type: 'string', required: true, description: 'Exact substring to find. Must appear exactly once.' },
-      new_text: { type: 'string', required: true, description: 'Replacement text. Use empty string to delete.' },
+      old_text: { type: 'string', optional: true, description: 'Exact substring to find (single-edit mode). Must appear exactly once.' },
+      new_text: { type: 'string', optional: true, description: 'Replacement text (single-edit mode). Use empty string to delete.' },
+      edits: { type: 'string', optional: true, description: 'JSON array of { old_text, new_text } objects for multiple edits in one call.' },
     },
-    handler: async ({ path, old_text, new_text = '' } = {}) => {
-      if (!path || old_text == null) return err('path and old_text are required')
+    handler: async ({ path, old_text, new_text = '', edits } = {}) => {
+      if (!path) return err('path is required')
       try {
         const file = await readWorkspaceFile(path)
         const original = file?.text ?? file?.content
         if (typeof original !== 'string') return err(`File is binary or unreadable: ${path}`)
-        const count = original.split(old_text).length - 1
-        if (count === 0) return err(`old_text not found in ${path}`)
-        if (count > 1) return err(`old_text appears ${count} times in ${path}; refine to make it unique`)
-        const updated = original.replace(old_text, String(new_text))
-        await writeFileContent(path, updated)
-        return ok({ path, replaced: 1, newLength: updated.length })
+
+        // Normalise to a list of {old_text, new_text}.
+        let list = []
+        if (Array.isArray(edits)) {
+          list = edits
+        } else if (typeof edits === 'string' && edits.trim()) {
+          try { list = JSON.parse(edits) } catch { return err('edits must be valid JSON array') }
+        } else if (old_text != null) {
+          list = [{ old_text, new_text }]
+        } else {
+          return err('provide either old_text/new_text or edits[]')
+        }
+        if (!Array.isArray(list) || list.length === 0) return err('edits[] is empty')
+
+        let current = original
+        const applied = []
+        for (let i = 0; i < list.length; i += 1) {
+          const e = list[i] || {}
+          const o = String(e.old_text ?? '')
+          const n = String(e.new_text ?? '')
+          if (!o) return err(`edit #${i + 1}: old_text is empty`)
+          const count = current.split(o).length - 1
+          if (count === 0) return err(`edit #${i + 1}: old_text not found in ${path}`)
+          if (count > 1) return err(`edit #${i + 1}: old_text appears ${count} times in ${path}; refine to make it unique`)
+          current = current.replace(o, n)
+          applied.push({ idx: i + 1, deltaBytes: n.length - o.length })
+        }
+        await writeFileContent(path, current)
+        return ok({
+          path,
+          replaced: applied.length,
+          deltaBytes: current.length - original.length,
+          newLength: current.length,
+          // Also return a tiny unified-ish diff hint so the JobCard /
+          // AgentToolBlock can show line counts without parsing JSON.
+          edits: applied,
+          oldLines: original.split('\n').length,
+          newLines: current.split('\n').length,
+        })
       } catch (e) { return err(e.message) }
     },
   },
@@ -244,6 +283,94 @@ export const TOOLS = {
         await deleteItem(path)
         return ok({ deleted: path })
       } catch (e) { return err(e.message) }
+    },
+  },
+
+  file_history: {
+    description:
+      'List previous saved revisions of a file (from /workspace/.history). ' +
+      'Each entry has a revisionId you can pass to restore_file. Use this when you (or the user) want to undo a recent edit_file / write_file.',
+    params: {
+      path: { type: 'string', required: true, description: 'Path of the file whose history you want.' },
+      limit: { type: 'number', optional: true, description: 'Cap on returned revisions, default 10, max 30.' },
+    },
+    handler: async ({ path, limit = 10 } = {}) => {
+      if (!path) return err('path is required')
+      try {
+        const items = await getFileHistory(path)
+        const cap = Math.min(30, Math.max(1, Number(limit) || 10))
+        return ok({
+          path,
+          count: items.length,
+          revisions: items.slice(0, cap).map((r) => ({
+            revisionId: r.revisionId,
+            createdAt: new Date(r.createdAt).toISOString(),
+            size: r.size,
+            reason: r.reason,
+          })),
+        })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  restore_file: {
+    description:
+      'Restore a previous revision of a file by revisionId (obtained via file_history). The current file is snapshotted as a new "restore" revision FIRST so you can undo the undo. Use this for conversational repair: if you (or the user) realise the last edit was wrong, list file_history → restore_file.',
+    params: {
+      path: { type: 'string', required: true, description: 'Path of the file to restore.' },
+      revision_id: { type: 'string', required: true, description: 'revisionId from file_history.' },
+    },
+    handler: async ({ path, revision_id } = {}) => {
+      if (!path || !revision_id) return err('path and revision_id are required')
+      try {
+        await restoreFileRevision(path, revision_id)
+        return ok({ path, restored: revision_id })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  // ── Planning ──────────────────────────────────────────────────────────
+  // Lightweight TODO list the agent maintains during a multi-step task.
+  // Renders as a checklist in the UI so the user can see overall progress
+  // ("step 4 of 12") instead of staring at an opaque spinner. Pure state —
+  // the server doesn't validate task semantics, just stores and replays.
+  // We expose three operations through three tools so each appears as a
+  // discrete event in the chat timeline.
+  plan_set: {
+    description:
+      'Set or REPLACE the current task plan as a checklist of steps. Use this at the start of a non-trivial multi-step request so the user sees the overall plan and progress. Each step is a short imperative phrase ("Read server/index.js", "Edit /api/chat route", "Run verify_code").',
+    params: {
+      title: { type: 'string', optional: true, description: 'Overall goal of the plan (1 short line).' },
+      steps: { type: 'string', required: true, description: 'JSON array of step strings.' },
+    },
+    handler: async ({ title = '', steps } = {}) => {
+      let list = []
+      if (Array.isArray(steps)) list = steps
+      else if (typeof steps === 'string') {
+        try { list = JSON.parse(steps) } catch { return err('steps must be a JSON array') }
+      }
+      if (!Array.isArray(list) || list.length === 0) return err('steps[] is empty')
+      const plan = list.slice(0, 30).map((s, i) => ({ idx: i + 1, text: String(s || '').slice(0, 200), done: false }))
+      return ok({ title: String(title || '').slice(0, 200), plan })
+    },
+  },
+
+  plan_check: {
+    description:
+      'Mark plan step(s) as DONE. Call this after you finish each meaningful step (a tool call or group of tool calls).',
+    params: {
+      indices: { type: 'string', required: true, description: 'JSON array of 1-based step indices to mark complete (e.g. [3] or [3,4]).' },
+      note: { type: 'string', optional: true, description: 'Optional 1-line note about how this step was done.' },
+    },
+    handler: async ({ indices, note = '' } = {}) => {
+      let list = []
+      if (Array.isArray(indices)) list = indices
+      else if (typeof indices === 'string') {
+        try { list = JSON.parse(indices) } catch { return err('indices must be a JSON array') }
+      }
+      const clean = list.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0 && n < 100)
+      if (!clean.length) return err('no valid indices')
+      return ok({ checked: clean, note: String(note || '').slice(0, 200) })
     },
   },
 
@@ -338,6 +465,72 @@ export const TOOLS = {
       path: { type: 'string', optional: true, description: 'Repository folder relative to workspace root.' },
     },
     handler: async ({ path = '' } = {}) => runGit({ path, command: 'git pull --ff-only', timeout_sec: 60 }),
+  },
+
+  git_push: {
+    description:
+      'Push the current branch to origin. If GITHUB_TOKEN is set on the server, the remote URL is rewritten in-place to https://x-access-token:<TOKEN>@github.com/… so push works on a fresh clone without manual git-credential setup. Use AFTER git_commit + verify_code, and AFTER ask_user confirmation if the repo is shared.',
+    params: {
+      path: { type: 'string', optional: true, description: 'Repository folder relative to workspace root.' },
+      branch: { type: 'string', optional: true, description: 'Branch to push. Default: current.' },
+      set_upstream: { type: 'boolean', optional: true, description: 'Add --set-upstream origin <branch>. Default false.' },
+    },
+    handler: async ({ path = '', branch = '', set_upstream = false } = {}) => {
+      // We can not rely on GITHUB_TOKEN inside the sandbox container, so we
+      // rewrite the remote URL through bash before pushing — only when the
+      // existing remote points at github.com over https.
+      const branchPart = branch ? ` ${branch}` : ''
+      const upstreamPart = set_upstream && branch ? ` --set-upstream origin ${branch}` : ''
+      const cmd = [
+        'set -e',
+        'orig_url="$(git config --get remote.origin.url || true)"',
+        'if [ -n "${GITHUB_TOKEN:-}" ] && echo "$orig_url" | grep -q "^https://github.com/"; then',
+        '  authed="$(echo "$orig_url" | sed "s#https://github.com/#https://x-access-token:${GITHUB_TOKEN}@github.com/#")";',
+        '  git remote set-url origin "$authed";',
+        'fi',
+        `git push${upstreamPart || branchPart}`,
+        // Always restore the clean URL so we never persist the token on disk.
+        'git remote set-url origin "$orig_url"',
+        'git rev-parse HEAD',
+      ].join('\n')
+      return runGit({ path, command: cmd, timeout_sec: 120 })
+    },
+  },
+
+  github_pr_create: {
+    description:
+      'Open a pull request on GitHub for a workspace repository. Requires the ops service ' +
+      '`github` to be configured (GITHUB_TOKEN env). Uses the current branch as the head ' +
+      'and main as the base by default. Returns the PR url + number on success.',
+    params: {
+      path: { type: 'string', optional: true, description: 'Repository folder; used only for git_status logging.' },
+      title: { type: 'string', required: true, description: 'PR title.' },
+      body: { type: 'string', optional: true, description: 'PR body / description (markdown).' },
+      head: { type: 'string', optional: true, description: 'Source branch. Default: current branch in the workspace clone.' },
+      base: { type: 'string', optional: true, description: 'Target branch. Default: main.' },
+      repo: { type: 'string', optional: true, description: '"owner/name" override. Default: GITHUB_REPO env.' },
+    },
+    handler: async ({ title, body = '', head = '', base = 'main', repo = '', path = '' } = {}) => {
+      if (!title) return err('title is required')
+      // Resolve head from local checkout if not given.
+      if (!head) {
+        const probe = await runGit({ path, command: 'git rev-parse --abbrev-ref HEAD' })
+        if (!probe.ok) return err('could not resolve current branch: ' + (probe.error || ''))
+        head = String(probe.result?.stdout || '').trim()
+        if (!head || head === 'HEAD') return err('detached HEAD — please specify head=<branch>')
+      }
+      try {
+        // Delegate to the existing ops connector so we share auth + redaction.
+        const { runOpsAction } = await import('./ops.js')
+        const r = await runOpsAction({
+          service: 'github',
+          action: 'create_pull_request',
+          params: { title, body, head, base, repo },
+          confirm: true,
+        })
+        return ok({ pr: r?.pull_request || r, head, base, title })
+      } catch (e) { return err(e.message) }
+    },
   },
 
   // ── Web ────────────────────────────────────────────────────────────────
