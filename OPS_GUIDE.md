@@ -110,9 +110,16 @@ When user asks “deploy/fix deploy/check logs”:
 7. Analyze summary/logs.
 8. If code changes are needed, use workspace/git tools, then repeat deploy after confirmation.
 
+## Admin dashboard
+
+A visual `/admin/ops` dashboard is available (auth required). It shows
+service/gateway/sandbox status, lists every service action (safe actions are
+neutral, dangerous ones are marked ⚠), recent jobs, and an output pane.
+Dangerous actions trigger a confirmation dialog and are only sent with
+`confirm:true` after the operator agrees.
+
 ## What is still missing
 
-- A visual `/admin/ops` dashboard.
 - Persistent audit log UI for ops actions.
 - Rich “repair loop” orchestration UI with progress steps.
 - Native MCP server support.

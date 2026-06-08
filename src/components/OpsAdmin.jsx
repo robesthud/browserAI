@@ -52,7 +52,20 @@ export default function OpsAdmin() {
         method: 'POST',
         body: JSON.stringify({ service, action, params, confirm }),
       })
-      setResult(JSON.stringify(data.result || data, null, 2))
+      const res = data.result || data
+      // Dangerous actions come back asking for confirmation. Show a real
+      // confirm dialog and re-run with confirm:true if the user agrees,
+      // instead of leaving the user staring at requiresConfirmation JSON.
+      if (res && res.requiresConfirmation && !confirm) {
+        setResult(res.message || 'Требуется подтверждение опасного действия.')
+        const okToRun = window.confirm(
+          `Опасное действие: ${service}.${action}\n\n${res.message || ''}\n\nВыполнить?`,
+        )
+        if (okToRun) return runAction(service, action, params, true)
+        setResult(`Отменено: ${service}.${action}`)
+        return
+      }
+      setResult(typeof res === 'string' ? res : JSON.stringify(res, null, 2))
       void load()
     } catch (e) {
       setResult(e.message || String(e))
