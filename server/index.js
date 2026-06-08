@@ -2453,6 +2453,41 @@ app.post('/api/mcp/restart', requireAuth, async (_req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
+// ── Approval policy (per-user) ─────────────────────────────────────────────
+app.get('/api/approval/policy', requireAuth, async (req, res) => {
+  try {
+    const { loadPolicy } = await import('./approvalGate.js')
+    res.json({ policy: loadPolicy(req.user?.id || '') })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/approval/policy', requireAuth, async (req, res) => {
+  try {
+    const { savePolicy } = await import('./approvalGate.js')
+    const next = savePolicy(req.user?.id || '', req.body?.policy || {})
+    res.json({ ok: true, policy: next })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+// ── Checkpoints (session-level undo) ───────────────────────────────────────
+app.get('/api/checkpoints/:chatId', requireAuth, async (req, res) => {
+  try {
+    const { listCheckpoints } = await import('./checkpoints.js')
+    res.json({ checkpoints: listCheckpoints(String(req.params.chatId || '')) })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/checkpoints/:chatId/restore', requireAuth, async (req, res) => {
+  try {
+    const { restoreCheckpoint } = await import('./checkpoints.js')
+    const result = await restoreCheckpoint({
+      chatId: String(req.params.chatId || ''),
+      step: Number(req.body?.step) || 0,
+    })
+    res.json({ ok: true, ...result })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
 // ── Web Push ───────────────────────────────────────────────────────────────
 app.get('/api/push/vapid', async (_req, res) => {
   try {

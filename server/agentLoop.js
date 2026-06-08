@@ -39,6 +39,8 @@ import { registerQuestion } from './askUserRegistry.js'
 import { buildClineSystemPrompt } from './clinePrompt.js'
 import { recordSpend, checkCap, chatTotalUsd } from './costTracker.js'
 import { shouldUseCheapEditor, wrapProviderForEditor, routingLabel } from './architectEditor.js'
+import { requiresApproval, categoryOf } from './approvalGate.js'
+import { recordCheckpoint } from './checkpoints.js'
 
 const DEFAULT_MAX_STEPS = 15
 const DEFAULT_DEADLINE_MS = 5 * 60 * 1000
@@ -984,6 +986,38 @@ async function runAgentInner({
         // (otherwise the very next call could match itself and trigger).
         recentCallFingerprints.push(callFingerprint(call))
         if (recentCallFingerprints.length > 20) recentCallFingerprints.shift()
+
+        // ── Approval gate (Cline-style) ────────────────────────────
+        // If the user's policy says this tool category needs explicit
+        // confirmation, we pause and emit an ask_user-like SSE the UI
+        // shows as an "Approve / Deny" pill. Reusing registerQuestion
+        // means we get the same answer-channel infra for free.
+        const cat = categoryOf(call.tool)
+        if (call.tool !== 'ask_user' && requiresApproval(call.tool, userId)) {
+          const { id: aqId, promise: aqPromise } = registerQuestion()
+          sse(res, 'tool_approval', {
+            step, sub: idx,
+            question_id: aqId,
+            tool: call.tool,
+            category: cat,
+            args: call.args,
+          })
+          let approved = true
+          try {
+            const ans = await aqPromise
+            // Accept "approve", "yes", "ok", true, etc.
+            const t = String(ans?.text || ans || '').toLowerCase().trim()
+            approved = t === 'approve' || t === 'yes' || t === 'ok' || t === 'allow' || t === 'true'
+          } catch { approved = false }
+          if (!approved) {
+            const r0 = { ok: false, error: `User denied ${call.tool} (${cat}). Pick a different approach or call ask_user to clarify.` }
+            sse(res, 'tool_result', {
+              step, sub: idx, name: call.tool, ok: false, error: r0.error,
+            })
+            return { call, r: r0 }
+          }
+        }
+
         sse(res, 'tool_start', { step, sub: idx, name: call.tool, args: call.args, readBack: Boolean(call._readBack) })
         let r
         if (call.tool === 'ask_user') {
@@ -1033,6 +1067,20 @@ async function runAgentInner({
           result: r.ok ? r.result : undefined,
           error: r.ok ? undefined : r.error,
         })
+        // Record a session checkpoint after every successful write-class
+        // tool so the user can one-click "↶ undo this turn". Fire-and-
+        // forget — we look up the latest .rev id per file asynchronously
+        // and never block the agent loop on it.
+        if (r?.ok && cat === 'write' && (call.tool === 'write_file' || call.tool === 'edit_file' || call.tool === 'delete_file' || call.tool === 'replace_across_files')) {
+          const filesTouched = []
+          if (call.args?.path) filesTouched.push(call.args.path)
+          if (Array.isArray(r.result?.applied)) for (const a of r.result.applied) if (a.path) filesTouched.push(a.path)
+          if (Array.isArray(r.result?.touched)) for (const p of r.result.touched) filesTouched.push(p)
+          if (filesTouched.length) {
+            recordCheckpoint({ chatId, step, label: call.tool, files: filesTouched })
+              .catch((e) => console.warn('[agent] checkpoint record failed:', e?.message || e))
+          }
+        }
         return { call, r }
       }))
 
