@@ -11,7 +11,12 @@
  *   - read-only root (filesystem of the image is immutable)
  *   - only /workspace is read/write, bind-mounted to the same
  *     directory the main app sees
- *   - sandbox runs as non-root uid 1000:1000
+ *   - commands run as uid 0:0 to match the workspace owner. The workspace
+ *     is created by the API container as root, so a uid-1000 exec could
+ *     READ but never WRITE it (npm install / build / git clone / file
+ *     generation all failed with EACCES). The sandbox is still isolated:
+ *     separate container, read-only image root, CPU/RAM/pids caps, and no
+ *     route to internal infrastructure.
  *   - no network restrictions are applied here yet (curl works) —
  *     the perimeter relies on Timeweb's firewall + the absence of
  *     credentials on the container
@@ -51,7 +56,7 @@ export function runSandboxCommand({ command, timeoutMs = 30_000, cwd = '/workspa
 
     const args = [
       'exec',
-      '--user', '1000:1000',
+      '--user', process.env.AGENT_SANDBOX_USER || '0:0',
       '-w', cwd,
       SANDBOX_CONTAINER,
       'sh', '-c', command,
