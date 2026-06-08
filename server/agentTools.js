@@ -1076,6 +1076,16 @@ export const TOOLS = {
   },
 }
 
+// Lazy-register use_subagents to avoid a circular import (subAgents.js
+// re-imports invokeTool from this file). Done at module-load time but
+// AFTER the TOOLS literal is sealed.
+try {
+  const { USE_SUBAGENTS_TOOL } = await import('./subAgents.js')
+  TOOLS.use_subagents = USE_SUBAGENTS_TOOL
+} catch (e) {
+  console.warn('[agentTools] use_subagents registration failed:', e?.message || e)
+}
+
 // ── Schema for the system prompt ────────────────────────────────────────────
 /**
  * Render a tool catalogue (built-in TOOLS plus any extra map of

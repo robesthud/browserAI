@@ -1012,7 +1012,13 @@ async function runAgentInner({
           const onProgress = (chunk, kind) => {
             sse(res, 'tool_progress', { step, sub: idx, name: call.tool, kind, chunk: String(chunk).slice(0, 2000) })
           }
-          r = await invokeTool(call.tool, call.args, {
+          // Inject the live provider so use_subagents (and any future
+          // recursive tools) can spawn nested LLM calls without the
+          // caller having to thread credentials manually.
+          const argsWithProvider = (call.tool === 'use_subagents')
+            ? { ...(call.args || {}), _provider: provider }
+            : call.args
+          r = await invokeTool(call.tool, argsWithProvider, {
             signal: abortCtl.signal,
             onStdout: (c) => onProgress(c, 'stdout'),
             onStderr: (c) => onProgress(c, 'stderr'),
