@@ -573,6 +573,19 @@ export function useChats(settings) {
                   // agent runs even without looking at the screen.
                   haptics.tap()
                   break
+                case 'tool_diagnostic':
+                  // Inline syntax-check failed after a write/edit — flag
+                  // the matching toolCall so AgentToolBlock can paint an
+                  // amber pill and surface the message.
+                  patchAssistant((m) => ({
+                    ...m,
+                    toolCalls: (m.toolCalls || []).map((tc) =>
+                      tc.step === data.step && tc.name === data.name
+                        ? { ...tc, diagnostic: { path: data.path, error: data.error } }
+                        : tc,
+                    ),
+                  }))
+                  break
                 case 'tool_progress':
                   // Live stdout/stderr chunks from long bash / verify_code
                   // calls — appended to the matching toolCall so the
@@ -621,6 +634,34 @@ export function useChats(settings) {
                         options: data.options || [],
                         multi: data.multi !== false,
                         allowCustom: data.allow_custom !== false,
+                        answered: false,
+                        answer: null,
+                      },
+                    ],
+                  }))
+                  haptics.warning()
+                  break
+                case 'tool_approval':
+                  // Server is asking the user to approve / deny a tool
+                  // call (bash, git, deploy, mcp …). We piggy-back on
+                  // the askUsers[] array so the same answer-channel
+                  // wiring works. The component just shows a different
+                  // visual treatment when kind === 'approval'.
+                  patchAssistant((m) => ({
+                    ...m,
+                    askUsers: [
+                      ...(m.askUsers || []),
+                      {
+                        id: data.question_id,
+                        step: data.step,
+                        kind: 'approval',
+                        tool: data.tool,
+                        category: data.category,
+                        args: data.args || {},
+                        question: `Разрешить вызов «${data.tool}» (${data.category})?`,
+                        options: ['approve', 'deny'],
+                        multi: false,
+                        allowCustom: false,
                         answered: false,
                         answer: null,
                       },

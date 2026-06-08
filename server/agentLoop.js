@@ -535,12 +535,26 @@ async function runReflectionCheck({ provider, ask, draft, toolHistory }) {
     'verify_code не запускался). Не придирайся к стилю и формулировкам.',
   ].join('\n')
 
+  // Pick a STRONGER sibling for the critique pass when the main model
+  // is a "cheap" tier (architect/editor often swaps us onto haiku/flash
+  // during execution; reflection deserves the stronger model). When the
+  // main model is already strong, we just reuse it.
+  let reviewModel = provider.model
+  try {
+    const { lookupModel, suggestStrongSibling } = await import('./modelKnowledge.js')
+    const tier = lookupModel(provider.model).tier
+    if (tier === 'cheap') {
+      const strong = suggestStrongSibling(provider.model)
+      if (strong) reviewModel = strong
+    }
+  } catch { /* fall back to provider.model */ }
+
   const reply = await callLLM({
     baseUrl: provider.baseUrl, apiKey: provider.apiKey,
     authType: provider.authType || 'bearer',
     authHeader: provider.authHeader || '',
     extraHeaders: provider.extraHeaders || {},
-    model: provider.model,
+    model: reviewModel,
     messages: [
       { role: 'system', content: 'You are a terse reviewer. One line. No markdown.' },
       { role: 'user', content: prompt },
@@ -550,9 +564,9 @@ async function runReflectionCheck({ provider, ask, draft, toolHistory }) {
   const out = String(reply?.text || '').trim().split(/\r?\n/)[0] || ''
   const todoMatch = out.match(/^\s*todo\s*[:\-—]?\s*(.+)$/i)
   if (todoMatch) {
-    return { needsMoreWork: true, reason: todoMatch[1].trim(), usage: reply.usage }
+    return { needsMoreWork: true, reason: todoMatch[1].trim(), usage: reply.usage, reviewModel }
   }
-  return { needsMoreWork: false, reason: '', usage: reply.usage }
+  return { needsMoreWork: false, reason: '', usage: reply.usage, reviewModel }
 }
 
 async function streamFinalAnswer(res, fullText) {
@@ -1002,11 +1016,14 @@ async function runAgentInner({
             category: cat,
             args: call.args,
           })
-          let approved = true
+          let approved = false
           try {
             const ans = await aqPromise
-            // Accept "approve", "yes", "ok", true, etc.
-            const t = String(ans?.text || ans || '').toLowerCase().trim()
+            // The UI sends { selected: ['approve'|'deny'], custom?: '…' }
+            // from the AgentAskUser card (kind=approval). We also accept
+            // plain strings / booleans for programmatic answers.
+            const pick = Array.isArray(ans?.selected) ? String(ans.selected[0] || '') : String(ans?.text || ans || '')
+            const t = pick.toLowerCase().trim()
             approved = t === 'approve' || t === 'yes' || t === 'ok' || t === 'allow' || t === 'true'
           } catch { approved = false }
           if (!approved) {
@@ -1100,9 +1117,29 @@ async function runAgentInner({
       // per native-tool call (so tool_call_id matches), or a single
       // textual block for the text protocol.
       for (const { call, r } of results) {
-        const obsRaw = r.ok
+        let obsRaw = r.ok
           ? (typeof r.result === 'string' ? r.result : JSON.stringify(r.result, null, 2))
           : 'ERROR: ' + r.error
+
+        // Auto-diagnostics surface: if the tool succeeded but the inline
+        // syntax check found a problem, prepend a visible WARNING so the
+        // agent notices the mistake without us having to spell out "now
+        // call verify_code" in the system prompt. This is the Cline-style
+        // "what changed → what broke" feedback loop.
+        if (r.ok && r.result && typeof r.result === 'object' && r.result.diagnostics) {
+          const d = r.result.diagnostics
+          if (d.available && d.ok === false) {
+            obsRaw = `⚠ SYNTAX-CHECK FAILED on ${r.result.path || call.args?.path || '?'}: ${d.error}\nFix it now (read_file → edit_file) before continuing.\n\n${obsRaw}`
+            // Also emit a side-channel SSE so the UI can highlight the
+            // tool_result pill in amber.
+            sse(res, 'tool_diagnostic', {
+              step,
+              name: call.tool,
+              path: r.result.path || call.args?.path || '',
+              error: d.error,
+            })
+          }
+        }
         const obsContent = clipForLLM(obsRaw, provider?.model)
 
         if (call.nativeId) {

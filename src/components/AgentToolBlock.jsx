@@ -41,6 +41,16 @@ const VERBS = {
   ops_run_action:  { verb: 'used',  noun: 'Ops Action',  icon: '🛠' },
   plan_set:        { verb: 'used',  noun: 'Plan',        icon: '📋' },
   plan_check:      { verb: 'used',  noun: 'Plan check',  icon: '☑️' },
+  use_subagents:   { verb: 'Spawned', noun: 'Sub-agents', icon: '🛰' },
+  remember_fact:   { verb: 'used',  noun: 'Remember',    icon: '🧠' },
+  forget_fact:     { verb: 'used',  noun: 'Forget',      icon: '🧠' },
+  recall_facts:    { verb: 'used',  noun: 'Recall',      icon: '🧠' },
+  kb_add:          { verb: 'used',  noun: 'KB add',      icon: '📚' },
+  kb_search:       { verb: 'used',  noun: 'KB search',   icon: '📚' },
+  kb_list:         { verb: 'used',  noun: 'KB list',     icon: '📚' },
+  kb_delete:       { verb: 'used',  noun: 'KB delete',   icon: '📚' },
+  replace_across_files: { verb: 'Refactor', noun: '',    icon: '🔄' },
+  run_tests:       { verb: 'used',  noun: 'Tests',       icon: '🧪' },
 }
 
 function fmtDuration(ms) {
@@ -125,9 +135,18 @@ export default function AgentToolBlock({
   startedAt,
   finishedAt,
   stream,
+  diagnostic,   // { path, error } when post-write syntax check failed
 }) {
   const [open, setOpen] = useState(false)
-  const spec = VERBS[name] || { verb: 'used', noun: name, icon: '⚙️' }
+  // MCP tools come back as 'mcp__<server>__<tool>'. Render them with a
+  // distinct icon and a clean human-readable noun so the UI doesn't
+  // dump the raw triple-underscore string.
+  const mcpMatch = typeof name === 'string' && name.startsWith('mcp__')
+    ? name.match(/^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/)
+    : null
+  const spec = mcpMatch
+    ? { verb: 'MCP', noun: `${mcpMatch[1]}/${mcpMatch[2]}`, icon: '🔌' }
+    : (VERBS[name] || { verb: 'used', noun: name, icon: '⚙️' })
 
   // Status mark like Arena: ✓ / ✗ / spinning dot
   let mark, markCls
@@ -225,6 +244,11 @@ export default function AgentToolBlock({
               className="mb-2 w-full rounded border border-white/5 bg-graphite-950 object-contain"
               style={{ maxHeight: 360 }}
             />
+          )}
+          {diagnostic && (
+            <div className="mb-2 rounded-lg border border-amber-400/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-200">
+              ⚠ После записи <code className="rounded bg-graphite-900/60 px-1 py-0.5 font-mono">{diagnostic.path}</code> синтаксис-чек выдал: {diagnostic.error}
+            </div>
           )}
           {status === 'done' ? (
             highlightedHtml ? (

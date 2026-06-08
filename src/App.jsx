@@ -10,6 +10,7 @@ import DeepSeekAdmin from './components/DeepSeekAdmin.jsx'
 import OpsAdmin from './components/OpsAdmin.jsx'
 import ModelBar from './components/ModelBar.jsx'
 import ChatSearchModal from './components/ChatSearchModal.jsx'
+import CheckpointsTray from './components/CheckpointsTray.jsx'
 import { downloadChatMarkdown } from './lib/chatExport.js'
 import { IconExpand } from './icons.jsx'
 import {
@@ -90,6 +91,7 @@ function BrowserApp({ user, reloadAuth }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [workspaceAiBusy, setWorkspaceAiBusy] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [checkpointsOpen, setCheckpointsOpen] = useState(false)
 
   // Авторежим выбора модели
   const [autoMode, setAutoMode] = useState(() => {
@@ -411,6 +413,7 @@ function BrowserApp({ user, reloadAuth }) {
           onSelectModel={setActiveModel}
           onToggleAuto={handleToggleAuto}
           onOpenSearch={() => setSearchOpen(true)}
+          onOpenCheckpoints={activeChat ? () => setCheckpointsOpen(true) : null}
           onExportChat={activeChat ? () => downloadChatMarkdown(activeChat) : null}
           totalTokens={(activeChat?.messages || []).reduce((s, m) => s + (m?.tokens?.total || 0), 0)}
           costToday={costInfo.dailyTotal}
@@ -422,6 +425,12 @@ function BrowserApp({ user, reloadAuth }) {
           chats={chats}
           onSelectChat={selectChat}
           onClose={() => setSearchOpen(false)}
+        />
+
+        <CheckpointsTray
+          open={checkpointsOpen}
+          chatId={activeChat?.id || ''}
+          onClose={() => setCheckpointsOpen(false)}
         />
 
         {hasMessages ? (

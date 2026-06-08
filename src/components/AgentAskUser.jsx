@@ -22,10 +22,28 @@ export default function AgentAskUser({
   answered = false,
   answer = null,        // { selected, custom } when answered
   onSubmit,
+  // ── approval-mode extras (set when kind === 'approval') ────────────
+  kind = 'question',    // 'question' | 'approval'
+  tool = '',
+  category = '',
+  args = null,
 }) {
   const [selected, setSelected] = useState(answered ? (answer?.selected || []) : [])
   const [custom, setCustom] = useState(answered ? (answer?.custom || '') : '')
   const [sending, setSending] = useState(false)
+  const isApproval = kind === 'approval'
+
+  // For approval mode: one-click submit (no checkbox dance, no custom text).
+  const quickSubmit = async (verdict /* 'approve' | 'deny' */) => {
+    if (answered || sending) return
+    setSelected([verdict])
+    setSending(true)
+    try {
+      await onSubmit?.({ selected: [verdict] })
+    } finally {
+      setSending(false)
+    }
+  }
 
   const toggle = (id) => {
     if (answered) return
@@ -51,6 +69,69 @@ export default function AgentAskUser({
     } finally {
       setSending(false)
     }
+  }
+
+  // ── APPROVAL UI: streamlined two-button card ─────────────────────────
+  if (isApproval) {
+    const argPreview = (() => {
+      if (!args || typeof args !== 'object') return ''
+      const compact = {}
+      for (const [k, v] of Object.entries(args)) {
+        if (k.startsWith('_')) continue
+        const s = typeof v === 'string' ? v : JSON.stringify(v)
+        compact[k] = s.length > 180 ? s.slice(0, 180) + '…' : s
+      }
+      return JSON.stringify(compact, null, 2)
+    })()
+    const catColor = {
+      bash: 'border-amber-500/40 bg-amber-900/15',
+      git: 'border-sky-500/40 bg-sky-900/15',
+      deploy: 'border-red-500/40 bg-red-900/15',
+      mcp: 'border-violet-500/40 bg-violet-900/15',
+      write: 'border-emerald-500/40 bg-emerald-900/15',
+      net: 'border-cyan-500/40 bg-cyan-900/15',
+    }[category] || 'border-cream/15 bg-graphite-800/80'
+
+    return (
+      <div className={`my-2 rounded-xl border p-3 text-[13px] md:text-[14px] ${catColor}`}>
+        <div className="mb-1 flex items-center gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-cream-faint">
+            🔐 запрошено разрешение
+          </span>
+          <span className="rounded-full border border-white/15 bg-graphite-900/60 px-1.5 py-0.5 font-mono text-[10px] text-cream-soft">
+            {category}
+          </span>
+        </div>
+        <div className="mb-2 font-medium text-cream">
+          Вызвать <code className="rounded bg-graphite-900/70 px-1 py-0.5 font-mono text-[12px] text-cream">{tool}</code>?
+        </div>
+        {argPreview && (
+          <pre className="mb-2 max-h-48 overflow-auto rounded-lg border border-white/10 bg-graphite-900 px-2 py-1.5 font-mono text-[11px] leading-snug text-cream-soft">
+{argPreview}
+          </pre>
+        )}
+        {!answered ? (
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => quickSubmit('deny')}
+              disabled={sending}
+              className="rounded-lg border border-white/15 px-3 py-1.5 text-[12px] font-medium text-cream-soft transition hover:bg-graphite-700 hover:text-cream disabled:opacity-40"
+            >Отклонить</button>
+            <button
+              type="button"
+              onClick={() => quickSubmit('approve')}
+              disabled={sending}
+              className="rounded-lg bg-emerald-500 px-3 py-1.5 text-[12px] font-medium text-graphite-900 transition hover:bg-emerald-400 disabled:opacity-40"
+            >{sending ? '…' : '✓ Разрешить'}</button>
+          </div>
+        ) : (
+          <div className={`text-[11px] ${selected[0] === 'approve' ? 'text-emerald-300' : 'text-amber-300'}`}>
+            {selected[0] === 'approve' ? '✓ Разрешено' : '✕ Отклонено'}
+          </div>
+        )}
+      </div>
+    )
   }
 
   return (

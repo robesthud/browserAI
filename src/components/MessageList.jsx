@@ -267,6 +267,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                         startedAt={tc.startedAt}
                         finishedAt={tc.finishedAt}
                         stream={tc.stream}
+                        diagnostic={tc.diagnostic}
                       />,
                     )
                   }
@@ -295,6 +296,10 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                     allowCustom={q.allowCustom}
                     answered={q.answered}
                     answer={q.answer}
+                    kind={q.kind || 'question'}
+                    tool={q.tool || ''}
+                    category={q.category || ''}
+                    args={q.args || null}
                     onSubmit={(payload) => onAnswerAskUser?.(q.id, payload)}
                   />
                 ))}

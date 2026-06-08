@@ -105,6 +105,101 @@ function collectProjectsFromTree(tree) {
   return projects
 }
 
+// ── Auto-diagnostics after a write ─────────────────────────────────────────
+//
+// Cline-style "what changed → what broke" feedback loop. After a successful
+// edit_file / write_file we run a cheap, in-process syntax check on the
+// file (based on its extension) and tag the result onto the tool's payload
+// as `diagnostics`. The agent SEES the syntax error in the very next turn
+// without having to remember to call verify_code, which historically it
+// often forgot. Best-effort: any internal error is swallowed and reported
+// as `diagnostics: { available: false }`.
+async function quickSyntaxCheck(relPath, content) {
+  try {
+    const ext = String(relPath || '').toLowerCase().split('.').pop()
+    // JSON
+    if (ext === 'json' || ext === 'webmanifest' || relPath.endsWith('package-lock.json')) {
+      try {
+        JSON.parse(String(content))
+        return { available: true, ok: true, kind: 'json', lang: 'json' }
+      } catch (e) {
+        return { available: true, ok: false, kind: 'json', lang: 'json', error: e.message }
+      }
+    }
+    // JavaScript / TypeScript / JSX
+    if (['js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx'].includes(ext)) {
+      // Use Node's --check via a subprocess? Risky and slow.
+      // Instead: a tiny, fast parser pass with Function() for plain .js,
+      // and a brace/paren balance check for everything else.
+      if (ext === 'js' || ext === 'mjs' || ext === 'cjs') {
+        try {
+          // eslint-disable-next-line no-new-func
+          new Function(String(content))
+          return { available: true, ok: true, kind: 'syntax', lang: ext }
+        } catch (e) {
+          // Function() can't parse ESM `import` statements — fall through
+          // to brace balance check in that case.
+          if (!/import\s|export\s/.test(content)) {
+            return { available: true, ok: false, kind: 'syntax', lang: ext, error: e.message }
+          }
+        }
+      }
+      // Brace / paren / bracket balance — catches the most common copy-paste
+      // mistakes without needing a real parser.
+      const balance = checkBalance(String(content))
+      if (!balance.ok) {
+        return { available: true, ok: false, kind: 'balance', lang: ext, error: balance.error }
+      }
+      return { available: true, ok: true, kind: 'balance', lang: ext }
+    }
+    // YAML — extremely lightweight indentation check
+    if (ext === 'yml' || ext === 'yaml') {
+      // Not implementing a YAML parser here; just report skip.
+      return { available: false, kind: 'yaml-skip' }
+    }
+    return { available: false, kind: 'unknown-ext' }
+  } catch (e) {
+    return { available: false, error: e?.message || String(e) }
+  }
+}
+
+function checkBalance(src) {
+  const pairs = { '(': ')', '[': ']', '{': '}' }
+  const closes = new Set([')', ']', '}'])
+  const stack = []
+  let line = 1, col = 1
+  let inStr = null     // '"', "'", '`'
+  let inLineComment = false
+  let inBlockComment = false
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i]
+    if (ch === '\n') { line++; col = 1; if (inLineComment) inLineComment = false; continue }
+    col++
+    if (inLineComment) continue
+    if (inBlockComment) { if (ch === '*' && src[i + 1] === '/') { inBlockComment = false; i++ }; continue }
+    if (inStr) {
+      if (ch === '\\') { i++; continue }
+      if (ch === inStr) inStr = null
+      continue
+    }
+    if (ch === '/' && src[i + 1] === '/') { inLineComment = true; i++; continue }
+    if (ch === '/' && src[i + 1] === '*') { inBlockComment = true; i++; continue }
+    if (ch === '"' || ch === "'" || ch === '`') { inStr = ch; continue }
+    if (pairs[ch]) { stack.push({ ch, line, col }); continue }
+    if (closes.has(ch)) {
+      const top = stack.pop()
+      if (!top || pairs[top.ch] !== ch) {
+        return { ok: false, error: `Unbalanced "${ch}" at line ${line}, col ${col}` }
+      }
+    }
+  }
+  if (stack.length) {
+    const top = stack[stack.length - 1]
+    return { ok: false, error: `Unclosed "${top.ch}" opened at line ${top.line}, col ${top.col}` }
+  }
+  return { ok: true }
+}
+
 // ── Tool registry ───────────────────────────────────────────────────────────
 export const TOOLS = {
 
@@ -209,7 +304,8 @@ export const TOOLS = {
           // Already exists — overwrite
           await writeFileContent(path, String(content))
         }
-        return ok({ path, bytes: Buffer.byteLength(String(content), 'utf8') })
+        const diagnostics = await quickSyntaxCheck(path, String(content))
+        return ok({ path, bytes: Buffer.byteLength(String(content), 'utf8'), diagnostics })
       } catch (e) { return err(e.message) }
     },
   },
@@ -259,6 +355,7 @@ export const TOOLS = {
           applied.push({ idx: i + 1, deltaBytes: n.length - o.length })
         }
         await writeFileContent(path, current)
+        const diagnostics = await quickSyntaxCheck(path, current)
         return ok({
           path,
           replaced: applied.length,
@@ -269,6 +366,7 @@ export const TOOLS = {
           edits: applied,
           oldLines: original.split('\n').length,
           newLines: current.split('\n').length,
+          diagnostics,
         })
       } catch (e) { return err(e.message) }
     },

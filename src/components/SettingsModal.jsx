@@ -10,6 +10,7 @@ import {
 } from '../icons.jsx'
 import { emptyKey, getActiveKey, getSelectedModel } from '../lib/settings.js'
 import { exportKeysToFile, importKeysFromFile } from '../lib/keyfile.js'
+import AgentSettingsSection from './AgentSettingsSection.jsx'
 
 const inputCls =
   'w-full rounded-lg border border-white/10 bg-graphite-900 px-3 py-2 text-[13px] text-cream placeholder:text-cream-faint focus:border-cream/30 focus:outline-none'
@@ -978,6 +979,9 @@ export default function SettingsModal({
           </section>
           </>
           )}
+
+          {/* ---- Agent Mode: подтверждения + MCP ---- */}
+          {online && <AgentSettingsSection />}
 
           {/* ---- Шифрование (только при доступном сервере) ---- */}
           {online && (

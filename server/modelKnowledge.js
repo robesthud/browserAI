@@ -79,6 +79,23 @@ export function suggestCheapSibling(modelId = '') {
 }
 
 /**
+ * The inverse of suggestCheapSibling: if the agent is running on a
+ * cheap/fast model, suggest a stronger sibling in the same family for
+ * critical-thinking tasks (reflection, architectural decisions).
+ * Returns null when no stronger sibling is known.
+ */
+export function suggestStrongSibling(modelId = '') {
+  const id = String(modelId || '').toLowerCase()
+  if (/gpt-4o-mini|o4-mini|o1-mini/.test(id))   return 'gpt-4o'
+  if (/claude.*haiku/.test(id))                 return id.replace(/haiku/, 'sonnet-4')
+  if (/gemini.*flash/.test(id))                 return id.replace(/flash/, 'pro')
+  if (/deepseek-(chat|coder)/.test(id))         return 'deepseek-reasoner'
+  if (/qwen.*(turbo|small|7b)/.test(id))        return id.replace(/(turbo|small|7b)/, 'plus')
+  if (/llama.*(8b|small)/.test(id))             return id.replace(/(8b|small)/, '70b')
+  return null
+}
+
+/**
  * Suggested per-tool-output clip size for the current model. The agent loop
  * uses this in clipForLLM() instead of a fixed cap so a 64 k DeepSeek
  * doesn't drown in one giant read_file but a 200 k Claude can comfortably

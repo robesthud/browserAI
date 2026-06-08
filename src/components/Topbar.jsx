@@ -35,6 +35,7 @@ export default function Topbar({
   onSelectModel,
   onToggleAuto,
   onOpenSearch,
+  onOpenCheckpoints,
   onExportChat,
   totalTokens = 0,
   costToday = 0,
@@ -122,6 +123,15 @@ export default function Topbar({
             className="hidden h-9 w-9 place-items-center rounded-lg text-cream-dim transition-colors hover:bg-graphite-800 hover:text-cream md:grid"
             title="Поиск по чатам (Ctrl+K)"
           >🔎</button>
+        )}
+
+        {onOpenCheckpoints && (
+          <button
+            type="button"
+            onClick={onOpenCheckpoints}
+            className="hidden h-9 w-9 place-items-center rounded-lg text-cream-dim transition-colors hover:bg-graphite-800 hover:text-cream md:grid"
+            title="Контрольные точки — откатить ход агента"
+          >💾</button>
         )}
 
         {onExportChat && (
