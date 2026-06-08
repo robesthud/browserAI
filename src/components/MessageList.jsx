@@ -3,6 +3,7 @@ import { IconBot, IconUser, IconFile, IconCopy, IconEdit, IconRefresh } from '..
 import { formatSize } from '../lib/files.js'
 import Markdown from '../lib/markdown.jsx'
 import AgentToolBlock from './AgentToolBlock.jsx'
+import AgentThought from './AgentThought.jsx'
 import AgentAskUser from './AgentAskUser.jsx'
 import JobCard from './JobCard.jsx'
 import usePullToRefresh from '../lib/usePullToRefresh.js'
@@ -187,9 +188,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                     const ths = thoughtsByStep.get(tc.step) || []
                     for (const t of ths) {
                       items.push(
-                        <div key={`th-${tc.step}-${t.at}`} className="text-[13px] text-cream-soft">
-                          <Markdown text={t.text} />
-                        </div>,
+                        <AgentThought key={`th-${tc.step}-${t.at}`} text={t.text} />,
                       )
                     }
                     thoughtsByStep.delete(tc.step)
@@ -212,9 +211,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                   for (const [step, ths] of thoughtsByStep) {
                     for (const t of ths) {
                       items.push(
-                        <div key={`th-late-${step}-${t.at}`} className="text-[13px] text-cream-soft">
-                          <Markdown text={t.text} />
-                        </div>,
+                        <AgentThought key={`th-late-${step}-${t.at}`} text={t.text} />,
                       )
                     }
                   }
@@ -269,33 +266,76 @@ export default function MessageList({ messages, aiWorking, onEdit, onRegenerate,
   const bottomRef = useRef(null)
   const scrollRef = useRef(null)
   const prevLenRef = useRef(messages.length)
+  // True if the user has scrolled up (>200px from bottom). While true we
+  // STOP auto-scrolling on every streamed token, so the user can quietly
+  // read older messages while the model is still writing.
+  // Cleared as soon as the user scrolls back down to within 60px of the
+  // bottom (or sends a new message).
+  const userScrolledUpRef = useRef(false)
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false)
   const { pullDistance, refreshing, threshold } = usePullToRefresh(scrollRef, onRefresh)
 
-  // Скроллим вниз только когда появляется новое сообщение,
-  // но НЕ при переключении чата из сайдбара (там длина может не меняться)
+  // Track manual scroll position so we can stop fighting the user.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return undefined
+    const onScroll = () => {
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+      // 60px hysteresis: if you scroll back almost to the bottom, we
+      // consider you "caught up" and resume auto-scroll on the next chunk.
+      if (distance < 60) {
+        userScrolledUpRef.current = false
+        setShowJumpToLatest(false)
+      } else if (distance > 200) {
+        userScrolledUpRef.current = true
+        if (aiWorking) setShowJumpToLatest(true)
+      }
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [aiWorking])
+
+  // When AI is no longer working, hide the "jump to latest" button.
+  useEffect(() => {
+    if (!aiWorking) setShowJumpToLatest(false)
+  }, [aiWorking])
+
+  // Scroll to bottom only when a NEW message appears (not on chunk updates).
+  // User just hit "send" → assume they want to see the assistant reply.
   useEffect(() => {
     const prevLen = prevLenRef.current
     prevLenRef.current = messages.length
     if (messages.length > prevLen) {
+      userScrolledUpRef.current = false   // reset on new turn
+      setShowJumpToLatest(false)
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
-  }, [messages])
+  }, [messages.length])
 
-  // Auto-scroll when the last assistant message grows new tool calls or
-  // thoughts (the agent loop streams them in). We don't want to fight
-  // the user — only scroll if they're already close to the bottom.
+  // Auto-scroll on streamed content/tool growth — but ONLY if the user
+  // hasn't deliberately scrolled up. Uses behavior:'auto' (instant) so
+  // we don't stack dozens of in-flight smooth animations that would
+  // otherwise lock the scroll position.
   const lastMsg = messages[messages.length - 1]
   const lastToolCount = (lastMsg?.toolCalls?.length || 0) + (lastMsg?.thoughts?.length || 0)
   useEffect(() => {
+    if (userScrolledUpRef.current) return
     const el = scrollRef.current
     if (!el) return
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (distanceFromBottom < 200) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }
+    // Only follow the stream if we were ALREADY near the bottom; a sudden
+    // jump down while the user is mid-read is the bug we fixed.
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (distance > 200) return
+    bottomRef.current?.scrollIntoView({ behavior: 'auto' })
   }, [lastToolCount, lastMsg?.content])
 
   const armed = pullDistance >= threshold
+
+  const jumpToLatest = () => {
+    userScrolledUpRef.current = false
+    setShowJumpToLatest(false)
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }
 
   return (
     <div ref={scrollRef} className="thin-scroll relative flex-1 overflow-y-auto">
@@ -326,6 +366,19 @@ export default function MessageList({ messages, aiWorking, onEdit, onRegenerate,
         ))}
       </div>
       <div ref={bottomRef} className="h-4" />
+
+      {/* Floating "jump to latest" pill — appears when the user scrolled
+          up during streaming. Clicking re-enables auto-follow. */}
+      {showJumpToLatest && (
+        <button
+          type="button"
+          onClick={jumpToLatest}
+          className="sticky bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1 rounded-full border border-white/15 bg-graphite-800/95 px-3 py-1.5 text-[12px] text-cream shadow-lg backdrop-blur hover:bg-graphite-700"
+          style={{ marginLeft: 'auto', marginRight: 'auto', width: 'fit-content' }}
+        >
+          ↓ К последнему ответу
+        </button>
+      )}
     </div>
   )
 }
