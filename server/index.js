@@ -2401,8 +2401,27 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
   } catch (e) {
     console.warn('[agent] workspace activity digest failed:', e?.message || e)
   }
+  // Cross-session memory: render the user's persisted facts (Tailwind v3 not v4,
+  // 'main repo is /opt/browserai', …) into the system prompt every turn.
+  let userFactsNote = ''
+  try {
+    const { renderFactsForPrompt } = await import('./userMemory.js')
+    userFactsNote = renderFactsForPrompt(req.user?.id || '') || ''
+  } catch (e) {
+    console.warn('[agent] facts render failed:', e?.message || e)
+  }
+
+  // Model self-knowledge: context window + tier + vision flag.
+  let modelHintNote = ''
+  try {
+    const { renderModelHintForPrompt } = await import('./modelKnowledge.js')
+    modelHintNote = renderModelHintForPrompt(model)
+  } catch { /* optional */ }
+
   const extraSystemFinal = [
     String(extraSystem || '').replace(/\[browserai-first-turn\]/g, '').trim(),
+    modelHintNote,
+    userFactsNote,
     projectRulesNote,
     realActivityNote,
   ].filter(Boolean).join('\n\n')
@@ -2421,6 +2440,7 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
       history: safeHistory,
       extraSystem: extraSystemFinal,
       workspaceScope: chatId,
+      userId: req.user?.id || '',
       res,
     })
   } catch (e) {

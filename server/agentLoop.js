@@ -163,16 +163,20 @@ function buildNativeToolsSpec() {
 // past every provider's context window in 2-3 turns. We keep the head
 // + tail so the model sees both the start of the output and the most
 // recent (often most useful) lines, with a clear gap marker.
-const TOOL_OUTPUT_HEAD = Number(process.env.TOOL_OUTPUT_HEAD || 6000)
-const TOOL_OUTPUT_TAIL = Number(process.env.TOOL_OUTPUT_TAIL || 2000)
-function clipForLLM(s) {
+//
+// IMPORTANT: head/tail are model-aware via tokenBudgetFor() in
+// server/modelKnowledge.js. A 64k DeepSeek call gets tighter clipping
+// than a 200k Claude — env vars still override.
+import { tokenBudgetFor } from './modelKnowledge.js'
+function clipForLLM(s, modelId = '') {
+  const budget = tokenBudgetFor(modelId)
+  const head = Number(process.env.TOOL_OUTPUT_HEAD || budget.head)
+  const tail = Number(process.env.TOOL_OUTPUT_TAIL || budget.tail)
   const str = String(s || '')
-  const max = TOOL_OUTPUT_HEAD + TOOL_OUTPUT_TAIL + 200
+  const max = head + tail + 200
   if (str.length <= max) return str
-  const head = str.slice(0, TOOL_OUTPUT_HEAD)
-  const tail = str.slice(-TOOL_OUTPUT_TAIL)
-  const hidden = str.length - TOOL_OUTPUT_HEAD - TOOL_OUTPUT_TAIL
-  return `${head}\n\n… [${hidden} characters omitted to keep context small — run with a more specific filter to see the middle] …\n\n${tail}`
+  const hidden = str.length - head - tail
+  return `${str.slice(0, head)}\n\n… [${hidden} characters omitted to keep context small — run with a more specific filter to see the middle] …\n\n${str.slice(-tail)}`
 }
 
 // ── Programmatic safety nets (IQ+20 patches) ────────────────────────────────
@@ -386,6 +390,7 @@ async function runAgentInner({
   history = [],
   maxSteps = DEFAULT_MAX_STEPS,
   extraSystem = '',
+  userId = '',
   res,
 }) {
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
@@ -687,6 +692,7 @@ async function runAgentInner({
             signal: abortCtl.signal,
             onStdout: (c) => onProgress(c, 'stdout'),
             onStderr: (c) => onProgress(c, 'stderr'),
+            userId,
           })
         }
         sse(res, 'tool_result', {
@@ -718,7 +724,7 @@ async function runAgentInner({
         const obsRaw = r.ok
           ? (typeof r.result === 'string' ? r.result : JSON.stringify(r.result, null, 2))
           : 'ERROR: ' + r.error
-        const obsContent = clipForLLM(obsRaw)
+        const obsContent = clipForLLM(obsRaw, provider?.model)
 
         if (call.nativeId) {
           convo.push({

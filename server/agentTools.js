@@ -26,6 +26,7 @@ import { searchWeb, fetchWebPage } from './web.js'
 import { runSandboxCommand } from './agentSandbox.js'
 import { listOpsServices, runOpsAction } from './ops.js'
 import { browserOpen, browserScreenshot, browserClick, browserType, browserClose } from './browserTools.js'
+import { upsertFact, forgetFact, listFacts } from './userMemory.js'
 
 // ── Utility ─────────────────────────────────────────────────────────────────
 function truncate(str, max = 8000) {
@@ -371,6 +372,159 @@ export const TOOLS = {
       const clean = list.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0 && n < 100)
       if (!clean.length) return err('no valid indices')
       return ok({ checked: clean, note: String(note || '').slice(0, 200) })
+    },
+  },
+
+  // ── Cross-session memory ───────────────────────────────────────────────
+  // Pure key/value facts persisted in the SQLite next to user accounts.
+  // Rendered into every system prompt for this user (see userMemory.js).
+  // Use to remember stable preferences ('Tailwind v3, not v4'), recurring
+  // pointers ('main repo: /opt/browserai'), conventions ('commits in EN').
+  remember_fact: {
+    description:
+      'Remember a SHORT cross-session fact about the user (preference, convention, recurring context). Key < 120 chars, value < 1 KB. Idempotent — re-calling with the same key updates the value. The fact is automatically rendered into every future agent system prompt so you (and other agents) will recall it.',
+    params: {
+      key:   { type: 'string', required: true, description: 'Stable identifier — e.g. "tailwind_version" or "main_repo_path".' },
+      value: { type: 'string', required: true, description: 'Free-form text the fact stores.' },
+    },
+    handler: async ({ key, value, _userId } = {}) => {
+      if (!_userId) return err('user-scoped tool: no user id in context')
+      try { return ok(upsertFact(_userId, key, value)) }
+      catch (e) { return err(e.message) }
+    },
+  },
+  forget_fact: {
+    description: 'Delete a previously-remembered fact by key.',
+    params: { key: { type: 'string', required: true, description: 'The key to delete.' } },
+    handler: async ({ key, _userId } = {}) => {
+      if (!_userId) return err('user-scoped tool: no user id in context')
+      try { return ok(forgetFact(_userId, key)) }
+      catch (e) { return err(e.message) }
+    },
+  },
+  recall_facts: {
+    description: 'List every remembered fact for the current user (key, value, updated_at). Mostly diagnostic — facts are already injected into the system prompt automatically.',
+    params: {},
+    handler: async ({ _userId } = {}) => {
+      if (!_userId) return err('user-scoped tool: no user id in context')
+      try { return ok({ facts: listFacts(_userId) }) }
+      catch (e) { return err(e.message) }
+    },
+  },
+
+  // ── Multi-file refactor ────────────────────────────────────────────────
+  // Single-call rename / find-replace across many files. Saves N round-
+  // trips per file when the user says "rename X to Y everywhere".
+  replace_across_files: {
+    description:
+      'Find a substring (or regex) in many workspace files and replace it. Returns a per-file count of replacements. Skips binary files. Atomic per-file (each file is read → replaced → written as one op). Use this for "rename X to Y in the whole repo" requests instead of N×edit_file calls.',
+    params: {
+      pattern:     { type: 'string', required: true, description: 'Substring OR JavaScript regex literal: /foo/g.' },
+      replacement: { type: 'string', required: true, description: 'Replacement text. $1, $2 etc work for regex captures.' },
+      paths:       { type: 'string', optional: true, description: 'JSON array of relative paths/globs to scan. Default: every text file in the workspace.' },
+      max_files:   { type: 'number', optional: true, description: 'Safety cap on files to touch. Default 50.' },
+    },
+    handler: async ({ pattern, replacement = '', paths, max_files = 50 } = {}) => {
+      if (!pattern) return err('pattern is required')
+      // Parse pattern: support /…/flags or plain substring.
+      let re
+      const m = String(pattern).match(/^\/(.*)\/([gimsuy]*)$/)
+      if (m) {
+        try { re = new RegExp(m[1], m[2] || 'g') } catch (e) { return err(`bad regex: ${e.message}`) }
+      } else {
+        const escaped = String(pattern).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        re = new RegExp(escaped, 'g')
+      }
+      let list = []
+      if (Array.isArray(paths)) list = paths
+      else if (typeof paths === 'string' && paths.trim()) {
+        try { list = JSON.parse(paths) } catch { return err('paths must be JSON array') }
+      }
+      // If no paths given: walk the workspace tree and take every text file.
+      if (!list.length) {
+        const tree = await getWorkspaceTree(false)
+        const flat = []
+        const walk = (node) => {
+          if (!node) return
+          if (node.type === 'file' && /\.(js|jsx|ts|tsx|json|md|html|css|scss|py|sh|yml|yaml|sql|txt|toml|ini|env|xml|conf|rs|go|java|kt|rb|php|c|h|cpp)$/i.test(node.name)) flat.push(node.path)
+          for (const c of node.children || []) walk(c)
+        }
+        walk(tree)
+        list = flat.slice(0, Math.min(500, Number(max_files) * 5 || 250))
+      }
+      const cap = Math.min(500, Math.max(1, Number(max_files) || 50))
+      const touched = []
+      let stoppedAt = 0
+      for (const p of list) {
+        if (touched.length >= cap) { stoppedAt = touched.length; break }
+        try {
+          const f = await readWorkspaceFile(p)
+          const src = f?.text ?? f?.content
+          if (typeof src !== 'string') continue
+          const next = src.replace(re, replacement)
+          if (next === src) continue
+          const matches = (src.match(re) || []).length
+          await writeFileContent(p, next)
+          touched.push({ path: p, replacements: matches, deltaBytes: next.length - src.length })
+        } catch (e) {
+          // Skip files we couldn't read/write but report once.
+          touched.push({ path: p, error: e.message })
+        }
+      }
+      return ok({
+        scanned: list.length,
+        touched: touched.filter((t) => !t.error).length,
+        errors: touched.filter((t) => t.error),
+        files: touched,
+        stoppedAt,
+      })
+    },
+  },
+
+  // ── Test loop ──────────────────────────────────────────────────────────
+  // Convenience wrapper around verify_code: auto-detect the project's test
+  // runner (npm test / pytest / cargo test / go test) and run it. Returns
+  // pass/fail. Used as the "after every edit" guard in TDD-style flows.
+  run_tests: {
+    description: 'Auto-detect and run the project test suite (npm test / pytest / go test / cargo test). Returns pass/fail + per-suite summary. Use after a batch of edits and BEFORE git_commit / git_push.',
+    params: {
+      path:        { type: 'string', optional: true, description: 'Subdirectory to run from. Default: workspace root.' },
+      timeout_sec: { type: 'number', optional: true, description: 'Max seconds, default 180.' },
+    },
+    handler: async ({ path = '', timeout_sec = 180 } = {}) => {
+      const cwd = safeWorkspaceCwd(path)
+      // Probe what's available — single bash call, output parsed to pick
+      // the right runner.
+      const probe = await runSandboxCommand({
+        command:
+          'set -e\n' +
+          '[ -f package.json ] && echo NODE && jq -r ".scripts.test // empty" package.json 2>/dev/null || cat package.json 2>/dev/null | grep -o "\\"test\\": *\\"[^\\"]*\\"" | head -1\n' +
+          '[ -f pyproject.toml ] || [ -f setup.py ] && echo PY\n' +
+          '[ -f Cargo.toml ] && echo RUST\n' +
+          '[ -f go.mod ] && echo GO\n' +
+          '[ -f Gemfile ] && echo RUBY\n',
+        cwd,
+        timeoutMs: 8000,
+      })
+      const probeOut = probe.stdout || ''
+      let cmd = ''
+      let runner = ''
+      if (probeOut.includes('NODE')) { runner = 'npm test'; cmd = 'npm test --silent --if-present' }
+      else if (probeOut.includes('PY'))   { runner = 'pytest';      cmd = 'pytest -q || python -m pytest -q' }
+      else if (probeOut.includes('RUST')) { runner = 'cargo test';  cmd = 'cargo test --quiet' }
+      else if (probeOut.includes('GO'))   { runner = 'go test';     cmd = 'go test ./...' }
+      else if (probeOut.includes('RUBY')) { runner = 'bundle test'; cmd = 'bundle exec rake test || bundle exec rspec' }
+      else return err('No supported test runner detected (package.json / pyproject.toml / Cargo.toml / go.mod / Gemfile).')
+      try {
+        const r = await runSandboxCommand({ command: cmd, cwd, timeoutMs: Math.min(600_000, Math.max(10_000, Number(timeout_sec) * 1000 || 180_000)) })
+        return ok({
+          runner,
+          passed: r.exitCode === 0,
+          exitCode: r.exitCode,
+          stdout: truncate(r.stdout, 5000),
+          stderr: truncate(r.stderr, 3000),
+        })
+      } catch (e) { return err(e.message) }
     },
   },
 
@@ -823,17 +977,18 @@ export function renderToolsForPrompt() {
 /**
  * Invoke a tool by name. Returns the {ok, result|error} shape.
  */
-export async function invokeTool(name, args = {}, { signal, onStdout, onStderr } = {}) {
+export async function invokeTool(name, args = {}, { signal, onStdout, onStderr, userId } = {}) {
   const tool = TOOLS[name]
   if (!tool) return err(`Unknown tool: ${name}`)
   if (typeof tool.handler !== 'function') return err(`Tool ${name} has no handler`)
-  // Cooperative cancellation + live-progress streaming. Tools that care
-  // pick up _signal / _onStdout / _onStderr from their args; the rest
-  // just ignore the extra fields.
+  // Cooperative cancellation + live-progress streaming + identity. Tools
+  // that care pick up _signal / _onStdout / _onStderr / _userId from
+  // their args; the rest just ignore the extra fields.
   const enrichedArgs = { ...(args || {}) }
   if (signal)   enrichedArgs._signal   = signal
   if (onStdout) enrichedArgs._onStdout = onStdout
   if (onStderr) enrichedArgs._onStderr = onStderr
+  if (userId)   enrichedArgs._userId   = userId
   try {
     if (signal?.aborted) return err('cancelled')
     return await tool.handler(enrichedArgs)
