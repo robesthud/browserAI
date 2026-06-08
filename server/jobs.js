@@ -586,6 +586,20 @@ async function runGeminiJob(job) {
   })
   // Free the headless Gemini tab now that the video is safely in workspace.
   if (isVideo) await deleteVideoSession(jobSessionId)
+
+  // Web Push: ping the owner that their long-running media job is done.
+  // No-op when push isn't configured (web-push missing, no subscriptions).
+  try {
+    if (job.userId) {
+      const { notifyUser } = await import('./push.js')
+      await notifyUser(job.userId, {
+        title: 'BrowserAI',
+        body: isVideo ? '🎬 Видео готово!' : '🖼 Изображение готово!',
+        data: { url: '/' },
+        tag: `job-${job.id}`,
+      })
+    }
+  } catch { /* push optional */ }
 }
 
 // Re-run a video job that previously timed out or produced no usable file.

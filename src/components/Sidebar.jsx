@@ -7,6 +7,7 @@ import {
 } from '../icons.jsx'
 import SidebarUserPrefs from './SidebarUserPrefs.jsx'
 import JobsTray from './JobsTray.jsx'
+import PushToggle from './PushToggle.jsx'
 
 export default function Sidebar({
   collapsed,
@@ -160,6 +161,10 @@ export default function Sidebar({
             shown here so they stay visible even when the user switches
             to a different chat. */}
         <JobsTray />
+
+        {/* Web Push subscription toggle — invisible on browsers without
+            ServiceWorker / PushManager support. */}
+        <PushToggle />
 
         {/* UI preferences: theme / font-size / haptics */}
         <SidebarUserPrefs />

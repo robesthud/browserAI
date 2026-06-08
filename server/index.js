@@ -2363,6 +2363,39 @@ app.get('/api/health/metrics', async (_req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
+// ── Web Push ───────────────────────────────────────────────────────────────
+app.get('/api/push/vapid', async (_req, res) => {
+  try {
+    const { getPublicVapidKey } = await import('./push.js')
+    res.json({ publicKey: await getPublicVapidKey() })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/push/subscribe', requireAuth, async (req, res) => {
+  try {
+    const { saveSubscription } = await import('./push.js')
+    await saveSubscription(req.user?.id, req.body || {})
+    res.json({ ok: true })
+  } catch (e) { res.status(400).json({ error: e.message }) }
+})
+
+app.post('/api/push/unsubscribe', requireAuth, async (req, res) => {
+  try {
+    const { deleteSubscription } = await import('./push.js')
+    res.json({ ok: true, ...deleteSubscription(String(req.body?.endpoint || '')) })
+  } catch (e) { res.status(400).json({ error: e.message }) }
+})
+
+app.post('/api/push/test', requireAuth, async (req, res) => {
+  try {
+    const { notifyUser } = await import('./push.js')
+    const r = await notifyUser(req.user?.id, {
+      title: 'BrowserAI', body: String(req.body?.body || 'Test notification ✅'),
+    })
+    res.json(r)
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
 // ── Agent mode ─────────────────────────────────────────────────────────────
 // SSE stream of an autonomous agent that can call workspace, web and
 // sandboxed bash tools. The agent loop is provider-agnostic — it works
