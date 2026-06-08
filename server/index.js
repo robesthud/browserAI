@@ -134,7 +134,41 @@ let lastActivity = Date.now()
 
 const app = express()
 app.set('trust proxy', 1)
+
+// HSTS is dangerous when the app is served over plain HTTP on a bare IP
+// (no TLS on :443). Browsers cache `Strict-Transport-Security` for 180 days
+// and silently rewrite every later `http://<ip>/...` to `https://<ip>/...`,
+// which then fails with `NetworkError when attempting to fetch resource`
+// (Firefox) or `ERR_CONNECTION_REFUSED` (Chrome) — even for /api/chat,
+// /api/cloud, image uploads, etc. We saw exactly this symptom in prod when
+// users hit http://72.56.116.15.
+//
+// Rule: only enable HSTS when APP_URL is https://… AND the host is a DNS
+// name (not a raw IP). Otherwise turn it off so browsers never enter the
+// upgrade-to-HTTPS trap.
+function shouldEnableHsts() {
+  const appUrl = String(process.env.APP_URL || '').trim()
+  if (!appUrl.toLowerCase().startsWith('https://')) return false
+  try {
+    const host = new URL(appUrl).hostname
+    // IPv4 literal or IPv6 literal in brackets → no HSTS.
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return false
+    if (host.includes(':')) return false
+    return true
+  } catch {
+    return false
+  }
+}
+const HSTS_ENABLED = shouldEnableHsts()
+if (!HSTS_ENABLED) {
+  console.log('[security] HSTS disabled (APP_URL is plain http:// or a raw IP). Set APP_URL=https://<dns-name> to re-enable.')
+}
+
 app.use(helmet({
+  // See shouldEnableHsts() above — false on http:// or bare IP, true on
+  // https:// + DNS name. When false, helmet does NOT set the
+  // Strict-Transport-Security header at all.
+  hsts: HSTS_ENABLED,
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
@@ -1962,6 +1996,18 @@ app.post('/api/chat', requireAuth, async (req, res) => {
 })
 
 app.get('/api/health', (req, res) => res.json({ ok: true }))
+
+// HSTS-eviction endpoint. If a previous deploy accidentally sent
+// `Strict-Transport-Security: max-age=...` over plain HTTP (which is what
+// we used to do via helmet's default config), browsers now silently
+// upgrade every http://<host>/... request to https:// and fail with a
+// network error. Sending `max-age=0` once tells the browser to forget
+// the pin. Safe to call anytime — has no effect when there's no pin and
+// no effect once HSTS is correctly served over real HTTPS.
+app.get('/api/hsts-reset', (_req, res) => {
+  res.setHeader('Strict-Transport-Security', 'max-age=0')
+  res.json({ ok: true, message: 'HSTS pin cleared (max-age=0).' })
+})
 
 // ── Временный диагностический эндпоинт ──────────────────────────────────────
 // Берёт активный ключ, шлёт тестовый запрос к провайдеру и показывает что вернулось
