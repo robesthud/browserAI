@@ -88,7 +88,10 @@ import {
 } from './deepseekTokenRefresher.js'
 import { startDeepSeekBot } from './deepseekBot.js'
 import { runAgent } from './agentLoop.js'
-import { callLLM, callLLMStream, isAnthropicOfficialUrl, isGoogleGenerativeNativeUrl } from './llmClient.js'
+import {
+  callLLM, callLLMStream, isAnthropicOfficialUrl, isGoogleGenerativeNativeUrl,
+  getProviderCapabilities, normalizeProviderError,
+} from './llmClient.js'
 import { sandboxHealth } from './agentSandbox.js'
 import { browserHealth } from './browserTools.js'
 import { answerQuestion } from './askUserRegistry.js'
@@ -2045,7 +2048,8 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         } : undefined,
       })
     } catch (e) {
-      if (!res.headersSent) return res.status(502).json({ error: e.message || 'Official provider adapter failed' })
+      const providerError = normalizeProviderError(e, { baseUrl, model, phase: 'chat' })
+      if (!res.headersSent) return res.status(502).json({ error: providerError.message, providerError })
       res.end()
       return
     }
@@ -2766,6 +2770,81 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
     if (!res.headersSent) {
       res.status(500).json({ error: e.message })
     }
+  }
+})
+
+
+// Provider adapter metadata. Lets UI/self-tests understand which protocol
+// the selected model will use before starting an agent run.
+app.post('/api/agent/provider/capabilities', requireAuth, (req, res) => {
+  const { baseUrl = '', model = '' } = req.body || {}
+  if (!baseUrl) return res.status(400).json({ error: 'baseUrl required' })
+  res.json({ capabilities: getProviderCapabilities(baseUrl, model) })
+})
+
+// Lightweight provider diagnostic: capabilities + optional tiny probe.
+// This does not expose secrets and returns a normalized provider_error on fail.
+app.post('/api/agent/provider/diagnose', requireAuth, async (req, res) => {
+  let {
+    baseUrl = '', apiKey = '', model = '',
+    authType = 'bearer', authHeader = '', extraHeaders = {},
+    runProbe = true,
+  } = req.body || {}
+  if (!baseUrl || !model) return res.status(400).json({ error: 'baseUrl and model required' })
+
+  // Managed DeepSeek injection — same logic as /api/chat and /api/agent/chat.
+  let mergedExtraHeaders = extraHeaders
+  if (isDeepSeekWebUrl(baseUrl) && (!apiKey || apiKey === '__managed__')) {
+    const managedBearer = getDeepSeekBearer()
+    const managedCookies = getDeepSeekCookieHeader()
+    if (!managedBearer) {
+      return res.status(503).json({
+        ok: false,
+        capabilities: getProviderCapabilities(baseUrl, model),
+        providerError: normalizeProviderError(new Error('DeepSeek managed session is not configured'), { baseUrl, model, phase: 'diagnose' }),
+      })
+    }
+    apiKey = managedBearer
+    mergedExtraHeaders = { ...(extraHeaders || {}) }
+    if (managedCookies && !Object.keys(mergedExtraHeaders).some((k) => k.toLowerCase() === 'cookie')) {
+      mergedExtraHeaders.Cookie = managedCookies
+    }
+  }
+
+  const capabilities = getProviderCapabilities(baseUrl, model)
+  if (!runProbe) return res.json({ ok: true, capabilities, probe: null })
+  if (!apiKey) {
+    return res.status(400).json({
+      ok: false,
+      capabilities,
+      providerError: normalizeProviderError(new Error('apiKey is required for probe'), { baseUrl, model, phase: 'diagnose' }),
+    })
+  }
+
+  try {
+    const reply = await callLLM({
+      baseUrl, apiKey, model, authType, authHeader,
+      extraHeaders: mergedExtraHeaders,
+      messages: [
+        { role: 'system', content: 'Reply with exactly: OK' },
+        { role: 'user', content: 'Diagnostic ping.' },
+      ],
+      temperature: 0,
+    })
+    res.json({
+      ok: true,
+      capabilities,
+      probe: {
+        text: String(reply?.text || '').slice(0, 200),
+        usage: reply?.usage || null,
+      },
+    })
+  } catch (e) {
+    res.status(502).json({
+      ok: false,
+      capabilities,
+      providerError: normalizeProviderError(e, { baseUrl, model, phase: 'diagnose' }),
+    })
   }
 })
 

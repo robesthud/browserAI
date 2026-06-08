@@ -34,7 +34,9 @@
  */
 import { TOOLS, renderToolsForPrompt, invokeTool } from './agentTools.js'
 import { withWorkspaceScope } from './workspace.js'
-import { callLLM, callLLMStream, supportsNativeTools, supportsStreaming } from './llmClient.js'
+import {
+  callLLM, callLLMStream, supportsNativeTools, supportsStreaming, normalizeProviderError,
+} from './llmClient.js'
 import { registerQuestion } from './askUserRegistry.js'
 import { clipToolOutput, manageContext, applyAnthropicCacheHints, contextUsageFraction } from './contextManager.js'
 import { buildClineSystemPrompt } from './clinePrompt.js'
@@ -993,13 +995,15 @@ async function runAgentInner({
               temperature:  Number(provider.temperature ?? 0.3),
             })
           } catch (fallbackError) {
-            sse(res, 'error', { message: 'LLM call failed: ' + (fallbackError.message || String(fallbackError)) })
+            const providerError = normalizeProviderError(fallbackError, { baseUrl: provider.baseUrl, model: provider.model, phase: 'agent-fallback-llm-call' })
+            sse(res, 'error', { message: 'LLM call failed: ' + providerError.message, providerError })
             sseDone(res, { steps: step, reason: 'llm-error' }, tokens)
             res.end()
             return
           }
         } else {
-          sse(res, 'error', { message: 'LLM call failed: ' + (e.message || String(e)) })
+          const providerError = normalizeProviderError(e, { baseUrl: provider.baseUrl, model: provider.model, phase: 'agent-llm-call' })
+          sse(res, 'error', { message: 'LLM call failed: ' + providerError.message, providerError })
           sseDone(res, { steps: step, reason: 'llm-error' }, tokens)
           res.end()
           return

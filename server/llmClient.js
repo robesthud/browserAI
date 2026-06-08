@@ -732,3 +732,92 @@ export function supportsNativeTools(baseUrl = '') {
     (u.includes('generativelanguage.googleapis.com') && u.includes('/openai'))
   )
 }
+
+// ── Provider metadata / diagnostics ─────────────────────────────────────────
+export function getProviderKind(baseUrl = '') {
+  if (isDeepSeekWebUrl(baseUrl)) return 'deepseek-managed-web'
+  if (isAnthropicOfficialUrl(baseUrl)) return 'anthropic-official'
+  if (isGoogleGenerativeNativeUrl(baseUrl)) return 'google-gemini-official'
+  let host
+  let pathname
+  try {
+    const u = new URL(baseUrl)
+    host = u.hostname.toLowerCase()
+    pathname = u.pathname.toLowerCase()
+  } catch { return 'unknown' }
+  if (/chatgpt\.com|grok\.com|claude\.ai|perplexity\.ai|tongyi\.aliyun\.com/.test(host)) return 'browser-session'
+  if (pathname.includes('/openai') || pathname.includes('/v1') || pathname.includes('/api/v1')) return 'openai-compatible'
+  return 'openai-compatible'
+}
+
+function modelHasVision(model = '') {
+  return /vision|vl|gpt-4o|gemini|claude|sonnet|opus|haiku|pixtral|llava/i.test(String(model || ''))
+}
+
+function modelHasReasoning(model = '') {
+  return /reason|thinking|deepthink|r1|o1|o3|o4|qwq|grok-3-mini/i.test(String(model || ''))
+}
+
+export function getProviderCapabilities(baseUrl = '', model = '') {
+  const kind = getProviderKind(baseUrl)
+  const openaiCompatible = kind === 'openai-compatible'
+  const officialApi = kind === 'anthropic-official' || kind === 'google-gemini-official'
+  const nativeTools = supportsNativeTools(baseUrl)
+  return {
+    schema: 'browserai.provider_capabilities.v1',
+    kind,
+    baseUrl: String(baseUrl || '').replace(/\?.*$/, ''),
+    model: String(model || ''),
+    transport: {
+      openaiCompatible,
+      officialApi,
+      browserSession: kind === 'browser-session',
+      managed: kind === 'deepseek-managed-web',
+    },
+    features: {
+      streaming: supportsStreaming(baseUrl),
+      nativeTools,
+      universalTools: true,
+      toolFallback: true,
+      vision: modelHasVision(model) || kind === 'google-gemini-official' || kind === 'anthropic-official',
+      reasoning: modelHasReasoning(model),
+      usage: kind !== 'deepseek-managed-web',
+      systemPrompt: true,
+      multimodalInput: kind !== 'deepseek-managed-web',
+    },
+    recommendedToolProtocol: nativeTools ? 'native-tools-first' : 'universal-xml',
+  }
+}
+
+export function normalizeProviderError(error, { baseUrl = '', model = '', phase = 'llm-call' } = {}) {
+  const raw = error?.message || String(error || 'unknown provider error')
+  const statusMatch = raw.match(/(?:HTTP|status|ответил)\s*(\d{3})/i)
+  const status = statusMatch ? Number(statusMatch[1]) : 0
+  const lower = raw.toLowerCase()
+  const authError = status === 401 || status === 403 || /unauthorized|forbidden|invalid api key|invalid token|токен отклон|ключ отклон/.test(lower)
+  const rateLimited = status === 429 || /rate limit|too many requests|quota|лимит|квота/.test(lower)
+  const timeout = /timeout|timed out|таймаут|aborted/.test(lower)
+  const serverError = status >= 500 || /bad gateway|service unavailable|overloaded/.test(lower)
+  const retryable = rateLimited || timeout || serverError
+
+  let hint = 'Провайдер вернул ошибку. Проверь baseUrl, модель и ключ.'
+  if (authError) hint = 'Проблема авторизации: обнови API key/session token или проверь auth type.'
+  else if (rateLimited) hint = 'Лимит/квота провайдера. Подожди, смени модель или ключ.'
+  else if (timeout) hint = 'Таймаут провайдера. Можно повторить запрос или отключить streaming.'
+  else if (serverError) hint = 'Сбой на стороне провайдера/прокси. Обычно помогает retry или fallback provider.'
+  else if (/model/i.test(raw) && /not|unknown|invalid|не/i.test(raw)) hint = 'Похоже, модель недоступна. Обнови список моделей или выбери другую.'
+
+  return {
+    schema: 'browserai.provider_error.v1',
+    phase,
+    provider: getProviderCapabilities(baseUrl, model),
+    status,
+    authError,
+    rateLimited,
+    timeout,
+    serverError,
+    retryable,
+    message: raw.slice(0, 1000),
+    hint,
+  }
+}

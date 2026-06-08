@@ -49,7 +49,7 @@ Final Answer or Ask User / Resume
 | 1 | Жёсткие базовые слои Agent Runtime | ✅ Выполнено | `6f44b85` |
 | 2 | Model Planner / Agent Loop hardening | ✅ Выполнено | см. журнал выполнения |
 | 3 | Tool Router hardening | ✅ Выполнено | см. журнал выполнения |
-| 4 | Provider adapters 2.0 | частично ✅ | `802665c`, требуется расширение |
+| 4 | Provider adapters 2.0 | ✅ Выполнено | см. журнал выполнения |
 | 5 | Настоящий streaming protocol | частично ✅ | есть SSE, нужно унифицировать события |
 | 6 | Ask User pause/resume | частично ✅ | есть promise registry, нужно усилить state |
 | 7 | Workspace / sandbox policy | частично ✅ | есть workspace scope/sandbox, нужен audit |
@@ -334,7 +334,11 @@ npm run build
 
 ## Этап 4. Provider adapters 2.0
 
-### Уже сделано
+### Цель
+
+Сделать provider layer явным, диагностируемым и независимым от конкретной модели/провайдера.
+
+### Сделано ранее
 
 Коммит `802665c`:
 
@@ -344,16 +348,94 @@ npm run build
 - Streaming для Anthropic/Gemini official.
 - Validation official Anthropic/Gemini.
 
-### Осталось
+### Сделано сейчас
 
-- Нормализовать provider errors.
-- Добавить adapter metadata endpoint.
-- Добавить тесты на:
-  - OpenAI-compatible
-  - Anthropic official
-  - Gemini official
-  - DeepSeek managed
-  - session/web-token models
+Добавлено в `server/llmClient.js`:
+
+- `getProviderKind(...)`
+- `getProviderCapabilities(...)`
+- `normalizeProviderError(...)`
+
+Единый capabilities формат:
+
+```js
+{
+  schema: "browserai.provider_capabilities.v1",
+  kind,
+  baseUrl,
+  model,
+  transport: {
+    openaiCompatible,
+    officialApi,
+    browserSession,
+    managed
+  },
+  features: {
+    streaming,
+    nativeTools,
+    universalTools,
+    toolFallback,
+    vision,
+    reasoning,
+    usage,
+    systemPrompt,
+    multimodalInput
+  },
+  recommendedToolProtocol
+}
+```
+
+Единый provider error формат:
+
+```js
+{
+  schema: "browserai.provider_error.v1",
+  phase,
+  provider,
+  status,
+  authError,
+  rateLimited,
+  timeout,
+  serverError,
+  retryable,
+  message,
+  hint
+}
+```
+
+Добавлены endpoints:
+
+```text
+POST /api/agent/provider/capabilities
+POST /api/agent/provider/diagnose
+```
+
+`/api/agent/provider/diagnose` возвращает:
+
+- capabilities;
+- optional probe result;
+- normalized providerError при ошибке.
+
+Agent loop теперь отправляет normalized provider error в SSE `error` при LLM failure.
+
+Official Anthropic/Gemini adapter в `/api/chat` теперь также возвращает `providerError` при ошибке.
+
+### Проверки
+
+```bash
+node --check server/llmClient.js
+node --check server/index.js
+node --check server/agentLoop.js
+npx eslint server/agentCore.js server/llmClient.js
+npm run build
+```
+
+### Осталось после этапа 4
+
+- Добавить frontend UI для capabilities/diagnose.
+- Добавить regression tests на все adapter kinds.
+- Добавить автоматический fallback provider между несколькими ключами.
+- Добавить более точную detection vision/reasoning по model registry.
 
 ---
 
@@ -530,3 +612,10 @@ TIMEWEB_APP_DIR
   - добавлена path traversal защита на уровне router;
   - добавлено SSE-событие `tool_router`;
   - некорректные tool calls теперь возвращают structured error без выполнения tool.
+- Выполнен этап 4 — Provider adapters 2.0:
+  - добавлен `getProviderKind`;
+  - добавлен `getProviderCapabilities`;
+  - добавлен `normalizeProviderError`;
+  - добавлены endpoints `/api/agent/provider/capabilities` и `/api/agent/provider/diagnose`;
+  - LLM errors в Agent Loop теперь имеют structured `providerError`;
+  - official Anthropic/Gemini `/api/chat` errors тоже возвращают `providerError`.
