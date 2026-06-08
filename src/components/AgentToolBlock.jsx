@@ -124,6 +124,7 @@ export default function AgentToolBlock({
   step,
   startedAt,
   finishedAt,
+  stream,
 }) {
   const [open, setOpen] = useState(false)
   const spec = VERBS[name] || { verb: 'used', noun: name, icon: '⚙️' }
@@ -237,7 +238,18 @@ export default function AgentToolBlock({
               </pre>
             )
           ) : (
-            <div className="text-cream-faint">выполняется…</div>
+            stream ? (
+              // Live tail of stdout/stderr from a long-running bash /
+              // verify_code call. Auto-scrolls to bottom each render via
+              // overflow-anchor on the wrapper. Capped to last ~8 KB
+              // on the client too (see useChats.js).
+              <pre className="thin-scroll max-h-48 overflow-auto whitespace-pre-wrap rounded bg-graphite-900 p-2 font-mono text-[11px] text-cream-faint">
+                {stream}
+                <span className="text-amber-300">▌</span>
+              </pre>
+            ) : (
+              <div className="text-cream-faint">выполняется…</div>
+            )
           )}
           {step != null && (
             <div className="mt-1 text-right text-[10px] text-cream-faint">шаг #{step}</div>

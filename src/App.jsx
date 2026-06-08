@@ -9,6 +9,8 @@ import AuthGate from './components/AuthGate.jsx'
 import DeepSeekAdmin from './components/DeepSeekAdmin.jsx'
 import OpsAdmin from './components/OpsAdmin.jsx'
 import ModelBar from './components/ModelBar.jsx'
+import ChatSearchModal from './components/ChatSearchModal.jsx'
+import { downloadChatMarkdown } from './lib/chatExport.js'
 import { IconExpand } from './icons.jsx'
 import {
   findKeyForModel,
@@ -70,6 +72,7 @@ function BrowserApp({ user, reloadAuth }) {
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [workspaceAiBusy, setWorkspaceAiBusy] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
 
   // Авторежим выбора модели
   const [autoMode, setAutoMode] = useState(() => {
@@ -90,6 +93,22 @@ function BrowserApp({ user, reloadAuth }) {
       // localStorage may be unavailable
     }
   }, [autoMode])
+
+  // Global Ctrl/Cmd+K hotkey → open chat search modal. Ignored when
+  // a text field is focused so users typing 'K' get no surprise modal.
+  useEffect(() => {
+    const onKey = (e) => {
+      const isCmd = e.metaKey || e.ctrlKey
+      if (!isCmd || e.key.toLowerCase() !== 'k') return
+      const tag = (document.activeElement?.tagName || '').toLowerCase()
+      const isEditable = document.activeElement?.isContentEditable
+      if (tag === 'input' || tag === 'textarea' || isEditable) return
+      e.preventDefault()
+      setSearchOpen(true)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   // Agent mode — model is allowed to call tools (workspace / web / bash /
   // github / download_url). Default ON: users overwhelmingly expect AI to
@@ -144,6 +163,7 @@ function BrowserApp({ user, reloadAuth }) {
     newChat,
     selectChat,
     deleteChat,
+    branchFromMessage,
     updateChat,
     sendMessage,
     sendAgentMessage,
@@ -373,6 +393,16 @@ function BrowserApp({ user, reloadAuth }) {
           selectedModel={selectedModel}
           onSelectModel={setActiveModel}
           onToggleAuto={handleToggleAuto}
+          onOpenSearch={() => setSearchOpen(true)}
+          onExportChat={activeChat ? () => downloadChatMarkdown(activeChat) : null}
+          totalTokens={(activeChat?.messages || []).reduce((s, m) => s + (m?.tokens?.total || 0), 0)}
+        />
+
+        <ChatSearchModal
+          open={searchOpen}
+          chats={chats}
+          onSelectChat={selectChat}
+          onClose={() => setSearchOpen(false)}
         />
 
         {hasMessages ? (
@@ -384,6 +414,7 @@ function BrowserApp({ user, reloadAuth }) {
               onRegenerate={handleRegenerate}
               onRefresh={() => location.reload()}
               onJobDone={markJobDone}
+              onBranch={(messageId) => activeChat && branchFromMessage(activeChat.id, messageId)}
               onAnswerAskUser={(messageId, questionId, payload) =>
                 answerAgentQuestion(activeChat.id, messageId, questionId, payload)
               }

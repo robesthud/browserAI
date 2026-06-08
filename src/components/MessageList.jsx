@@ -84,7 +84,7 @@ function WorkingSpinner() {
   )
 }
 
-function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, onJobDone }) {
+function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, onJobDone, onBranch }) {
   const isUser = m.role === 'user'
 
   // Mobile swipe-left -> reveal action buttons (regenerate / copy).
@@ -161,6 +161,22 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                <IconRefresh />
              </button>
           )}
+          {onBranch && !aiWorking && (
+            <button
+              onClick={() => onBranch(m.id)}
+              className="opacity-0 group-hover:opacity-100 transition-opacity text-cream-faint hover:text-cream px-1"
+              title="Создать ветку из этого сообщения (новый чат с историей до сих пор)"
+            >↳</button>
+          )}
+          {/* Per-message token badge for assistant turns */}
+          {!isUser && m.tokens?.total ? (
+            <span
+              className="rounded-full border border-white/10 bg-graphite-800/40 px-1.5 font-mono text-[10px] text-cream-faint"
+              title={`prompt: ${m.tokens.prompt || 0} · completion: ${m.tokens.completion || 0}`}
+            >
+              {m.tokens.total > 9999 ? `${(m.tokens.total / 1000).toFixed(1)}k` : m.tokens.total}t
+            </span>
+          ) : null}
         </div>
 
         {isUser ? (
@@ -250,6 +266,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                         error={tc.error}
                         startedAt={tc.startedAt}
                         finishedAt={tc.finishedAt}
+                        stream={tc.stream}
                       />,
                     )
                   }
@@ -308,7 +325,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
   )
 }
 
-export default function MessageList({ messages, aiWorking, onEdit, onRegenerate, onRefresh, onAnswerAskUser, onJobDone }) {
+export default function MessageList({ messages, aiWorking, onEdit, onRegenerate, onRefresh, onAnswerAskUser, onJobDone, onBranch }) {
   const bottomRef = useRef(null)
   const scrollRef = useRef(null)
   const prevLenRef = useRef(messages.length)
@@ -407,6 +424,7 @@ export default function MessageList({ messages, aiWorking, onEdit, onRegenerate,
             onEdit={onEdit}
             onRegenerate={onRegenerate}
             onJobDone={onJobDone}
+            onBranch={onBranch}
             onAnswerAskUser={(questionId, payload) => onAnswerAskUser?.(m.id, questionId, payload)}
           />
         ))}

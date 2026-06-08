@@ -34,6 +34,9 @@ export default function Topbar({
   selectedModel,
   onSelectModel,
   onToggleAuto,
+  onOpenSearch,
+  onExportChat,
+  totalTokens = 0,
 }) {
   return (
     <header className="flex items-center gap-2 px-3 pb-2 pt-10 md:gap-3 md:px-5 md:py-3.5">
@@ -81,8 +84,36 @@ export default function Topbar({
         )}
       </div>
 
-      {/* Right: workspace toggle + desktop-only logout */}
+      {/* Right: search / export / tokens / workspace toggle + desktop-only logout */}
       <div className="flex shrink-0 items-center gap-1.5 md:gap-2">
+        {/* Token usage badge — only on desktop, only when there's something to show */}
+        {totalTokens > 0 && (
+          <span
+            className="hidden rounded-full border border-white/10 bg-graphite-800/60 px-2 py-0.5 font-mono text-[11px] text-cream-faint md:inline"
+            title={`Использовано токенов за чат: ${totalTokens}`}
+          >
+            {totalTokens > 9999 ? `${(totalTokens / 1000).toFixed(1)}k` : totalTokens} tok
+          </span>
+        )}
+
+        {onOpenSearch && (
+          <button
+            type="button"
+            onClick={onOpenSearch}
+            className="hidden h-9 w-9 place-items-center rounded-lg text-cream-dim transition-colors hover:bg-graphite-800 hover:text-cream md:grid"
+            title="Поиск по чатам (Ctrl+K)"
+          >🔎</button>
+        )}
+
+        {onExportChat && (
+          <button
+            type="button"
+            onClick={onExportChat}
+            className="hidden h-9 w-9 place-items-center rounded-lg text-cream-dim transition-colors hover:bg-graphite-800 hover:text-cream md:grid"
+            title="Скачать чат как Markdown"
+          >⬇</button>
+        )}
+
         <button
           onClick={onToggleWorkspace}
           className={`grid h-9 w-9 place-items-center rounded-lg transition-colors

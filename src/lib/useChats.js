@@ -210,6 +210,27 @@ export function useChats(settings) {
     [activeId],
   )
 
+  // Branch from a specific message: create a NEW chat that contains every
+  // message up to (and including) the chosen one, so the user can try a
+  // different next prompt without losing the original chat thread. The
+  // workspace is initialised fresh — branches don't share workspace state
+  // because that would let one branch silently corrupt the other.
+  const branchFromMessage = useCallback((chatId, messageId) => {
+    const original = chats.find((c) => c.id === chatId)
+    if (!original) return null
+    const idx = (original.messages || []).findIndex((m) => m.id === messageId)
+    if (idx === -1) return null
+    const keep = original.messages.slice(0, idx + 1).map((m) => ({ ...m, pending: false }))
+    const branch = createChat()
+    branch.title = `↳ ${original.title || 'Branch'}`
+    branch.messages = keep
+    branch.summary = original.summary || ''
+    setChats((prev) => [branch, ...prev])
+    setActiveId(branch.id)
+    workspaceApi.initChatWorkspace(branch.id).catch(() => {})
+    return branch.id
+  }, [chats])
+
   const renameChat = useCallback((id, title) => {
     setChats((prev) =>
       prev.map((c) => (c.id === id ? { ...c, title } : c)),
@@ -552,6 +573,23 @@ export function useChats(settings) {
                   // agent runs even without looking at the screen.
                   haptics.tap()
                   break
+                case 'tool_progress':
+                  // Live stdout/stderr chunks from long bash / verify_code
+                  // calls — appended to the matching toolCall so the
+                  // AgentToolBlock can render a streaming tail instead of
+                  // staying empty until the command finishes.
+                  patchAssistant((m) => ({
+                    ...m,
+                    toolCalls: (m.toolCalls || []).map((tc) =>
+                      tc.step === data.step && tc.name === data.name
+                        ? {
+                            ...tc,
+                            stream: ((tc.stream || '') + String(data.chunk || '')).slice(-8000),
+                          }
+                        : tc,
+                    ),
+                  }))
+                  break
                 case 'thought':
                   // Streaming reasoning between tool calls — the model's
                   // intermediate "I'll do X next" / "Now I'll Y" text.
@@ -599,8 +637,21 @@ export function useChats(settings) {
                   patchAssistant((m) => ({ ...m, error: data.message || 'agent error', pending: false }))
                   haptics.error()
                   break
+                case 'usage':
+                  // Stream token totals from the server. The full counter
+                  // lives on the assistant message so it survives a reload.
+                  patchAssistant((m) => ({
+                    ...m,
+                    tokens: data.totals || { prompt: data.prompt, completion: data.completion, total: data.total },
+                  }))
+                  break
                 case 'done':
-                  patchAssistant({ pending: false })
+                  patchAssistant((m) => ({
+                    ...m,
+                    pending: false,
+                    tokens: data.tokens || m.tokens,
+                    finishReason: data.reason || m.finishReason,
+                  }))
                   resolve()
                   break
               }
@@ -658,6 +709,7 @@ export function useChats(settings) {
     selectChat,
     deleteChat,
     renameChat,
+    branchFromMessage,
     updateChat,
     sendMessage,
     sendAgentMessage,

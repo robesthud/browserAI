@@ -48,7 +48,7 @@ function clip(buf, max) {
  * @param {string} [opts.cwd='/workspace'] working directory inside container
  * @returns {Promise<{stdout, stderr, exitCode, truncated}>}
  */
-export function runSandboxCommand({ command, timeoutMs = 30_000, cwd = '/workspace' } = {}) {
+export function runSandboxCommand({ command, timeoutMs = 30_000, cwd = '/workspace', signal, onStdout, onStderr } = {}) {
   return new Promise((resolve, reject) => {
     if (!command || typeof command !== 'string') {
       return reject(new Error('command must be a non-empty string'))
@@ -68,39 +68,56 @@ export function runSandboxCommand({ command, timeoutMs = 30_000, cwd = '/workspa
     let outBytes = 0
     let errBytes = 0
     let killed = false
+    let cancelled = false
 
     const timer = setTimeout(() => {
       killed = true
       try { proc.kill('SIGKILL') } catch { /* already exited */ }
     }, timeoutMs)
 
+    // External cancellation: user clicked Stop → kill the child immediately.
+    let onAbort = null
+    if (signal) {
+      onAbort = () => {
+        cancelled = true
+        try { proc.kill('SIGKILL') } catch { /* already exited */ }
+      }
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }
+
     proc.stdout.on('data', (c) => {
       outBytes += c.length
       if (outBytes <= MAX_STDOUT * 2) outChunks.push(c)
+      try { onStdout?.(c.toString('utf-8')) } catch { /* listener errors ignored */ }
     })
     proc.stderr.on('data', (c) => {
       errBytes += c.length
       if (errBytes <= MAX_STDERR * 2) errChunks.push(c)
+      try { onStderr?.(c.toString('utf-8')) } catch { /* listener errors ignored */ }
     })
 
     proc.on('error', (e) => {
       clearTimeout(timer)
+      if (onAbort && signal) signal.removeEventListener('abort', onAbort)
       // Likely: docker binary missing, or sandbox container not running.
       reject(new Error(`sandbox exec failed: ${e.message}. Is the agent-sandbox container running?`))
     })
 
     proc.on('close', (code) => {
       clearTimeout(timer)
+      if (onAbort && signal) signal.removeEventListener('abort', onAbort)
       const stdout = clip(Buffer.concat(outChunks), MAX_STDOUT)
       const stderr = clip(Buffer.concat(errChunks), MAX_STDERR)
-      const exitCode = killed ? -1 : (code == null ? -1 : code)
+      const exitCode = killed || cancelled ? -1 : (code == null ? -1 : code)
       const truncated = stdout.truncated || stderr.truncated || killed
-      const extraStderr = killed ? `\n[sandbox] killed after ${timeoutMs}ms timeout` : ''
+      const reason = cancelled ? `\n[sandbox] cancelled by user` : (killed ? `\n[sandbox] killed after ${timeoutMs}ms timeout` : '')
       resolve({
         stdout: stdout.text,
-        stderr: stderr.text + extraStderr,
+        stderr: stderr.text + reason,
         exitCode,
         truncated,
+        cancelled,
       })
     })
   })

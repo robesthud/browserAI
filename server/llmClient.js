@@ -62,7 +62,7 @@ async function callDeepSeekManaged({ baseUrl, apiKey, model, messages, extraHead
     throw new Error(`DeepSeek returned ${statusCode}: ${JSON.stringify(captured)?.slice(0, 400)}`)
   }
   const text = captured?.choices?.[0]?.message?.content || ''
-  return { text: String(text || ''), toolCalls: [] }
+  return { text: String(text || ''), toolCalls: [], usage: null }
 }
 
 // ── OpenAI-compatible transport ─────────────────────────────────────────────
@@ -125,6 +125,13 @@ async function callOpenAICompatible({
   return {
     text: typeof msg.content === 'string' ? msg.content : '',
     toolCalls: nativeToolCalls,
+    // Pass through provider-side token accounting so the agent loop can
+    // surface running cost in the UI ('1.2k → 800 tok ≈ $0.003').
+    usage: data?.usage ? {
+      prompt: Number(data.usage.prompt_tokens || data.usage.input_tokens || 0),
+      completion: Number(data.usage.completion_tokens || data.usage.output_tokens || 0),
+      total: Number(data.usage.total_tokens || 0),
+    } : null,
   }
 }
 

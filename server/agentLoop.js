@@ -219,6 +219,12 @@ function sse(res, event, data) {
   try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) } catch { /* closed */ }
 }
 
+// Convenience: send 'done' with the latest token totals attached. Always
+// include them — the UI ignores zeros for providers that don't return usage.
+function sseDone(res, payload, tokens) {
+  sse(res, 'done', { ...payload, tokens })
+}
+
 // ── Main loop ───────────────────────────────────────────────────────────────
 /**
  * Run the agent until it produces a final answer or hits a limit.
@@ -247,9 +253,20 @@ async function runAgentInner({
   res.setHeader('X-Accel-Buffering', 'no')
   res.flushHeaders?.()
 
+  // Initialise token counters early so the no-provider exit path can reference
+  // them without a ReferenceError. tokens.* are mutated in accumulateUsage().
+  const tokens = { prompt: 0, completion: 0, total: 0, llmCalls: 0 }
+  function accumulateUsage(u) {
+    if (!u) return
+    tokens.prompt += Number(u.prompt || 0)
+    tokens.completion += Number(u.completion || 0)
+    tokens.total += Number(u.total || (u.prompt + u.completion) || 0)
+    tokens.llmCalls += 1
+  }
+
   if (!provider?.baseUrl || !provider?.apiKey) {
     sse(res, 'error', { message: 'Provider is not configured (baseUrl + apiKey required)' })
-    sse(res, 'done', { steps: 0, reason: 'no-provider' })
+    sseDone(res, { steps: 0, reason: 'no-provider' }, tokens)
     res.end()
     return
   }
@@ -266,14 +283,19 @@ async function runAgentInner({
   const deadline = Date.now() + DEFAULT_DEADLINE_MS
   let step = 0
   let aborted = false
-  res.on('close', () => { aborted = true })
+  // Shared abort controller so a Stop click in the UI propagates ALL the way
+  // down: cancels the in-flight LLM HTTP fetch AND any tool that supports
+  // AbortSignal (bash sandbox, web_fetch, browser_*). Without this, hitting
+  // Stop while the model is mid-bash would still wait the full 30s timeout.
+  const abortCtl = new AbortController()
+  res.on('close', () => { aborted = true; try { abortCtl.abort('client closed') } catch { /* ignore */ } })
 
   try {
     while (step < maxSteps) {
       if (aborted) return
       if (Date.now() > deadline) {
         sse(res, 'error', { message: `Total deadline of ${DEFAULT_DEADLINE_MS / 1000}s exceeded after ${step} steps` })
-        sse(res, 'done', { steps: step, reason: 'deadline' })
+        sseDone(res, { steps: step, reason: 'deadline' }, tokens)
         res.end()
         return
       }
@@ -319,17 +341,21 @@ async function runAgentInner({
             })
           } catch (fallbackError) {
             sse(res, 'error', { message: 'LLM call failed: ' + (fallbackError.message || String(fallbackError)) })
-            sse(res, 'done', { steps: step, reason: 'llm-error' })
+            sseDone(res, { steps: step, reason: 'llm-error' }, tokens)
             res.end()
             return
           }
         } else {
           sse(res, 'error', { message: 'LLM call failed: ' + (e.message || String(e)) })
-          sse(res, 'done', { steps: step, reason: 'llm-error' })
+          sseDone(res, { steps: step, reason: 'llm-error' }, tokens)
           res.end()
           return
         }
       }
+      // Stream a usage event so the UI updates the token badge live, not
+      // only after the whole agent loop finishes.
+      accumulateUsage(reply?.usage)
+      if (reply?.usage) sse(res, 'usage', { step, ...reply.usage, totals: { ...tokens } })
 
       // Decide which tool path(s) to follow.
       // PARALLEL TOOLS: when the provider returns more than one tool_calls
@@ -368,7 +394,7 @@ async function runAgentInner({
         }
         // Final answer
         sse(res, 'assistant', { text: reply.text || '' })
-        sse(res, 'done', { steps: step, reason: 'final' })
+        sseDone(res, { steps: step, reason: 'final' }, tokens)
         res.end()
         return
       }
@@ -422,7 +448,18 @@ async function runAgentInner({
           // the loop pushes the error back into context and the model
           // decides. But we DO clip outsized payloads so a 5 MB bash log
           // doesn't blow up the next LLM call.
-          r = await invokeTool(call.tool, call.args)
+          // Live-tail for long bash / verify_code calls: stream stdout
+          // chunks to the UI as they appear so the user sees npm install /
+          // git clone progress, not a 30-second silent block followed by
+          // a wall of text at the end.
+          const onProgress = (chunk, kind) => {
+            sse(res, 'tool_progress', { step, sub: idx, name: call.tool, kind, chunk: String(chunk).slice(0, 2000) })
+          }
+          r = await invokeTool(call.tool, call.args, {
+            signal: abortCtl.signal,
+            onStdout: (c) => onProgress(c, 'stdout'),
+            onStderr: (c) => onProgress(c, 'stderr'),
+          })
         }
         sse(res, 'tool_result', {
           step, sub: idx,
@@ -460,11 +497,11 @@ async function runAgentInner({
     }
 
     sse(res, 'error', { message: `Agent stopped after ${maxSteps} steps without a final answer` })
-    sse(res, 'done', { steps: step, reason: 'max-steps' })
+    sseDone(res, { steps: step, reason: 'max-steps' }, tokens)
     res.end()
   } catch (e) {
     sse(res, 'error', { message: e?.message || String(e) })
-    sse(res, 'done', { steps: step, reason: 'crash' })
+    sseDone(res, { steps: step, reason: 'crash' }, tokens)
     try { res.end() } catch { /* response already closed */ }
   }
 }

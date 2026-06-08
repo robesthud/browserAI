@@ -713,18 +713,22 @@ export const TOOLS = {
       command: { type: 'string', required: true, description: 'Shell command, e.g. "ls -la /workspace" or "node -e \\"console.log(1+1)\\""' },
       timeout_sec: { type: 'number', optional: true, description: 'Max seconds, default 30, max 120.' },
     },
-    handler: async ({ command, timeout_sec = 30 } = {}) => {
+    handler: async ({ command, timeout_sec = 30, _signal, _onStdout, _onStderr } = {}) => {
       if (!command) return err('command is required')
       try {
         const r = await runSandboxCommand({
           command: String(command),
           timeoutMs: Math.min(120_000, Math.max(1_000, Number(timeout_sec) * 1000 || 30_000)),
+          signal: _signal,
+          onStdout: _onStdout,
+          onStderr: _onStderr,
         })
         return ok({
           stdout: truncate(r.stdout, 6000),
           stderr: truncate(r.stderr, 3000),
           exitCode: r.exitCode,
           truncated: r.truncated || false,
+          cancelled: r.cancelled || false,
         })
       } catch (e) { return err(e.message) }
     },
@@ -819,13 +823,22 @@ export function renderToolsForPrompt() {
 /**
  * Invoke a tool by name. Returns the {ok, result|error} shape.
  */
-export async function invokeTool(name, args = {}) {
+export async function invokeTool(name, args = {}, { signal, onStdout, onStderr } = {}) {
   const tool = TOOLS[name]
   if (!tool) return err(`Unknown tool: ${name}`)
   if (typeof tool.handler !== 'function') return err(`Tool ${name} has no handler`)
+  // Cooperative cancellation + live-progress streaming. Tools that care
+  // pick up _signal / _onStdout / _onStderr from their args; the rest
+  // just ignore the extra fields.
+  const enrichedArgs = { ...(args || {}) }
+  if (signal)   enrichedArgs._signal   = signal
+  if (onStdout) enrichedArgs._onStdout = onStdout
+  if (onStderr) enrichedArgs._onStderr = onStderr
   try {
-    return await tool.handler(args || {})
+    if (signal?.aborted) return err('cancelled')
+    return await tool.handler(enrichedArgs)
   } catch (e) {
+    if (signal?.aborted) return err('cancelled')
     return err(e?.message || String(e))
   }
 }
