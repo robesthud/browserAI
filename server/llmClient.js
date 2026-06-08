@@ -135,6 +135,141 @@ async function callOpenAICompatible({
   }
 }
 
+// ── OpenAI-compatible STREAMING transport ────────────────────────────────────
+//
+// True provider-side SSE streaming. Used by callLLMStream() to get
+// chunks of `content` / `tool_calls` as the model generates them,
+// instead of the all-or-nothing path of callOpenAICompatible.
+//
+// Hooks:
+//   onTextDelta(chunk)                        — every content chunk
+//   onToolCallDelta({ idx, id?, name?, argsDelta? })
+//                                              — every tool_calls chunk
+//                                              (OpenAI streams them by
+//                                              index; we forward as-is)
+//   onUsage(usage)                            — final usage block, if any
+//
+// Returns { text, toolCalls, usage } at end-of-stream, same shape as
+// the non-streaming variant.
+async function callOpenAICompatibleStream({
+  baseUrl, apiKey, authType = 'bearer', authHeader = '',
+  extraHeaders = {}, model, messages, temperature = 0.7,
+  tools, toolChoice = 'auto', signal,
+  onTextDelta, onToolCallDelta, onUsage,
+}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    'Accept': 'text/event-stream',
+    ...buildSessionHeaders({ baseUrl, apiKey, authType, authHeader, extraHeaders }),
+  }
+  const body = {
+    model, messages, temperature,
+    stream: true,
+    stream_options: { include_usage: true }, // OpenAI: usage in final chunk
+  }
+  if (Array.isArray(tools) && tools.length > 0) {
+    body.tools = tools
+    body.tool_choice = toolChoice
+  }
+
+  const url = joinUrl(baseUrl, 'chat/completions')
+  const r = await fetch(url, {
+    method: 'POST', headers,
+    body: JSON.stringify(body),
+    signal: signal || AbortSignal.timeout(180_000),
+  })
+  if (!r.ok) {
+    const raw = await r.text().catch(() => '')
+    throw new Error(`Provider HTTP ${r.status} from ${url}: ${raw.slice(0, 400)}`)
+  }
+  if (!r.body) throw new Error('Provider returned no body for stream')
+
+  // SSE assembler. Lines arrive as:
+  //   data: {...json...}
+  //   data: [DONE]
+  let text = ''
+  const toolByIdx = new Map() // idx → { id, name, argsBuf }
+  let usage = null
+
+  const reader = r.body.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  let stopped = false
+
+  while (!stopped) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    let nlIdx
+    while ((nlIdx = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nlIdx).trim()
+      buf = buf.slice(nlIdx + 1)
+      if (!line.startsWith('data:')) continue
+      const payload = line.slice(5).trim()
+      if (!payload) continue
+      if (payload === '[DONE]') { stopped = true; break }
+      const chunk = safeJsonParse(payload)
+      if (!chunk) continue
+      const choice = chunk?.choices?.[0]
+      const delta = choice?.delta || {}
+      // Text content
+      if (typeof delta.content === 'string' && delta.content) {
+        text += delta.content
+        try { onTextDelta?.(delta.content) } catch { /* hook errors must not kill stream */ }
+      }
+      // Native tool_calls (OpenAI stream-delta form)
+      if (Array.isArray(delta.tool_calls)) {
+        for (const tc of delta.tool_calls) {
+          const idx = Number.isInteger(tc?.index) ? tc.index : 0
+          let slot = toolByIdx.get(idx)
+          if (!slot) {
+            slot = { id: '', name: '', argsBuf: '' }
+            toolByIdx.set(idx, slot)
+          }
+          if (tc.id)                  slot.id   = tc.id
+          if (tc.function?.name)      slot.name = tc.function.name
+          if (typeof tc.function?.arguments === 'string') {
+            slot.argsBuf += tc.function.arguments
+          }
+          try {
+            onToolCallDelta?.({
+              idx,
+              id: slot.id || null,
+              name: slot.name || null,
+              argsDelta: tc.function?.arguments || '',
+              argsBuf: slot.argsBuf,
+            })
+          } catch { /* ignore */ }
+        }
+      }
+      // Anthropic-flavoured "thinking" deltas (provider-side reasoning)
+      if (typeof delta.reasoning === 'string' && delta.reasoning) {
+        try { onTextDelta?.(delta.reasoning, { kind: 'thinking' }) } catch { /* ignore */ }
+      }
+      // Usage on the last chunk
+      if (chunk.usage) {
+        usage = {
+          prompt:     Number(chunk.usage.prompt_tokens || chunk.usage.input_tokens || 0),
+          completion: Number(chunk.usage.completion_tokens || chunk.usage.output_tokens || 0),
+          total:      Number(chunk.usage.total_tokens || 0),
+        }
+        try { onUsage?.(usage) } catch { /* ignore */ }
+      }
+    }
+  }
+
+  const toolCalls = [...toolByIdx.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, slot]) => ({
+      id: slot.id || null,
+      name: slot.name,
+      args: safeJsonParse(slot.argsBuf || '{}') || {},
+      raw: { id: slot.id, function: { name: slot.name, arguments: slot.argsBuf } },
+    }))
+    .filter((tc) => tc.name)
+  return { text, toolCalls, usage }
+}
+
 // ── Public ──────────────────────────────────────────────────────────────────
 /**
  * Call an LLM and return { text, toolCalls }. Provider-agnostic.
@@ -167,6 +302,43 @@ export async function callLLM(opts) {
     })
   }
   return callOpenAICompatible(opts)
+}
+
+/**
+ * Streaming counterpart of callLLM(). Calls onTextDelta()/onToolCallDelta()
+ * as the provider emits chunks; resolves with the final {text, toolCalls,
+ * usage} aggregate when the stream completes.
+ *
+ * For DeepSeek managed transport we don't have provider-side SSE, so we
+ * fall back to a non-streaming call and emit a single fake delta at the
+ * end to keep the caller's interface uniform.
+ */
+export async function callLLMStream(opts) {
+  if (!opts?.baseUrl || !opts?.apiKey) {
+    throw new Error('callLLMStream: baseUrl and apiKey are required')
+  }
+  if (isDeepSeekWebUrl(opts.baseUrl)) {
+    const res = await callDeepSeekManaged({
+      baseUrl: opts.baseUrl, apiKey: opts.apiKey,
+      model: opts.model, messages: opts.messages,
+      extraHeaders: opts.extraHeaders || {},
+    })
+    try { if (res?.text) opts.onTextDelta?.(res.text) } catch { /* ignore */ }
+    try { if (res?.usage) opts.onUsage?.(res.usage) } catch { /* ignore */ }
+    return res
+  }
+  return callOpenAICompatibleStream(opts)
+}
+
+/**
+ * Heuristic — does this provider stream cleanly on SSE? Practically all
+ * OpenAI-compatible endpoints do, but some flaky regional proxies cache
+ * the response and break streaming; we expose a hook to opt out via env.
+ */
+export function supportsStreaming(baseUrl = '') {
+  if (isDeepSeekWebUrl(baseUrl)) return false // soft-fallback handled inside callLLMStream
+  if (String(process.env.BROWSERAI_DISABLE_STREAMING || '').trim()) return false
+  return true
 }
 
 /**

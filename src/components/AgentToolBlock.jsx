@@ -148,11 +148,13 @@ export default function AgentToolBlock({
     ? { verb: 'MCP', noun: `${mcpMatch[1]}/${mcpMatch[2]}`, icon: '🔌' }
     : (VERBS[name] || { verb: 'used', noun: name, icon: '⚙️' })
 
-  // Status mark like Arena: ✓ / ✗ / spinning dot
+  // Status mark like Arena: ✓ / ✗ / spinning dot / queued
   let mark, markCls
   if (status === 'done') {
     if (ok) { mark = '✓'; markCls = 'text-emerald-300' }
     else    { mark = '✗'; markCls = 'text-rose-300' }
+  } else if (status === 'queued') {
+    mark = '◌'; markCls = 'text-violet-300'
   } else {
     mark = '•'; markCls = 'text-amber-300 animate-pulse'
   }
@@ -225,6 +227,21 @@ export default function AgentToolBlock({
           <path d="M2 4 L6 8 L10 4" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
+
+      {/* Always-visible mini-tail: when a long-running tool (bash /
+          verify_code / browser_*) is producing stdout LIVE, show the
+          last ~2 lines below the pill without forcing the user to
+          expand. Disappears the moment the tool finishes. */}
+      {status === 'running' && stream && !open && (
+        <div className="border-t border-white/5 bg-graphite-900/70 px-2.5 py-1 font-mono text-[10px] leading-tight text-cream-faint md:text-[11px]">
+          {(() => {
+            const lines = String(stream).split('\n').filter(Boolean)
+            const tail = lines.slice(-2).join(' · ')
+            return tail.length > 220 ? '…' + tail.slice(-220) : tail
+          })()}
+          <span className="text-amber-300"> ▌</span>
+        </div>
+      )}
 
       {open && (
         <div className="border-t border-white/10 px-2.5 py-2 md:px-3">

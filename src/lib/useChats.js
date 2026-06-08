@@ -543,22 +543,54 @@ export function useChats(settings) {
                 case 'thinking':
                   // Optional: we could surface a "thinking" indicator
                   break
+                case 'tool_preview':
+                  // Mid-stream XML closer detected: the LLM has just
+                  // finished writing a tool call but the server hasn't
+                  // started executing yet. Show a 'queued' pill so the
+                  // user sees a response within ms instead of waiting
+                  // for the full assistant message to land.
+                  patchAssistant((m) => {
+                    const id = `${data.step}-${data.name}`
+                    if ((m.toolCalls || []).some((tc) => tc.id === id)) return m
+                    return {
+                      ...m,
+                      pending: true,
+                      toolCalls: [
+                        ...(m.toolCalls || []),
+                        {
+                          id, step: data.step, name: data.name, args: data.args,
+                          status: 'queued', startedAt: Date.now(),
+                        },
+                      ],
+                    }
+                  })
+                  break
                 case 'tool_start':
-                  patchAssistant((m) => ({
-                    ...m,
-                    pending: true,
-                    toolCalls: [
-                      ...(m.toolCalls || []),
-                      {
-                        id: `${data.step}-${data.name}`,
-                        step: data.step,
-                        name: data.name,
-                        args: data.args,
-                        status: 'running',
-                        startedAt: Date.now(),
-                      },
-                    ],
-                  }))
+                  patchAssistant((m) => {
+                    const id = `${data.step}-${data.name}`
+                    const existing = (m.toolCalls || []).find((tc) => tc.id === id)
+                    if (existing) {
+                      // tool_preview already created the pill — flip status.
+                      return {
+                        ...m,
+                        pending: true,
+                        toolCalls: m.toolCalls.map((tc) =>
+                          tc.id === id ? { ...tc, status: 'running', startedAt: Date.now() } : tc,
+                        ),
+                      }
+                    }
+                    return {
+                      ...m,
+                      pending: true,
+                      toolCalls: [
+                        ...(m.toolCalls || []),
+                        {
+                          id, step: data.step, name: data.name, args: data.args,
+                          status: 'running', startedAt: Date.now(),
+                        },
+                      ],
+                    }
+                  })
                   break
                 case 'tool_result':
                   patchAssistant((m) => ({

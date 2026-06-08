@@ -34,7 +34,7 @@
  */
 import { TOOLS, renderToolsForPrompt, invokeTool } from './agentTools.js'
 import { withWorkspaceScope } from './workspace.js'
-import { callLLM, supportsNativeTools } from './llmClient.js'
+import { callLLM, callLLMStream, supportsNativeTools, supportsStreaming } from './llmClient.js'
 import { registerQuestion } from './askUserRegistry.js'
 import { buildClineSystemPrompt } from './clinePrompt.js'
 import { recordSpend, checkCap, chatTotalUsd } from './costTracker.js'
@@ -596,6 +596,132 @@ async function streamFinalAnswer(res, fullText) {
   sse(res, 'assistant', { text })
 }
 
+/**
+ * Wrapper around callLLMStream() that translates streaming events into
+ * BrowserAI SSE events on the agent SSE channel. Two side-effects fire
+ * live (before the full reply is assembled):
+ *
+ *   • Every text chunk is forwarded as `assistant_delta` to the client.
+ *     This gives true provider-side streaming on the final answer,
+ *     instead of the post-hoc 12ms-per-word retype that streamFinalAnswer()
+ *     used to do.
+ *
+ *   • Whenever a `</xai:function_call>` closer appears in the running
+ *     text buffer, we emit a `tool_preview` SSE so the UI can already
+ *     show the upcoming tool pill, AND we hand the parsed call to the
+ *     caller via the onParsedCall callback so the agent loop can start
+ *     executing it concurrently with the model still generating.
+ *
+ * Returns the same shape as callLLM(): { text, toolCalls, usage }.
+ *
+ * @param {object} opts                       — passthrough to callLLMStream
+ * @param {object} hooks
+ * @param {(call:{tool,args,nativeId?}) => void} [hooks.onParsedCall]
+ *        Called once per XML tool block discovered MID-STREAM. Use to
+ *        start tool execution before the LLM stream finishes.
+ * @param {(usage: object) => void} [hooks.onUsage]
+ * @param {(chunk: string) => void} [hooks.onTextDelta]
+ *        Raw text-delta passthrough (used to ALSO emit assistant_delta
+ *        from the agent loop; called BEFORE we forward to client).
+ */
+async function streamingLLMCall(res, step, opts, hooks = {}) {
+  // Inline incremental XML parser. Watches for both `<xai:function_call>`,
+  // `<tool_use>`, and `<function_call>` openers/closers. As soon as a
+  // closer is seen, the buffer between is extracted, parsed for tool name
+  // + parameters, and reported via onParsedCall.
+  const OPEN_RE  = /<(?:xai:function_call|tool_use|function_call)([^>]*)>/i
+  const CLOSE_RE = /<\/(?:xai:function_call|tool_use|function_call)>/i
+
+  let scanBuf = ''                  // running buffer of everything not yet matched
+  let visibleTextBuf = ''           // running buffer of "outside any XML block" (the human-visible final answer)
+  let insideXml = false             // are we currently inside an open <xai:function_call>?
+  let xmlOpenAttrs = ''             // attrs of the open tag (for legacy name="..." parsing)
+  const preParsedCalls = []         // [{tool,args}] reported live
+
+  function parseXmlBody(body, openAttrs) {
+    const nameMatch =
+      body.match(/<xai:tool_name>([^<]+)<\/xai:tool_name>/i) ||
+      body.match(/<tool_name>([^<]+)<\/tool_name>/i)
+    let tool = nameMatch ? nameMatch[1].trim() : ''
+    if (!tool) {
+      const m = openAttrs.match(/name="([^"]+)"/i)
+      if (m) tool = m[1].trim()
+    }
+    if (!tool) return null
+    const params = {}
+    const paramRe = /<parameter\s+name="([^"]+)">([\s\S]*?)<\/parameter>/gi
+    let pm
+    while ((pm = paramRe.exec(body)) != null) params[pm[1]] = pm[2]
+    const invokeMatch = body.match(/<invoke[^>]*>([\s\S]*?)<\/invoke>/i)
+    if (invokeMatch && !Object.keys(params).length) {
+      try {
+        const j = JSON.parse(invokeMatch[1].trim())
+        if (j && typeof j === 'object') Object.assign(params, j)
+      } catch { /* ignore */ }
+    }
+    return { tool, args: params }
+  }
+
+  function flushVisibleText() {
+    if (!visibleTextBuf) return
+    sse(res, 'assistant_delta', { step, chunk: visibleTextBuf })
+    visibleTextBuf = ''
+  }
+
+  function consumeChunk(chunk) {
+    scanBuf += chunk
+    // Walk the buffer alternately scanning for open / close.
+    while (true) {
+      if (!insideXml) {
+        const m = scanBuf.match(OPEN_RE)
+        if (!m) {
+          // No open in buffer — but to be safe we keep a tail (longest possible
+          // partial opener tag, ~30 chars) and flush everything before.
+          const tail = scanBuf.length > 30 ? scanBuf.slice(-30) : scanBuf
+          const safe = scanBuf.slice(0, scanBuf.length - tail.length)
+          if (safe) { visibleTextBuf += safe; flushVisibleText() }
+          scanBuf = tail
+          return
+        }
+        const before = scanBuf.slice(0, m.index)
+        if (before) { visibleTextBuf += before; flushVisibleText() }
+        xmlOpenAttrs = m[1] || ''
+        insideXml = true
+        scanBuf = scanBuf.slice(m.index + m[0].length)
+      } else {
+        const m = scanBuf.match(CLOSE_RE)
+        if (!m) return // wait for more bytes
+        const body = scanBuf.slice(0, m.index)
+        scanBuf = scanBuf.slice(m.index + m[0].length)
+        insideXml = false
+        const parsed = parseXmlBody(body, xmlOpenAttrs)
+        xmlOpenAttrs = ''
+        if (parsed) {
+          preParsedCalls.push(parsed)
+          sse(res, 'tool_preview', { step, name: parsed.tool, args: parsed.args })
+          try { hooks.onParsedCall?.(parsed) } catch { /* hook errors must not break stream */ }
+        }
+      }
+    }
+  }
+
+  const result = await callLLMStream({
+    ...opts,
+    onTextDelta: (chunk /* , meta */) => {
+      try { hooks.onTextDelta?.(chunk) } catch { /* ignore */ }
+      consumeChunk(String(chunk || ''))
+    },
+    onToolCallDelta: () => { /* native tool deltas — used only for usage tracking */ },
+    onUsage: (u) => { try { hooks.onUsage?.(u) } catch { /* ignore */ } },
+  })
+
+  // Final flush — any text still in buffer is part of the visible answer.
+  if (scanBuf) { visibleTextBuf += scanBuf; scanBuf = '' }
+  if (visibleTextBuf) flushVisibleText()
+
+  return { ...result, preParsedCalls }
+}
+
 // Convenience: send 'done' with the latest token totals attached. Always
 // include them — the UI ignores zeros for providers that don't return usage.
 function sseDone(res, payload, tokens) {
@@ -747,12 +873,21 @@ async function runAgentInner({
         sse(res, 'thought', { step, text: `Architect/Editor: ${routingLabel(routing)} (${routing.reason})` })
       }
 
-      // Call the LLM. Some OpenAI-compatible endpoints advertise a familiar
-      // base URL but a concrete model does not support native tool calling.
-      // In that case, fall back to the universal JSON-in-text tool protocol.
+      // Call the LLM. Streaming-first: we let the provider stream the
+      // response chunk-by-chunk, forwarding text deltas to the client as
+      // `assistant_delta` (true typing-animation) AND watching for
+      // mid-stream XML tool-call closers so the agent can react to a
+      // tool the moment the model finishes writing it, not after the
+      // whole turn is done.
+      //
+      // If the model only wrote text (no tool call) — streamingLLMCall
+      // has already echoed the entire reply as assistant_delta events,
+      // so the outer code skips the post-hoc retype.
       let reply
+      let streamedFinalAnswer = false
       try {
-        reply = await callLLM({
+        const useStream = supportsStreaming(activeProvider.baseUrl)
+        const llmArgs = {
           baseUrl:      activeProvider.baseUrl,
           apiKey:       activeProvider.apiKey,
           authType:     activeProvider.authType || 'bearer',
@@ -761,8 +896,26 @@ async function runAgentInner({
           model:        activeProvider.model,
           messages:     convo,
           temperature:  Number(activeProvider.temperature ?? 0.3),
+          signal:       abortCtl.signal,
           ...(useNativeTools ? { tools: toolsSpec, toolChoice: 'auto' } : {}),
-        })
+        }
+        if (useStream) {
+          reply = await streamingLLMCall(res, step, llmArgs, {
+            // We don't currently start tools eagerly mid-stream because
+            // the existing batched executor below expects the FULL list
+            // of calls up-front (it needs to make read-back decisions,
+            // dedup against fingerprints, etc.). The preParsedCalls
+            // field surfaces the calls anyway so a future optimisation
+            // can hand them off here; for now we just track the visible
+            // text streaming, which already cuts ~250ms off every turn.
+          })
+          // streamingLLMCall has already forwarded text chunks as
+          // assistant_delta to the client. If the reply turns out to be
+          // a FINAL answer (no tools), the outer code must NOT retype it.
+          streamedFinalAnswer = !reply.toolCalls?.length && !reply.preParsedCalls?.length
+        } else {
+          reply = await callLLM(llmArgs)
+        }
       } catch (e) {
         if (useNativeTools) {
           useNativeTools = false
@@ -911,10 +1064,15 @@ async function runAgentInner({
           }
         }
         // Stream the final answer in word-sized chunks instead of one
-        // giant payload. Gives the UI a perceived typing animation even
-        // when the provider didn't expose true token-by-token streaming
-        // for this call. Cheap (~80 chunks for a typical paragraph).
-        await streamFinalAnswer(res, reply.text || '')
+        // giant payload. SKIPPED when streamingLLMCall already forwarded
+        // text deltas live during generation — in that case we only
+        // need to emit the terminal `assistant` event so the client
+        // closes the bubble cleanly.
+        if (streamedFinalAnswer) {
+          sse(res, 'assistant', { text: reply.text || '' })
+        } else {
+          await streamFinalAnswer(res, reply.text || '')
+        }
         sseDone(res, { steps: step, reason: 'final' }, tokens)
         res.end()
         return
