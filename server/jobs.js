@@ -183,26 +183,10 @@ async function saveDataUrlsToWorkspace(chatId, dataUrls = []) {
   return files.map((f) => `generated/${f.path}`)
 }
 
-// gemini-web-proxy assigns a session id with this exact formula:
-//   session_id = "default"                          if no system msg
-//   session_id = str(hash(system_text[:100]))[:8]   otherwise
-// We mirror that here so we can target the correct session in poll-media
-// WITHOUT having to first fetch /v1/sessions and guess which one is ours.
-//
-// Python's hash() for short strings is salted per-interpreter-run (PYTHONHASHSEED),
-// so we can't pre-compute it. Instead we feed a fixed system text, then read
-// /v1/sessions AFTER the first chat call to learn the assigned id.
-function buildSystemMessageForJob(systemKey) {
-  // Reasonably unique + < 100 chars (proxy uses [:100] for the hash input).
-  // Keeping the prefix human-readable helps debugging the headless Gemini tab.
-  return `BrowserAI Veo job ${systemKey}`.slice(0, 96)
-}
-
 async function callGeminiProxy({
   prompt,
   model = DEFAULT_GEMINI_MODEL,
   attachments = [],
-  systemKey = '',           // when set, forces gemini-web-proxy to open a fresh chat
 } = {}) {
   const content = []
   if (prompt) content.push({ type: 'text', text: prompt })
@@ -214,15 +198,7 @@ async function callGeminiProxy({
       content.push({ type: 'file_url', file_url: { url: a.dataUrl, name: a.name, mime_type: a.type || 'application/octet-stream' } })
     }
   }
-  const messages = []
-  if (systemKey) {
-    // System message → forces a NEW dedicated chat tab on the Gemini side.
-    // Without it, every job lands in the shared 'default' session, polluting
-    // the chat with "оживи фото" + "готово?" spam visible to the user later.
-    messages.push({ role: 'system', content: buildSystemMessageForJob(systemKey) })
-  }
-  messages.push({ role: 'user', content: content.length ? content : String(prompt || '') })
-  const body = { model, messages }
+  const body = { model, messages: [{ role: 'user', content: content.length ? content : String(prompt || '') }] }
   const r = await fetch(`${DEFAULT_GEMINI_URL.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer not-needed' },
@@ -274,38 +250,78 @@ async function pollMediaForSession(sessionId) {
   }
 }
 
-// Pick the session id assigned to a video job. The proxy uses
-//   session_id = "default"                          if no system msg
-//   session_id = str(hash(system_text[:100]))[:8]   otherwise
-// We use a system message ("BrowserAI Veo job <jobId>") so each video job
-// gets its OWN headless chat tab and never spams the user's main session.
-//
-// Python's hash() is salted per process so we can't pre-compute the id.
-// Instead, after the first chat call we diff /v1/sessions before/after to
-// learn which id was newly added.
-async function findNewSessionId(prevList) {
-  const now = await listGeminiSessions()
-  const fresh = now.filter((s) => !prevList.includes(s))
-  if (fresh.length === 1) return fresh[0]
-  if (fresh.length > 1) return fresh[fresh.length - 1] // most recent
-  // Nothing changed — either the chat reused an existing one (unlikely with
-  // a unique system msg) or proxy is misconfigured. Fall back to last known.
-  return now[now.length - 1] || 'default'
+// Video jobs use a dedicated isolated Gemini chat opened via our patched
+// proxy endpoint POST /v1/sessions/new (returns an id like "ba-xxxxxxxx").
+// The first message + image attach go through POST /v1/sessions/{id}/send,
+// which bypasses chat_completions' session-id derivation entirely, so the
+// call is GUARANTEED to land in our tab and not in the user's "default" chat.
+/**
+ * Allocate a brand-new, isolated Gemini chat tab via our patched proxy.
+ * Returns a sessionId ("ba-xxxxxxxx") guaranteed not to clash with the
+ * shared 'default' user chat. The tab is pre-warmed (upload-button waited
+ * to appear), so the very next /send call can attach images reliably.
+ */
+async function createVideoSession() {
+  const r = await fetch(`${PROXY_ROOT}/v1/sessions/new`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (!r.ok) {
+    const t = await r.text().catch(() => '')
+    throw new Error(`new-session failed: HTTP ${r.status} ${t.slice(0, 400)}`)
+  }
+  const j = await r.json()
+  if (!j?.session_id) throw new Error('proxy returned empty session_id')
+  return j
 }
 
 /**
- * Close a headless Gemini chat tab on the proxy so we don't leak browser
- * memory across hundreds of video jobs. Idempotent / best-effort.
- * Never closes 'default' — that's the shared user session.
+ * Send the FIRST message (text + images) into a pre-allocated session.
+ * Uses our patched endpoint /v1/sessions/{id}/send which forwards to
+ * upstream send_to_gemini() but bypasses chat_completions' session-id
+ * derivation, so the call always lands in OUR headless tab.
  */
-async function releaseGeminiSession(sessionId) {
-  if (!sessionId || sessionId === 'default') return
+async function sendIntoVideoSession(sessionId, { prompt, attachments = [] }) {
+  const images = (attachments || [])
+    .filter((a) => a?.dataUrl && (String(a.type || '').startsWith('image/') || String(a.dataUrl).startsWith('data:image/')))
+    .map((a) => a.dataUrl)
+  const body = { prompt: String(prompt || ''), images }
+  const r = await fetch(`${PROXY_ROOT}/v1/sessions/${encodeURIComponent(sessionId)}/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(JOB_TIMEOUT_MS),
+  })
+  const raw = await r.text()
+  if (!r.ok) throw new Error(`session-send failed: HTTP ${r.status}: ${raw.slice(0, 800)}`)
+  let json
+  try { json = JSON.parse(raw) } catch {
+    throw new Error('session-send: non-JSON response')
+  }
+  return { reply: json?.reply || '', imageCount: json?.image_count || 0 }
+}
+
+/**
+ * Delete the underlying Gemini conversation on gemini.google.com so the
+ * user's left sidebar doesn't fill up, AND close the headless tab.
+ * Best-effort: never throws.
+ */
+async function deleteVideoSession(sessionId) {
+  if (!sessionId || sessionId === 'default' || !sessionId.startsWith('ba-')) return
+  try {
+    await fetch(`${PROXY_ROOT}/v1/sessions/${encodeURIComponent(sessionId)}/delete-chat`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(10_000),
+    })
+  } catch { /* best-effort */ }
+  // Fall-through DELETE just in case delete-chat couldn't navigate menus.
   try {
     await fetch(`${PROXY_ROOT}/v1/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(5_000),
     })
-  } catch { /* best-effort, don't break the job for cleanup failure */ }
+  } catch { /* best-effort */ }
 }
 
 // Gemini video generation (Veo) is asynchronous: the first reply is a
@@ -389,38 +405,67 @@ async function runGeminiJob(job) {
   const typeLabel = isVideo ? 'Создай видео/анимацию' : 'Выполни задачу'
   const prompt = `${typeLabel}. ${input.prompt || ''}`.trim()
   const model = input.model || DEFAULT_GEMINI_MODEL
-  setJobPatch(job.id, { progress: 25 })
+  setJobPatch(job.id, { progress: 20 })
 
-  // For video jobs: force gemini-web-proxy to open a brand-new headless
-  // Gemini chat tab dedicated to this job (system msg → unique session id).
-  // No spam in any pre-existing chat, no cross-contamination between users.
-  const systemKey = isVideo ? `${job.id}:${Date.now()}` : ''
-  const sessionsBefore = isVideo ? await listGeminiSessions() : []
+  let content = ''
+  let jobSessionId = ''
 
-  let content
-  try {
-    content = await callGeminiProxy({ prompt, model, attachments: input.attachments || [], systemKey })
-  } catch (e) {
-    setJobPatch(job.id, {
-      status: 'failed', progress: 100,
-      error: `Не удалось отправить запрос в Gemini: ${e.message || e}`,
-      result: { kind: isVideo ? 'video' : 'doc', retryable: isVideo },
-      finishedAt: now(),
-    })
-    return
+  if (isVideo) {
+    // 1. Allocate a brand-new headless Gemini tab dedicated to this job.
+    //    The patched proxy waits until the upload control is in the DOM
+    //    before returning, so set_input_files in step 2 actually works.
+    try {
+      const sess = await createVideoSession()
+      jobSessionId = sess.session_id
+      appendJobLog(job.id, `Открыл отдельную Gemini-сессию: ${jobSessionId}${sess.attach_button_present ? '' : ' (⚠ upload-кнопка не появилась за 15с — попробую всё равно)'}`)
+      setJobPatch(job.id, { progress: 30 })
+    } catch (e) {
+      setJobPatch(job.id, {
+        status: 'failed', progress: 100,
+        error: `Не удалось открыть отдельный Gemini-чат: ${e.message || e}`,
+        result: { kind: 'video', retryable: true },
+        finishedAt: now(),
+      })
+      return
+    }
+
+    // 2. Send the prompt + image into THAT session via /v1/sessions/{id}/send.
+    try {
+      const sent = await sendIntoVideoSession(jobSessionId, {
+        prompt,
+        attachments: input.attachments || [],
+      })
+      content = sent.reply
+      appendJobLog(job.id, `Запрос отправлен в Gemini (картинок прикреплено: ${sent.imageCount})`)
+      if ((input.attachments || []).some((a) => String(a?.type || '').startsWith('image/')) && sent.imageCount === 0) {
+        appendJobLog(job.id, '⚠ Картинка не прикрепилась — Gemini, скорее всего, попросит её ещё раз')
+      }
+    } catch (e) {
+      appendJobLog(job.id, `Ошибка отправки в Gemini: ${e.message || e}`)
+      // Don't abort — proxy may still have queued the message; let polling try.
+      content = ''
+    }
+    setJobPatch(job.id, { progress: 70 })
+  } else {
+    // Non-video Gemini jobs: keep the old shared-session behaviour.
+    try {
+      content = await callGeminiProxy({ prompt, model, attachments: input.attachments || [] })
+    } catch (e) {
+      setJobPatch(job.id, {
+        status: 'failed', progress: 100,
+        error: `Не удалось отправить запрос в Gemini: ${e.message || e}`,
+        result: { kind: 'doc', retryable: false },
+        finishedAt: now(),
+      })
+      return
+    }
+    setJobPatch(job.id, { progress: 70 })
   }
+
   appendJobLog(job.id, 'Ответ Gemini получен')
-  setJobPatch(job.id, { progress: 70 })
 
   let dataUrls = extractDataUrls(content)
   let remoteUrls = []
-
-  // For video: figure out which headless session the proxy spun up for us.
-  let jobSessionId = ''
-  if (isVideo) {
-    jobSessionId = await findNewSessionId(sessionsBefore)
-    appendJobLog(job.id, `Выделенная Gemini-сессия для этого видео: ${jobSessionId}`)
-  }
 
   // Async video: if no usable video came back on the first call, poll the
   // SAME chat reply via the proxy's /poll-media endpoint until Veo finishes.
@@ -435,7 +480,7 @@ async function runGeminiJob(job) {
     const polled = await pollGeminiVideo(job, model, jobSessionId)
     if (polled.cancelled) {
       appendJobLog(job.id, 'Задача отменена пользователем во время ожидания видео')
-      await releaseGeminiSession(jobSessionId)
+      await deleteVideoSession(jobSessionId)
       return
     }
     if (polled.sessionLost) {
@@ -445,6 +490,7 @@ async function runGeminiJob(job) {
         result: { content: polled.content || content, kind: 'video', retryable: true },
         finishedAt: now(),
       })
+      // Session is already gone; no chat to delete.
       return
     }
     if (polled.dataUrls.length) {
@@ -452,22 +498,21 @@ async function runGeminiJob(job) {
       dataUrls = polled.dataUrls
     } else if (polled.timedOut) {
       appendJobLog(job.id, 'Видео не успело сгенерироваться за отведённое время (25 мин лимит)')
-      // Don't fail outright if we at least have a hint of a remote URL —
-      // the UI will surface a "Скачать видео" retry button.
       remoteUrls = polled.remoteUrls || []
       const errMsg = remoteUrls.length
-        ? 'Видео сгенерировано, но скачать его автоматически не удалось. Нажми «Повторить запрос видео» — попробую снова.'
+        ? 'Видео сгенерировано, но скачать его автоматически не удалось. Нажми «Повторить запрос видео» — попробую снова в новом чате.'
         : 'Gemini не вернул готовое видео за отведённое время. Попробуйте ещё раз позже или нажмите «Повторить запрос видео» в карточке.'
       if (remoteUrls.length) {
-        appendJobLog(job.id, `Получены ${remoteUrls.length} ссылок на видео — UI предложит докачать`)
+        appendJobLog(job.id, `Получены ${remoteUrls.length} ссылок на видео — UI предложит докачать в новой попытке`)
       }
       setJobPatch(job.id, {
         status: 'failed', progress: 100, error: errMsg,
         result: { content, remoteUrls, retryable: true, kind: 'video' },
         finishedAt: now(),
       })
-      // Keep the headless tab alive: retry will reuse it via /poll-media,
-      // no need to spin up a new Veo run from scratch.
+      // Trash the abandoned Gemini chat so it doesn't pollute the sidebar.
+      // The retry button creates a fresh job → fresh session anyway.
+      await deleteVideoSession(jobSessionId)
       return
     } else if (polled.content) {
       content = polled.content
@@ -486,6 +531,7 @@ async function runGeminiJob(job) {
       result: { content, files, dataUrlsCount: dataUrls.length, retryable: true, kind: 'video' },
       finishedAt: now(),
     })
+    await deleteVideoSession(jobSessionId)
     return
   }
 
@@ -501,7 +547,7 @@ async function runGeminiJob(job) {
     finishedAt: now(),
   })
   // Free the headless Gemini tab now that the video is safely in workspace.
-  if (isVideo) await releaseGeminiSession(jobSessionId)
+  if (isVideo) await deleteVideoSession(jobSessionId)
 }
 
 // Re-run a video job that previously timed out or produced no usable file.
