@@ -14,8 +14,35 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN || ''
 const GITHUB_REPO = process.env.GITHUB_REPO || 'robesthud/browserAI'
 const OPS_AUDIT_LOG = process.env.OPS_AUDIT_LOG || '/data/ops-audit.log'
 
+// Redact secrets from any text returned to the agent/LLM or written to the
+// audit log. The model never needs raw tokens, and ops output (docker logs,
+// git diff, GitHub file content, deploy output) can incidentally contain them.
+const SECRET_ENV_NAMES = [
+  'GITHUB_TOKEN', 'TG_BOT_TOKEN', 'TG_USER_BOT_TOKEN', 'AUTH_SECRET',
+  'SESSION_SECRET', 'CF_PROXY_SECRET', 'DEEPSEEK_USER_TOKEN', 'SMTP_PASS',
+  'TWILIO_AUTH_TOKEN',
+]
+function redactSecrets(text = '') {
+  let s = String(text || '')
+  if (!s) return s
+  // 1) Exact known env-var values currently set in the process.
+  for (const name of SECRET_ENV_NAMES) {
+    const v = process.env[name]
+    if (v && v.length >= 6) s = s.split(v).join('<redacted>')
+  }
+  // 2) Token-shaped patterns (GitHub PATs, Bearer tokens, JWTs, long cookies).
+  s = s
+    .replace(/github_pat_[A-Za-z0-9_]+/g, '<redacted-gh-pat>')
+    .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}/g, '<redacted-gh-token>')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/gi, 'Bearer <redacted>')
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}/g, '<redacted-jwt>')
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '<redacted-private-key>')
+    .replace(/((?:cf_clearance|ds_session_id|smidV2|aws-waf-token)=)[^;\s"']+/gi, '$1<redacted>')
+  return s
+}
+
 function clip(s = '', max = 12000) {
-  const str = String(s || '')
+  const str = redactSecrets(String(s || ''))
   return str.length > max ? str.slice(0, max) + `\n... [truncated ${str.length - max} chars]` : str
 }
 
@@ -186,7 +213,7 @@ async function githubAction(action, params = {}) {
     const ref = params.ref || 'main'
     const j = await (await githubApi(`/repos/${repo}/contents/${encodeURIComponent(filePath).replace(/%2F/g, '/')}?ref=${encodeURIComponent(ref)}`)).json()
     const content = j.content ? Buffer.from(j.content, 'base64').toString('utf8') : ''
-    return { stdout: content, stderr: '', exitCode: 0, sha: j.sha }
+    return { stdout: clip(content, Number(params.maxChars) || 30000), stderr: '', exitCode: 0, sha: j.sha }
   }
   if (action === 'put_file') {
     const filePath = params.path
@@ -223,7 +250,7 @@ async function telegramNotify({ text = '' } = {}) {
     signal: AbortSignal.timeout(15_000),
   })
   const raw = await r.text()
-  return { stdout: raw, stderr: r.ok ? '' : raw, exitCode: r.ok ? 0 : r.status }
+  return { stdout: clip(raw, 4000), stderr: r.ok ? '' : clip(raw, 4000), exitCode: r.ok ? 0 : r.status }
 }
 
 export const OPS_SERVICES = {
@@ -303,7 +330,7 @@ export async function runOpsAction({ service, action, params = {}, confirm = fal
       return result
     }
   } catch (e) {
-    auditOps({ service, action, status: 'throw', error: e.message, ms: Date.now() - started })
+    auditOps({ service, action, status: 'throw', error: redactSecrets(e.message), ms: Date.now() - started })
     throw e
   }
 

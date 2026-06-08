@@ -9,7 +9,7 @@ The agent sees only these generic tools:
 - `ops_list_services` — list configured services and allowed actions.
 - `ops_run_action` — run a safe action, or a dangerous action after confirmation.
 
-Secrets are stored on the server as environment variables or files. Tool results must not include tokens.
+Secrets are stored on the server as environment variables or files. Tool results must not include tokens — all ops output (command stdout/stderr, GitHub file contents, deploy logs) and audit-log error fields are passed through `redactSecrets()`, which strips known env-var values plus token-shaped patterns (GitHub PATs, Bearer tokens, JWTs, private keys, session cookies) before reaching the agent/LLM or the audit log.
 
 ## Built-in services
 
