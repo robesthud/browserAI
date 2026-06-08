@@ -1804,6 +1804,29 @@ app.get('/api/kb/search', requireAuth, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }) }
 })
 
+// ── Semantic long-term memory ───────────────────────────────────────────────
+app.get('/api/memory', requireAuth, async (req, res) => {
+  try {
+    const { listMemories } = await import('./semanticMemory.js')
+    res.json({ memories: listMemories(req.user?.id, { limit: Number(req.query.limit || 50) }) })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/memory', requireAuth, async (req, res) => {
+  try {
+    const { rememberMemory } = await import('./semanticMemory.js')
+    const r = await rememberMemory(req.user?.id, String(req.body?.text || ''), { chatId: req.body?.chatId || '' })
+    res.json({ ok: true, ...(r || {}) })
+  } catch (e) { res.status(400).json({ error: e.message }) }
+})
+
+app.delete('/api/memory/:id', requireAuth, async (req, res) => {
+  try {
+    const { forgetMemory } = await import('./semanticMemory.js')
+    res.json({ ok: true, ...forgetMemory(req.user?.id, req.params.id) })
+  } catch (e) { res.status(400).json({ error: e.message }) }
+})
+
 app.post('/api/jobs', requireAuth, (req, res) => {
   try {
     const { type, title = '', prompt = '', chatId = '', model = '', attachments = [], input = {} } = req.body || {}
@@ -2538,10 +2561,27 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
     modelHintNote = renderModelHintForPrompt(model)
   } catch { /* optional */ }
 
+  // Semantic recall: pull the top-K memories most relevant to whatever
+  // the user just typed (last user message). This is the cross-chat
+  // "wait, we talked about this last week" memory layer — works on top
+  // of the explicit remember_fact KV the agent can also write to.
+  let recallNote = ''
+  try {
+    const lastUser = [...safeHistory].reverse().find((m) => m.role === 'user')
+    if (lastUser?.content && req.user?.id) {
+      const { renderRecallForPrompt } = await import('./semanticMemory.js')
+      recallNote = await renderRecallForPrompt(req.user.id, lastUser.content, {
+        topK: 5,
+        provider: { baseUrl, apiKey, authType, authHeader, extraHeaders: mergedExtraHeaders, model },
+      })
+    }
+  } catch (e) { console.warn('[agent] recall failed:', e?.message || e) }
+
   const extraSystemFinal = [
     String(extraSystem || '').replace(/\[browserai-first-turn\]/g, '').trim(),
     modelHintNote,
     userFactsNote,
+    recallNote,
     projectRulesNote,
     realActivityNote,
   ].filter(Boolean).join('\n\n')
@@ -2563,6 +2603,19 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
       userId: req.user?.id || '',
       res,
     })
+    // Fire-and-forget: ask the model to extract 0-3 memorable facts from
+    // the turn we just finished and store them in long-term memory.
+    // Never blocks the response — runs after the SSE stream has ended.
+    if (req.user?.id) {
+      try {
+        const { extractAndStore } = await import('./factExtractor.js')
+        void extractAndStore({
+          userId: req.user.id, chatId,
+          provider: { baseUrl, apiKey, authType, authHeader, extraHeaders: mergedExtraHeaders, model },
+          history: safeHistory,
+        }).catch(() => { /* best-effort */ })
+      } catch { /* optional */ }
+    }
   } catch (e) {
     if (!res.headersSent) {
       res.status(500).json({ error: e.message })

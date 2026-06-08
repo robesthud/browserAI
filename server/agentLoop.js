@@ -45,52 +45,78 @@ const TOOL_FENCE_RE = /```(?:json|tool|tool_call)?\s*\n?\s*(\{[\s\S]*?\})\s*\n?\
 // ── System prompt ───────────────────────────────────────────────────────────
 function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null } = {}) {
   const head = [
-    'You are an autonomous coding agent operating inside BrowserAI.',
-    'You can read and write files in /workspace, search the web, fetch pages, and run shell commands in an isolated sandbox.',
+    'You are BrowserAI — an autonomous coding agent that thinks, plans, uses',
+    'tools, verifies its own work, and reports honestly. You operate inside',
+    'a real sandbox with files in /workspace and a live shell.',
+    '',
+    '# How you think (very important)',
+    '',
+    '  • Plan before you act on anything non-trivial. For tasks with more',
+    '    than ~3 steps, call `plan_set` first with a short checklist, then',
+    '    `plan_check` after each completed step. The user can SEE the plan',
+    '    in the UI and knows what to expect.',
+    '',
+    '  • Reach for parallel tools. When you need to read 3 files / search',
+    '    3 patterns / check 3 things — emit them in ONE response, side by',
+    '    side. The loop runs them concurrently, you save N round-trips.',
+    '    Especially: `read_file` × N at the start of a code-change task.',
+    '',
+    '  • Read before you write. Always `read_file` before `edit_file`,',
+    '    never patch from memory. If a file is huge, `search_files` first',
+    '    to find the exact byte range.',
+    '',
+    '  • Use long-term memory. When the user tells you a stable preference',
+    '    or shares a recurring fact about themselves / their project, call',
+    '    `remember_fact` (key/value, fast) and/or `kb_add` (long doc).',
+    '    These survive across chats. Do NOT spam — only persist things',
+    '    you would actually want to recall a week later.',
+    '',
+    '  • Recall before you guess. If the user references a past topic you',
+    '    do not have in the current chat ("тот проект где мы…"), call',
+    '    `kb_search` / `recall_facts` before asking for clarification.',
     '',
     '# Hard rules — non-negotiable',
     '',
-    '  1. **Never** paste source code, patches, or diffs in your chat reply. If',
-    '     the user asks you to "fix bugs", "improve", "rewrite", "refactor",',
-    '     "change", "edit", "add a feature" — you MUST apply the change',
-    '     to the actual file via `edit_file` or `write_file`. A reply that',
-    '     shows code in markdown without first calling a tool is a BUG.',
+    '  1. **Never** paste source code, patches, or diffs in your chat reply.',
+    '     If the user asks to fix/edit/improve/refactor anything — you MUST',
+    '     apply the change via `edit_file` / `write_file`. A reply that shows',
+    '     code in markdown without a tool call first is a BUG.',
     '',
-    '  2. **Always read before you write.** Call `read_file` before',
-    '     `edit_file`/`write_file` so the patch is based on the current',
-    '     contents, not an assumption.',
+    '  2. **Prefer `edit_file`** with `edits:[{old_text,new_text},…]` over',
+    '     `write_file` for changes touching < 80% of a file. write_file',
+    '     replaces the whole file — easy to lose context.',
     '',
-    '  3. **Prefer `edit_file`** over `write_file` for any change touching',
-    '     less than 80% of the file. `write_file` replaces the entire file',
-    '     and loses parts you forgot to include.',
+    '  3. **Verify your work.** After a batch of edits run `verify_code`',
+    '     (or `run_tests` if the project has a suite). Never declare success',
+    '     without verification passing on the files you touched.',
     '',
-    '  4. **Verify your work.** After a batch of edits run `verify_code`',
-    '     (syntax / lint / tests). If it fails — fix and re-verify. Never',
-    '     declare success without `verify_code` passing on touched files.',
+    '  4. **Confirm dangerous ops first.** Deploy / restart / delete repo /',
+    '     `ops_run_action` with `confirm:true` — ALWAYS preceded by',
+    '     `ask_user` so the user explicitly OKs the change.',
     '',
-    '  5. **Report only real, observed work.** Your final summary must list',
-    '     each tool call you actually made (file paths, commit ids, command',
-    '     exit codes — facts from tool results). Do NOT invent steps, files,',
-    '     or numbers. If something failed, say so plainly.',
+    '  5. **Be honest about failures.** If a tool failed, say so. If you',
+    '     could not figure something out, say so and propose what info you',
+    '     would need. Never invent file paths, commit ids, or tool results.',
     '',
-    '  6. Never invent tool names or parameter names — only what is listed',
-    '     below. If a needed tool is missing, say so and ask the user.',
+    '  6. **Cite your real work in summaries.** Your final user-facing reply',
+    '     lists ONLY tool calls you actually made (taken from the conversation',
+    '     above). No phantom steps, no aspirational sentences in past tense.',
     '',
-    '  7. Dangerous ops (deploy / restart / delete repo / drop DB) require',
-    '     `ask_user` confirmation BEFORE calling `ops_run_action` with',
-    '     `confirm:true`.',
+    '  7. Never invent tool names or parameter names — only what is listed',
+    '     below. If a needed tool is missing, say so and `ask_user`.',
     '',
     '# Standard workflow for code-change requests',
     '',
-    '  1. `list_files` or `search_files` to locate the relevant files (skip',
-    '     if the user already gave exact paths).',
-    '  2. `read_file` each target file.',
-    '  3. `edit_file` (small surgical replacement) — repeat per file.',
-    '  4. `verify_code` on the touched paths.',
-    '  5. If asked, `git_status` / `git_diff` to show what changed.',
-    '  6. Write a short Russian-language SUMMARY listing only what you',
-    '     really did: bullet points like "✓ server/foo.js: исправил X",',
-    '     "✓ verify_code: ok", with file paths from your own tool calls.',
+    '  1. `plan_set` with the steps you intend to take (>3 step tasks).',
+    '  2. `list_files` / `search_files` to locate targets (parallel where',
+    '     it helps).',
+    '  3. `read_file` each target (parallel batch).',
+    '  4. `edit_file` with `edits:[…]` per file. Multi-file rename →',
+    '     `replace_across_files` instead.',
+    '  5. `verify_code` / `run_tests` on the touched paths.',
+    '  6. If asked or appropriate: `git_status` → `git_commit` → `git_push`',
+    '     → `github_pr_create`. Get `ask_user` confirmation BEFORE push.',
+    '  7. Final RUSSIAN-language summary — only real, observed work.',
     '',
   ]
   const callingHelp = native
@@ -183,6 +209,56 @@ function clipForLLM(s, modelId = '') {
   return `${str.slice(0, head)}\n\n… [${hidden} characters omitted to keep context small — run with a more specific filter to see the middle] …\n\n${str.slice(-tail)}`
 }
 
+/**
+ * Auto-compact the running `convo` array when it's about to push past
+ * the provider's context window. Strategy:
+ *   1. Estimate total chars in convo (≈4 chars per token, conservative).
+ *   2. If we're under 60% of the model's budget → noop.
+ *   3. Otherwise replace the OLDEST third of the conversation (everything
+ *      after the system message and before the most recent N turns) with
+ *      a single condensed summary message that lists what was done so
+ *      the agent doesn't lose its bearings.
+ *
+ * Called once per iteration of the main loop. Cheap O(n) over convo size.
+ */
+function maybeAutoCompact(convo, modelId) {
+  const budget = tokenBudgetFor(modelId)
+  const budgetChars = budget.ctxTokens * 4
+  let total = 0
+  for (const m of convo) total += String(m?.content || '').length
+  if (total < budgetChars * 0.6) return false
+  // Keep system + last 8 messages verbatim; squash the middle.
+  const sys = convo[0]?.role === 'system' ? convo[0] : null
+  const keepTail = 8
+  if (convo.length - (sys ? 1 : 0) <= keepTail + 2) return false
+  const head = sys ? [sys] : []
+  const middleStart = sys ? 1 : 0
+  const middleEnd = convo.length - keepTail
+  const middle = convo.slice(middleStart, middleEnd)
+  const tail = convo.slice(middleEnd)
+  // Build a terse digest: "U: …", "A used: tool1, tool2", "Tool: …"
+  const lines = []
+  for (const m of middle) {
+    if (m.role === 'user') lines.push(`U: ${String(m.content || '').slice(0, 240)}`)
+    else if (m.role === 'assistant') {
+      const t = String(m.content || '').slice(0, 240)
+      const tools = Array.isArray(m.tool_calls) ? m.tool_calls.map((tc) => tc?.function?.name || tc?.name).filter(Boolean) : []
+      if (tools.length) lines.push(`A used: ${tools.join(', ')}`)
+      if (t) lines.push(`A: ${t}`)
+    } else if (m.role === 'tool') {
+      lines.push(`T ${m.name || ''}: ${String(m.content || '').slice(0, 240)}`)
+    }
+  }
+  const digest = {
+    role: 'user',
+    content:
+      '[auto-compact summary of earlier turns — full text was dropped to free up context]\n\n' +
+      lines.join('\n').slice(0, 4000),
+  }
+  convo.splice(middleStart, middle.length, digest)
+  return true
+}
+
 // ── Programmatic safety nets (IQ+20 patches) ────────────────────────────────
 // These run alongside the system prompt; they catch failure modes that
 // instruction-following alone is unreliable about.
@@ -204,53 +280,52 @@ function callFingerprint(call) {
 }
 
 
-// ── XML Function Call Parser (Arena.ai style) ────────────────────────────────
-const XML_TOOL_CALL_RE = /<xai:function_call[^>]*>([\s\S]*?)<\/xai:function_call>/gi
-const XML_PARAM_RE = /<parameter name="([^"]+)">([\s\S]*?)<\/parameter>/gi
+// ── XML Function Call Parser (Arena.ai / Anthropic / Grok style) ────────────
+// Models that don't expose native OpenAI tool_calls (DeepSeek, Gemini Web,
+// some older Llamas) reliably emit ONE of these XML envelopes:
+//
+//   <xai:function_call>
+//     <xai:tool_name>read_file</xai:tool_name>
+//     <parameter name="path">server/index.js</parameter>
+//   </xai:function_call>
+//
+// We also accept the older <function_call name="..."> shape from Anthropic
+// circa Claude-2 and the newer <tool_use name="..."> Claude-3 one.
+//
+// Multiple blocks back-to-back → parallel tool batch in the same loop tick.
+const XML_TOOL_CALL_RE = /<(?:xai:function_call|tool_use|function_call)([^>]*)>([\s\S]*?)<\/(?:xai:function_call|tool_use|function_call)>/gi
+const XML_PARAM_RE = /<parameter\s+name="([^"]+)"\s*>([\s\S]*?)<\/parameter>/gi
 
 function parseXmlFunctionCalls(text) {
   const calls = []
+  // Reset lastIndex because we share the RegExp across calls.
+  XML_TOOL_CALL_RE.lastIndex = 0
   let match
   while ((match = XML_TOOL_CALL_RE.exec(text)) !== null) {
-    const content = match[1]
-    const nameMatch = content.match(/<xai:tool_name>([^<]+)<\/xai:tool_name>/i) ||
-                      content.match(/name=["']([^"']+)["']/i)
+    const openAttrs = match[1] || ''
+    const content = match[2] || ''
+    // Tool name can live in any of: <xai:tool_name>X</xai:tool_name>,
+    // <tool_name>X</tool_name>, or as a name="X" attribute on the opening tag.
+    const nameMatch =
+      content.match(/<xai:tool_name>([^<]+)<\/xai:tool_name>/i) ||
+      content.match(/<tool_name>([^<]+)<\/tool_name>/i) ||
+      openAttrs.match(/name\s*=\s*["']([^"']+)["']/i)
     if (!nameMatch) continue
     const name = nameMatch[1].trim()
     const args = {}
+    XML_PARAM_RE.lastIndex = 0
     let paramMatch
     while ((paramMatch = XML_PARAM_RE.exec(content)) !== null) {
       args[paramMatch[1]] = paramMatch[2].trim()
     }
+    // Also accept Claude-style <invoke> body as JSON inside the call.
+    const invokeJsonMatch = content.match(/<invoke[^>]*>([\s\S]*?)<\/invoke>/i)
+    if (invokeJsonMatch) {
+      try { Object.assign(args, JSON.parse(invokeJsonMatch[1].trim())) } catch { /* ignore */ }
+    }
     calls.push({ tool: name, args })
   }
   return calls
-function extractToolCalls(text, nativeToolCalls = null) {
-  // Приоритет: native tool_calls от провайдера
-  if (nativeToolCalls && Array.isArray(nativeToolCalls) && nativeToolCalls.length > 0) {
-    return nativeToolCalls.map(tc => ({
-      tool: tc.function?.name || tc.name,
-      args: tc.function?.arguments ? JSON.parse(tc.function.arguments) : (tc.args || {})
-    }))
-  }
-  
-  // XML формат (Arena.ai style) - поддержка нескольких вызовов
-  const xmlCalls = parseXmlFunctionCalls(text)
-  if (xmlCalls.length > 0) return xmlCalls
-  
-  // Fallback: JSON в кодовых блоках
-  const jsonMatch = text.match(/```(?:json|tool|tool_call)?\s*\n?\s*(\{[\s\S]*?\})\s*\n?\s*```/i)
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[1])
-      if (parsed.tool) return [{ tool: parsed.tool, args: parsed.args || {} }]
-      if (Array.isArray(parsed)) return parsed
-    } catch {}
-  }
-  
-  return []
-}
-
 }
 /**
  * Detect a tool-call loop: the model has called the SAME (tool, args)
@@ -391,6 +466,64 @@ function sse(res, event, data) {
  * frontend appends each delta into the message bubble live, then snaps
  * to the canonical final string. Stays under 100 events per response.
  */
+/**
+ * Tiny "did I finish the task?" check.
+ *
+ * Run BEFORE we accept the agent's first proposed final answer. Asks the
+ * same LLM provider a yes/no question + reason. Cheap (~120 prompt
+ * tokens). Catches the most common 'gave-up-too-early' failures:
+ *   - user asked to edit N files, agent edited 1
+ *   - user asked "is it deployed?" and agent answered "I think so" without
+ *     calling verify_code / git_status
+ *   - agent says "done" but no edit_file in toolHistory
+ *
+ * Returns { needsMoreWork: bool, reason: string, usage }.
+ * Errors are swallowed by the caller — reflection is best-effort.
+ */
+async function runReflectionCheck({ provider, ask, draft, toolHistory }) {
+  const toolSummary = (toolHistory || [])
+    .slice(-12)
+    .map((h) => `${h.ok ? '✓' : '✗'} ${h.tool}`)
+    .join(', ') || '(none)'
+  const prompt = [
+    'Ты — критик автономного агента. Оцени, выполнил ли он задачу пользователя.',
+    '',
+    `Запрос пользователя:\n${String(ask || '').slice(0, 1500)}`,
+    '',
+    `Какие инструменты были вызваны (последние): ${toolSummary}`,
+    '',
+    `Черновик финального ответа агента:\n${String(draft || '').slice(0, 2000)}`,
+    '',
+    'Ответь СТРОГО одной строкой:',
+    '  DONE                — если запрос полностью закрыт',
+    '  TODO: <причина>     — если есть пропущенные шаги, требующие ещё tool-вызовов',
+    '',
+    'TODO выдавай ТОЛЬКО для реально пропущенных действий (например: ' +
+    'пользователь просил исправить 3 файла — исправлен 1; пользователь ' +
+    'просил задеплоить — не было ops_run_action; код был изменён, но ' +
+    'verify_code не запускался). Не придирайся к стилю и формулировкам.',
+  ].join('\n')
+
+  const reply = await callLLM({
+    baseUrl: provider.baseUrl, apiKey: provider.apiKey,
+    authType: provider.authType || 'bearer',
+    authHeader: provider.authHeader || '',
+    extraHeaders: provider.extraHeaders || {},
+    model: provider.model,
+    messages: [
+      { role: 'system', content: 'You are a terse reviewer. One line. No markdown.' },
+      { role: 'user', content: prompt },
+    ],
+    temperature: 0.1,
+  })
+  const out = String(reply?.text || '').trim().split(/\r?\n/)[0] || ''
+  const todoMatch = out.match(/^\s*todo\s*[:\-—]?\s*(.+)$/i)
+  if (todoMatch) {
+    return { needsMoreWork: true, reason: todoMatch[1].trim(), usage: reply.usage }
+  }
+  return { needsMoreWork: false, reason: '', usage: reply.usage }
+}
+
 async function streamFinalAnswer(res, fullText) {
   const text = String(fullText || '')
   if (!text) {
@@ -523,6 +656,12 @@ async function runAgentInner({
       }
       step += 1
       pushedBackThisTurn = false
+      // Keep the conversation under the model's context budget. If we
+      // had to compact, emit a 'thought' so the user sees it happened
+      // (otherwise it would look like the agent silently forgot).
+      if (maybeAutoCompact(convo, provider?.model)) {
+        sse(res, 'thought', { step, text: 'Контекст приближается к лимиту модели — сжал старые шаги в краткую сводку.' })
+      }
       sse(res, 'thinking', { step })
 
       // Call the LLM. Some OpenAI-compatible endpoints advertise a familiar
@@ -595,9 +734,19 @@ async function runAgentInner({
       }
       let malformedToolCall = false
       if (calls.length === 0) {
-        const textCall = extractTextToolCall(reply.text, extraTools)
-        if (textCall?.malformed) malformedToolCall = true
-        else if (textCall) calls = [textCall]
+        // 1) XML envelope (Arena.ai / Anthropic / Grok style) — supports
+        //    multiple <xai:function_call> blocks for parallel batches.
+        const xmlCalls = parseXmlFunctionCalls(reply.text || '')
+        for (const c of xmlCalls) {
+          if (TOOLS[c.tool] || (extraTools && extraTools[c.tool])) calls.push(c)
+        }
+        // 2) Legacy single JSON fenced block (kept for back-compat with
+        //    models that learnt the old prompt).
+        if (calls.length === 0) {
+          const textCall = extractTextToolCall(reply.text, extraTools)
+          if (textCall?.malformed) malformedToolCall = true
+          else if (textCall) calls = [textCall]
+        }
       }
 
       if (calls.length === 0) {
@@ -634,6 +783,31 @@ async function runAgentInner({
           continue
         }
         // Final answer
+        // Self-reflection: before committing the answer, ask the model
+        // one cheap "did I actually finish what the user asked?" check.
+        // This is the small sub-agent loop that big AI assistants use to
+        // catch sloppy stop-too-early answers. Skipped on the very first
+        // turn (no work to reflect on) and when the previous turn was
+        // already a reflection retry to avoid infinite ping-pong.
+        const lastUserAsk = [...history].reverse().find((m) => m.role === 'user')?.content || ''
+        const didRealWork = recentToolHistory.some((h) => h.ok && !['ask_user', 'recall_facts', 'plan_check', 'plan_set'].includes(h.tool))
+        const reflectionAlreadyDone = convo.some((m) => m.role === 'user' && String(m.content || '').startsWith('[reflection]'))
+        if (didRealWork && !reflectionAlreadyDone && !aborted) {
+          const verdict = await runReflectionCheck({
+            provider, ask: lastUserAsk, draft: reply.text || '', toolHistory: recentToolHistory,
+          }).catch(() => null)
+          if (verdict?.usage) accumulateUsage(verdict.usage)
+          if (verdict?.needsMoreWork) {
+            sse(res, 'thought', { step, text: `Самопроверка: ${verdict.reason}. Продолжаю.` })
+            convo.push({
+              role: 'user',
+              content:
+                `[reflection] You said you were done, but a self-check identified gaps:\n${verdict.reason}\n\n` +
+                'Address them now using tools. If they are not real gaps, briefly explain why and finalise.',
+            })
+            continue
+          }
+        }
         // Stream the final answer in word-sized chunks instead of one
         // giant payload. Gives the UI a perceived typing animation even
         // when the provider didn't expose true token-by-token streaming
