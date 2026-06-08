@@ -1,5 +1,5 @@
 diff --git a/server.py b/server.py
-index 121bdc5..d8ff4fe 100644
+index 121bdc5..7751442 100644
 --- a/server.py
 +++ b/server.py
 @@ -6,6 +6,9 @@ import json
@@ -193,7 +193,7 @@ index 121bdc5..d8ff4fe 100644
      
      # Count existing responses BEFORE sending
      existing_responses = await page.query_selector_all('div[id^="model-response-message-content"]')
-@@ -448,10 +590,35 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
+@@ -448,10 +590,71 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
      if not response_text:
          raise Exception(f"Timeout after {timeout}s")
      
@@ -203,7 +203,7 @@ index 121bdc5..d8ff4fe 100644
 +    extraction = await page.evaluate('''async () => {
          const lastResponse = [...document.querySelectorAll('div[id^="model-response-message-content"]')].pop();
 -        if (!lastResponse) return { text: '', codeBlocks: [] };
-+        if (!lastResponse) return { text: '', codeBlocks: [], images: [] };
++        if (!lastResponse) return { text: '', codeBlocks: [], images: [], videos: [] };
 +        
 +        async function srcToDataUrl(src) {
 +            if (!src) return '';
@@ -229,19 +229,55 @@ index 121bdc5..d8ff4fe 100644
 +            const dataUrl = await srcToDataUrl(src);
 +            images.push({ src, dataUrl, alt: img.alt || 'generated image' });
 +        }
++
++        // Generated VIDEO extraction (Gemini Veo). Videos are async and the
++        // <video>/generated_video_content URLs are only valid inside this
++        // authenticated browser context, so fetch them here to data: URLs.
++        async function srcToVideoDataUrl(src) {
++            if (!src) return '';
++            if (src.startsWith('data:video/')) return src;
++            try {
++                const blob = await fetch(src).then(r => r.blob());
++                return await new Promise((resolve, reject) => {
++                    const reader = new FileReader();
++                    reader.onload = () => resolve(String(reader.result || ''));
++                    reader.onerror = reject;
++                    reader.readAsDataURL(blob);
++                });
++            } catch (e) { return ''; }
++        }
++        const videos = [];
++        const seenV = new Set();
++        const vEls = [...lastResponse.querySelectorAll('video, video source')];
++        for (const v of vEls.slice(0, 4)) {
++            let src = v.currentSrc || v.src || '';
++            if (!src && v.querySelector) { const so = v.querySelector('source'); if (so) src = so.src || ''; }
++            if (!src || seenV.has(src)) continue;
++            seenV.add(src);
++            const dataUrl = await srcToVideoDataUrl(src);
++            if (dataUrl && dataUrl.startsWith('data:video/')) videos.push({ src, dataUrl });
++        }
++        const vLinks = [...lastResponse.querySelectorAll('a[href*=\"generated_video_content\"], a[href*=\"/video\"]')];
++        for (const a of vLinks.slice(0, 4)) {
++            const src = a.href || '';
++            if (!src || seenV.has(src)) continue;
++            seenV.add(src);
++            const dataUrl = await srcToVideoDataUrl(src);
++            if (dataUrl && dataUrl.startsWith('data:video/')) videos.push({ src, dataUrl });
++        }
          
          // Try multiple selectors for code blocks in Gemini
          const selectors = [
-@@ -476,7 +643,7 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
+@@ -476,7 +679,7 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
          // Get full text content
          const text = lastResponse.innerText || lastResponse.textContent || '';
          
 -        return { text, codeBlocks };
-+        return { text, codeBlocks, images };
++        return { text, codeBlocks, images, videos };
      }''')
      
      text_content = extraction.get('text', '').replace('\\_', '_')
-@@ -560,6 +727,67 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
+@@ -560,6 +763,78 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
      
      # No tool calls - convert HTML to markdown
      response_text = md(response_text, heading_style="ATX", code_language_callback=lambda el: el.get('class', [''])[0].replace('language-', '') if el.get('class') else '')
@@ -257,6 +293,17 @@ index 121bdc5..d8ff4fe 100644
 +            response_text = response_text.replace(src, data_url)
 +        if data_url and data_url not in response_text:
 +            response_text += f"\n\n![{alt}]({data_url})"
++
++    # Inline generated videos as data: URLs so BrowserAI can save them.
++    for video in extraction.get('videos', []) or []:
++        v_src = video.get('src') or ''
++        v_data = video.get('dataUrl') or ''
++        if not (v_data and v_data.startswith('data:video/')):
++            continue
++        if v_src and v_src in response_text:
++            response_text = response_text.replace(v_src, v_data)
++        if v_data not in response_text:
++            response_text += f"\n\n[generated video]({v_data})"
 +
 +    # Last-resort fallback: Gemini image responses can be rendered in a
 +    # component that hides the real image URL. If markdown contains an empty
@@ -309,7 +356,7 @@ index 121bdc5..d8ff4fe 100644
      
      return response_text.strip()
  
-@@ -672,10 +900,19 @@ async def chat_completions(request: ChatRequest):
+@@ -672,10 +947,19 @@ async def chat_completions(request: ChatRequest):
      
      async with page_locks[session_id]:
          conversation = format_conversation(request.messages, request.tools)
@@ -331,7 +378,7 @@ index 121bdc5..d8ff4fe 100644
              print(f"📤 [{time.strftime('%H:%M:%S')}] {response[:80]}...")
              
              # Check for tool calls
-@@ -824,12 +1061,17 @@ async def chat_completions(request: ChatRequest):
+@@ -824,12 +1108,17 @@ async def chat_completions(request: ChatRequest):
  
  @app.get("/v1/models")
  async def list_models():

@@ -20,6 +20,13 @@ as a local OpenAI-compatible bridge to Gemini Web.
 - Generated image output support:
   - converts Gemini `blob:` image results to `data:image/png;base64,...`
   - falls back to screenshotting the generated image block when necessary
+- Generated video output support (Veo):
+  - extracts `<video>` / `generated_video_content` results to `data:video/...`
+    via an in-page authenticated fetch (the raw link is 404 outside the
+    browser session)
+  - video generation is async; BrowserAI's job runner (`server/jobs.js`)
+    polls the same Gemini session until the finished video appears, then
+    saves it to the workspace
 
 ## Apply patch on VPS
 

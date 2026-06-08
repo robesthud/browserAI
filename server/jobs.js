@@ -177,18 +177,93 @@ async function callGeminiProxy({ prompt, model = DEFAULT_GEMINI_MODEL, attachmen
   return json?.choices?.[0]?.message?.content || ''
 }
 
+// Gemini video generation (Veo) is asynchronous: the first reply is a
+// "creating video, come back later" placeholder with no media. We must keep
+// asking the SAME chat session until the finished video appears. The proxy
+// only returns a usable data:video/ URL once the <video> element is present
+// (the googleusercontent link is 404 outside the authenticated browser).
+const VIDEO_PENDING_RE = /создаю видео|создание видео|вернитесь позже|может занять|generating video|creating video|come back|готовлю видео/i
+const VIDEO_POLL_INTERVAL_MS = 15_000
+const VIDEO_POLL_MAX_MS = Number(process.env.GEMINI_VIDEO_POLL_MAX_MS || 8 * 60 * 1000)
+
+async function pollGeminiVideo(job, model) {
+  const deadline = Date.now() + VIDEO_POLL_MAX_MS
+  let attempt = 0
+  while (Date.now() < deadline) {
+    attempt += 1
+    await new Promise((res) => setTimeout(res, VIDEO_POLL_INTERVAL_MS))
+    appendJobLog(job.id, `Проверяю готовность видео (попытка ${attempt})…`)
+    // Bump progress slowly between 75 and 95 while polling
+    setJobPatch(job.id, { progress: Math.min(95, 75 + attempt * 3) })
+    let reply = ''
+    try {
+      reply = await callGeminiProxy({ prompt: 'Готово ли видео? Если да, покажи/вставь его.', model })
+    } catch (e) {
+      appendJobLog(job.id, `Опрос не удался: ${e.message || e}`)
+      continue
+    }
+    const urls = extractDataUrls(reply)
+    if (urls.length) return { content: reply, dataUrls: urls }
+    if (!VIDEO_PENDING_RE.test(reply)) {
+      // No media and no "still working" wording — return whatever we got.
+      return { content: reply, dataUrls: [] }
+    }
+  }
+  return { content: '', dataUrls: [], timedOut: true }
+}
+
 async function runGeminiJob(job) {
   const input = job.input || {}
   appendJobLog(job.id, 'Запуск Gemini Web задачи')
   setJobPatch(job.id, { status: 'running', progress: 10 })
-  const typeLabel = job.type === 'gemini_video' ? 'Создай видео/анимацию' : 'Выполни задачу'
+  const isVideo = job.type === 'gemini_video'
+  const typeLabel = isVideo ? 'Создай видео/анимацию' : 'Выполни задачу'
   const prompt = `${typeLabel}. ${input.prompt || ''}`.trim()
+  const model = input.model || DEFAULT_GEMINI_MODEL
   setJobPatch(job.id, { progress: 25 })
-  const content = await callGeminiProxy({ prompt, model: input.model || DEFAULT_GEMINI_MODEL, attachments: input.attachments || [] })
+  let content = await callGeminiProxy({ prompt, model, attachments: input.attachments || [] })
   appendJobLog(job.id, 'Ответ Gemini получен')
-  setJobPatch(job.id, { progress: 75 })
-  const dataUrls = extractDataUrls(content)
+  setJobPatch(job.id, { progress: 70 })
+
+  let dataUrls = extractDataUrls(content)
+
+  // Async video: if no media yet but Gemini said it's generating, poll.
+  if (isVideo && dataUrls.length === 0 && VIDEO_PENDING_RE.test(content)) {
+    appendJobLog(job.id, 'Видео генерируется асинхронно — ожидаю готовности…')
+    const polled = await pollGeminiVideo(job, model)
+    if (polled.dataUrls.length) {
+      content = polled.content
+      dataUrls = polled.dataUrls
+    } else if (polled.timedOut) {
+      appendJobLog(job.id, 'Видео не успело сгенерироваться за отведённое время')
+      setJobPatch(job.id, {
+        status: 'failed',
+        progress: 100,
+        error: 'Gemini не вернул готовое видео за отведённое время. Попробуйте ещё раз позже.',
+        result: { content },
+        finishedAt: now(),
+      })
+      return
+    } else if (polled.content) {
+      content = polled.content
+    }
+  }
+
+  setJobPatch(job.id, { progress: 90 })
   const files = await saveDataUrlsToWorkspace(job.chatId, dataUrls)
+
+  // For media jobs, an empty file list means we produced nothing usable.
+  if (isVideo && files.length === 0) {
+    setJobPatch(job.id, {
+      status: 'failed',
+      progress: 100,
+      error: 'Не удалось получить файл видео из Gemini.',
+      result: { content, files, dataUrlsCount: dataUrls.length },
+      finishedAt: now(),
+    })
+    return
+  }
+
   setJobPatch(job.id, {
     status: 'succeeded',
     progress: 100,
