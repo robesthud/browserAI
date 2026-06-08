@@ -497,6 +497,60 @@ export const TOOLS = {
       } catch (e) { return err(e.message) }
     },
   },
+
+  // ── Verification: check code before deploying (mirrors the human-agent flow) ──
+  verify_code: {
+    description: 'Verify workspace code before committing/deploying. Runs lightweight checks in the sandbox: Node syntax check (node --check) on changed/!given JS files, optional npm script (e.g. lint/test/build), or a custom command. Use this BEFORE git_commit / ops deploy to avoid shipping broken code. Returns pass/fail per check.',
+    params: {
+      path: { type: 'string', optional: true, description: 'Repo/subfolder relative to workspace root. Empty = workspace root.' },
+      node_check_glob: { type: 'string', optional: true, description: 'Glob for files to run "node --check" on, e.g. "server/**/*.js" or "*.js". Default: skip if empty.' },
+      npm_script: { type: 'string', optional: true, description: 'npm script to run, e.g. "lint", "test", "build". Runs "npm run <script>" if present in package.json.' },
+      command: { type: 'string', optional: true, description: 'Custom verification shell command to run instead of/in addition to the above.' },
+      timeout_sec: { type: 'number', optional: true, description: 'Max seconds for the whole verification, default 120, max 600.' },
+    },
+    handler: async ({ path = '', node_check_glob = '', npm_script = '', command = '', timeout_sec = 120 } = {}) => {
+      const cwd = safeWorkspaceCwd(path)
+      const timeoutMs = Math.min(600_000, Math.max(5_000, Number(timeout_sec) * 1000 || 120_000))
+      const checks = []
+      const runOne = async (name, cmd) => {
+        try {
+          const r = await runSandboxCommand({ command: cmd, cwd, timeoutMs })
+          const passed = r.exitCode === 0
+          checks.push({
+            name,
+            passed,
+            exitCode: r.exitCode,
+            stdout: truncate(r.stdout, 4000),
+            stderr: truncate(r.stderr, 3000),
+          })
+          return passed
+        } catch (e) {
+          checks.push({ name, passed: false, error: e.message })
+          return false
+        }
+      }
+
+      if (node_check_glob) {
+        // Run node --check on each matched .js file; fail if any errors.
+        const glob = String(node_check_glob).replace(/'/g, '')
+        const cmd = `set -e; found=0; fail=0; for f in $(find . -type f -path '${glob}' 2>/dev/null || true); do found=$((found+1)); node --check "$f" 2>&1 && echo "ok: $f" || { echo "FAIL: $f"; fail=1; }; done; echo "checked $found file(s)"; exit $fail`
+        await runOne(`node --check ${glob}`, cmd)
+      }
+      if (npm_script) {
+        const s = String(npm_script).replace(/[^a-zA-Z0-9:_-]/g, '')
+        await runOne(`npm run ${s}`, `test -f package.json && npm run ${s} --if-present 2>&1 || echo "no package.json"`)
+      }
+      if (command) {
+        await runOne('custom', String(command))
+      }
+
+      if (checks.length === 0) {
+        return err('Nothing to verify — provide node_check_glob, npm_script, or command')
+      }
+      const allPassed = checks.every((c) => c.passed)
+      return ok({ allPassed, checks })
+    },
+  },
 }
 
 // ── Schema for the system prompt ────────────────────────────────────────────

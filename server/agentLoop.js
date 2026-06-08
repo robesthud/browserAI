@@ -59,6 +59,8 @@ function buildSystemPrompt({ extraSystem = '', native = false } = {}) {
     '  4. Prefer edit_file over write_file for small changes.',
     '  5. When done, write a concise Russian-language summary for the user.',
     '  6. If a tool fails, recover (try again with different args, or fall back).',
+    '  7. Before committing or deploying code, run verify_code (syntax / lint / tests). Never ship code that fails verification.',
+    '  8. Deploy/repair and other dangerous ops require ask_user confirmation first; call ops_run_action with confirm:true only after the user agrees.',
     '',
   ]
   const callingHelp = native
