@@ -11,6 +11,8 @@ import {
 import { processFiles, formatSize } from '../lib/files.js'
 import FileTree from './FileTree.jsx'
 import { filterWorkspaceTree, workspaceApi } from '../lib/workspace.js'
+import { runSlashCommand, parseMentions } from '../lib/slashCommands.js'
+import SlashAutocomplete from './SlashAutocomplete.jsx'
 
 function WorkspacePickerModal({ open, onClose, onPick }) {
   const [tree, setTree] = useState(null)
@@ -109,11 +111,24 @@ export default function Composer({
   isStreaming,
   onSend,
   onStop,
+  chatId = '',
+  // Slash-command hooks — wired by App.jsx
+  onSlashClear,
+  onSlashSettings,
+  onSlashSearch,
+  onSlashCheckpoints,
+  onSlashExport,
+  onSlashToggleAgent,
+  onSlashSetModel,
+  onSlashFetchCost,
+  onFlash,
 }) {
   const [text, setText] = useState('')
+  const [caret, setCaret] = useState(0)
   const [attachments, setAttachments] = useState([])
   const [busyFiles, setBusyFiles] = useState(false)
   const [dragOver, setDragOver] = useState(false)
+  const [autocompleteOpen, setAutocompleteOpen] = useState(true)
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
   const fileInputRef = useRef(null)
   const taRef = useRef(null)
@@ -207,23 +222,87 @@ export default function Composer({
     }
   }
 
-  const submit = () => {
+  const submit = async () => {
     if (isStreaming) return
-    const t = text.trim()
+    let t = text.trim()
     if (!t && attachments.length === 0) return
-    
-    // Если отправляем во время записи, останавливаем запись и очищаем базу
+
+    // ── Slash-command interception ──
+    // If the first non-whitespace token is /<cmd>, route to runSlashCommand
+    // which may either consume the input entirely or rewrite it.
+    if (t.startsWith('/')) {
+      try {
+        const slashRes = await runSlashCommand(t, {
+          newChat: onSlashClear,
+          openSettings: onSlashSettings,
+          openSearch: onSlashSearch,
+          openCheckpoints: onSlashCheckpoints,
+          onExportChat: onSlashExport,
+          onToggleAgent: onSlashToggleAgent,
+          onSetModel: onSlashSetModel,
+          fetchCost: onSlashFetchCost,
+          postFlash: onFlash,
+        })
+        if (slashRes.handled) {
+          if (slashRes.send) {
+            t = slashRes.send
+          } else {
+            // Pure side-effect command — clear input and bail.
+            setText('')
+            setAttachments([])
+            requestAnimationFrame(() => {
+              if (taRef.current) taRef.current.style.height = 'auto'
+            })
+            return
+          }
+        }
+      } catch (e) {
+        onFlash?.({ kind: 'err', text: 'Ошибка slash-команды: ' + (e?.message || String(e)) })
+      }
+    }
+
+    // ── File mentions: @path turns into an inline attachment ──
+    const { mentioned } = parseMentions(t)
+    let finalAttachments = attachments
+    if (mentioned.length) {
+      try {
+        const loaded = []
+        for (const p of mentioned) {
+          if (finalAttachments.some((a) => a.path === p)) continue
+          const url = chatId
+            ? `/api/workspace/file?path=${encodeURIComponent(p)}&chatId=${encodeURIComponent(chatId)}`
+            : `/api/workspace/file?path=${encodeURIComponent(p)}`
+          try {
+            const r = await fetch(url, { credentials: 'include' })
+            if (!r.ok) continue
+            const j = await r.json()
+            const content = j?.text || j?.content || ''
+            if (!content) continue
+            loaded.push({
+              id: 'mention-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+              name: p.split('/').pop(),
+              path: p,
+              type: j?.mime || 'text/plain',
+              size: content.length,
+              text: content.length > 32_000 ? content.slice(0, 32_000) : content,
+              truncated: content.length > 32_000,
+              dataUrl: null,
+            })
+          } catch { /* ignore individual file failures */ }
+        }
+        if (loaded.length) finalAttachments = [...finalAttachments, ...loaded]
+      } catch { /* mentions are best-effort */ }
+    }
+
     if (isRecording) {
       recognitionRef.current?.stop()
       setIsRecording(false)
     }
     baseTextRef.current = ''
-    
-    onSend(t, attachments)
+
+    onSend(t, finalAttachments)
     setText('')
     setAttachments([])
-    // requestAnimationFrame — ждём пока React обновит DOM после setText('')
-    // прежде чем сбрасывать высоту, иначе textarea может остаться растянутой
     requestAnimationFrame(() => {
       if (taRef.current) taRef.current.style.height = 'auto'
     })
@@ -241,6 +320,23 @@ export default function Composer({
     el.style.height = 'auto'
     el.style.height = Math.min(el.scrollHeight, 220) + 'px'
     setText(el.value)
+    setCaret(el.selectionStart || el.value.length)
+    setAutocompleteOpen(true)
+  }
+
+  // Apply a replacement from the slash/mention autocomplete.
+  const acceptAutocomplete = (newText, newCaret) => {
+    setText(newText)
+    requestAnimationFrame(() => {
+      if (taRef.current) {
+        taRef.current.value = newText
+        taRef.current.selectionStart = taRef.current.selectionEnd = newCaret
+        taRef.current.focus()
+        taRef.current.style.height = 'auto'
+        taRef.current.style.height = Math.min(taRef.current.scrollHeight, 220) + 'px'
+      }
+      setCaret(newCaret)
+    })
   }
 
   const onDrop = (e) => {
@@ -272,9 +368,18 @@ export default function Composer({
             }}
             onDragLeave={() => setDragOver(false)}
             onDrop={onDrop}
-            className={`rounded-2xl border bg-graphite-800 p-2 shadow-[0_8px_40px_-12px_rgba(0,0,0,0.6)] transition-colors md:rounded-3xl md:p-4
+            className={`relative rounded-2xl border bg-graphite-800 p-2 shadow-[0_8px_40px_-12px_rgba(0,0,0,0.6)] transition-colors md:rounded-3xl md:p-4
               ${dragOver ? 'border-cream/40 bg-graphite-750' : 'border-white/[0.06]'}`}
           >
+            {autocompleteOpen && (
+              <SlashAutocomplete
+                text={text}
+                caret={caret}
+                chatId={chatId}
+                onAccept={acceptAutocomplete}
+                onClose={() => setAutocompleteOpen(false)}
+              />
+            )}
             {attachments.length > 0 && (
               <div className="mb-3 flex flex-wrap gap-2">
                 {attachments.map((a) => {

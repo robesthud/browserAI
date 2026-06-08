@@ -92,6 +92,46 @@ function BrowserApp({ user, reloadAuth }) {
   const [workspaceAiBusy, setWorkspaceAiBusy] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [checkpointsOpen, setCheckpointsOpen] = useState(false)
+  const [flash, setFlash] = useState(null) // { kind: 'ok'|'info'|'err', text: '...' }
+
+  // Auto-dismiss flash after 6s.
+  useEffect(() => {
+    if (!flash) return
+    const id = setTimeout(() => setFlash(null), 6000)
+    return () => clearTimeout(id)
+  }, [flash])
+
+  // Slash-command hook bundle passed to Composer.
+  const composerSlashHooks = {
+    onSlashClear: () => { newChat() },
+    onSlashSettings: () => setSettingsOpen(true),
+    onSlashSearch: () => setSearchOpen(true),
+    onSlashCheckpoints: () => setCheckpointsOpen(true),
+    onSlashExport: () => { if (activeChat) downloadChatMarkdown(activeChat) },
+    onSlashToggleAgent: (forceOn) => {
+      // Persists per-chat — agentMode lives in chat object.
+      if (!activeChat) return
+      const cur = activeChat.agentMode !== false
+      const next = forceOn == null ? !cur : Boolean(forceOn)
+      updateChat(activeChat.id, { agentMode: next })
+      setFlash({ kind: 'info', text: `Agent Mode: ${next ? 'включён' : 'выключен'}` })
+    },
+    onSlashSetModel: (modelId) => {
+      // Returns true on success — Composer surfaces the verdict via flash.
+      const all = availableModels || []
+      const hit = all.find((m) => m.id === modelId || m.name === modelId || (m.id || '').endsWith(modelId))
+      if (!hit) return false
+      setActiveModel?.(hit.id)
+      return true
+    },
+    onSlashFetchCost: async () => {
+      try {
+        const r = await fetch('/api/cost/today', { credentials: 'include' })
+        return r.ok ? r.json() : null
+      } catch { return null }
+    },
+    onFlash: setFlash,
+  }
 
   // Авторежим выбора модели
   const [autoMode, setAutoMode] = useState(() => {
@@ -467,6 +507,8 @@ function BrowserApp({ user, reloadAuth }) {
               isStreaming={aiWorking}
               onSend={handleSendMessage}
               onStop={stop}
+              chatId={activeChat?.id || ''}
+              {...composerSlashHooks}
             />
           </>
         ) : (
@@ -476,6 +518,8 @@ function BrowserApp({ user, reloadAuth }) {
               isStreaming={aiWorking}
               onSend={handleSendMessage}
               onStop={stop}
+              chatId={activeChat?.id || ''}
+              {...composerSlashHooks}
             />
             {/* ModelBar под полем ввода на стартовом экране — дропдаун открывается вниз */}
             {availableModels.length > 0 && (
@@ -528,6 +572,20 @@ function BrowserApp({ user, reloadAuth }) {
         onVaultRestore={vaultRestore}
         onClose={() => setSettingsOpen(false)}
       />
+
+      {/* Global flash toast — used by slash commands to give immediate feedback. */}
+      {flash && (
+        <div
+          className={`pointer-events-none fixed inset-x-0 top-3 z-50 mx-auto flex w-fit max-w-[90vw] items-start gap-2 rounded-lg border px-3 py-2 text-[12px] shadow-2xl ${
+            flash.kind === 'ok'   ? 'border-emerald-400/40 bg-emerald-900/80 text-emerald-100' :
+            flash.kind === 'err'  ? 'border-red-400/40 bg-red-900/80 text-red-100' :
+                                    'border-cream/20 bg-graphite-800/95 text-cream'
+          }`}
+          role="status"
+        >
+          <pre className="whitespace-pre-wrap font-mono">{flash.text}</pre>
+        </div>
+      )}
     </div>
   )
 }
