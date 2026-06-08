@@ -42,7 +42,10 @@ import { recordSpend, checkCap, chatTotalUsd } from './costTracker.js'
 import { shouldUseCheapEditor, wrapProviderForEditor, routingLabel } from './architectEditor.js'
 import { requiresApproval, categoryOf } from './approvalGate.js'
 import { recordCheckpoint } from './checkpoints.js'
-import { buildAgentContext, normalizeToolResult } from './agentCore.js'
+import {
+  buildAgentContext, normalizeToolResult, createAgentState,
+  buildPlanningDirective, updateAgentStateFromTool,
+} from './agentCore.js'
 
 const DEFAULT_MAX_STEPS = 15
 const DEFAULT_DEADLINE_MS = 5 * 60 * 1000
@@ -840,7 +843,13 @@ async function runAgentInner({
   if (agentContext.runtime.effectiveMaxSteps > maxSteps) {
     maxSteps = agentContext.runtime.effectiveMaxSteps
   }
+  const agentState = createAgentState({ agentContext, history })
+  const planningDirective = buildPlanningDirective(agentContext)
+  if (planningDirective) {
+    convo.push({ role: 'user', content: planningDirective })
+  }
   sse(res, 'agent_context', agentContext)
+  sse(res, 'agent_state', agentState)
 
   // ── Tracked state for safety nets (Agent IQ +20)
   // recentCallFingerprints: rolling list of [tool::args] strings — used by
@@ -1266,6 +1275,8 @@ async function runAgentInner({
           }))
           const promises = normalised.map((q) => {
             const { id: questionId, promise } = registerQuestion()
+            updateAgentStateFromTool(agentState, 'ask_user', { ok: true, result: { pending: true } }, { question: q.question })
+            sse(res, 'agent_state', agentState)
             sse(res, 'ask_user', {
               step, sub: idx,
               question_id: questionId,
@@ -1284,6 +1295,12 @@ async function runAgentInner({
           // Preserve single-question legacy shape when only one question.
           const single = answers.length === 1
           r = { ok: true, result: single ? answers[0].answer : { answers } }
+          agentState.status = 'running'
+          agentState.openQuestions = []
+          agentState.currentStep = 'User answered; continue task'
+          agentState.nextActions = ['use the user answer and continue']
+          agentState.updatedAt = new Date().toISOString()
+          sse(res, 'agent_state', agentState)
         } else {
           // AUTO-RECOVERY: a tool can return ok:false but a string error
           // hint that's actually recoverable (e.g. "old_text not found in
@@ -1316,6 +1333,7 @@ async function runAgentInner({
         const structuredResult = normalizeToolResult(call.tool, r, {
           step, sub: idx, readBack: Boolean(call._readBack),
         })
+        updateAgentStateFromTool(agentState, call.tool, r, call.args || {})
         sse(res, 'tool_result', {
           step, sub: idx,
           name: call.tool,
@@ -1324,6 +1342,7 @@ async function runAgentInner({
           error: r.ok ? undefined : r.error,
           structured: structuredResult,
         })
+        sse(res, 'agent_state', agentState)
         // Record a session checkpoint after every successful write-class
         // tool so the user can one-click "↶ undo this turn". Fire-and-
         // forget — we look up the latest .rev id per file asynchronously
