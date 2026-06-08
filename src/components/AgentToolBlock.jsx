@@ -10,15 +10,37 @@ import { highlight, detectLangFromPath } from '../lib/syntaxHighlight.js'
  */
 
 const VERBS = {
-  list_files:   { verb: 'used',  noun: 'List Files', icon: '📂' },
-  read_file:    { verb: 'used',  noun: 'Read File',  icon: '📄' },
-  write_file:   { verb: 'Write', noun: '',           icon: '✏️' },
-  edit_file:    { verb: 'Edit',  noun: '',           icon: '🔧' },
-  delete_file:  { verb: 'used',  noun: 'Delete',     icon: '🗑️' },
-  search_files: { verb: 'used',  noun: 'Search',     icon: '🔎' },
-  web_search:   { verb: 'used',  noun: 'Web Search', icon: '🌐' },
-  web_fetch:    { verb: 'used',  noun: 'Fetch',      icon: '📥' },
-  bash:         { verb: 'used',  noun: 'Bash',       icon: '>_' },
+  list_files:      { verb: 'used',  noun: 'List Files',  icon: '📂' },
+  find_projects:   { verb: 'used',  noun: 'Find Projects', icon: '🗂' },
+  read_file:       { verb: 'used',  noun: 'Read File',   icon: '📄' },
+  write_file:      { verb: 'Write', noun: '',            icon: '✏️' },
+  edit_file:       { verb: 'Edit',  noun: '',            icon: '🔧' },
+  delete_file:     { verb: 'used',  noun: 'Delete',      icon: '🗑️' },
+  file_history:    { verb: 'used',  noun: 'History',     icon: '🕓' },
+  restore_file:    { verb: 'used',  noun: 'Restore',     icon: '↩️' },
+  search_files:    { verb: 'used',  noun: 'Search',      icon: '🔎' },
+  download_url:    { verb: 'used',  noun: 'Download',    icon: '📥' },
+  git_status:      { verb: 'used',  noun: 'git status',  icon: '⎇' },
+  git_diff:        { verb: 'used',  noun: 'git diff',    icon: '⎇' },
+  git_commit:      { verb: 'used',  noun: 'git commit',  icon: '⎇' },
+  git_push:        { verb: 'used',  noun: 'git push',    icon: '⎇' },
+  git_pull:        { verb: 'used',  noun: 'git pull',    icon: '⎇' },
+  git_clone:       { verb: 'used',  noun: 'git clone',   icon: '⎇' },
+  github_pr_create:{ verb: 'used',  noun: 'GitHub PR',   icon: '🔀' },
+  web_search:      { verb: 'used',  noun: 'Web Search',  icon: '🌐' },
+  web_fetch:       { verb: 'used',  noun: 'Fetch',       icon: '📥' },
+  bash:            { verb: 'used',  noun: 'Bash',        icon: '>_' },
+  verify_code:     { verb: 'used',  noun: 'Verify',      icon: '✅' },
+  browser_open:    { verb: 'used',  noun: 'Open Page',   icon: '🌐' },
+  browser_screenshot:{ verb: 'used',noun: 'Screenshot',  icon: '📸' },
+  browser_click:   { verb: 'used',  noun: 'Click',       icon: '🖱' },
+  browser_type:    { verb: 'used',  noun: 'Type',        icon: '⌨' },
+  browser_close:   { verb: 'used',  noun: 'Close Page',  icon: '✖' },
+  analyze_image:   { verb: 'used',  noun: 'Vision',      icon: '👁' },
+  ops_list_services:{ verb:'used',  noun: 'Ops List',    icon: '🛠' },
+  ops_run_action:  { verb: 'used',  noun: 'Ops Action',  icon: '🛠' },
+  plan_set:        { verb: 'used',  noun: 'Plan',        icon: '📋' },
+  plan_check:      { verb: 'used',  noun: 'Plan check',  icon: '☑️' },
 }
 
 function fmtDuration(ms) {
@@ -33,14 +55,44 @@ function summarizeArgs(name, args = {}) {
     case 'read_file':
     case 'write_file':
     case 'edit_file':
-    case 'delete_file': return args.path || ''
-    case 'list_files':  return args.path || '/'
+    case 'delete_file':
+    case 'file_history':
+    case 'restore_file': return args.path || ''
+    case 'list_files':
+    case 'find_projects': return args.path || '/'
     case 'search_files': return `"${args.query || ''}"`
     case 'web_search':  return `"${args.query || ''}"`
-    case 'web_fetch':   return args.url || ''
+    case 'web_fetch':
+    case 'download_url': return args.url || ''
+    case 'browser_open':
+    case 'browser_screenshot':
+    case 'browser_close': return args.url || args.session_id || ''
+    case 'browser_click':
+    case 'browser_type':  return args.selector || args.text || ''
     case 'bash':        return args.command || ''
+    case 'verify_code': return args.path || args.script || 'verify'
+    case 'git_commit':  return args.message || ''
+    case 'git_push':    return args.branch || 'current branch'
+    case 'github_pr_create': return args.title || ''
+    case 'plan_set':    return args.title || `${args.steps ? '...' : ''}`
+    case 'plan_check':  return args.indices || ''
+    case 'ops_run_action': return `${args.service || ''}.${args.action || ''}`
     default: return ''
   }
+}
+
+// Tiny "+N / -M lines" hint to surface in the collapsed pill for edit_file.
+// Calculated from the result.oldLines / newLines returned by the new
+// edit_file handler. Falls back to '' if either field is missing
+// (old single-replacement responses).
+function editDeltaPill(result) {
+  if (!result || typeof result !== 'object') return ''
+  const o = Number(result.oldLines)
+  const n = Number(result.newLines)
+  if (!Number.isFinite(o) || !Number.isFinite(n)) return ''
+  const d = n - o
+  if (d === 0) return '±0 lines'
+  return d > 0 ? `+${d} lines` : `${d} lines`
 }
 
 function formatResult(name, result) {
@@ -90,6 +142,14 @@ export default function AgentToolBlock({
   const body = status === 'done'
     ? (ok ? formatResult(name, result) : (error || 'unknown error'))
     : ''
+  const deltaPill = status === 'done' && ok && (name === 'edit_file' || name === 'write_file')
+    ? editDeltaPill(result)
+    : ''
+  // Inline screenshot preview for browser_* tools (whenever the result
+  // includes a screenshot path inside /workspace).
+  const screenshotPath = status === 'done' && ok && result && typeof result === 'object'
+    ? (result.screenshotPath || result.screenshot || (typeof result.path === 'string' && /\.(png|jpg|jpeg|webp)$/i.test(result.path) ? result.path : ''))
+    : ''
 
   // Detect language for syntax highlighting on read_file / write_file / edit_file
   let highlightedHtml = null
@@ -127,6 +187,11 @@ export default function AgentToolBlock({
         )}
         {!argSummary && <span className="flex-1" />}
 
+        {/* +N/-M lines pill for edit_file / write_file */}
+        {deltaPill && (
+          <span className="shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 font-mono text-[10px] text-violet-200">{deltaPill}</span>
+        )}
+
         {/* Status mark */}
         <span className={`shrink-0 text-[13px] leading-none ${markCls}`}>{mark}</span>
 
@@ -148,6 +213,17 @@ export default function AgentToolBlock({
               <summary className="cursor-pointer">аргументы</summary>
               <pre className="thin-scroll mt-1 max-h-32 overflow-auto rounded bg-graphite-900 p-2 font-mono text-[11px] text-cream">{JSON.stringify(args, null, 2)}</pre>
             </details>
+          )}
+          {/* Inline screenshot preview for browser_* tools */}
+          {screenshotPath && (
+            // eslint-disable-next-line jsx-a11y/img-redundant-alt
+            <img
+              src={`/api/workspace/download?path=${encodeURIComponent(screenshotPath)}&inline=1`}
+              alt={`screenshot: ${screenshotPath}`}
+              loading="lazy"
+              className="mb-2 w-full rounded border border-white/5 bg-graphite-950 object-contain"
+              style={{ maxHeight: 360 }}
+            />
           )}
           {status === 'done' ? (
             highlightedHtml ? (

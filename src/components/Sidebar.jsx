@@ -6,6 +6,7 @@ import {
   IconSettings,
 } from '../icons.jsx'
 import SidebarUserPrefs from './SidebarUserPrefs.jsx'
+import JobsTray from './JobsTray.jsx'
 
 export default function Sidebar({
   collapsed,
@@ -154,6 +155,11 @@ export default function Sidebar({
             <span>Настройки</span>
           </button>
         </div>
+
+        {/* Live background jobs (video / image / document generation) —
+            shown here so they stay visible even when the user switches
+            to a different chat. */}
+        <JobsTray />
 
         {/* UI preferences: theme / font-size / haptics */}
         <SidebarUserPrefs />

@@ -4,6 +4,7 @@ import { formatSize } from '../lib/files.js'
 import Markdown from '../lib/markdown.jsx'
 import AgentToolBlock from './AgentToolBlock.jsx'
 import AgentThought from './AgentThought.jsx'
+import AgentPlanCard from './AgentPlanCard.jsx'
 import AgentAskUser from './AgentAskUser.jsx'
 import JobCard from './JobCard.jsx'
 import usePullToRefresh from '../lib/usePullToRefresh.js'
@@ -178,7 +179,49 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
             {(Array.isArray(m.toolCalls) && m.toolCalls.length > 0) || (Array.isArray(m.thoughts) && m.thoughts.length > 0) ? (
               <div className="mb-2 space-y-1">
                 {(() => {
+                  // ─── Pass 1: fold plan_set + plan_check calls into a single
+                  // PlanCard so we don't show 5 separate toolblocks for what
+                  // is really one checklist. The card lives at the TOP of
+                  // the message and updates as plan_check arrives.
+                  let plan = null
+                  for (const tc of m.toolCalls || []) {
+                    if (tc.status !== 'done' || !tc.ok) continue
+                    if (tc.name === 'plan_set' && Array.isArray(tc.result?.plan)) {
+                      plan = { title: tc.result.title || '', steps: tc.result.plan.map((s) => ({ ...s })) }
+                    } else if (tc.name === 'plan_check' && plan && Array.isArray(tc.result?.checked)) {
+                      for (const i of tc.result.checked) {
+                        const idx = Number(i)
+                        const step = plan.steps.find((s) => s.idx === idx)
+                        if (step) {
+                          step.done = true
+                          if (tc.result.note) step.note = tc.result.note
+                        }
+                      }
+                    }
+                  }
+
+                  // ─── Pass 2: progress counter "Step N of M" — purely
+                  // cosmetic, derived from how many distinct tool steps
+                  // have completed vs how many are still running.
+                  const stepIds = new Set()
+                  let doneSteps = 0
+                  for (const tc of m.toolCalls || []) {
+                    if (tc.name === 'plan_set' || tc.name === 'plan_check') continue
+                    stepIds.add(tc.step)
+                    if (tc.status === 'done') doneSteps += 1
+                  }
+                  const totalSteps = stepIds.size
+
                   const items = []
+                  if (plan) items.push(<AgentPlanCard key="plan" plan={plan} />)
+                  if (totalSteps > 1 && aiWorking) {
+                    items.push(
+                      <div key="step-progress" className="px-1 text-[11px] text-cream-faint">
+                        Шаг {doneSteps} из {totalSteps}…
+                      </div>,
+                    )
+                  }
+
                   const thoughtsByStep = new Map()
                   for (const t of m.thoughts || []) {
                     if (!thoughtsByStep.has(t.step)) thoughtsByStep.set(t.step, [])
@@ -192,6 +235,9 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                       )
                     }
                     thoughtsByStep.delete(tc.step)
+                    // Hide plan_set / plan_check tool blocks themselves —
+                    // they're already represented by AgentPlanCard above.
+                    if (tc.name === 'plan_set' || tc.name === 'plan_check') continue
                     items.push(
                       <AgentToolBlock
                         key={tc.id}
