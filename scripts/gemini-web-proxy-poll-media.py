@@ -36,6 +36,7 @@ from fastapi.responses import JSONResponse  # noqa: E402
 import asyncio  # noqa: E402
 import re  # noqa: E402
 import uuid as _uuid  # noqa: E402
+import base64  # noqa: E402
 
 
 def _has_runtime():
@@ -186,6 +187,13 @@ if _BA_RUNTIME_OK:
         Re-extract media from the LAST assistant reply already on the page.
         Mirrors the in-page extraction block in send_to_gemini, but does not
         touch the input box and does not push a new message.
+
+        Special handling for Veo: the finished mp4 is a
+        contribution.usercontent.google.com / lh3.googleusercontent.com URL
+        that requires the page's own cookies (CORS-blocked from a vanilla
+        fetch). When in-page fetch fails we DON'T drop the src — we surface
+        it under `remote_links` so the caller can ask /fetch-media to
+        download it through Playwright's request context.
         """
         try:
             response_divs = await page.query_selector_all(
@@ -202,13 +210,14 @@ if _BA_RUNTIME_OK:
                 '''
                 async () => {
                   const last = [...document.querySelectorAll('div[id^="model-response-message-content"]')].pop();
-                  if (!last) return { text: '', images: [], videos: [], links: [] };
+                  if (!last) return { text: '', images: [], videos: [], remoteVideos: [], links: [] };
 
                   async function srcToVideoDataUrl(src) {
                     if (!src) return '';
                     if (src.startsWith('data:video/')) return src;
                     try {
-                      const blob = await fetch(src).then(r => r.blob());
+                      const blob = await fetch(src, { credentials: 'include' }).then(r => r.ok ? r.blob() : null);
+                      if (!blob) return '';
                       return await new Promise((resolve) => {
                         const r = new FileReader();
                         r.onload = () => resolve(String(r.result || ''));
@@ -221,7 +230,8 @@ if _BA_RUNTIME_OK:
                     if (!src) return '';
                     if (src.startsWith('data:image/')) return src;
                     try {
-                      const blob = await fetch(src).then(r => r.blob());
+                      const blob = await fetch(src, { credentials: 'include' }).then(r => r.ok ? r.blob() : null);
+                      if (!blob) return '';
                       return await new Promise((resolve) => {
                         const r = new FileReader();
                         r.onload = () => resolve(String(r.result || ''));
@@ -231,40 +241,38 @@ if _BA_RUNTIME_OK:
                     } catch (e) { return ''; }
                   }
 
-                  // Strategy: Gemini's Veo player isn't always inside the
-                  // model-response-message-content div — sometimes it lives
-                  // in a sibling 'video-player' / 'aiplatform-video' /
-                  // 'sources' wrapper rendered later. So we search the
-                  // WHOLE document for <video>/<source> and trust whatever
-                  // we find AFTER the last assistant reply boundary.
-                  // We also still scan the reply div first (for inline
-                  // images and any in-bubble video).
-                  function* collectVideos(root) {
-                    for (const v of root.querySelectorAll('video, video source')) {
-                      const src = v.getAttribute('src') || v.currentSrc || v.src || '';
-                      if (src) yield { src, node: v };
-                    }
-                  }
-
-                  const videos = [];
+                  // Walk the WHOLE document for <video>/<source>.
+                  // Gemini's Veo player is rendered inside a custom
+                  // <video-player> element that sits OUTSIDE the reply div
+                  // (sibling, attached after the response-element completes),
+                  // so a reply-scoped query misses it.
                   const seen = new Set();
-                  for (const root of [last, document]) {
-                    for (const { src } of collectVideos(root)) {
-                      if (seen.has(src)) continue;
-                      seen.add(src);
-                      const du = await srcToVideoDataUrl(src);
-                      if (du && du.startsWith('data:video/')) videos.push({ src, dataUrl: du });
+                  const videos = [];          // data: URLs (best path)
+                  const remoteVideos = [];    // raw URLs, for server-side fetch fallback
+
+                  for (const v of document.querySelectorAll('video, video source, video-player video, video-player source')) {
+                    const src = v.getAttribute('src') || v.currentSrc || v.src || '';
+                    if (!src || seen.has(src)) continue;
+                    seen.add(src);
+                    const du = await srcToVideoDataUrl(src);
+                    if (du && du.startsWith('data:video/')) {
+                      videos.push({ src, dataUrl: du });
+                    } else if (/^https?:/.test(src)) {
+                      // In-page fetch was blocked (CORS / auth). Hand the URL
+                      // up so the proxy can re-fetch with Playwright cookies.
+                      remoteVideos.push(src);
                     }
                   }
-                  // Also: <a href="...generated_video_content..."> and Veo's
-                  // <download-button> + <a download="..."> links that point
-                  // to the finished mp4 (visible in Gemini's player overlay).
-                  for (const a of document.querySelectorAll('a[href*="generated_video_content"], a[href*="/video"], a[download][href]')) {
+                  for (const a of document.querySelectorAll('a[href*="generated_video_content"], a[href*="/video"], a[href*="usercontent.google.com"], a[download][href]')) {
                     const src = a.getAttribute('href') || '';
                     if (!src || seen.has(src)) continue;
                     seen.add(src);
                     const du = await srcToVideoDataUrl(src);
-                    if (du && du.startsWith('data:video/')) videos.push({ src, dataUrl: du });
+                    if (du && du.startsWith('data:video/')) {
+                      videos.push({ src, dataUrl: du });
+                    } else if (/^https?:/.test(src)) {
+                      remoteVideos.push(src);
+                    }
                   }
 
                   const images = [];
@@ -275,20 +283,40 @@ if _BA_RUNTIME_OK:
                     if (du && du.startsWith('data:image/')) images.push({ src, dataUrl: du, alt: i.getAttribute('alt') || '' });
                   }
 
-                  // Surface any remote media href so the caller can decide to
-                  // trigger a fresh download-button poll on the next cycle.
+                  // Generic remote media href surface (for callers that want
+                  // to know about ANY media-looking link in the document).
                   const links = [];
                   for (const a of document.querySelectorAll('a[href]')) {
                     const h = a.getAttribute('href') || '';
                     if (/googleusercontent\\.com|generated_video_content|veo|\\.mp4($|\\?)|\\.webm($|\\?)/i.test(h)) links.push(h);
                   }
 
-                  return { text: last.innerText || '', images, videos, links };
+                  return { text: last.innerText || '', images, videos, remoteVideos, links };
                 }
                 '''
             )
         except Exception as e:  # pragma: no cover
             return {"error": f"page.evaluate failed: {e}"}
+
+        # If we still have a remote video URL but no data, fetch it server-side
+        # through Playwright's request context (uses the same cookies as the
+        # logged-in tab, so contribution.usercontent.google.com returns the mp4
+        # bytes instead of 401/CORS-failing).
+        server_side = []
+        try:
+            remote_videos = extraction.get("remoteVideos", []) if isinstance(extraction, dict) else []
+            for url in remote_videos[:3]:  # safety cap
+                try:
+                    resp = await page.context.request.get(url, timeout=45000)
+                    if resp.ok:
+                        body = await resp.body()
+                        ct = resp.headers.get("content-type") or "video/mp4"
+                        b64 = base64.b64encode(body).decode("ascii")
+                        server_side.append(f"data:{ct};base64,{b64}")
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
         # Try the native download button (yields ORIGINAL file, not preview).
         try:
@@ -308,6 +336,10 @@ if _BA_RUNTIME_OK:
             du = v.get("dataUrl") or ""
             if du.startswith("data:video/"):
                 out["videos"].append(du)
+        for du in server_side:
+            if du and du not in out["videos"]:
+                out["videos"].append(du)
+                out["via_download_button"].append({"kind": "video", "mime": du.split(";")[0].split(":")[-1]})
         for i in (extraction.get("images", []) if isinstance(extraction, dict) else []) or []:
             du = i.get("dataUrl") or ""
             if du.startswith("data:image/"):
