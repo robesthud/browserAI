@@ -42,6 +42,7 @@ import { recordSpend, checkCap, chatTotalUsd } from './costTracker.js'
 import { shouldUseCheapEditor, wrapProviderForEditor, routingLabel } from './architectEditor.js'
 import { requiresApproval, categoryOf } from './approvalGate.js'
 import { recordCheckpoint } from './checkpoints.js'
+import { buildAgentContext, normalizeToolResult } from './agentCore.js'
 
 const DEFAULT_MAX_STEPS = 15
 const DEFAULT_DEADLINE_MS = 5 * 60 * 1000
@@ -829,6 +830,18 @@ async function runAgentInner({
   const abortCtl = new AbortController()
   res.on('close', () => { aborted = true; try { abortCtl.abort('client closed') } catch { /* ignore */ } })
 
+  // ── Strict Agent Runtime Context ─────────────────────────────
+  // A safe, explicit context object separates environment/task metadata
+  // from the model loop. The UI can inspect it, and the loop uses it to
+  // avoid under-budgeting complex agent tasks.
+  const agentContext = buildAgentContext({
+    provider, history, extraSystem, userId, workspaceScope, maxSteps,
+  })
+  if (agentContext.runtime.effectiveMaxSteps > maxSteps) {
+    maxSteps = agentContext.runtime.effectiveMaxSteps
+  }
+  sse(res, 'agent_context', agentContext)
+
   // ── Tracked state for safety nets (Agent IQ +20)
   // recentCallFingerprints: rolling list of [tool::args] strings — used by
   // the stuck-in-loop detector. recentToolHistory: per-call {tool,ok,result}
@@ -1300,12 +1313,16 @@ async function runAgentInner({
             extraTools,
           })
         }
+        const structuredResult = normalizeToolResult(call.tool, r, {
+          step, sub: idx, readBack: Boolean(call._readBack),
+        })
         sse(res, 'tool_result', {
           step, sub: idx,
           name: call.tool,
           ok: Boolean(r.ok),
           result: r.ok ? r.result : undefined,
           error: r.ok ? undefined : r.error,
+          structured: structuredResult,
         })
         // Record a session checkpoint after every successful write-class
         // tool so the user can one-click "↶ undo this turn". Fire-and-
