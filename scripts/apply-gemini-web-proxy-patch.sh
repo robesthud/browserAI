@@ -6,7 +6,11 @@ set -euo pipefail
 #   scripts/apply-gemini-web-proxy-patch.sh /opt/gemini-web-proxy
 
 TARGET_DIR="${1:-/opt/gemini-web-proxy}"
-PATCH_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gemini-web-proxy.patch"
+# Resolve our own directory BEFORE any cd, so the snippet+patch paths stay
+# absolute even after `cd "$TARGET_DIR"` below.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATCH_FILE="$SCRIPT_DIR/gemini-web-proxy.patch"
+POLL_SNIPPET="$SCRIPT_DIR/gemini-web-proxy-poll-media.py"
 
 if [ ! -d "$TARGET_DIR" ]; then
   echo "Target directory not found: $TARGET_DIR" >&2
@@ -38,7 +42,6 @@ fi
 # This is OUR module added directly on top of upstream, not a unified diff —
 # we re-write it on every run so changes in BrowserAI's repo show up after
 # `git pull && scripts/apply-gemini-web-proxy-patch.sh`.
-POLL_SNIPPET="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gemini-web-proxy-poll-media.py"
 if [ -f "$POLL_SNIPPET" ]; then
   cp "$TARGET_DIR/server.py" "$TARGET_DIR/server.py.bak.poll-media.$(date +%s)"
   # Strip any previously injected block (between the marker and EOF).
