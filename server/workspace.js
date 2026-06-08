@@ -907,6 +907,7 @@ export {
   streamWorkspaceFile,
   statWorkspaceItem,
   getDownloadName,
+  fileNameToMime,
   safePath,
   withWorkspaceScope,
   deleteWorkspaceScope,

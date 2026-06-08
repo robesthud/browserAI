@@ -20,6 +20,10 @@ export function cancelJob(id) {
   return req(`/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
 }
 
+export function retryVideoJob(id) {
+  return req(`/${encodeURIComponent(id)}/retry-video`, { method: 'POST' })
+}
+
 export function listJobs(chatId = '') {
   return req(`?chatId=${encodeURIComponent(chatId)}`)
 }

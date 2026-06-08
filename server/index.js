@@ -17,7 +17,7 @@ import crypto from 'node:crypto'
 import nodemailer from 'nodemailer'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, createReadStream as fsCreateReadStream } from 'node:fs'
 import {
   listKeys,
   getActiveKeyId,
@@ -62,6 +62,7 @@ import {
   streamWorkspaceFile,
   statWorkspaceItem,
   getDownloadName,
+  fileNameToMime,
   safePath,
   withWorkspaceScope,
   deleteWorkspaceScope,
@@ -74,7 +75,7 @@ import {
   isGatewayUrl,
   resolveGatewayModel,
 } from './gateway.js'
-import { createJob, getJob, initJobs, listJobs, startJob, cancelJob } from './jobs.js'
+import { createJob, getJob, initJobs, listJobs, startJob, cancelJob, retryVideoJob } from './jobs.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
@@ -1475,11 +1476,50 @@ app.get('/api/workspace/download', requireAuth, async (req, res) => {
     }
 
     if (stat.isFile) {
+      const fileName = getDownloadName(rel)
+      // Honour ?inline=1 so the same endpoint can be used as a <video>/<img>
+      // src (browsers refuse to render `attachment` responses). Default stays
+      // 'attachment' for backwards compatibility with the explicit "Download"
+      // buttons.
+      const inlineMode = /^(1|true|yes)$/i.test(String(req.query?.inline || ''))
+      const mime = inlineMode ? fileNameToMime(fileName) : 'application/octet-stream'
       res.setHeader(
         'Content-Disposition',
-        `attachment; filename="${encodeURIComponent(getDownloadName(rel))}"`,
+        `${inlineMode ? 'inline' : 'attachment'}; filename="${encodeURIComponent(fileName)}"`,
       )
-      res.setHeader('Content-Type', 'application/octet-stream')
+      res.setHeader('Content-Type', mime)
+      // Allow byte-range so HTML5 <video> can seek without re-downloading
+      // the whole file (especially important for the Veo-generated mp4s,
+      // which routinely run 10-30 MB).
+      res.setHeader('Accept-Ranges', 'bytes')
+
+      const full = safePath(rel)
+      const range = req.headers.range
+      if (range && stat.size > 0) {
+        const m = /^bytes=(\d*)-(\d*)$/.exec(range)
+        if (m) {
+          let start = m[1] ? parseInt(m[1], 10) : 0
+          let end = m[2] ? parseInt(m[2], 10) : stat.size - 1
+          if (Number.isNaN(start) || start < 0) start = 0
+          if (Number.isNaN(end) || end >= stat.size) end = stat.size - 1
+          if (start > end) {
+            res.status(416).setHeader('Content-Range', `bytes */${stat.size}`).end()
+            return
+          }
+          res.status(206)
+          res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`)
+          res.setHeader('Content-Length', String(end - start + 1))
+          const partial = fsCreateReadStream(full, { start, end })
+          partial.on('error', (err) => {
+            if (!res.headersSent) res.status(500).json({ error: 'Ошибка при чтении файла' })
+            else res.destroy(err)
+          })
+          partial.pipe(res)
+          return
+        }
+      }
+
+      res.setHeader('Content-Length', String(stat.size))
       const stream = streamWorkspaceFile(rel)
       stream.on('error', (err) => {
         if (!res.headersSent) res.status(500).json({ error: 'Ошибка при чтении файла' })
@@ -1720,6 +1760,17 @@ app.post('/api/jobs/:id/cancel', requireAuth, (req, res) => {
   const job = cancelJob(req.params.id)
   if (!job) return res.status(404).json({ error: 'job not found' })
   res.json({ ok: true, job })
+})
+
+// Retry a failed/timed-out video job. Creates a NEW job with the same input
+// and starts it. The UI links the new job from the failed card's button.
+app.post('/api/jobs/:id/retry-video', requireAuth, async (req, res) => {
+  try {
+    const newJob = await retryVideoJob(req.params.id)
+    res.json({ ok: true, job: newJob })
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e?.message || 'retry failed' })
+  }
 })
 
 app.get('/api/web/fetch', requireAuth, async (req, res) => {

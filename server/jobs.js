@@ -141,6 +141,22 @@ function extractDataUrls(text = '') {
   return out
 }
 
+// Gemini sometimes inlines video as a googleusercontent / lh3 / fbsbx link
+// instead of a data: URL. The proxy will then fail to attach it because the
+// URL is short-lived and bound to the headless Chrome's cookies. We capture
+// such links so the runner can ask the proxy (which still owns the session)
+// to download them through its native download-button flow on the next poll.
+function extractRemoteMediaUrls(text = '') {
+  const out = []
+  const re = /https?:\/\/[^\s)"'<>]*(?:googleusercontent\.com|gstatic\.com|fbsbx\.com|googleapis\.com)[^\s)"'<>]*/gi
+  let m
+  while ((m = re.exec(String(text || '')))) {
+    const url = m[0]
+    if (!out.includes(url)) out.push(url)
+  }
+  return out
+}
+
 function dataUrlToUploadFile(dataUrl, index = 0) {
   const m = String(dataUrl || '').match(/^data:([^;,]+)(?:;[^,]*)?,(.*)$/s)
   if (!m) return null
@@ -194,38 +210,70 @@ async function callGeminiProxy({ prompt, model = DEFAULT_GEMINI_MODEL, attachmen
 // Gemini video generation (Veo) is asynchronous: the first reply is a
 // "creating video, come back later" placeholder with no media. We must keep
 // asking the SAME chat session until the finished video appears. The proxy
-// only returns a usable data:video/ URL once the <video> element is present
-// (the googleusercontent link is 404 outside the authenticated browser).
-const VIDEO_PENDING_RE = /создаю видео|создание видео|вернитесь позже|может занять|generating video|creating video|come back|готовлю видео/i
+// returns a usable data:video/ URL once the <video> element is present
+// (raw googleusercontent links are 404 outside the authenticated browser,
+// so we either inline as data: or trigger the proxy's download-button flow).
+const VIDEO_PENDING_RE = /создаю видео|создание видео|вернитесь позже|может занять|generating video|creating video|come back|готовлю видео|in progress|идёт генерация|пожалуйста подождите/i
+const VIDEO_READY_HINT_RE = /(видео\s+готово|готов|finished|complete|ready|вот\s+(?:ваше\s+)?видео|here\s+is\s+the\s+video)/i
 const VIDEO_POLL_INTERVAL_MS = 15_000
-const VIDEO_POLL_MAX_MS = Number(process.env.GEMINI_VIDEO_POLL_MAX_MS || 8 * 60 * 1000)
+// Veo can take 12-18 min on busy hours — bump default ceiling to 25 min.
+const VIDEO_POLL_MAX_MS = Number(process.env.GEMINI_VIDEO_POLL_MAX_MS || 25 * 60 * 1000)
+
+// Prompts cycled across polling rounds. We avoid hammering Gemini with the
+// same wording so it doesn't reply "I already told you it's processing".
+const POLL_PROMPTS = [
+  'Готово ли видео? Если да — выведи готовый ролик в виде <video> и не пиши ничего лишнего.',
+  'Проверь статус видео и, как только оно завершено, отправь сам файл (mp4) в этом сообщении.',
+  'Если ролик готов — открой нативный download-button и приложи финальный mp4 как вложение.',
+  'Покажи готовое видео сейчас, без вступительного текста. Только медиа.',
+]
 
 async function pollGeminiVideo(job, model) {
   const deadline = Date.now() + VIDEO_POLL_MAX_MS
   let attempt = 0
+  let lastContent = ''
+  let lastRemoteUrls = []
   while (Date.now() < deadline) {
     if (isCancelled(job.id)) return { content: '', dataUrls: [], cancelled: true }
     attempt += 1
     await new Promise((res) => setTimeout(res, VIDEO_POLL_INTERVAL_MS))
     if (isCancelled(job.id)) return { content: '', dataUrls: [], cancelled: true }
     appendJobLog(job.id, `Проверяю готовность видео (попытка ${attempt})…`)
-    // Bump progress slowly between 75 and 95 while polling
-    setJobPatch(job.id, { progress: Math.min(95, 75 + attempt * 3) })
+    // Bump progress slowly between 75 and 96 while polling
+    setJobPatch(job.id, { progress: Math.min(96, 75 + attempt * 2) })
+    const prompt = POLL_PROMPTS[(attempt - 1) % POLL_PROMPTS.length]
     let reply
     try {
-      reply = await callGeminiProxy({ prompt: 'Готово ли видео? Если да, покажи/вставь его.', model })
+      reply = await callGeminiProxy({ prompt, model })
     } catch (e) {
       appendJobLog(job.id, `Опрос не удался: ${e.message || e}`)
       continue
     }
+    lastContent = reply
     const urls = extractDataUrls(reply)
-    if (urls.length) return { content: reply, dataUrls: urls }
-    if (!VIDEO_PENDING_RE.test(reply)) {
-      // No media and no "still working" wording — return whatever we got.
-      return { content: reply, dataUrls: [] }
+    if (urls.length) {
+      const vids = urls.filter((u) => u.startsWith('data:video/'))
+      if (vids.length) return { content: reply, dataUrls: urls }
+      // Maybe Gemini returned just a poster image — keep waiting.
+    }
+    const remote = extractRemoteMediaUrls(reply).filter((u) => /video|generated_video|veo/i.test(u))
+    if (remote.length) lastRemoteUrls = remote
+    if (VIDEO_READY_HINT_RE.test(reply) && !VIDEO_PENDING_RE.test(reply) && !urls.length) {
+      // Gemini insists it's ready but the proxy didn't extract media — try
+      // one more explicit poll forcing it to attach the file.
+      appendJobLog(job.id, 'Gemini пишет «готово», но медиа не пришло — прошу приложить mp4 ещё раз')
+      try {
+        const last = await callGeminiProxy({ prompt: 'Открой меню «⋮» под видео, нажми Download и приложи готовый mp4 сюда как файл.', model })
+        const urls2 = extractDataUrls(last).filter((u) => u.startsWith('data:video/'))
+        if (urls2.length) return { content: last, dataUrls: urls2 }
+        const remote2 = extractRemoteMediaUrls(last).filter((u) => /video|generated_video|veo/i.test(u))
+        if (remote2.length) lastRemoteUrls = [...new Set([...lastRemoteUrls, ...remote2])]
+      } catch (e) {
+        appendJobLog(job.id, `Финальный опрос упал: ${e.message || e}`)
+      }
     }
   }
-  return { content: '', dataUrls: [], timedOut: true }
+  return { content: lastContent, dataUrls: [], remoteUrls: lastRemoteUrls, timedOut: true }
 }
 
 async function runGeminiJob(job) {
@@ -242,9 +290,11 @@ async function runGeminiJob(job) {
   setJobPatch(job.id, { progress: 70 })
 
   let dataUrls = extractDataUrls(content)
+  let remoteUrls = []
 
   // Async video: if no media yet but Gemini said it's generating, poll.
-  if (isVideo && dataUrls.length === 0 && VIDEO_PENDING_RE.test(content)) {
+  if (isVideo && dataUrls.filter((u) => u.startsWith('data:video/')).length === 0
+      && (VIDEO_PENDING_RE.test(content) || dataUrls.length === 0)) {
     appendJobLog(job.id, 'Видео генерируется асинхронно — ожидаю готовности…')
     const polled = await pollGeminiVideo(job, model)
     if (polled.cancelled) {
@@ -255,12 +305,28 @@ async function runGeminiJob(job) {
       content = polled.content
       dataUrls = polled.dataUrls
     } else if (polled.timedOut) {
-      appendJobLog(job.id, 'Видео не успело сгенерироваться за отведённое время')
+      appendJobLog(job.id, 'Видео не успело сгенерироваться за отведённое время (25 мин лимит)')
+      // Don't fail outright if we at least have a hint of a remote URL —
+      // the UI will surface a "Скачать видео" retry button.
+      remoteUrls = polled.remoteUrls || []
+      if (!remoteUrls.length) {
+        setJobPatch(job.id, {
+          status: 'failed',
+          progress: 100,
+          error: 'Gemini не вернул готовое видео за отведённое время. Попробуйте ещё раз позже или нажмите «Повторить запрос видео» в карточке.',
+          result: { content, remoteUrls, retryable: true, kind: 'video' },
+          finishedAt: now(),
+        })
+        return
+      }
+      // Has remote URL — mark as succeeded-with-pending-download so UI shows
+      // a retry button. We still save no files yet.
+      appendJobLog(job.id, `Получены ${remoteUrls.length} ссылок на видео — UI предложит докачать`)
       setJobPatch(job.id, {
         status: 'failed',
         progress: 100,
-        error: 'Gemini не вернул готовое видео за отведённое время. Попробуйте ещё раз позже.',
-        result: { content },
+        error: 'Видео сгенерировано, но скачать его автоматически не удалось. Нажми «Повторить запрос видео» — попробую снова.',
+        result: { content, remoteUrls, retryable: true, kind: 'video' },
         finishedAt: now(),
       })
       return
@@ -277,8 +343,8 @@ async function runGeminiJob(job) {
     setJobPatch(job.id, {
       status: 'failed',
       progress: 100,
-      error: 'Не удалось получить файл видео из Gemini.',
-      result: { content, files, dataUrlsCount: dataUrls.length },
+      error: 'Не удалось получить файл видео из Gemini. Нажми «Повторить запрос видео» в карточке.',
+      result: { content, files, dataUrlsCount: dataUrls.length, retryable: true, kind: 'video' },
       finishedAt: now(),
     })
     return
@@ -287,9 +353,31 @@ async function runGeminiJob(job) {
   setJobPatch(job.id, {
     status: 'succeeded',
     progress: 100,
-    result: { content, files, dataUrlsCount: dataUrls.length },
+    result: {
+      content,
+      files,
+      dataUrlsCount: dataUrls.length,
+      kind: isVideo ? 'video' : (files.some((f) => /\.(png|jpg|jpeg|webp|gif)$/i.test(f)) ? 'image' : 'doc'),
+    },
     finishedAt: now(),
   })
+}
+
+// Re-run a video job that previously timed out or produced no usable file.
+// Reuses the same chat session / model / attachments as the original.
+export async function retryVideoJob(originalJobId) {
+  const orig = getJob(originalJobId)
+  if (!orig) throw new Error('original job not found')
+  if (orig.type !== 'gemini_video') throw new Error('not a video job')
+  const newJob = createJob({
+    userId: orig.userId || '',
+    chatId: orig.chatId || '',
+    type: 'gemini_video',
+    title: orig.title || 'gemini video (retry)',
+    input: orig.input || {},
+  })
+  void startJob(newJob.id)
+  return newJob
 }
 
 
