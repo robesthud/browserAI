@@ -231,16 +231,38 @@ if _BA_RUNTIME_OK:
                     } catch (e) { return ''; }
                   }
 
-                  const videos = [];
-                  for (const v of last.querySelectorAll('video, video source')) {
-                    const src = v.getAttribute('src') || v.currentSrc || v.src || '';
-                    if (!src) continue;
-                    const du = await srcToVideoDataUrl(src);
-                    if (du && du.startsWith('data:video/')) videos.push({ src, dataUrl: du });
+                  // Strategy: Gemini's Veo player isn't always inside the
+                  // model-response-message-content div — sometimes it lives
+                  // in a sibling 'video-player' / 'aiplatform-video' /
+                  // 'sources' wrapper rendered later. So we search the
+                  // WHOLE document for <video>/<source> and trust whatever
+                  // we find AFTER the last assistant reply boundary.
+                  // We also still scan the reply div first (for inline
+                  // images and any in-bubble video).
+                  function* collectVideos(root) {
+                    for (const v of root.querySelectorAll('video, video source')) {
+                      const src = v.getAttribute('src') || v.currentSrc || v.src || '';
+                      if (src) yield { src, node: v };
+                    }
                   }
-                  for (const a of last.querySelectorAll('a[href*="generated_video_content"], a[href*="/video"]')) {
+
+                  const videos = [];
+                  const seen = new Set();
+                  for (const root of [last, document]) {
+                    for (const { src } of collectVideos(root)) {
+                      if (seen.has(src)) continue;
+                      seen.add(src);
+                      const du = await srcToVideoDataUrl(src);
+                      if (du && du.startsWith('data:video/')) videos.push({ src, dataUrl: du });
+                    }
+                  }
+                  // Also: <a href="...generated_video_content..."> and Veo's
+                  // <download-button> + <a download="..."> links that point
+                  // to the finished mp4 (visible in Gemini's player overlay).
+                  for (const a of document.querySelectorAll('a[href*="generated_video_content"], a[href*="/video"], a[download][href]')) {
                     const src = a.getAttribute('href') || '';
-                    if (!src) continue;
+                    if (!src || seen.has(src)) continue;
+                    seen.add(src);
                     const du = await srcToVideoDataUrl(src);
                     if (du && du.startsWith('data:video/')) videos.push({ src, dataUrl: du });
                   }
@@ -256,7 +278,7 @@ if _BA_RUNTIME_OK:
                   // Surface any remote media href so the caller can decide to
                   // trigger a fresh download-button poll on the next cycle.
                   const links = [];
-                  for (const a of last.querySelectorAll('a[href]')) {
+                  for (const a of document.querySelectorAll('a[href]')) {
                     const h = a.getAttribute('href') || '';
                     if (/googleusercontent\\.com|generated_video_content|veo|\\.mp4($|\\?)|\\.webm($|\\?)/i.test(h)) links.push(h);
                   }
@@ -309,6 +331,65 @@ if _BA_RUNTIME_OK:
                 out["via_download_button"].append({"kind": "other", "mime": mime})
 
         return out
+
+    @app.get("/v1/sessions/{session_id}/debug-dom")  # noqa: F821
+    async def ba_debug_dom(session_id: str):
+        """
+        Dump a snapshot of the current Gemini page DOM relevant to media
+        extraction. Helps figure out where Veo's <video>/<source>/<a> ended
+        up when poll-media returns 0 videos but the user clearly sees a
+        finished video on screen.
+        """
+        if session_id not in session_pages:  # noqa: F821
+            raise HTTPException(404, f"session {session_id} not found")
+        page = session_pages[session_id]  # noqa: F821
+        try:
+            info = await page.evaluate(
+                '''() => {
+                  function dump(el) {
+                    const r = el.getBoundingClientRect();
+                    const a = el.attributes || [];
+                    const attrs = {};
+                    for (const x of a) attrs[x.name] = (x.value || '').slice(0, 200);
+                    return {
+                      tag: el.tagName,
+                      visible: !!(r.width && r.height),
+                      rect: { w: Math.round(r.width), h: Math.round(r.height) },
+                      class: String(el.className || '').slice(0, 200),
+                      id: el.id || '',
+                      attrs,
+                      text: (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 120),
+                    };
+                  }
+                  const videos = [...document.querySelectorAll('video, source')].map(dump);
+                  const dlAnchors = [...document.querySelectorAll('a[download], a[href*="video"], a[href*="googleusercontent"], a[href*="generated_video"]')].slice(0, 30).map(dump);
+                  const dlButtons = [...document.querySelectorAll('button[aria-label*="скачать" i], button[aria-label*="download" i], [data-test-id*="download" i]')].slice(0, 30).map(dump);
+                  const wrappers = [
+                    'video-player', 'video-player-wrapper', 'aiplatform-video',
+                    'video-attachment', 'media-attachment', 'gemini-video-player',
+                    '[class*="video" i]'
+                  ];
+                  const wrSnapshot = [];
+                  for (const sel of wrappers) {
+                    for (const el of document.querySelectorAll(sel)) {
+                      wrSnapshot.push({ selector: sel, ...dump(el) });
+                      if (wrSnapshot.length > 30) break;
+                    }
+                    if (wrSnapshot.length > 30) break;
+                  }
+                  const lastReply = [...document.querySelectorAll('div[id^="model-response-message-content"]')].pop();
+                  const lastReplyHtml = lastReply ? lastReply.outerHTML.slice(0, 4000) : '';
+                  return {
+                    url: location.href,
+                    title: document.title,
+                    videos, dlAnchors, dlButtons, wrappers: wrSnapshot,
+                    lastReplyHtml,
+                  };
+                }'''
+            )
+        except Exception as e:
+            raise HTTPException(500, f"debug-dom failed: {e}")
+        return JSONResponse(info)
 
     @app.post("/v1/sessions/{session_id}/poll-media")  # noqa: F821
     async def ba_poll_media(session_id: str):
