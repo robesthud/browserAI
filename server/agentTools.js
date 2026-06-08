@@ -27,6 +27,7 @@ import { runSandboxCommand } from './agentSandbox.js'
 import { listOpsServices, runOpsAction } from './ops.js'
 import { browserOpen, browserScreenshot, browserClick, browserType, browserClose } from './browserTools.js'
 import { upsertFact, forgetFact, listFacts } from './userMemory.js'
+import { addDocument, deleteDocument, listDocuments, searchKnowledge } from './knowledgeBase.js'
 
 // ── Utility ─────────────────────────────────────────────────────────────────
 function truncate(str, max = 8000) {
@@ -412,6 +413,54 @@ export const TOOLS = {
     },
   },
 
+  // ── Knowledge base (RAG) ───────────────────────────────────────────────
+  // Per-user document store with TF-IDF search. Add long docs (PDFs/MDs/
+  // logs/manuals) once, then query relevant passages instead of pasting
+  // the whole document into every prompt.
+  kb_add: {
+    description: 'Add a document to the user knowledge base. Text is chunked and indexed automatically. Use for long docs you want to query later via kb_search — instead of re-reading them in full every turn.',
+    params: {
+      title:  { type: 'string', required: true, description: 'Human-readable title.' },
+      text:   { type: 'string', required: true, description: 'Full text content (≤ 256 KB).' },
+      source: { type: 'string', optional: true, description: 'Optional URL / file path for provenance.' },
+    },
+    handler: async ({ title, text, source = '', _userId } = {}) => {
+      if (!_userId) return err('user-scoped tool: no user id in context')
+      try { return ok(addDocument(_userId, { title, source, text })) }
+      catch (e) { return err(e.message) }
+    },
+  },
+  kb_search: {
+    description: 'Search the user knowledge base for passages relevant to a query. Returns top-K chunks (text, score, doc title). Use BEFORE asking the LLM to recall something — much cheaper than re-reading source files.',
+    params: {
+      query: { type: 'string', required: true, description: 'Natural-language query.' },
+      top_k: { type: 'number', optional: true, description: 'How many passages, default 5, max 20.' },
+    },
+    handler: async ({ query, top_k = 5, _userId } = {}) => {
+      if (!_userId) return err('user-scoped tool: no user id in context')
+      try { return ok({ results: searchKnowledge(_userId, query, { topK: top_k }) }) }
+      catch (e) { return err(e.message) }
+    },
+  },
+  kb_list: {
+    description: 'List all documents in the user knowledge base (id, title, source, chunks, bytes).',
+    params: {},
+    handler: async ({ _userId } = {}) => {
+      if (!_userId) return err('user-scoped tool: no user id in context')
+      try { return ok({ documents: listDocuments(_userId) }) }
+      catch (e) { return err(e.message) }
+    },
+  },
+  kb_delete: {
+    description: 'Remove a knowledge-base document by id.',
+    params: { id: { type: 'string', required: true } },
+    handler: async ({ id, _userId } = {}) => {
+      if (!_userId) return err('user-scoped tool: no user id in context')
+      try { return ok(deleteDocument(_userId, id)) }
+      catch (e) { return err(e.message) }
+    },
+  },
+
   // ── Multi-file refactor ────────────────────────────────────────────────
   // Single-call rename / find-replace across many files. Saves N round-
   // trips per file when the user says "rename X to Y everywhere".
@@ -777,41 +826,118 @@ export const TOOLS = {
   },
 
   // ── Vision: let the (text) agent actually "see" an image/screenshot ──
+  // Tries every configured vision backend in order until one returns text:
+  //   1. Gemini Web Proxy (free, default)
+  //   2. OpenAI gpt-4o-mini   (if OPENAI_API_KEY)
+  //   3. Anthropic claude-3-5-haiku (if ANTHROPIC_API_KEY)
+  // The agent now also accepts a `data_url` directly so it can analyse
+  // an image the user just attached, without having to save it first.
   analyze_image: {
-    description: 'Look at an image in the workspace (e.g. a screenshot saved by browser_open) and get a text description/answer from a vision model. Use this to inspect UI screenshots, diagrams, photos. Returns the vision model\'s textual answer.',
+    description:
+      'Look at an image (workspace file OR direct data: URL) and ask a vision model about it. ' +
+      'Tries Gemini Web Proxy first, falls back to OpenAI / Anthropic vision when keys are set on the server. ' +
+      'Use this to inspect UI screenshots from browser_open, diagrams, photos the user attached, etc.',
     params: {
-      path: { type: 'string', required: true, description: 'Path to an image file in the workspace (png/jpg/webp/gif), e.g. "browser-screenshots/screenshot-….png".' },
-      question: { type: 'string', optional: true, description: 'What to ask about the image. Default: describe it.' },
+      path:     { type: 'string', optional: true, description: 'Workspace file path. Use this OR data_url.' },
+      data_url: { type: 'string', optional: true, description: 'data:image/...;base64,... URL. Use this for one-shot analysis without saving the file.' },
+      question: { type: 'string', optional: true, description: 'What to ask. Default: describe what is on the image in detail.' },
+      model:    { type: 'string', optional: true, description: 'Force a specific provider: "gemini", "openai", "anthropic".' },
     },
-    handler: async ({ path, question = '' } = {}) => {
-      if (!path) return err('path is required')
-      try {
-        const file = await readWorkspaceFile(path)
-        if (file?.kind !== 'image' || !file?.dataUrl) {
-          return err(`Not an image or unreadable: ${path} (kind=${file?.kind}, mime=${file?.mime})`)
-        }
-        const visionUrl = process.env.GEMINI_WEB_PROXY_URL || 'http://host.docker.internal:8080/v1'
-        const visionModel = process.env.GEMINI_WEB_MODEL || 'gemini-2.5-flash'
-        const prompt = String(question || '').trim() || 'Опиши, что изображено на этом изображении, подробно.'
-        const r = await fetch(`${visionUrl.replace(/\/$/, '')}/chat/completions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer not-needed' },
-          body: JSON.stringify({
-            model: visionModel,
-            messages: [{ role: 'user', content: [
-              { type: 'text', text: prompt },
-              { type: 'image_url', image_url: { url: file.dataUrl } },
-            ] }],
-          }),
-          signal: AbortSignal.timeout(120_000),
-        })
-        const raw = await r.text()
-        if (!r.ok) return err(`Vision backend ${r.status}: ${truncate(raw, 500)}`)
-        let answer = ''
-        try { answer = JSON.parse(raw)?.choices?.[0]?.message?.content || '' } catch { /* ignore */ }
-        if (!answer) return err('Vision backend returned no text')
-        return ok({ path, question: prompt, answer: truncate(answer, 6000) })
-      } catch (e) { return err(e.message) }
+    handler: async ({ path, data_url = '', question = '', model = '' } = {}) => {
+      if (!path && !data_url) return err('path or data_url required')
+      let dataUrl = data_url
+      if (!dataUrl && path) {
+        try {
+          const file = await readWorkspaceFile(path)
+          if (file?.kind !== 'image' || !file?.dataUrl) return err(`Not an image: ${path}`)
+          dataUrl = file.dataUrl
+        } catch (e) { return err(e.message) }
+      }
+      const prompt = String(question || '').trim() || 'Опиши, что изображено на этом изображении, подробно. Если это UI — перечисли видимые элементы, ошибки, текст.'
+
+      const attempts = []
+      const want = String(model || '').toLowerCase()
+      const tryGemini = !want || want === 'gemini'
+      const tryOpenAI = (!want || want === 'openai') && process.env.OPENAI_API_KEY
+      const tryAnth   = (!want || want === 'anthropic') && process.env.ANTHROPIC_API_KEY
+
+      if (tryGemini) {
+        try {
+          const url = (process.env.GEMINI_WEB_PROXY_URL || 'http://host.docker.internal:8080/v1').replace(/\/$/, '')
+          const r = await fetch(`${url}/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer not-needed' },
+            body: JSON.stringify({
+              model: process.env.GEMINI_WEB_MODEL || 'gemini-2.5-flash',
+              messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: dataUrl } }] }],
+            }),
+            signal: AbortSignal.timeout(90_000),
+          })
+          const raw = await r.text()
+          if (r.ok) {
+            const answer = JSON.parse(raw)?.choices?.[0]?.message?.content || ''
+            if (answer) return ok({ path, question: prompt, answer: truncate(answer, 6000), via: 'gemini-web-proxy' })
+          }
+          attempts.push(`gemini: HTTP ${r.status} ${truncate(raw, 200)}`)
+        } catch (e) { attempts.push(`gemini: ${e.message}`) }
+      }
+
+      if (tryOpenAI) {
+        try {
+          const r = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+            body: JSON.stringify({
+              model: process.env.OPENAI_VISION_MODEL || 'gpt-4o-mini',
+              messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: dataUrl } }] }],
+            }),
+            signal: AbortSignal.timeout(90_000),
+          })
+          const raw = await r.text()
+          if (r.ok) {
+            const answer = JSON.parse(raw)?.choices?.[0]?.message?.content || ''
+            if (answer) return ok({ path, question: prompt, answer: truncate(answer, 6000), via: 'openai' })
+          }
+          attempts.push(`openai: HTTP ${r.status} ${truncate(raw, 200)}`)
+        } catch (e) { attempts.push(`openai: ${e.message}`) }
+      }
+
+      if (tryAnth) {
+        try {
+          // Anthropic expects base64 + media_type separately.
+          const m = String(dataUrl).match(/^data:(image\/[a-z0-9+.-]+);base64,(.*)$/i)
+          if (!m) throw new Error('data URL must be base64-encoded image')
+          const r = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': process.env.ANTHROPIC_API_KEY,
+              'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify({
+              model: process.env.ANTHROPIC_VISION_MODEL || 'claude-3-5-haiku-latest',
+              max_tokens: 2000,
+              messages: [{
+                role: 'user',
+                content: [
+                  { type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } },
+                  { type: 'text', text: prompt },
+                ],
+              }],
+            }),
+            signal: AbortSignal.timeout(90_000),
+          })
+          const raw = await r.text()
+          if (r.ok) {
+            const j = JSON.parse(raw)
+            const answer = j?.content?.map((b) => b.text || '').join('') || ''
+            if (answer) return ok({ path, question: prompt, answer: truncate(answer, 6000), via: 'anthropic' })
+          }
+          attempts.push(`anthropic: HTTP ${r.status} ${truncate(raw, 200)}`)
+        } catch (e) { attempts.push(`anthropic: ${e.message}`) }
+      }
+
+      return err(`No vision backend returned a usable answer. Attempts: ${attempts.join(' | ') || '(none configured)'}`)
     },
   },
 
@@ -952,11 +1078,15 @@ export const TOOLS = {
 
 // ── Schema for the system prompt ────────────────────────────────────────────
 /**
- * Render the tool catalogue as plain text the LLM can read.
+ * Render a tool catalogue (built-in TOOLS plus any extra map of
+ * user-defined custom tools) as plain text the LLM can read.
  */
-export function renderToolsForPrompt() {
+export function renderToolsForPrompt(extraTools = null) {
+  const combined = extraTools && typeof extraTools === 'object'
+    ? { ...TOOLS, ...extraTools }
+    : TOOLS
   const lines = []
-  for (const [name, def] of Object.entries(TOOLS)) {
+  for (const [name, def] of Object.entries(combined)) {
     lines.push(`### ${name}`)
     lines.push(def.description)
     const params = Object.entries(def.params || {})
@@ -976,9 +1106,10 @@ export function renderToolsForPrompt() {
 
 /**
  * Invoke a tool by name. Returns the {ok, result|error} shape.
+ * Pass `extraTools` to expose user-defined tools alongside the built-ins.
  */
-export async function invokeTool(name, args = {}, { signal, onStdout, onStderr, userId } = {}) {
-  const tool = TOOLS[name]
+export async function invokeTool(name, args = {}, { signal, onStdout, onStderr, userId, extraTools } = {}) {
+  const tool = (extraTools && extraTools[name]) || TOOLS[name]
   if (!tool) return err(`Unknown tool: ${name}`)
   if (typeof tool.handler !== 'function') return err(`Tool ${name} has no handler`)
   // Cooperative cancellation + live-progress streaming + identity. Tools

@@ -45,7 +45,7 @@ const DEFAULT_DEADLINE_MS = 5 * 60 * 1000
 const TOOL_FENCE_RE = /```(?:json|tool|tool_call)?\s*\n?\s*(\{[\s\S]*?\})\s*\n?\s*```/i
 
 // ── System prompt ───────────────────────────────────────────────────────────
-function buildSystemPrompt({ extraSystem = '', native = false } = {}) {
+function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null } = {}) {
   const head = [
     'You are an autonomous coding agent operating inside BrowserAI.',
     'You can read and write files in /workspace, search the web, fetch pages, and run shell commands in an isolated sandbox.',
@@ -122,7 +122,7 @@ function buildSystemPrompt({ extraSystem = '', native = false } = {}) {
   const tail = [
     '# Available tools',
     '',
-    renderToolsForPrompt(),
+    renderToolsForPrompt(extraTools),
     extraSystem ? '\n# Extra context\n\n' + extraSystem : '',
   ].filter(Boolean)
 
@@ -130,8 +130,9 @@ function buildSystemPrompt({ extraSystem = '', native = false } = {}) {
 }
 
 // ── OpenAI-format tools[] schema, built from our registry ───────────────────
-function buildNativeToolsSpec() {
-  return Object.entries(TOOLS).map(([name, def]) => {
+function buildNativeToolsSpec(extraTools = null) {
+  const combined = extraTools && typeof extraTools === 'object' ? { ...TOOLS, ...extraTools } : TOOLS
+  return Object.entries(combined).map(([name, def]) => {
     const properties = {}
     const required = []
     for (const [pName, pMeta] of Object.entries(def.params || {})) {
@@ -303,7 +304,7 @@ function looksLikeUnapplliedCodeReply(text = '', history = []) {
 // CLEARLY tried to call a tool (had a fenced JSON or trailing brace) but
 // the JSON didn't parse. The loop uses that flag to trigger a single
 // "fix your JSON" push-back instead of silently dropping the call.
-function extractTextToolCall(text = '') {
+function extractTextToolCall(text = '', extraTools = null) {
   const fence = TOOL_FENCE_RE.exec(text)
   const candidates = []
   if (fence) candidates.push(fence[1])
@@ -313,7 +314,8 @@ function extractTextToolCall(text = '') {
   for (const raw of candidates) {
     try {
       const obj = JSON.parse(raw)
-      if (obj && typeof obj.tool === 'string' && TOOLS[obj.tool]) {
+      const known = obj && typeof obj.tool === 'string' && (TOOLS[obj.tool] || (extraTools && extraTools[obj.tool]))
+      if (known) {
         return { tool: obj.tool, args: obj.args || {} }
       }
       // Parsed but wrong shape — still counts as "the model tried to
@@ -417,9 +419,19 @@ async function runAgentInner({
     return
   }
 
+  // Custom user-defined tools (HTTP / webhook). Loaded once per agent run.
+  let extraTools = null
+  if (userId) {
+    try {
+      const { loadCustomToolsFor } = await import('./customTools.js')
+      const map = loadCustomToolsFor(userId)
+      if (Object.keys(map).length) extraTools = map
+    } catch (e) { console.warn('[agent] custom tools load failed:', e?.message || e) }
+  }
+
   let useNativeTools = supportsNativeTools(provider.baseUrl)
-  let systemPrompt = buildSystemPrompt({ extraSystem, native: useNativeTools })
-  let toolsSpec = useNativeTools ? buildNativeToolsSpec() : undefined
+  let systemPrompt = buildSystemPrompt({ extraSystem, native: useNativeTools, extraTools })
+  let toolsSpec = useNativeTools ? buildNativeToolsSpec(extraTools) : undefined
 
   const convo = [
     { role: 'system', content: systemPrompt },
@@ -524,14 +536,14 @@ async function runAgentInner({
       let calls = []
       if (useNativeTools && Array.isArray(reply.toolCalls) && reply.toolCalls.length > 0) {
         for (const tc of reply.toolCalls) {
-          if (TOOLS[tc.name]) {
+          if (TOOLS[tc.name] || (extraTools && extraTools[tc.name])) {
             calls.push({ tool: tc.name, args: tc.args || {}, nativeId: tc.id, nativeRaw: tc.raw })
           }
         }
       }
       let malformedToolCall = false
       if (calls.length === 0) {
-        const textCall = extractTextToolCall(reply.text)
+        const textCall = extractTextToolCall(reply.text, extraTools)
         if (textCall?.malformed) malformedToolCall = true
         else if (textCall) calls = [textCall]
       }
@@ -693,6 +705,7 @@ async function runAgentInner({
             onStdout: (c) => onProgress(c, 'stdout'),
             onStderr: (c) => onProgress(c, 'stderr'),
             userId,
+            extraTools,
           })
         }
         sse(res, 'tool_result', {

@@ -1731,6 +1731,79 @@ app.get('/api/ops/audit', requireAuth, (req, res) => {
   res.json({ entries: readOpsAudit({ limit: req.query.limit || 100 }) })
 })
 
+// ── User-defined custom tools (MCP-style) ──────────────────────────────────
+app.get('/api/custom-tools', requireAuth, async (req, res) => {
+  try {
+    const { listCustomTools } = await import('./customTools.js')
+    res.json({ tools: listCustomTools(req.user?.id) })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/custom-tools', requireAuth, async (req, res) => {
+  try {
+    const { upsertCustomTool } = await import('./customTools.js')
+    res.json({ ok: true, ...upsertCustomTool(req.user?.id, req.body || {}) })
+  } catch (e) { res.status(400).json({ error: e.message }) }
+})
+
+app.delete('/api/custom-tools/:name', requireAuth, async (req, res) => {
+  try {
+    const { deleteCustomTool } = await import('./customTools.js')
+    res.json({ ok: true, ...deleteCustomTool(req.user?.id, req.params.name) })
+  } catch (e) { res.status(400).json({ error: e.message }) }
+})
+
+// ── Cron / scheduled jobs ──────────────────────────────────────────────────
+app.get('/api/cron', requireAuth, async (req, res) => {
+  try {
+    const { listCronJobs } = await import('./cron.js')
+    res.json({ jobs: listCronJobs(req.user?.id) })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/cron', requireAuth, async (req, res) => {
+  try {
+    const { upsertCronJob } = await import('./cron.js')
+    res.json({ ok: true, ...upsertCronJob(req.user?.id, req.body || {}) })
+  } catch (e) { res.status(400).json({ error: e.message }) }
+})
+
+app.delete('/api/cron/:id', requireAuth, async (req, res) => {
+  try {
+    const { deleteCronJob } = await import('./cron.js')
+    res.json({ ok: true, ...deleteCronJob(req.user?.id, req.params.id) })
+  } catch (e) { res.status(400).json({ error: e.message }) }
+})
+
+// ── Knowledge base (RAG) ───────────────────────────────────────────────────
+app.get('/api/kb', requireAuth, async (req, res) => {
+  try {
+    const { listDocuments } = await import('./knowledgeBase.js')
+    res.json({ documents: listDocuments(req.user?.id) })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/kb', requireAuth, async (req, res) => {
+  try {
+    const { addDocument } = await import('./knowledgeBase.js')
+    res.json({ ok: true, ...addDocument(req.user?.id, req.body || {}) })
+  } catch (e) { res.status(400).json({ error: e.message }) }
+})
+
+app.delete('/api/kb/:id', requireAuth, async (req, res) => {
+  try {
+    const { deleteDocument } = await import('./knowledgeBase.js')
+    res.json({ ok: true, ...deleteDocument(req.user?.id, req.params.id) })
+  } catch (e) { res.status(400).json({ error: e.message }) }
+})
+
+app.get('/api/kb/search', requireAuth, async (req, res) => {
+  try {
+    const { searchKnowledge } = await import('./knowledgeBase.js')
+    res.json({ results: searchKnowledge(req.user?.id, String(req.query.q || ''), { topK: Number(req.query.top_k || 5) }) })
+  } catch (e) { res.status(400).json({ error: e.message }) }
+})
+
 app.post('/api/jobs', requireAuth, (req, res) => {
   try {
     const { type, title = '', prompt = '', chatId = '', model = '', attachments = [], input = {} } = req.body || {}
@@ -2520,5 +2593,13 @@ try {
   startUserTelegramBot({ db })
 } catch (e) {
   console.warn('[user-tg] bootstrap failed:', e.message)
+}
+
+// Cron worker — polls every 60 s for due scheduled jobs.
+try {
+  const { startCronWorker } = await import('./cron.js')
+  startCronWorker()
+} catch (e) {
+  console.warn('[cron] bootstrap failed:', e.message)
 }
 
