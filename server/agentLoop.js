@@ -644,6 +644,14 @@ async function runAgentInner({
       if (Object.keys(map).length) extraTools = map
     } catch (e) { console.warn('[agent] custom tools load failed:', e?.message || e) }
   }
+  // MCP tools (from /data/mcp.json — global to the instance, shared across users).
+  try {
+    const { listMcpTools } = await import('./mcpClient.js')
+    const mcp = listMcpTools()
+    if (Object.keys(mcp).length) {
+      extraTools = { ...(extraTools || {}), ...mcp }
+    }
+  } catch (e) { console.warn('[agent] mcp tools load failed:', e?.message || e) }
 
   let useNativeTools = supportsNativeTools(provider.baseUrl)
   let systemPrompt = buildSystemPrompt({ extraSystem, native: useNativeTools, extraTools })

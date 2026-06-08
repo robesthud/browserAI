@@ -1109,6 +1109,16 @@ export function renderToolsForPrompt(extraTools = null) {
  * Pass `extraTools` to expose user-defined tools alongside the built-ins.
  */
 export async function invokeTool(name, args = {}, { signal, onStdout, onStderr, userId, extraTools } = {}) {
+  // MCP tools route through mcpClient — they don't live in TOOLS.
+  if (typeof name === 'string' && name.startsWith('mcp__')) {
+    try {
+      const { invokeMcpTool } = await import('./mcpClient.js')
+      const cleanArgs = { ...(args || {}) }
+      delete cleanArgs._signal; delete cleanArgs._onStdout; delete cleanArgs._onStderr; delete cleanArgs._userId
+      const out = await invokeMcpTool(name, cleanArgs)
+      return ok(typeof out === 'string' ? out : (out ?? ''))
+    } catch (e) { return err(`MCP ${name}: ${e?.message || String(e)}`) }
+  }
   const tool = (extraTools && extraTools[name]) || TOOLS[name]
   if (!tool) return err(`Unknown tool: ${name}`)
   if (typeof tool.handler !== 'function') return err(`Tool ${name} has no handler`)

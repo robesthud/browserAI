@@ -2409,6 +2409,50 @@ app.get('/api/cost/chat/:chatId', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
+// ── MCP (Model Context Protocol) ───────────────────────────────────────────
+// All endpoints require admin (we only allow management for the owner of
+// the box because MCP servers can read filesystem / call out / etc.).
+app.get('/api/mcp/status', requireAuth, async (_req, res) => {
+  try {
+    const { getMcpServerStatus } = await import('./mcpClient.js')
+    res.json({ servers: getMcpServerStatus() })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.get('/api/mcp/config', requireAuth, async (_req, res) => {
+  try {
+    const { getMcpConfig } = await import('./mcpClient.js')
+    res.json({ servers: await getMcpConfig() })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/mcp/server/:name', requireAuth, async (req, res) => {
+  try {
+    const { setMcpServer } = await import('./mcpClient.js')
+    const out = await setMcpServer(String(req.params.name), req.body || {})
+    res.json({ ok: true, servers: out, restartHint: 'Restart the container or POST /api/mcp/restart to apply.' })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.delete('/api/mcp/server/:name', requireAuth, async (req, res) => {
+  try {
+    const { deleteMcpServer } = await import('./mcpClient.js')
+    const out = await deleteMcpServer(String(req.params.name))
+    res.json({ ok: true, servers: out })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/mcp/restart', requireAuth, async (_req, res) => {
+  try {
+    const { stopMcpHub, startMcpHub } = await import('./mcpClient.js')
+    stopMcpHub()
+    await new Promise((r) => setTimeout(r, 500))
+    await startMcpHub()
+    const { getMcpServerStatus } = await import('./mcpClient.js')
+    res.json({ ok: true, servers: getMcpServerStatus() })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
 // ── Web Push ───────────────────────────────────────────────────────────────
 app.get('/api/push/vapid', async (_req, res) => {
   try {
@@ -2745,5 +2789,13 @@ try {
   startCronWorker()
 } catch (e) {
   console.warn('[cron] bootstrap failed:', e.message)
+}
+
+// MCP hub — spawn any servers listed in /data/mcp.json (disabled by default).
+try {
+  const { startMcpHub } = await import('./mcpClient.js')
+  startMcpHub().catch((e) => console.warn('[mcp] hub start failed:', e?.message || e))
+} catch (e) {
+  console.warn('[mcp] bootstrap failed:', e.message)
 }
 
