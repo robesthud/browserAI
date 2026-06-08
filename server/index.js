@@ -67,7 +67,13 @@ import {
   deleteWorkspaceScope,
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
-import { getGatewayModels, getGatewayStatus, isGatewayUrl, resolveGatewayModel } from './gateway.js'
+import {
+  getGatewayModels,
+  getGatewayStatus,
+  getGatewayStatusSync,
+  isGatewayUrl,
+  resolveGatewayModel,
+} from './gateway.js'
 import { createJob, getJob, initJobs, listJobs, startJob, cancelJob } from './jobs.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
@@ -1134,9 +1140,18 @@ app.post('/api/validate', requireAuth, async (req, res) => {
 
   if (isGatewayUrl(baseUrl)) {
     const models = getGatewayModels()
+    const snap = getGatewayStatusSync()
+    const dsOk = snap?.deepseek?.alive
+    const gemOk = snap?.gemini?.alive
+    const aliveBits = []
+    if (dsOk) aliveBits.push('DeepSeek')
+    if (gemOk === true) aliveBits.push('Gemini')
+    const message = aliveBits.length
+      ? `Free Gateway готов · ${aliveBits.join(' + ')} · моделей: ${models.length}`
+      : `Free Gateway: провайдеры пока не отвечают (Gemini=${gemOk ?? '?'}, DeepSeek=${dsOk ? 'ok' : 'down'}). Запусти /api/gateway/health.`
     return res.json({
       ok: true,
-      message: `Free Gateway готов · моделей: ${models.length}`,
+      message,
       models,
       preferredModel: models.includes(model) ? model : models[0],
     })
@@ -1594,11 +1609,32 @@ app.get('/api/web/search', requireAuth, async (req, res) => {
 
 
 app.get('/api/gateway/models', requireAuth, (_req, res) => {
-  res.json({ models: getGatewayModels(), items: getGatewayStatus().models })
+  const snap = getGatewayStatusSync()
+  res.json({ models: getGatewayModels(), items: snap.models })
 })
 
-app.get('/api/gateway/status', requireAuth, (_req, res) => {
-  res.json(getGatewayStatus())
+// Лёгкий статус (быстрый, из 15-сек кэша; если кэш пуст — поднимет фоновый
+// пинг и вернёт sync-снимок).
+app.get('/api/gateway/status', requireAuth, async (_req, res) => {
+  try {
+    const status = await getGatewayStatus()
+    res.json(status)
+  } catch (e) {
+    res.status(500).json({ error: e?.message || 'gateway status failed' })
+  }
+})
+
+// Полный health: принудительный пинг (force=1 → сбросить кэш).
+app.get('/api/gateway/health', requireAuth, async (req, res) => {
+  try {
+    const force = String(req.query?.force || '').match(/^(1|true|yes)$/i)
+    const status = await getGatewayStatus({ force: Boolean(force) })
+    const httpCode =
+      status.deepseek?.alive || status.gemini?.alive ? 200 : 503
+    res.status(httpCode).json(status)
+  } catch (e) {
+    res.status(500).json({ error: e?.message || 'gateway health failed' })
+  }
 })
 
 app.get('/api/ops/services', requireAuth, (_req, res) => {
@@ -1741,6 +1777,14 @@ app.post('/api/chat', requireAuth, async (req, res) => {
 
   if (isGatewayUrl(baseUrl)) {
     const routed = resolveGatewayModel(model)
+    if (!routed.ok) {
+      const code = routed.error === 'unknown_model' ? 400 : 503
+      return res.status(code).json({
+        error: routed.message,
+        code: routed.error,
+        suggestion: routed.suggestion,
+      })
+    }
     baseUrl = routed.baseUrl
     apiKey = routed.apiKey
     authType = routed.authType
@@ -2167,6 +2211,14 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
 
   if (isGatewayUrl(baseUrl)) {
     const routed = resolveGatewayModel(model)
+    if (!routed.ok) {
+      const code = routed.error === 'unknown_model' ? 400 : 503
+      return res.status(code).json({
+        error: routed.message,
+        code: routed.error,
+        suggestion: routed.suggestion,
+      })
+    }
     baseUrl = routed.baseUrl
     apiKey = routed.apiKey
     authType = routed.authType

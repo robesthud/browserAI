@@ -10,8 +10,23 @@ async function api(path, options = {}) {
   return r.json()
 }
 
-function StatusPill({ ok, children }) {
-  return <span className={`rounded-full px-2 py-0.5 text-xs ${ok ? 'bg-emerald-500/15 text-emerald-300' : 'bg-red-500/15 text-red-300'}`}>{children}</span>
+function StatusPill({ ok, title, children }) {
+  // ok === true  → green
+  // ok === false → red
+  // ok == null   → grey ("unknown")
+  const cls = ok === true
+    ? 'bg-emerald-500/15 text-emerald-300'
+    : ok === false
+      ? 'bg-red-500/15 text-red-300'
+      : 'bg-white/10 text-cream-faint'
+  return <span title={title || ''} className={`rounded-full px-2 py-0.5 text-xs ${cls}`}>{children}</span>
+}
+
+function gwLabel(part) {
+  if (!part) return 'unknown'
+  if (part.alive === true)  return part.latencyMs ? `OK (${part.latencyMs}ms)` : 'OK'
+  if (part.alive === false) return part.error ? `down · ${part.error}` : 'down'
+  return 'unknown'
 }
 
 export default function OpsAdmin() {
@@ -90,9 +105,18 @@ export default function OpsAdmin() {
         <section className="rounded-2xl border border-white/10 bg-graphite-900/70 p-4">
           <h2 className="mb-3 text-lg font-medium">Status</h2>
           <div className="flex flex-wrap gap-2">
-            <StatusPill ok={gateway?.deepseek?.alive}>DeepSeek {gateway?.deepseek?.alive ? 'OK' : 'unknown'}</StatusPill>
-            <StatusPill ok={gateway?.gemini?.alive}>Gemini {gateway?.gemini?.alive ? 'OK' : 'unknown'}</StatusPill>
+            <StatusPill ok={gateway?.deepseek?.alive} title={gateway?.deepseek?.error || ''}>
+              DeepSeek {gwLabel(gateway?.deepseek)}
+            </StatusPill>
+            <StatusPill ok={gateway?.gemini?.alive} title={gateway?.gemini?.error || gateway?.gemini?.endpoint || ''}>
+              Gemini {gwLabel(gateway?.gemini)}
+            </StatusPill>
             <StatusPill ok={agentHealth?.sandbox === 'ok'}>Sandbox {agentHealth?.sandbox || 'unknown'}</StatusPill>
+            {gateway?.checkedAt && (
+              <span className="ml-auto text-xs text-cream-faint" title={gateway.checkedAt}>
+                checked: {new Date(gateway.checkedAt).toLocaleTimeString()}
+              </span>
+            )}
           </div>
         </section>
 

@@ -29,7 +29,13 @@ import {
   isSessionValid as isDeepSeekValid,
 } from './deepseekTokenRefresher.js'
 import { callLLM } from './llmClient.js'
-import { GATEWAY_API_KEY, GATEWAY_BASE_URL, getGatewayModels, resolveGatewayModel } from './gateway.js'
+import {
+  GATEWAY_API_KEY,
+  GATEWAY_BASE_URL,
+  getGatewayModels,
+  isGatewayProvider,
+  resolveGatewayModel,
+} from './gateway.js'
 
 const TG_TOKEN = process.env.TG_USER_BOT_TOKEN || process.env.TG_BOT_TOKEN || ''
 const POLL_TIMEOUT_SEC = 25
@@ -252,24 +258,67 @@ function settingsKeyboard(user) {
 }
 
 // ── LLM calls ─────────────────────────────────────────────────────────────
+/**
+ * Build the provider config for a TG user. Returns either:
+ *   { ok: true, baseUrl, apiKey, authType, model, extraHeaders, temperature }
+ * or, when the gateway can't satisfy the request:
+ *   { ok: false, error, message, suggestion }
+ *
+ * Используем строгую связку isGatewayProvider(baseUrl ∧ apiKey), чтобы
+ * случайный импорт ключа с apiKey="__gateway__" не активировал gateway-маршрут
+ * на произвольном baseUrl.
+ */
 async function getProvider(user) {
   const requestedModel = user.model || DEFAULT_MODEL
-  if (user.provider_base_url === GATEWAY_BASE_URL || user.provider_api_key === GATEWAY_API_KEY) {
+
+  // Gateway: route to a concrete provider and merge headers.
+  if (isGatewayProvider(user.provider_base_url, user.provider_api_key)) {
     const routed = resolveGatewayModel(requestedModel)
-    user = { ...user, provider_base_url: routed.baseUrl, provider_api_key: routed.apiKey, model: routed.model }
+    if (!routed.ok) {
+      return { ok: false, error: routed.error, message: routed.message, suggestion: routed.suggestion }
+    }
+    const extraHeaders = { ...(routed.extraHeaders || {}) }
+    let apiKey = routed.apiKey
+    if (routed.provider === 'deepseek') {
+      // For managed DeepSeek inject the live bearer + cookies here.
+      if (apiKey === '__managed__') {
+        if (!isDeepSeekValid()) {
+          return {
+            ok: false,
+            error: 'deepseek_unavailable',
+            message: 'DeepSeek session is not configured / expired on the server.',
+            suggestion: routed.suggestion || 'gemini-2.5-flash',
+          }
+        }
+        apiKey = getDeepSeekBearer()
+      }
+      const cookie = getDeepSeekCookieHeader()
+      if (cookie) extraHeaders.Cookie = cookie
+    }
+    return {
+      ok: true,
+      baseUrl: routed.baseUrl,
+      apiKey,
+      authType: routed.authType || 'bearer',
+      model: routed.model,
+      extraHeaders,
+      temperature: 0.7,
+    }
   }
 
+  // Non-gateway: user picked a custom provider/key directly.
   const apiKey = user.provider_api_key === '__managed__'
     ? (isDeepSeekValid() ? getDeepSeekBearer() : '')
     : user.provider_api_key
   const extraHeaders = {}
-  if (user.provider_base_url.includes('chat.deepseek.com')) {
+  if (String(user.provider_base_url || '').includes('chat.deepseek.com')) {
     const cookie = getDeepSeekCookieHeader()
     if (cookie) extraHeaders.Cookie = cookie
     extraHeaders.Referer = 'https://chat.deepseek.com/'
     extraHeaders.Origin  = 'https://chat.deepseek.com'
   }
   return {
+    ok: true,
     baseUrl: user.provider_base_url,
     apiKey,
     authType: 'bearer',
@@ -290,6 +339,11 @@ async function handlePlainChat(user, userText) {
   let acc
 
   const provider = await getProvider(user)
+  if (!provider.ok) {
+    const hint = provider.suggestion ? `\nПопробуй переключиться на: ${provider.suggestion}` : ''
+    await editMessage(user.chat_id, messageId, `❌ ${provider.message || 'gateway не доступен'}${hint}`)
+    return
+  }
   if (!provider.apiKey) {
     await editMessage(user.chat_id, messageId, '❌ Серверная сессия не настроена. Попробуйте позже.')
     return
@@ -302,8 +356,9 @@ async function handlePlainChat(user, userText) {
     // and edit the placeholder once. (Streaming would require duplicating
     // the SSE parser per provider; for the bot a single final edit is
     // perfectly acceptable.)
+    const { ok: _ok, error: _err, suggestion: _s, message: _m, ...cleanProvider } = provider
     const r = await callLLM({
-      ...provider,
+      ...cleanProvider,
       messages: history,
     })
     acc = r.text || '(пустой ответ)'
@@ -358,6 +413,11 @@ async function handleAgentChat(user, userText) {
   const schedulePlaceholderEdit = makeEditQueue(user.chat_id, placeholderId)
 
   const provider = await getProvider(user)
+  if (!provider.ok) {
+    const hint = provider.suggestion ? `\nПопробуй переключиться на: ${provider.suggestion}` : ''
+    await editMessage(user.chat_id, placeholderId, `❌ ${provider.message || 'gateway не доступен'}${hint}`)
+    return
+  }
   if (!provider.apiKey) {
     await editMessage(user.chat_id, placeholderId, '❌ Серверная сессия не настроена.')
     return
@@ -436,8 +496,10 @@ async function handleAgentChat(user, userText) {
   }
 
   try {
+    // Strip the gateway-only `ok` flag before handing the provider to the agent loop.
+    const { ok: _ok, error: _err, suggestion: _s, message: _m, ...cleanProvider } = provider
     await runAgent({
-      provider,
+      provider: cleanProvider,
       history,
       res: fakeRes,
     })
