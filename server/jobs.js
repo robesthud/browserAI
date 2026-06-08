@@ -40,7 +40,44 @@ export function initJobs() {
     CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
     CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
   `)
+  // On boot, mark any job that was 'running'/'queued' as failed — the worker
+  // that owned it died with the previous process, so it'll never finish.
+  // Without this users see ghost "Выполняется" cards forever after a deploy.
+  const orphaned = db.prepare(`
+    UPDATE jobs
+       SET status = 'failed',
+           error  = COALESCE(NULLIF(error, ''), 'Серверный процесс был перезапущен во время выполнения этой задачи.'),
+           progress = 100,
+           updated_at = ?,
+           finished_at = COALESCE(finished_at, ?)
+     WHERE status IN ('running', 'queued')
+  `).run(Date.now(), Date.now())
+  if (orphaned.changes > 0) {
+    console.log(`[jobs] marked ${orphaned.changes} orphaned job(s) as failed on boot`)
+  }
   initialized = true
+}
+
+// Treat any job that hasn't been touched for > ORPHAN_TIMEOUT_MS as dead
+// (worker crashed without updating status). Bumps the row to 'failed' so
+// the UI stops showing a phantom progress bar.
+const ORPHAN_TIMEOUT_MS = Number(process.env.JOB_ORPHAN_TIMEOUT_MS || 10 * 60 * 1000)
+function reapStaleJob(row) {
+  if (!row) return row
+  if (row.status !== 'running' && row.status !== 'queued') return row
+  const idle = Date.now() - Number(row.updated_at || row.created_at || 0)
+  if (idle <= ORPHAN_TIMEOUT_MS) return row
+  // Mark stale.
+  db.prepare(`
+    UPDATE jobs
+       SET status = 'failed',
+           error  = COALESCE(NULLIF(error, ''), 'Задача не обновляла статус более 10 минут — вероятно, воркер упал.'),
+           progress = 100,
+           updated_at = ?,
+           finished_at = ?
+     WHERE id = ?
+  `).run(Date.now(), Date.now(), row.id)
+  return { ...row, status: 'failed', error: 'Задача не обновляла статус более 10 минут — вероятно, воркер упал.', progress: 100, finished_at: Date.now() }
 }
 
 function rowToJob(row) {
@@ -65,7 +102,8 @@ function rowToJob(row) {
 
 export function getJob(id) {
   initJobs()
-  return rowToJob(db.prepare('SELECT * FROM jobs WHERE id = ?').get(id))
+  const row = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id)
+  return rowToJob(reapStaleJob(row))
 }
 
 export function listJobs({ chatId = '', userId = '', limit = 50 } = {}) {
@@ -75,7 +113,7 @@ export function listJobs({ chatId = '', userId = '', limit = 50 } = {}) {
   if (chatId) rows = db.prepare('SELECT * FROM jobs WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?').all(chatId, max)
   else if (userId) rows = db.prepare('SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?').all(userId, max)
   else rows = db.prepare('SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?').all(max)
-  return rows.map(rowToJob)
+  return rows.map(reapStaleJob).map(rowToJob)
 }
 
 export function createJob({ userId = '', chatId = '', type, title = '', input = {} } = {}) {

@@ -243,7 +243,13 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
 
             {m.job ? <JobCard job={m.job} onJobDone={onJobDone} /> : null}
             {m.content ? <Markdown text={m.content} /> : null}
-            {m.pending && (
+            {/*
+              Hide the pulsing cursor when the message owns a job that has
+              already reached a terminal state (succeeded / failed / cancelled).
+              Otherwise an old failed video card from history kept showing the
+              "...is typing" indicator forever after a page reload.
+            */}
+            {m.pending && !(m.job && ['succeeded', 'failed', 'cancelled'].includes(m.job.status)) && (
               <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-cream/70 align-middle" />
             )}
             {m.stopped && !m.content && (

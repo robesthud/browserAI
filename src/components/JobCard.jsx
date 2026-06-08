@@ -116,9 +116,33 @@ export default function JobCard({ job: initial, onJobDone }) {
   const [retryBusy, setRetryBusy] = useState(false)
   const [retryNewId, setRetryNewId] = useState(null)
   const [retryError, setRetryError] = useState('')
+  // Local dismissal for failed/cancelled cards so the user can hide stale
+  // error cards from history without affecting other clients or the DB.
+  const [dismissed, setDismissed] = useState(false)
+
+  // Refresh ONCE on mount from the server so an old chat-history snapshot
+  // (saved with status='running' before a container restart) is corrected
+  // immediately, even before the 2.5 s polling tick fires. Otherwise the
+  // card would render with a stale 'Выполняется' / purple progress bar
+  // for 2-3 seconds on every page reload.
+  useEffect(() => {
+    if (!initial?.id) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const data = await getJob(initial.id)
+        if (cancelled) return
+        if (data?.job) setJob(data.job)
+      } catch { /* ignore — next polling tick will retry */ }
+    })()
+    return () => { cancelled = true }
+  }, [initial?.id])
 
   useEffect(() => {
     if (!initial?.id) return undefined
+    // If the snapshot we were handed is already terminal, skip the polling
+    // loop entirely — nothing on the server will ever change for this id.
+    if (initial?.status && TERMINAL.includes(initial.status)) return undefined
     let cancelled = false
     // Poll on a fixed interval, reading fresh status from the response itself
     // (not stale closure state) so a job can never get stuck visually
@@ -135,13 +159,14 @@ export default function JobCard({ job: initial, onJobDone }) {
       } catch { /* ignore polling errors, keep trying */ }
     }, 2500)
     return () => { cancelled = true; clearInterval(id) }
-  }, [initial?.id, onJobDone])
+  }, [initial?.id, initial?.status, onJobDone])
 
   useEffect(() => {
     if (initial?.id && TERMINAL.includes(initial?.status)) onJobDone?.(initial.id)
   }, [initial?.id, initial?.status, onJobDone])
 
   if (!job) return null
+  if (dismissed) return null
   const done = job.status === 'succeeded'
   const failed = job.status === 'failed' || job.status === 'cancelled'
   const running = !TERMINAL.includes(job.status)
@@ -184,7 +209,19 @@ export default function JobCard({ job: initial, onJobDone }) {
           )}
           {friendlyTitle}
         </div>
-        <div className="text-[11px] text-cream-faint">{statusText(job.status)}</div>
+        <div className="flex items-center gap-2">
+          <div className="text-[11px] text-cream-faint">{statusText(job.status)}</div>
+          {failed && (
+            <button
+              type="button"
+              title="Скрыть эту карточку"
+              onClick={() => setDismissed(true)}
+              className="rounded-md px-1.5 text-[14px] leading-none text-cream-faint hover:bg-white/10 hover:text-cream"
+            >
+              ✕
+            </button>
+          )}
+        </div>
       </div>
       <div className="mt-2 h-2 overflow-hidden rounded-full bg-graphite-900">
         <div className={`h-full ${failed ? 'bg-red-400' : done ? 'bg-emerald-400' : 'bg-violet-400'}`} style={{ width: `${Math.max(3, job.progress || 0)}%` }} />
