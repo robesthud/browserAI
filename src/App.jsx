@@ -91,12 +91,18 @@ function BrowserApp({ user, reloadAuth }) {
     }
   }, [autoMode])
 
-  // Agent mode — model is allowed to call tools (workspace / web / bash)
+  // Agent mode — model is allowed to call tools (workspace / web / bash /
+  // github / download_url). Default ON: users overwhelmingly expect AI to
+  // be able to download files / clone repos / read attachments etc., and
+  // shouldUseAgentForText() routes only the right prompts through tools.
   const [agentMode, setAgentMode] = useState(() => {
     try {
-      return localStorage.getItem('browserai.agentMode') === '1'
+      const saved = localStorage.getItem('browserai.agentMode')
+      if (saved === '1') return true
+      if (saved === '0') return false
+      return true   // default for first-time users
     } catch {
-      return false
+      return true
     }
   })
   useEffect(() => {
@@ -254,20 +260,23 @@ function BrowserApp({ user, reloadAuth }) {
 
   const shouldUseAgentForText = (text, taskType) => {
     if (!agentMode) return false
-    if (autoMode && ['image', 'chat', 'fast', 'creative', 'translation'].includes(taskType || '')) return false
     const lower = String(text || '').toLowerCase()
+    // Phrases that *unambiguously* need tools (download files, manage workspace,
+    // run shell, hit GitHub, etc.). When any of these are present we ALWAYS
+    // run the agent loop — even if the auto-router decided the task is a
+    // 'chat' or 'image' (so the model wouldn't otherwise see its toolbox).
+    // Without this, "Скачай файлы с гитхаб robesthud/browserai" would print
+    // a Markdown instruction instead of actually downloading the repo.
+    const NEEDS_TOOLS_RE = /(скачай|скачать|загруз|клонир|оживи фай|workspace|воркспейс|папк|файл|github|gitlab|gitea|bitbucket|git[\s_-]?clone|\.git\b|гитхаб|гитлаб|репозитор|repo\s|запусти|выполни\s+команд|исправь|измени файл|create file|создай файл|удали файл|delete file|переименуй)/i
+    if (NEEDS_TOOLS_RE.test(lower)) return true
+    // For "soft" non-tool tasks (just chat / image-gen / fast Q&A), keep
+    // the conversation in plain chat mode so the user doesn't see the
+    // tool-call UI noise.
+    if (autoMode && ['image', 'chat', 'fast', 'creative', 'translation'].includes(taskType || '')) return false
     return (
       taskType === 'code' ||
-      lower.includes('workspace') ||
-      lower.includes('файл') ||
-      lower.includes('папк') ||
-      lower.includes('скачай') ||
-      lower.includes('github') ||
-      lower.includes('git') ||
-      lower.includes('запусти') ||
       lower.includes('исправь') ||
-      lower.includes('измени') ||
-      lower.includes('создай файл')
+      lower.includes('измени')
     )
   }
 
