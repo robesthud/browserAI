@@ -63,6 +63,7 @@ import {
   statWorkspaceItem,
   getDownloadName,
   fileNameToMime,
+  listRecentWorkspaceActivity,
   safePath,
   withWorkspaceScope,
   deleteWorkspaceScope,
@@ -2366,6 +2367,29 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
     .filter((m) => m && typeof m.content === 'string' && m.content.trim())
     .map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }))
 
+  // Inject a real "what was done recently in this workspace" digest so the
+  // agent can produce an HONEST summary when the user asks "что ты сделал?"
+  // instead of hallucinating one out of its chat memory. Limited to the
+  // current chat's workspace scope and the last 60 minutes.
+  let realActivityNote = ''
+  try {
+    if (chatId) {
+      const events = await withWorkspaceScope(chatId, () => listRecentWorkspaceActivity({ sinceMs: 60 * 60 * 1000, limit: 50 }))
+      if (events.length) {
+        const lines = events.map((e) => {
+          const iso = new Date(e.ts).toISOString().slice(11, 19)
+          return `  • [${iso}] ${e.reason.toUpperCase()} ${e.path}`
+        }).join('\n')
+        realActivityNote = `# Recently-applied changes in /workspace (ground truth, last 60 min)\n\n${lines}\n\nWhen the user asks for a report or summary, build it FROM THIS LIST and from your own tool-call history. Do NOT invent file paths or changes that aren't here.`
+      } else {
+        realActivityNote = '# Recently-applied changes in /workspace (last 60 min)\n\n(none — no files were created or modified yet)\n\nIf the user thinks you "fixed" something, be honest: nothing has been applied to disk yet. Either apply it now via edit_file/write_file, or say so plainly.'
+      }
+    }
+  } catch (e) {
+    console.warn('[agent] workspace activity digest failed:', e?.message || e)
+  }
+  const extraSystemFinal = [extraSystem, realActivityNote].filter(Boolean).join('\n\n')
+
   try {
     await runAgent({
       provider: {
@@ -2378,7 +2402,7 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
         temperature,
       },
       history: safeHistory,
-      extraSystem,
+      extraSystem: extraSystemFinal,
       workspaceScope: chatId,
       res,
     })

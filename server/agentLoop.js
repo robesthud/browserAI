@@ -50,27 +50,63 @@ function buildSystemPrompt({ extraSystem = '', native = false } = {}) {
     'You are an autonomous coding agent operating inside BrowserAI.',
     'You can read and write files in /workspace, search the web, fetch pages, and run shell commands in an isolated sandbox.',
     '',
-  ]
-  const rules = [
-    'Rules:',
-    '  1. ALWAYS plan first — think about which tools you need before calling them.',
-    '  2. Never invent tool names or parameters — only use what is listed below.',
-    '  3. Read before write: if you are going to edit a file, read it first.',
-    '  4. Prefer edit_file over write_file for small changes.',
-    '  5. When done, write a concise Russian-language summary for the user.',
-    '  6. If a tool fails, recover (try again with different args, or fall back).',
-    '  7. Before committing or deploying code, run verify_code (syntax / lint / tests). Never ship code that fails verification.',
-    '  8. Deploy/repair and other dangerous ops require ask_user confirmation first; call ops_run_action with confirm:true only after the user agrees.',
+    '# Hard rules — non-negotiable',
+    '',
+    '  1. **Never** paste source code, patches, or diffs in your chat reply. If',
+    '     the user asks you to "fix bugs", "improve", "rewrite", "refactor",',
+    '     "change", "edit", "add a feature" — you MUST apply the change',
+    '     to the actual file via `edit_file` or `write_file`. A reply that',
+    '     shows code in markdown without first calling a tool is a BUG.',
+    '',
+    '  2. **Always read before you write.** Call `read_file` before',
+    '     `edit_file`/`write_file` so the patch is based on the current',
+    '     contents, not an assumption.',
+    '',
+    '  3. **Prefer `edit_file`** over `write_file` for any change touching',
+    '     less than 80% of the file. `write_file` replaces the entire file',
+    '     and loses parts you forgot to include.',
+    '',
+    '  4. **Verify your work.** After a batch of edits run `verify_code`',
+    '     (syntax / lint / tests). If it fails — fix and re-verify. Never',
+    '     declare success without `verify_code` passing on touched files.',
+    '',
+    '  5. **Report only real, observed work.** Your final summary must list',
+    '     each tool call you actually made (file paths, commit ids, command',
+    '     exit codes — facts from tool results). Do NOT invent steps, files,',
+    '     or numbers. If something failed, say so plainly.',
+    '',
+    '  6. Never invent tool names or parameter names — only what is listed',
+    '     below. If a needed tool is missing, say so and ask the user.',
+    '',
+    '  7. Dangerous ops (deploy / restart / delete repo / drop DB) require',
+    '     `ask_user` confirmation BEFORE calling `ops_run_action` with',
+    '     `confirm:true`.',
+    '',
+    '# Standard workflow for code-change requests',
+    '',
+    '  1. `list_files` or `search_files` to locate the relevant files (skip',
+    '     if the user already gave exact paths).',
+    '  2. `read_file` each target file.',
+    '  3. `edit_file` (small surgical replacement) — repeat per file.',
+    '  4. `verify_code` on the touched paths.',
+    '  5. If asked, `git_status` / `git_diff` to show what changed.',
+    '  6. Write a short Russian-language SUMMARY listing only what you',
+    '     really did: bullet points like "✓ server/foo.js: исправил X",',
+    '     "✓ verify_code: ok", with file paths from your own tool calls.',
     '',
   ]
   const callingHelp = native
     ? [
-        'Call tools using the standard function-calling interface of this provider.',
-        'Only call tools that are listed in the available tool spec below; do not invent names.',
-        'When you have the final answer for the user, reply with plain markdown (no tool call).',
+        '# Calling tools',
+        '',
+        'Use the standard function-calling interface of this provider.',
+        'Only call tools that appear in the spec below; do not invent names.',
+        'After all tool work is complete, reply with plain markdown (no further tool call) — that is the final user-visible answer.',
         '',
       ]
     : [
+        '# Calling tools',
+        '',
         'When you need to use a tool, reply with EXACTLY one fenced JSON block — nothing else in the message:',
         '```json',
         '{"tool":"<tool_name>","args":{...}}',
@@ -80,6 +116,8 @@ function buildSystemPrompt({ extraSystem = '', native = false } = {}) {
         '  • call another tool (same JSON envelope), or',
         '  • give the user the final answer as plain markdown (no JSON envelope).',
         '',
+        'NEVER return raw source code in the markdown reply — apply it with a tool first.',
+        '',
       ]
   const tail = [
     '# Available tools',
@@ -88,7 +126,7 @@ function buildSystemPrompt({ extraSystem = '', native = false } = {}) {
     extraSystem ? '\n# Extra context\n\n' + extraSystem : '',
   ].filter(Boolean)
 
-  return [...head, ...callingHelp, ...rules, ...tail].join('\n')
+  return [...head, ...callingHelp, ...tail].join('\n')
 }
 
 // ── OpenAI-format tools[] schema, built from our registry ───────────────────
@@ -118,6 +156,27 @@ function buildNativeToolsSpec() {
       },
     }
   })
+}
+
+// Heuristic: did the user ask for an edit-style change ("исправь",
+// "поправь", "оживи код", "сделай так чтобы…", "fix the bug",
+// "refactor", etc) AND the model's reply contains a substantial code
+// block instead of a tool call? Then it's almost certainly the "modelы
+// прислал коды вместо того чтобы их применить" anti-pattern the user
+// complained about — push back instead of accepting it as a final answer.
+const EDIT_REQUEST_RE = /(исправ|поправ|почини|испрви|переписать|refactor|fix |rewrite|edit |применит|апплай|внеси изменен|сделай так|реализуй|сделай|implement|добав\w* код|улучш|оптимиз|почини баг|удали (?:из|из файла|строк))/i
+const CODE_BLOCK_RE = /```[a-z0-9_+-]*\n[\s\S]{120,}?\n```/i
+const TOOLISH_REPLY_RE = /^\s*```(?:json|tool)?\s*\{/im
+function looksLikeUnapplliedCodeReply(text = '', history = []) {
+  const reply = String(text || '')
+  if (!CODE_BLOCK_RE.test(reply)) return false
+  if (TOOLISH_REPLY_RE.test(reply)) return false   // a bona-fide tool envelope we just failed to parse
+  // Look at the LAST user turn to decide whether the user was asking for
+  // an edit. If they were just asking "show me the function" we don't
+  // want to nag — passing code back is the right answer there.
+  const lastUser = [...history].reverse().find((m) => m.role === 'user')
+  const askText = String(lastUser?.content || '')
+  return EDIT_REQUEST_RE.test(askText)
 }
 
 // ── Parse a JSON-in-text tool call ──────────────────────────────────────────
@@ -270,6 +329,24 @@ async function runAgentInner({
       }
 
       if (!call) {
+        // Heuristic safety net: did the user ask to fix/edit code but the
+        // model dumped a fenced code block instead of calling edit_file?
+        // This is the single most common 'agent gave up' failure mode —
+        // especially on smaller models. Push back ONCE per turn.
+        if (looksLikeUnapplliedCodeReply(reply.text, history) && !aborted) {
+          sse(res, 'thought', {
+            step,
+            text: 'Заметил: ты прислал код в чат, но не применил его через edit_file/write_file. Перезапрашиваю с напоминанием.',
+          })
+          convo.push({
+            role: 'user',
+            content:
+              'Ты прислал код в чат, но не применил его к файлам. ' +
+              'Сейчас обязательно ПРИМЕНИ изменения через edit_file (или write_file для нового файла), ' +
+              'а потом запусти verify_code на затронутых путях. В чат код больше НЕ присылай.',
+          })
+          continue
+        }
         // Final answer
         sse(res, 'assistant', { text: reply.text || '' })
         sse(res, 'done', { steps: step, reason: 'final' })

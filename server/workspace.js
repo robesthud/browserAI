@@ -853,6 +853,43 @@ async function getFileHistory(relPath) {
   return items.sort((a, b) => b.createdAt - a.createdAt)
 }
 
+/**
+ * Walk .history/ inside the current workspace scope and return a list of
+ * recent revision events (file path, reason: create|edit|restore, timestamp).
+ * Used by the agent loop to inject a real "what was actually done" report
+ * into the model's context — instead of having the model invent a summary
+ * from its own (often-truncated) chat memory.
+ */
+async function listRecentWorkspaceActivity({ sinceMs = 60 * 60 * 1000, limit = 40 } = {}) {
+  const historyRoot = getScopedHistoryRoot()
+  const cutoff = Date.now() - Math.max(0, Number(sinceMs) || 0)
+  const out = []
+
+  async function walk(absDir, relDir) {
+    let entries
+    try { entries = await fs.readdir(absDir, { withFileTypes: true }) }
+    catch { return }
+    for (const entry of entries) {
+      const absChild = path.join(absDir, entry.name)
+      const relChild = relDir ? `${relDir}/${entry.name}` : entry.name
+      if (entry.isDirectory()) { await walk(absChild, relChild); continue }
+      // Try to parse "<basename>.<ts>.<hash>.<reason>.rev"
+      const m = entry.name.match(/^(.+)\.(\d+)\.([a-f0-9]{8})(?:\.([a-z0-9_-]+))?\.rev$/i)
+      if (!m) continue
+      const ts = Number(m[2])
+      if (!Number.isFinite(ts) || ts < cutoff) continue
+      out.push({
+        path: relDir ? `${relDir}/${m[1]}` : m[1],
+        ts,
+        reason: m[4] || 'edit',
+      })
+    }
+  }
+  await walk(historyRoot, '').catch(() => {})
+  out.sort((a, b) => b.ts - a.ts)
+  return out.slice(0, Math.max(1, Number(limit) || 40))
+}
+
 async function restoreFileRevision(relPath, revisionId) {
   const normalizedRel = normalizeRelativePath(relPath)
   const cleanRevisionId = path.basename(String(revisionId || ''))
@@ -908,6 +945,7 @@ export {
   statWorkspaceItem,
   getDownloadName,
   fileNameToMime,
+  listRecentWorkspaceActivity,
   safePath,
   withWorkspaceScope,
   deleteWorkspaceScope,
