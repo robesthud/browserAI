@@ -2386,6 +2386,29 @@ app.get('/api/health/metrics', async (_req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
+// ── Cost tracking ──────────────────────────────────────────────────────────
+// Returns the user's LLM spend over the trailing 24h plus a per-model
+// breakdown. The UI consumes this for the token/cost badge in the topbar.
+app.get('/api/cost/today', requireAuth, async (req, res) => {
+  try {
+    const { dailyTotalUsd, topModelsToday, checkCap } = await import('./costTracker.js')
+    const cap = checkCap(req.user?.id || '')
+    res.json({
+      dailyTotal: dailyTotalUsd(req.user?.id || ''),
+      top: topModelsToday(req.user?.id || '', 5),
+      cap: cap.cap || Number(process.env.BROWSERAI_DAILY_USD || 5),
+      capReached: !cap.ok,
+    })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+app.get('/api/cost/chat/:chatId', requireAuth, async (req, res) => {
+  try {
+    const { chatTotalUsd } = await import('./costTracker.js')
+    res.json(chatTotalUsd(String(req.params.chatId || '')))
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
 // ── Web Push ───────────────────────────────────────────────────────────────
 app.get('/api/push/vapid', async (_req, res) => {
   try {

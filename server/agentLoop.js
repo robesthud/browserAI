@@ -37,6 +37,8 @@ import { withWorkspaceScope } from './workspace.js'
 import { callLLM, supportsNativeTools } from './llmClient.js'
 import { registerQuestion } from './askUserRegistry.js'
 import { buildClineSystemPrompt } from './clinePrompt.js'
+import { recordSpend, checkCap, chatTotalUsd } from './costTracker.js'
+import { shouldUseCheapEditor, wrapProviderForEditor, routingLabel } from './architectEditor.js'
 
 const DEFAULT_MAX_STEPS = 15
 const DEFAULT_DEADLINE_MS = 5 * 60 * 1000
@@ -596,7 +598,7 @@ function sseDone(res, payload, tokens) {
  * @param {object} opts.res                   Express response, will be SSE-streamed
  */
 export async function runAgent(opts) {
-  return withWorkspaceScope(opts?.workspaceScope || '', () => runAgentInner(opts || {}))
+  return withWorkspaceScope(opts?.workspaceScope || '', () => runAgentInner({ ...(opts || {}), workspaceScope: opts?.workspaceScope || '' }))
 }
 
 async function runAgentInner({
@@ -605,8 +607,10 @@ async function runAgentInner({
   maxSteps = DEFAULT_MAX_STEPS,
   extraSystem = '',
   userId = '',
+  workspaceScope = '',
   res,
 }) {
+  const chatId = String(workspaceScope || '')
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
@@ -691,20 +695,48 @@ async function runAgentInner({
       }
       sse(res, 'thinking', { step })
 
+      // ── Cost cap gate ─────────────────────────────────────────────
+      // If the user has hit their per-day USD cap, we refuse the next
+      // LLM call and tell them why. Override: env BROWSERAI_DAILY_USD
+      // or remember_fact daily_usd_cap=NN.
+      const capCheck = checkCap(userId)
+      if (!capCheck.ok) {
+        sse(res, 'error', { message: capCheck.reason })
+        sseDone(res, { steps: step, reason: 'cap-reached' }, tokens)
+        res.end()
+        return
+      }
+
+      // ── Architect/Editor routing (Aider-style) ────────────────────
+      // After step 1, if the model has been doing mechanical edits, we
+      // swap to a cheaper sibling for the executor turns. Strong model
+      // stays on planning + summary turns. Saves 30-60% on long sessions.
+      const routing = shouldUseCheapEditor({
+        provider, step,
+        recentToolHistory,
+        userId,
+      })
+      const activeProvider = routing.useCheap
+        ? wrapProviderForEditor(provider, routing.cheapModel)
+        : provider
+      if (routing.useCheap) {
+        sse(res, 'thought', { step, text: `Architect/Editor: ${routingLabel(routing)} (${routing.reason})` })
+      }
+
       // Call the LLM. Some OpenAI-compatible endpoints advertise a familiar
       // base URL but a concrete model does not support native tool calling.
       // In that case, fall back to the universal JSON-in-text tool protocol.
       let reply
       try {
         reply = await callLLM({
-          baseUrl:      provider.baseUrl,
-          apiKey:       provider.apiKey,
-          authType:     provider.authType || 'bearer',
-          authHeader:   provider.authHeader || '',
-          extraHeaders: provider.extraHeaders || {},
-          model:        provider.model,
+          baseUrl:      activeProvider.baseUrl,
+          apiKey:       activeProvider.apiKey,
+          authType:     activeProvider.authType || 'bearer',
+          authHeader:   activeProvider.authHeader || '',
+          extraHeaders: activeProvider.extraHeaders || {},
+          model:        activeProvider.model,
           messages:     convo,
-          temperature:  Number(provider.temperature ?? 0.3),
+          temperature:  Number(activeProvider.temperature ?? 0.3),
           ...(useNativeTools ? { tools: toolsSpec, toolChoice: 'auto' } : {}),
         })
       } catch (e) {
@@ -744,7 +776,26 @@ async function runAgentInner({
       // Stream a usage event so the UI updates the token badge live, not
       // only after the whole agent loop finishes.
       accumulateUsage(reply?.usage)
-      if (reply?.usage) sse(res, 'usage', { step, ...reply.usage, totals: { ...tokens } })
+      // Persist spend so the user can see $X/day in the UI and so the
+      // daily cap above can fire next turn. Best-effort — never blocks.
+      let spendNote = null
+      try {
+        const sp = recordSpend({
+          userId, chatId,
+          model: activeProvider.model,
+          usage: reply?.usage || {},
+        })
+        spendNote = sp
+      } catch { /* tracker offline */ }
+      if (reply?.usage) sse(res, 'usage', {
+        step,
+        ...reply.usage,
+        totals: { ...tokens },
+        cost: spendNote?.cost || 0,
+        dailyTotal: spendNote?.dailyTotal || 0,
+        chatTotal: chatTotalUsd(chatId).cost,
+        model: activeProvider.model,
+      })
 
       // Decide which tool path(s) to follow.
       // PARALLEL TOOLS: when the provider returns more than one tool_calls

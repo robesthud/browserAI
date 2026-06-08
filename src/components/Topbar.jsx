@@ -37,6 +37,8 @@ export default function Topbar({
   onOpenSearch,
   onExportChat,
   totalTokens = 0,
+  costToday = 0,
+  costCap = 0,
 }) {
   return (
     <header className="flex items-center gap-2 px-3 pb-2 pt-10 md:gap-3 md:px-5 md:py-3.5">
@@ -93,6 +95,23 @@ export default function Topbar({
             title={`Использовано токенов за чат: ${totalTokens}`}
           >
             {totalTokens > 9999 ? `${(totalTokens / 1000).toFixed(1)}k` : totalTokens} tok
+          </span>
+        )}
+
+        {/* USD spend today — turns amber > 50% of cap, red > 90% */}
+        {costToday > 0 && (
+          <span
+            className={[
+              'hidden rounded-full border px-2 py-0.5 font-mono text-[11px] md:inline',
+              costCap && costToday > 0.9 * costCap
+                ? 'border-red-500/40 bg-red-900/30 text-red-200'
+                : costCap && costToday > 0.5 * costCap
+                  ? 'border-amber-500/40 bg-amber-900/30 text-amber-200'
+                  : 'border-white/10 bg-graphite-800/60 text-cream-faint',
+            ].join(' ')}
+            title={`Расход на LLM за сутки: $${costToday.toFixed(4)}${costCap ? ` из $${costCap.toFixed(2)} лимита` : ''}`}
+          >
+            ${costToday < 0.01 ? costToday.toFixed(4) : costToday.toFixed(3)}
           </span>
         )}
 

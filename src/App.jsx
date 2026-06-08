@@ -66,6 +66,23 @@ function CloudSync({ settings, chats }) {
 }
 
 function BrowserApp({ user, reloadAuth }) {
+  // ── LLM cost badge: poll daily total every 30 s ─────────────────────
+  const [costInfo, setCostInfo] = useState({ dailyTotal: 0, cap: 0 })
+  useEffect(() => {
+    let alive = true
+    async function refresh() {
+      try {
+        const r = await fetch('/api/cost/today', { credentials: 'include' })
+        if (!r.ok) return
+        const j = await r.json()
+        if (alive) setCostInfo({ dailyTotal: Number(j.dailyTotal || 0), cap: Number(j.cap || 0) })
+      } catch { /* ignore */ }
+    }
+    refresh()
+    const id = setInterval(refresh, 30_000)
+    return () => { alive = false; clearInterval(id) }
+  }, [])
+
   const [collapsed, setCollapsed] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth < 768 : false,
   )
@@ -396,6 +413,8 @@ function BrowserApp({ user, reloadAuth }) {
           onOpenSearch={() => setSearchOpen(true)}
           onExportChat={activeChat ? () => downloadChatMarkdown(activeChat) : null}
           totalTokens={(activeChat?.messages || []).reduce((s, m) => s + (m?.tokens?.total || 0), 0)}
+          costToday={costInfo.dailyTotal}
+          costCap={costInfo.cap}
         />
 
         <ChatSearchModal
