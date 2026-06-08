@@ -500,8 +500,28 @@ function extractTextToolCall(text = '', extraTools = null) {
 }
 
 // ── SSE helper ──────────────────────────────────────────────────────────────
+// Stable Agent Mode streaming protocol. Backward compatible by design:
+// existing UI still reads fields like `step`, `name`, `ok`, etc. directly,
+// while new clients can rely on the standard envelope fields:
+//   schema, event, seq, timestamp, payload
+function normaliseSsePayload(res, event, data) {
+  const seq = (res.__browseraiAgentSseSeq = Number(res.__browseraiAgentSseSeq || 0) + 1)
+  const timestamp = new Date().toISOString()
+  const payload = data && typeof data === 'object' && !Array.isArray(data) ? data : { value: data }
+  return {
+    schema: 'browserai.agent_stream_event.v1',
+    event,
+    seq,
+    timestamp,
+    ...payload,
+    payload,
+  }
+}
+
 function sse(res, event, data) {
-  try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) } catch { /* closed */ }
+  try {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(normaliseSsePayload(res, event, data))}\n\n`)
+  } catch { /* closed */ }
 }
 
 /**
@@ -779,6 +799,17 @@ async function runAgentInner({
   res.setHeader('Connection', 'keep-alive')
   res.setHeader('X-Accel-Buffering', 'no')
   res.flushHeaders?.()
+
+  sse(res, 'stream_protocol', {
+    version: 1,
+    compatibility: 'top-level-fields-plus-envelope',
+    events: [
+      'stream_protocol', 'agent_context', 'agent_state', 'thinking', 'thinking_delta',
+      'assistant_delta', 'assistant', 'thought', 'tool_preview', 'tool_router',
+      'tool_start', 'tool_progress', 'tool_result', 'tool_diagnostic',
+      'ask_user', 'tool_approval', 'usage', 'done', 'error',
+    ],
+  })
 
   // Initialise token counters early so the no-provider exit path can reference
   // them without a ReferenceError. tokens.* are mutated in accumulateUsage().

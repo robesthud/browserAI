@@ -50,7 +50,7 @@ Final Answer or Ask User / Resume
 | 2 | Model Planner / Agent Loop hardening | ✅ Выполнено | см. журнал выполнения |
 | 3 | Tool Router hardening | ✅ Выполнено | см. журнал выполнения |
 | 4 | Provider adapters 2.0 | ✅ Выполнено | см. журнал выполнения |
-| 5 | Настоящий streaming protocol | частично ✅ | есть SSE, нужно унифицировать события |
+| 5 | Streaming Protocol | ✅ Выполнено | см. журнал выполнения |
 | 6 | Ask User pause/resume | частично ✅ | есть promise registry, нужно усилить state |
 | 7 | Workspace / sandbox policy | частично ✅ | есть workspace scope/sandbox, нужен audit |
 | 8 | Context memory / summarization | частично ✅ | есть contextManager, нужен agent state digest |
@@ -441,30 +441,84 @@ npm run build
 
 ## Этап 5. Streaming Protocol
 
-### Нужно
+### Цель
 
-Унифицировать события:
+Сделать Agent Mode SSE stream стабильным и версионированным, чтобы UI, логи, mobile app и будущие self-tests могли одинаково читать события.
 
-```text
-agent_context
-agent_state
-thinking
-thinking_delta
-assistant_delta
-assistant
-tool_preview
-tool_start
-tool_progress
-tool_result
-tool_diagnostic
-ask_user
-tool_approval
-usage
-done
-error
+### Сделано
+
+В `server/agentLoop.js` обновлён SSE helper.
+
+Каждое Agent Mode SSE-событие теперь имеет единый envelope:
+
+```js
+{
+  schema: "browserai.agent_stream_event.v1",
+  event,
+  seq,
+  timestamp,
+  ...legacyTopLevelFields,
+  payload
+}
 ```
 
-Каждое событие должно иметь стабильный shape.
+Сохранена обратная совместимость:
+
+- старый UI по-прежнему может читать `step`, `name`, `ok`, `result`, `error` на верхнем уровне;
+- новый UI может читать стабильные поля `schema`, `event`, `seq`, `timestamp`, `payload`.
+
+Добавлено первое событие stream metadata:
+
+```text
+event: stream_protocol
+```
+
+Payload:
+
+```js
+{
+  version: 1,
+  compatibility: "top-level-fields-plus-envelope",
+  events: [
+    "stream_protocol",
+    "agent_context",
+    "agent_state",
+    "thinking",
+    "thinking_delta",
+    "assistant_delta",
+    "assistant",
+    "thought",
+    "tool_preview",
+    "tool_router",
+    "tool_start",
+    "tool_progress",
+    "tool_result",
+    "tool_diagnostic",
+    "ask_user",
+    "tool_approval",
+    "usage",
+    "done",
+    "error"
+  ]
+}
+```
+
+Теперь каждое событие имеет последовательный номер `seq`, что позволяет UI/логам восстанавливать порядок событий.
+
+### Проверки
+
+```bash
+node --check server/agentLoop.js
+npx eslint server/agentCore.js server/llmClient.js
+npm run build
+```
+
+### Осталось после этапа 5
+
+- Обновить фронтенд, чтобы он использовал `payload` и `seq`.
+- Добавить визуальное отображение `stream_protocol`/debug mode.
+- Добавить e2e-test, который проверяет порядок и shape SSE events.
+- Унифицировать `/api/chat` streaming отдельно от Agent Mode streaming.
 
 ---
 
@@ -619,3 +673,8 @@ TIMEWEB_APP_DIR
   - добавлены endpoints `/api/agent/provider/capabilities` и `/api/agent/provider/diagnose`;
   - LLM errors в Agent Loop теперь имеют structured `providerError`;
   - official Anthropic/Gemini `/api/chat` errors тоже возвращают `providerError`.
+- Выполнен этап 5 — Streaming Protocol:
+  - добавлен стабильный envelope для всех Agent Mode SSE events;
+  - добавлены поля `schema`, `event`, `seq`, `timestamp`, `payload`;
+  - сохранена обратная совместимость с текущим UI;
+  - добавлено событие `stream_protocol` со списком поддерживаемых events.
