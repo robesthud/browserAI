@@ -22,7 +22,7 @@ index 121bdc5..154fca5 100644
  PROFILE_DIR = SERVICE_DIR / "chrome-profile"
  LOGIN_FLAG = SERVICE_DIR / "logged-in"
  
-@@ -70,6 +74,138 @@ def get_content_text(content: Any) -> str:
+@@ -70,6 +74,219 @@ def get_content_text(content: Any) -> str:
          ])
      return ""
  
@@ -94,34 +94,116 @@ index 121bdc5..154fca5 100644
 +                continue
 +        return False
 +
++    async def first_visible(selectors):
++        for sel in selectors:
++            try:
++                for el in await page.query_selector_all(sel):
++                    try:
++                        box = await el.bounding_box()
++                        disabled = (await el.get_attribute('disabled')) is not None or (await el.get_attribute('aria-disabled')) == 'true'
++                        if box and box.get('width', 0) > 8 and box.get('height', 0) > 8 and not disabled:
++                            return el
++                    except Exception:
++                        continue
++            except Exception:
++                continue
++        return None
++
++    async def try_drag_drop():
++        files = []
++        import mimetypes as _mt
++        for path in image_paths:
++            try:
++                data = Path(path).read_bytes()
++                if not data:
++                    continue
++                mime = _mt.guess_type(path)[0] or 'image/png'
++                files.append({'name': Path(path).name, 'mime': mime, 'b64': base64.b64encode(data).decode('ascii')})
++            except Exception:
++                continue
++        if not files:
++            return False
++        try:
++            ok = await page.evaluate('''async (files) => {
++                const target = document.querySelector('rich-textarea .ql-editor')
++                  || document.querySelector('rich-textarea')
++                  || document.querySelector('[contenteditable="true"]')
++                  || document.body;
++                if (!target || typeof DataTransfer === 'undefined' || typeof File === 'undefined') return false;
++                target.scrollIntoView({block:'center'});
++                target.focus?.();
++                const dt = new DataTransfer();
++                for (const f of files) {
++                    const bin = atob(f.b64);
++                    const arr = new Uint8Array(bin.length);
++                    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
++                    dt.items.add(new File([arr], f.name || 'image.png', {type: f.mime || 'image/png'}));
++                }
++                for (const type of ['dragenter','dragover','drop']) {
++                    target.dispatchEvent(new DragEvent(type, {bubbles:true, cancelable:true, dataTransfer:dt}));
++                    document.body.dispatchEvent(new DragEvent(type, {bubbles:true, cancelable:true, dataTransfer:dt}));
++                }
++                return true;
++            }''', files)
++            if ok:
++                await asyncio.sleep(5)
++                return True
++        except Exception:
++            return False
++        return False
++
++    try:
++        editor = await page.query_selector('rich-textarea .ql-editor')
++        if editor:
++            await editor.click()
++            await asyncio.sleep(0.5)
++    except Exception:
++        pass
++
 +    if await try_inputs():
 +        return
++    if await try_drag_drop():
++        return
 +
-+    # Open upload/tools menu via plus button near composer.
-+    btn = await page.query_selector('button[aria-label="Загрузка и инструменты"]') \
-+        or await page.query_selector('button[aria-label="Upload and tools"]') \
-+        or await page.query_selector('button[aria-haspopup="menu"][aria-label*="Загрузка" i]') \
-+        or await page.query_selector('button[aria-haspopup="menu"][aria-label*="Upload" i]')
-+    if not btn:
-+        raise Exception('Gemini upload/tools button not found')
-+    await btn.click()
-+    await asyncio.sleep(1.2)
++    btn = await first_visible([
++        'button[aria-label="Загрузка и инструменты"]',
++        'button[aria-label="Upload and tools"]',
++        'button[aria-label*="Загруз" i]',
++        'button[aria-label*="Upload" i]',
++        'button[aria-label*="Прикреп" i]',
++        'button[aria-label*="Attach" i]',
++        'button[aria-label*="Добав" i]',
++        'button[aria-label*="Add" i]',
++        'button[aria-haspopup="menu"]',
++        '[data-test-id*="upload" i]',
++        '[data-test-id*="file" i]',
++    ])
++    last_error = None
++    if btn:
++        try:
++            await btn.click()
++            await asyncio.sleep(1.2)
++        except Exception as e:
++            last_error = e
 +
-+    # Gemini uses hidden xapfileselectortrigger buttons that open file chooser.
 +    chooser_selectors = [
++        'input[type="file"]',
 +        'button.hidden-local-file-image-selector-button',
 +        'button[data-test-id="hidden-local-image-upload-button"]',
 +        'button.hidden-local-file-upload-button',
 +        'button[data-test-id="hidden-local-file-upload-button"]',
 +        'button[xapfileselectortrigger]',
 +    ]
-+    last_error = None
 +    for sel in chooser_selectors:
 +        try:
 +            el = await page.query_selector(sel)
 +            if not el:
 +                continue
-+            async with page.expect_file_chooser(timeout=5000) as fc_info:
++            if sel.startswith('input'):
++                await el.set_input_files(image_paths)
++                await asyncio.sleep(5)
++                return
++            async with page.expect_file_chooser(timeout=7000) as fc_info:
 +                try:
 +                    await el.click(force=True)
 +                except Exception:
@@ -134,30 +216,29 @@ index 121bdc5..154fca5 100644
 +            last_error = e
 +            continue
 +
-+    # Fallback: click visible "Загрузить файлы" menu item and catch chooser.
 +    try:
-+        item = await page.query_selector('[role="menuitem"]:has-text("Загрузить файлы")') \
-+            or await page.query_selector('[role="menuitem"]:has-text("Upload files")')
-+        if item:
-+            async with page.expect_file_chooser(timeout=5000) as fc_info:
-+                await item.click()
-+            chooser = await fc_info.value
-+            await chooser.set_files(image_paths)
-+            await asyncio.sleep(5)
-+            return
++        for label in ['Загрузить файлы', 'Загрузить изображение', 'Upload files', 'Upload image', 'Attach file']:
++            item = await page.query_selector(f'text="{label}"')
++            if item:
++                async with page.expect_file_chooser(timeout=7000) as fc_info:
++                    await item.click()
++                chooser = await fc_info.value
++                await chooser.set_files(image_paths)
++                await asyncio.sleep(5)
++                return
 +    except Exception as e:
 +        last_error = e
 +
 +    if await try_inputs():
 +        return
++    if await try_drag_drop():
++        return
 +
-+    debug = await page.evaluate('''() => [...document.querySelectorAll('input[type="file"], button[xapfileselectortrigger], [role="menuitem"], button')].map((el,i)=>{
++    debug = await page.evaluate('''() => [...document.querySelectorAll('input[type="file"], button[xapfileselectortrigger], [role="menuitem"], button, [aria-label], [data-test-id]')].map((el,i)=>{
 +      const r=el.getBoundingClientRect();
-+      return {i, tag:el.tagName, visible:!!(r.width&&r.height), rect:{x:r.x,y:r.y,w:r.width,h:r.height}, aria:el.getAttribute('aria-label')||'', role:el.getAttribute('role')||'', cls:el.className||'', test:el.getAttribute('data-test-id')||'', text:(el.textContent||'').replace(/\s+/g,' ').trim().slice(0,100), html:(el.outerHTML||'').replace(/\s+/g,' ').trim().slice(0,200)}
-+    }).slice(0,140)''')
++      return {i, tag:el.tagName, visible:!!(r.width&&r.height), rect:{x:r.x,y:r.y,w:r.width,h:r.height}, aria:el.getAttribute('aria-label')||'', role:el.getAttribute('role')||'', cls:String(el.className||''), test:el.getAttribute('data-test-id')||'', text:(el.textContent||'').replace(/\s+/g,' ').trim().slice(0,100), html:(el.outerHTML||'').replace(/\s+/g,' ').trim().slice(0,200)}
++    }).slice(0,180)''')
 +    raise Exception('Could not attach image files to Gemini UI: ' + str(last_error) + ' debug=' + json.dumps(debug, ensure_ascii=False)[:2500])
-+
-+
  async def check_logged_in(page: Page) -> bool:
      try:
          await asyncio.sleep(3)
