@@ -1084,19 +1084,42 @@ export const TOOLS = {
     handler: async () => ok({ pending: true }),
   },
 
-  // ── Shell (sandboxed) ───────────────────────────────────────────────────
+  // ── Shell (sandboxed, persistent) ─────────────────────────────────────
   bash: {
-    description: 'Run a shell command inside an isolated Linux sandbox that has a copy of the workspace mounted at /workspace. Useful for git, npm, node, curl, grep, build steps, etc. Output is returned. Timeout 30s.',
+    description:
+      'Run a shell command inside an isolated Linux sandbox that has the workspace mounted at /workspace. By default uses a PERSISTENT session per chat — cd, env vars, exports, activated virtualenvs survive across calls (just like a real terminal). Pass persist:false to spawn a fresh one-shot shell (legacy behaviour). For long-running processes (dev server, watcher, tail -F) prefer bash_bg instead — it returns immediately and you read logs separately.',
     params: {
-      command: { type: 'string', required: true, description: 'Shell command, e.g. "ls -la /workspace" or "node -e \\"console.log(1+1)\\""' },
-      timeout_sec: { type: 'number', optional: true, description: 'Max seconds, default 30, max 120.' },
+      command:     { type: 'string',  required: true,  description: 'Shell command, e.g. "ls -la /workspace" or "cd subdir && npm test"' },
+      timeout_sec: { type: 'number',  optional: true,  description: 'Max seconds, default 60, max 300.' },
+      persist:     { type: 'boolean', optional: true,  description: 'Default true — use the per-chat persistent session. Set false for a fresh one-shot shell.' },
     },
-    handler: async ({ command, timeout_sec = 30, _signal, _onStdout, _onStderr } = {}) => {
+    handler: async ({ command, timeout_sec = 60, persist = true, _signal, _onStdout, _onStderr, _chatId } = {}) => {
       if (!command) return err('command is required')
+      const timeoutMs = Math.min(300_000, Math.max(1_000, Number(timeout_sec) * 1000 || 60_000))
       try {
+        if (persist && _chatId) {
+          const { runInSession } = await import('./shellSession.js')
+          const r = await runInSession({
+            chatId: _chatId,
+            command: String(command),
+            timeoutMs,
+            signal: _signal,
+            onStdout: _onStdout,
+            onStderr: _onStderr,
+          })
+          return ok({
+            stdout: truncate(r.stdout || '', 6000),
+            stderr: truncate(r.stderr || '', 3000),
+            exitCode: r.exitCode,
+            durationMs: r.durationMs,
+            persistent: true,
+            cancelled: r.cancelled || false,
+            killed: r.killed || false,
+          })
+        }
         const r = await runSandboxCommand({
           command: String(command),
-          timeoutMs: Math.min(120_000, Math.max(1_000, Number(timeout_sec) * 1000 || 30_000)),
+          timeoutMs,
           signal: _signal,
           onStdout: _onStdout,
           onStderr: _onStderr,
@@ -1105,9 +1128,81 @@ export const TOOLS = {
           stdout: truncate(r.stdout, 6000),
           stderr: truncate(r.stderr, 3000),
           exitCode: r.exitCode,
+          persistent: false,
           truncated: r.truncated || false,
           cancelled: r.cancelled || false,
         })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  bash_reset: {
+    description: "Reset the chat's persistent shell session — useful if it's wedged or you want a clean env. The next bash call will reopen a fresh session.",
+    params: {},
+    handler: async ({ _chatId } = {}) => {
+      if (!_chatId) return err('persistent session requires a chat scope')
+      try {
+        const { resetSession } = await import('./shellSession.js')
+        const had = resetSession(_chatId)
+        return ok({ reset: had, chatId: _chatId })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  bash_bg: {
+    description: 'Start a long-running command in the BACKGROUND. Returns a task id immediately. Use bash_logs <task_id> to inspect output, bash_stop <task_id> to kill it, bash_list to see what is running. Perfect for `npm run dev`, `tail -F app.log`, watchers, background servers.',
+    params: {
+      command: { type: 'string', required: true, description: 'Shell command to spawn in the background.' },
+      name:    { type: 'string', optional: true, description: 'Human-readable label shown in bash_list (default: first 60 chars of command).' },
+    },
+    handler: async ({ command, name = '', _chatId = '' } = {}) => {
+      if (!command) return err('command is required')
+      try {
+        const { startBackgroundTask } = await import('./shellSession.js')
+        const t = startBackgroundTask({ chatId: _chatId, command: String(command), name })
+        return ok({ taskId: t.taskId, name: t.name, command: t.command, startedAt: t.startedAt })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  bash_logs: {
+    description: 'Read the latest stdout+stderr of a background task started via bash_bg. Returns the tail ring buffer plus running/exitCode.',
+    params: {
+      task_id: { type: 'string', required: true, description: 'Task id returned by bash_bg.' },
+      tail:    { type: 'number', optional: true, description: 'Max chars per stream, default 4000.' },
+    },
+    handler: async ({ task_id, tail = 4000 } = {}) => {
+      if (!task_id) return err('task_id is required')
+      try {
+        const { readBackgroundLogs } = await import('./shellSession.js')
+        const r = readBackgroundLogs(task_id, { tail: Number(tail) || 4000 })
+        if (!r) return err(`task not found: ${task_id}`)
+        return ok(r)
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  bash_stop: {
+    description: 'Stop a background task started via bash_bg. Sends SIGTERM, then SIGKILL after 1.5s.',
+    params: { task_id: { type: 'string', required: true, description: 'Task id returned by bash_bg.' } },
+    handler: async ({ task_id } = {}) => {
+      if (!task_id) return err('task_id is required')
+      try {
+        const { stopBackgroundTask } = await import('./shellSession.js')
+        const ok_ = stopBackgroundTask(task_id)
+        return ok_ ? ok({ stopped: task_id }) : err(`task not found: ${task_id}`)
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  bash_list: {
+    description: 'List background tasks for this chat (or all, if no chat scope). Shows id, name, running flag, exitCode, uptime.',
+    params: { all_chats: { type: 'boolean', optional: true, description: 'Set true to list tasks across all chats (admin view).' } },
+    handler: async ({ all_chats = false, _chatId = '' } = {}) => {
+      try {
+        const { listBackgroundTasks } = await import('./shellSession.js')
+        const arr = listBackgroundTasks(all_chats ? null : (_chatId || null))
+        return ok({ count: arr.length, tasks: arr })
       } catch (e) { return err(e.message) }
     },
   },
@@ -1224,7 +1319,7 @@ export function renderToolsForPrompt(extraTools = null) {
  * Invoke a tool by name. Returns the {ok, result|error} shape.
  * Pass `extraTools` to expose user-defined tools alongside the built-ins.
  */
-export async function invokeTool(name, args = {}, { signal, onStdout, onStderr, userId, extraTools } = {}) {
+export async function invokeTool(name, args = {}, { signal, onStdout, onStderr, userId, chatId, extraTools } = {}) {
   // MCP tools route through mcpClient — they don't live in TOOLS.
   if (typeof name === 'string' && name.startsWith('mcp__')) {
     try {
@@ -1246,6 +1341,7 @@ export async function invokeTool(name, args = {}, { signal, onStdout, onStderr, 
   if (onStdout) enrichedArgs._onStdout = onStdout
   if (onStderr) enrichedArgs._onStderr = onStderr
   if (userId)   enrichedArgs._userId   = userId
+  if (chatId)   enrichedArgs._chatId   = chatId
   try {
     if (signal?.aborted) return err('cancelled')
     return await tool.handler(enrichedArgs)

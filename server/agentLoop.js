@@ -1250,6 +1250,7 @@ async function runAgentInner({
             onStdout: (c) => onProgress(c, 'stdout'),
             onStderr: (c) => onProgress(c, 'stderr'),
             userId,
+            chatId,
             extraTools,
           })
         }
