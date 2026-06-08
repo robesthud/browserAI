@@ -2608,9 +2608,24 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'Access to internal networks is not allowed' })
   }
 
-  // Normalise history — drop empty messages, keep role+content
+  // Normalise history — drop empty messages, keep role + (string OR
+  // multimodal content[]). Multimodal user messages look like
+  //   { role: 'user', content: [{type:'text',text:…}, {type:'image_url',…}] }
+  // and must be passed through verbatim so the vision model sees them.
+  function hasContent(m) {
+    if (!m) return false
+    if (typeof m.content === 'string') return m.content.trim().length > 0
+    if (Array.isArray(m.content)) {
+      return m.content.some((p) =>
+        (p?.type === 'text'      && String(p.text || '').trim()) ||
+        (p?.type === 'image_url' && p.image_url?.url) ||
+        (p?.type === 'image'     && (p.source || p.image)),
+      )
+    }
+    return false
+  }
   const safeHistory = history
-    .filter((m) => m && typeof m.content === 'string' && m.content.trim())
+    .filter(hasContent)
     .map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }))
 
   // Inject a real "what was done recently in this workspace" digest so the

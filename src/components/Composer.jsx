@@ -277,29 +277,42 @@ export default function Composer({
           >
             {attachments.length > 0 && (
               <div className="mb-3 flex flex-wrap gap-2">
-                {attachments.map((a) => (
-                  <div
-                    key={a.id}
-                    className="flex items-center gap-2 rounded-lg border border-white/10 bg-graphite-750 px-2.5 py-1.5 text-[12px] text-cream-soft"
-                    title={
-                      a.error ||
-                      (a.truncated ? 'Файл обрезан до 200 КБ' : a.path || a.name)
-                    }
-                  >
-                    <span className="text-cream-dim">
-                      <IconFile />
-                    </span>
-                    <span className="max-w-[160px] truncate">{a.name}</span>
-                    <span className="text-cream-faint">{formatSize(a.size)}</span>
-                    <button
-                      onClick={() => removeAttachment(a.id)}
-                      className="text-cream-faint transition-colors hover:text-cream"
-                      title="Убрать"
+                {attachments.map((a) => {
+                  const isImage = a.dataUrl && /^image\//.test(a.type || '')
+                  return (
+                    <div
+                      key={a.id}
+                      className="group relative flex items-center gap-2 rounded-lg border border-white/10 bg-graphite-750 px-2.5 py-1.5 text-[12px] text-cream-soft"
+                      title={
+                        a.error ||
+                        (a.truncated ? 'Файл обрезан до 200 КБ' : a.path || a.name)
+                      }
                     >
-                      <IconClose />
-                    </button>
-                  </div>
-                ))}
+                      {isImage ? (
+                        <img
+                          src={a.dataUrl}
+                          alt={a.name}
+                          className="h-9 w-9 rounded object-cover"
+                        />
+                      ) : (
+                        <span className="text-cream-dim"><IconFile /></span>
+                      )}
+                      <div className="flex min-w-0 flex-col">
+                        <span className="max-w-[160px] truncate">{a.name}</span>
+                        <span className="text-[10px] text-cream-faint">
+                          {formatSize(a.size)}{isImage ? ' · vision-ready' : ''}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => removeAttachment(a.id)}
+                        className="text-cream-faint transition-colors hover:text-cream"
+                        title="Убрать"
+                      >
+                        <IconClose />
+                      </button>
+                    </div>
+                  )
+                })}
               </div>
             )}
 
@@ -308,6 +321,31 @@ export default function Composer({
               value={text}
               onChange={autoGrow}
               onKeyDown={onKeyDown}
+              onPaste={async (e) => {
+                // Image paste from clipboard (Cmd/Ctrl-V on a screenshot)
+                // → treat each pasted image as a real attachment without
+                // any extra clicks. Plain text paste falls through to the
+                // native textarea behaviour.
+                const items = e.clipboardData?.items || []
+                const imageFiles = []
+                for (const it of items) {
+                  if (it.kind === 'file' && /^image\//.test(it.type)) {
+                    const f = it.getAsFile()
+                    if (f) {
+                      // Give pasted files a meaningful name (clipboard files
+                      // come in as 'image.png' which collides if you paste
+                      // twice in a row).
+                      const ext = (it.type.split('/')[1] || 'png').toLowerCase()
+                      const renamed = new File([f], `pasted-${Date.now()}.${ext}`, { type: it.type })
+                      imageFiles.push(renamed)
+                    }
+                  }
+                }
+                if (imageFiles.length) {
+                  e.preventDefault()
+                  await addFiles(imageFiles)
+                }
+              }}
               rows={1}
               placeholder="Спросите что угодно…"
               className="block w-full resize-none border-0 bg-transparent px-2 pb-2 pt-1 text-[14px]

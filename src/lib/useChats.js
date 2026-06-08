@@ -107,8 +107,33 @@ function summarizeToolCallForHistory(tc) {
 // from re-running the same tools again because it forgot.
 function messageToHistoryEntry(m) {
   if (m.role === 'user') {
-    const content = m.attachments?.length
-      ? `${m.content || ''}\n\nAttachments:\n${m.attachments.map((a) => `- ${a.name} (${a.type})`).join('\n')}`
+    const atts = m.attachments || []
+    const images = atts.filter((a) => a.dataUrl && /^image\//.test(a.type || ''))
+    const others = atts.filter((a) => !(a.dataUrl && /^image\//.test(a.type || '')))
+
+    // Multimodal path: build an OpenAI-compatible content[] array when
+    // there are inline image attachments. Providers that don't support
+    // vision will receive the text only — we keep a copy of the textual
+    // description so the LLM still knows the image was sent.
+    if (images.length) {
+      const textParts = []
+      if (m.content) textParts.push(m.content)
+      if (others.length) {
+        textParts.push('\nOther attachments:\n' + others.map((a) => `- ${a.name} (${a.type})`).join('\n'))
+      }
+      const content = []
+      if (textParts.length) content.push({ type: 'text', text: textParts.join('\n') })
+      for (const img of images) {
+        // OpenAI / Anthropic / Gemini OpenAI-proxy all accept image_url
+        // with a data: URI. Provider-side will route to its own vision
+        // model automatically.
+        content.push({ type: 'image_url', image_url: { url: img.dataUrl } })
+      }
+      return { role: 'user', content }
+    }
+
+    const content = atts.length
+      ? `${m.content || ''}\n\nAttachments:\n${atts.map((a) => `- ${a.name} (${a.type})`).join('\n')}`
       : (m.content || '')
     return { role: 'user', content }
   }
