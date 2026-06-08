@@ -231,6 +231,7 @@ export const OPS_SERVICES = {
       docker_ps: { safe: true, description: 'Show docker compose ps' },
       docker_logs: { safe: true, description: 'Show container logs. params: service, tail' },
       git_status: { safe: true, description: 'Show git status in app dir' },
+      sync_check: { safe: true, description: 'Check that the deployed checkout matches origin/main and the app is healthy. Reports local commit, origin/main commit, in-sync yes/no, dirty files, and /api/health.' },
       deploy: { safe: false, description: 'git reset to origin/main, rebuild and restart BrowserAI' },
       deploy_safe: { safe: false, description: 'Deploy with automatic rollback: record current commit, pull+build+up, health-check; if health fails, reset to the previous commit, rebuild and restart, then re-check. Mirrors a careful deploy-and-revert-on-failure flow.' },
       repair_deploy: { safe: false, description: 'Run a deploy with diagnostics: pre-status, build/up, health checks, and failure logs. Use after confirmation when user asks to deploy/fix deploy.' },
@@ -300,6 +301,17 @@ export async function runOpsAction({ service, action, params = {}, confirm = fal
     docker_ps: `cd ${shQuote(APP_DIR)} && docker compose ps`,
     docker_logs: `cd ${shQuote(APP_DIR)} && docker compose logs --tail=${tail} ${shQuote(serviceName)}`,
     git_status: `cd ${shQuote(APP_DIR)} && git log -1 --oneline && git status --short`,
+    sync_check: `cd ${shQuote(APP_DIR)}
+set +e
+git fetch --quiet origin main
+LOCAL=$(git rev-parse HEAD)
+REMOTE=$(git rev-parse origin/main)
+echo "local:  $LOCAL"
+echo "origin: $REMOTE"
+if [ "$LOCAL" = "$REMOTE" ]; then echo "in_sync: yes"; else echo "in_sync: NO (deployed checkout differs from origin/main)"; fi
+DIRTY=$(git status --short); if [ -n "$DIRTY" ]; then echo "dirty_files:"; echo "$DIRTY"; else echo "dirty_files: none"; fi
+echo -n "health: "; curl -fsS http://localhost/api/health && echo || echo "UNHEALTHY"
+[ "$LOCAL" = "$REMOTE" ]`,
     deploy: `set -e; cd ${shQuote(APP_DIR)}; git fetch --quiet origin main; git reset --hard origin/main; git log -1 --oneline; scripts/apply-gemini-web-proxy-patch.sh /opt/gemini-web-proxy || true; systemctl restart gemini-web-proxy.service; docker compose build; docker compose up -d; sleep 8; curl -fsS http://localhost/api/health; echo; curl -fsS http://172.17.0.1:8080/health; echo`,
     deploy_safe: `cd ${shQuote(APP_DIR)}
 set +e
