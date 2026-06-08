@@ -36,6 +36,7 @@ import { TOOLS, renderToolsForPrompt, invokeTool } from './agentTools.js'
 import { withWorkspaceScope } from './workspace.js'
 import { callLLM, callLLMStream, supportsNativeTools, supportsStreaming } from './llmClient.js'
 import { registerQuestion } from './askUserRegistry.js'
+import { clipToolOutput, manageContext, applyAnthropicCacheHints, contextUsageFraction } from './contextManager.js'
 import { buildClineSystemPrompt } from './clinePrompt.js'
 import { recordSpend, checkCap, chatTotalUsd } from './costTracker.js'
 import { shouldUseCheapEditor, wrapProviderForEditor, routingLabel } from './architectEditor.js'
@@ -837,11 +838,23 @@ async function runAgentInner({
       }
       step += 1
       pushedBackThisTurn = false
-      // Keep the conversation under the model's context budget. If we
-      // had to compact, emit a 'thought' so the user sees it happened
-      // (otherwise it would look like the agent silently forgot).
-      if (maybeAutoCompact(convo, provider?.model)) {
-        sse(res, 'thought', { step, text: 'Контекст приближается к лимиту модели — сжал старые шаги в краткую сводку.' })
+      // Multi-tier context manager: shrink old tool outputs first
+      // (tier 1, 45 %), digest the oldest third next (tier 2, 65 %),
+      // emergency-drop everything but last 4 turns if we're really
+      // close (tier 3, 85 %). Emits a transparent 'thought' so the
+      // user sees what happened.
+      const ctxBefore = contextUsageFraction(convo, provider?.model)
+      const ctxAction = manageContext(convo, provider?.model)
+      if (ctxAction.tier > 0) {
+        const tierLabels = {
+          1: 'сжал старые tool-выводы',
+          2: 'сжал старые turn-ы в дайджест',
+          3: 'аварийный сброс: оставил только последние 4 turn-а',
+        }
+        sse(res, 'thought', {
+          step,
+          text: `Context manager: ${(ctxBefore * 100).toFixed(0)}% → ${(ctxAction.fractionAfter * 100).toFixed(0)}% (tier ${ctxAction.tier} — ${tierLabels[ctxAction.tier]})`,
+        })
       }
       sse(res, 'thinking', { step })
 
@@ -887,6 +900,11 @@ async function runAgentInner({
       let streamedFinalAnswer = false
       try {
         const useStream = supportsStreaming(activeProvider.baseUrl)
+        // Anthropic prompt caching: tags the (long) system prompt with
+        // cache_control: ephemeral on the way out. Saves ~90 % on the
+        // system tokens for every turn after the first within a 5 min
+        // window. Noop for non-Anthropic providers.
+        const messagesWithCache = applyAnthropicCacheHints(convo, activeProvider.baseUrl)
         const llmArgs = {
           baseUrl:      activeProvider.baseUrl,
           apiKey:       activeProvider.apiKey,
@@ -894,7 +912,7 @@ async function runAgentInner({
           authHeader:   activeProvider.authHeader || '',
           extraHeaders: activeProvider.extraHeaders || {},
           model:        activeProvider.model,
-          messages:     convo,
+          messages:     messagesWithCache,
           temperature:  Number(activeProvider.temperature ?? 0.3),
           signal:       abortCtl.signal,
           ...(useNativeTools ? { tools: toolsSpec, toolChoice: 'auto' } : {}),
@@ -1298,7 +1316,10 @@ async function runAgentInner({
             })
           }
         }
-        const obsContent = clipForLLM(obsRaw, provider?.model)
+        // Per-tool budget (tier 0 of the context manager): tightens
+        // structured tools like list_files to ~2 KB while letting
+        // read_file have ~12 KB. Replaces the old uniform clipForLLM().
+        const obsContent = clipToolOutput(call.tool, obsRaw, provider?.model)
 
         if (call.nativeId) {
           convo.push({
