@@ -63,6 +63,7 @@ import {
   statWorkspaceItem,
   getDownloadName,
   fileNameToMime,
+  getWorkspaceMetadata,
   listRecentWorkspaceActivity,
   readProjectRules,
   safePath,
@@ -1441,6 +1442,15 @@ app.delete('/api/workspace/chat', requireAuth, async (req, res) => {
     res.json({ ok: true })
   } catch (e) {
     res.status(400).json({ error: e.message || 'Не удалось удалить workspace чата' })
+  }
+})
+
+app.get('/api/workspace/metadata', requireAuth, async (req, res) => {
+  try {
+    const meta = await getWorkspaceMetadata()
+    res.json({ metadata: meta })
+  } catch (e) {
+    res.status(400).json({ error: e.message || 'Не удалось прочитать metadata workspace' })
   }
 })
 

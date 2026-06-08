@@ -26,15 +26,16 @@
  * 4 KB stderr to keep the LLM context manageable.
  */
 import { spawn } from 'node:child_process'
+import { redactSecrets } from './sandboxPolicy.js'
 
 const SANDBOX_CONTAINER = process.env.AGENT_SANDBOX_CONTAINER || 'agent-sandbox'
 const MAX_STDOUT = 8 * 1024
 const MAX_STDERR = 4 * 1024
 
 function clip(buf, max) {
-  if (buf.length <= max) return { text: buf.toString('utf8'), truncated: false }
+  if (buf.length <= max) return { text: redactSecrets(buf.toString('utf8')), truncated: false }
   return {
-    text: buf.subarray(0, max).toString('utf8') + `\n... [truncated, ${buf.length - max} more bytes]`,
+    text: redactSecrets(buf.subarray(0, max).toString('utf8')) + `\n... [truncated, ${buf.length - max} more bytes]`,
     truncated: true,
   }
 }
@@ -89,12 +90,12 @@ export function runSandboxCommand({ command, timeoutMs = 30_000, cwd = '/workspa
     proc.stdout.on('data', (c) => {
       outBytes += c.length
       if (outBytes <= MAX_STDOUT * 2) outChunks.push(c)
-      try { onStdout?.(c.toString('utf-8')) } catch { /* listener errors ignored */ }
+      try { onStdout?.(redactSecrets(c.toString('utf-8'))) } catch { /* listener errors ignored */ }
     })
     proc.stderr.on('data', (c) => {
       errBytes += c.length
       if (errBytes <= MAX_STDERR * 2) errChunks.push(c)
-      try { onStderr?.(c.toString('utf-8')) } catch { /* listener errors ignored */ }
+      try { onStderr?.(redactSecrets(c.toString('utf-8'))) } catch { /* listener errors ignored */ }
     })
 
     proc.on('error', (e) => {

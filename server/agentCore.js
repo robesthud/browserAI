@@ -1,3 +1,4 @@
+import { publicWorkspacePolicy } from './sandboxPolicy.js'
 /**
  * agentCore.js
  *
@@ -97,6 +98,7 @@ export function buildAgentContext({ provider = {}, history = [], extraSystem = '
       scoped: Boolean(workspaceScope),
       scope: workspaceScope ? String(workspaceScope).slice(0, 80) : '',
       cwd: '/workspace',
+      policy: publicWorkspacePolicy({ root: '/workspace', scoped: Boolean(workspaceScope) }),
     },
     model: {
       id: provider.model || '',

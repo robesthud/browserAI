@@ -8,6 +8,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import AdmZip from 'adm-zip'
 import * as tar from 'tar'
 import { isPrivateIp as isPrivateIpAddress } from './ssrf.js'
+import { publicWorkspacePolicy, WORKSPACE_EXCLUDED_DIRS } from './sandboxPolicy.js'
 
 const DEFAULT_DATA_DIR = '/data'
 const baseWorkspaceRoot = path.resolve(
@@ -140,9 +141,13 @@ function normalizeRelativePath(relativePath = '') {
   const raw = String(relativePath || '').replace(/\\/g, '/')
   // Отбрасываем null bytes — они вызывают information disclosure через сообщение Node.js
   if (raw.includes('\0')) throw new Error('Invalid path: null bytes not allowed')
+  if (raw.length > 1024) throw new Error('Invalid path: too long')
+  if (/%2e/i.test(raw) || /%2f/i.test(raw) || /%5c/i.test(raw)) {
+    throw new Error('Path traversal detected: encoded path segments are not allowed')
+  }
   const normalized = path.posix.normalize(raw).replace(/^\/+/, '')
   if (normalized === '.' || normalized === '') return ''
-  if (normalized === '..' || normalized.startsWith('../')) {
+  if (normalized === '..' || normalized.startsWith('../') || normalized.includes('/../')) {
     throw new Error('Path traversal detected')
   }
   return normalized
@@ -1000,6 +1005,40 @@ function getDownloadName(relPath) {
   return path.basename(normalizedRel || 'workspace')
 }
 
+async function getWorkspaceMetadata() {
+  const root = getScopedWorkspaceRoot()
+  const usedBytes = await getWorkspaceSizeBytes(root)
+  let fileCount = 0
+  let dirCount = 0
+  async function walk(dir) {
+    let entries
+    try { entries = await fs.readdir(dir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      if (WORKSPACE_EXCLUDED_DIRS.includes(entry.name)) continue
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) { dirCount += 1; await walk(full) }
+      else fileCount += 1
+    }
+  }
+  await walk(root)
+  return {
+    schema: 'browserai.workspace_metadata.v1',
+    root: '/workspace',
+    scopedRootHash: crypto.createHash('sha256').update(root).digest('hex').slice(0, 12),
+    usedBytes,
+    quotaBytes: WORKSPACE_QUOTA_BYTES,
+    maxSingleFileBytes: MAX_SINGLE_FILE_BYTES,
+    fileCount,
+    dirCount,
+    policy: publicWorkspacePolicy({
+      root: '/workspace',
+      scoped: root !== baseWorkspaceRoot,
+      quotaMb: Math.round(WORKSPACE_QUOTA_BYTES / 1024 / 1024),
+      maxFileMb: Math.round(MAX_SINGLE_FILE_BYTES / 1024 / 1024),
+    }),
+  }
+}
+
 export {
   ensureWorkspaceRoot,
   getWorkspaceTree,
@@ -1019,6 +1058,7 @@ export {
   statWorkspaceItem,
   getDownloadName,
   fileNameToMime,
+  getWorkspaceMetadata,
   listRecentWorkspaceActivity,
   readProjectRules,
   safePath,

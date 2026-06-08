@@ -52,7 +52,7 @@ Final Answer or Ask User / Resume
 | 4 | Provider adapters 2.0 | ✅ Выполнено | см. журнал выполнения |
 | 5 | Streaming Protocol | ✅ Выполнено | см. журнал выполнения |
 | 6 | Ask User pause/resume | ✅ Выполнено | см. журнал выполнения |
-| 7 | Workspace / sandbox policy | частично ✅ | есть workspace scope/sandbox, нужен audit |
+| 7 | Workspace / Sandbox Policy | ✅ Выполнено | см. журнал выполнения |
 | 8 | Context memory / summarization | частично ✅ | есть contextManager, нужен agent state digest |
 | 9 | UI parity с Arena Agent Mode | частично ✅ | есть tool cards/thoughts, нужно показывать agent_context/state |
 | 10 | Self-test / regression suite | ⬜ Не начато | — |
@@ -605,20 +605,88 @@ npm run build
 
 ## Этап 7. Workspace / Sandbox Policy
 
-### Уже есть
+### Цель
 
-- workspace scope per chat
-- sandbox command execution
-- persistent shell sessions
-- background tasks
-- file history/checkpoints
+Сделать workspace/sandbox слой явно описанным, безопасным и диагностируемым.
 
-### Осталось
+### Сделано
 
-- Полный audit path traversal.
-- Explicit workspace snapshot metadata.
-- Tool output size policy по типу tool.
-- Безопасная политика секретов.
+Добавлен файл:
+
+```text
+server/sandboxPolicy.js
+```
+
+В нём реализовано:
+
+- `redactSecrets(...)` — redaction секретов из sandbox/tool output;
+- `publicWorkspacePolicy(...)` — публичная политика workspace/sandbox;
+- `WORKSPACE_EXCLUDED_DIRS` — единый список исключаемых директорий.
+
+Redaction покрывает:
+
+- GitHub PAT / `ghp_*` tokens;
+- OpenAI-like `sk-*`;
+- Anthropic `sk-ant-*`;
+- Google `AIza...`;
+- Telegram bot tokens;
+- JWT;
+- Bearer tokens;
+- `password=...`, `token=...`, `secret=...`, `api_key=...` patterns.
+
+Обновлён `server/agentSandbox.js`:
+
+- stdout/stderr final output redacted;
+- live `tool_progress` stdout/stderr chunks тоже redacted;
+- output clipping сохранён.
+
+Обновлён `server/workspace.js`:
+
+- усилена path policy:
+  - max path length 1024;
+  - запрет encoded traversal `%2e`, `%2f`, `%5c`;
+  - дополнительная проверка `/../`;
+- добавлена `getWorkspaceMetadata(...)`;
+- metadata включает:
+  - usedBytes;
+  - quotaBytes;
+  - maxSingleFileBytes;
+  - fileCount;
+  - dirCount;
+  - public workspace policy;
+  - scopedRootHash без раскрытия реального пути.
+
+Добавлен endpoint:
+
+```text
+GET /api/workspace/metadata
+```
+
+Agent context теперь включает:
+
+```js
+workspace.policy
+```
+
+### Проверки
+
+```bash
+node --check server/sandboxPolicy.js
+node --check server/agentSandbox.js
+node --check server/workspace.js
+node --check server/index.js
+node --check server/agentCore.js
+npx eslint server/sandboxPolicy.js server/agentSandbox.js server/workspace.js server/agentCore.js server/llmClient.js
+npm run build
+```
+
+### Осталось после этапа 7
+
+- UI: показать workspace metadata/policy.
+- Добавить regression tests path traversal.
+- Добавить configurable denylist для bash-команд.
+- Persist/replay workspace snapshots beyond `.history` revisions.
+- Добавить per-tool output policy в отдельный registry.
 
 ---
 
@@ -742,3 +810,10 @@ TIMEWEB_APP_DIR
   - добавлены endpoints для list/get/cancel pending questions;
   - `ask_user` и `tool_approval` SSE теперь содержат `expiresAt`;
   - timeout задаётся через `BROWSERAI_ASK_TIMEOUT_MS`.
+- Выполнен этап 7 — Workspace / Sandbox Policy:
+  - добавлен `server/sandboxPolicy.js`;
+  - добавлен redaction секретов в sandbox stdout/stderr и live progress;
+  - усилена path policy workspace;
+  - добавлен `getWorkspaceMetadata`;
+  - добавлен endpoint `/api/workspace/metadata`;
+  - `agent_context.workspace` теперь содержит public policy.
