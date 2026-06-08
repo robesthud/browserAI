@@ -708,8 +708,16 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
 
   const result = await callLLMStream({
     ...opts,
-    onTextDelta: (chunk /* , meta */) => {
-      try { hooks.onTextDelta?.(chunk) } catch { /* ignore */ }
+    onTextDelta: (chunk, meta) => {
+      try { hooks.onTextDelta?.(chunk, meta) } catch { /* ignore */ }
+      // "Thinking" chunks (Anthropic delta.reasoning / OpenAI o1 /
+      // DeepSeek R1 reasoning_content) get their own SSE channel —
+      // the UI renders them as a collapsed "💭 Размышления" block
+      // separate from the final answer.
+      if (meta?.kind === 'thinking') {
+        sse(res, 'thinking_delta', { step, chunk: String(chunk || '') })
+        return
+      }
       consumeChunk(String(chunk || ''))
     },
     onToolCallDelta: () => { /* native tool deltas — used only for usage tracking */ },
@@ -762,12 +770,13 @@ async function runAgentInner({
 
   // Initialise token counters early so the no-provider exit path can reference
   // them without a ReferenceError. tokens.* are mutated in accumulateUsage().
-  const tokens = { prompt: 0, completion: 0, total: 0, llmCalls: 0 }
+  const tokens = { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: 0 }
   function accumulateUsage(u) {
     if (!u) return
     tokens.prompt += Number(u.prompt || 0)
     tokens.completion += Number(u.completion || 0)
     tokens.total += Number(u.total || (u.prompt + u.completion) || 0)
+    tokens.reasoningTokens += Number(u.reasoningTokens || 0)
     tokens.llmCalls += 1
   }
 

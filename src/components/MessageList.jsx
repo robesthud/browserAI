@@ -5,6 +5,7 @@ import Markdown from '../lib/markdown.jsx'
 import AgentToolBlock from './AgentToolBlock.jsx'
 import AgentThought from './AgentThought.jsx'
 import AgentPlanCard from './AgentPlanCard.jsx'
+import AgentExtendedThinking from './AgentExtendedThinking.jsx'
 import AgentAskUser from './AgentAskUser.jsx'
 import JobCard from './JobCard.jsx'
 import usePullToRefresh from '../lib/usePullToRefresh.js'
@@ -189,6 +190,16 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
           </div>
         ) : (
           <div className="text-[14px] leading-relaxed text-cream-soft">
+            {/* Provider-side extended thinking (Claude 3.7+, OpenAI o1/o3,
+                DeepSeek R1). Auto-opens while streaming, folds when done.
+                Distinct from the per-step `thoughts` narrative below. */}
+            {m.thinking && (
+              <AgentExtendedThinking
+                text={m.thinking}
+                pending={Boolean(m.pending)}
+                tokens={Number(m.tokens?.reasoningTokens || 0)}
+              />
+            )}
             {/* Agent loop: interleave intermediate thoughts and tool calls by step,
                 so the UI shows the model planning before each action — same UX as
                 Cursor / Arena. */}

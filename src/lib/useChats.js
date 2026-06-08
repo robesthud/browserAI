@@ -673,6 +673,19 @@ export function useChats(settings) {
                     ],
                   }))
                   break
+                case 'thinking_delta':
+                  // Provider-side "extended thinking" stream — Anthropic
+                  // delta.reasoning, OpenAI o1/o3 reasoning, DeepSeek-R1
+                  // reasoning_content. Chunks arrive char-by-char and we
+                  // append them into a single thinking buffer that the
+                  // UI renders as a collapsed "💭 Размышления" block
+                  // distinct from the regular thoughts (which are
+                  // narrative one-liners written into the system stream).
+                  patchAssistant((m) => ({
+                    ...m,
+                    thinking: ((m.thinking || '') + String(data.chunk || '')).slice(-32000),
+                  }))
+                  break
                 case 'ask_user':
                   // Open question card inline in the assistant message.
                   // The user will submit via /api/agent/answer, which
@@ -749,10 +762,27 @@ export function useChats(settings) {
                 case 'usage':
                   // Stream token totals from the server. The full counter
                   // lives on the assistant message so it survives a reload.
-                  patchAssistant((m) => ({
-                    ...m,
-                    tokens: data.totals || { prompt: data.prompt, completion: data.completion, total: data.total },
-                  }))
+                  // reasoningTokens (Claude thinking_tokens / OpenAI o1
+                  // reasoning_tokens / DeepSeek R1) gets surfaced inside
+                  // the same tokens object so the AgentExtendedThinking
+                  // pill can show "N reasoning tok" next to the toggle.
+                  patchAssistant((m) => {
+                    const base = data.totals || {
+                      prompt:     data.prompt,
+                      completion: data.completion,
+                      total:      data.total,
+                    }
+                    const reasoningTokens = Number(
+                      data.reasoningTokens
+                      || data.totals?.reasoningTokens
+                      || m.tokens?.reasoningTokens
+                      || 0,
+                    )
+                    return {
+                      ...m,
+                      tokens: { ...base, reasoningTokens },
+                    }
+                  })
                   break
                 case 'done':
                   patchAssistant((m) => ({

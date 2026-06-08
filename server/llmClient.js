@@ -242,16 +242,40 @@ async function callOpenAICompatibleStream({
           } catch { /* ignore */ }
         }
       }
-      // Anthropic-flavoured "thinking" deltas (provider-side reasoning)
-      if (typeof delta.reasoning === 'string' && delta.reasoning) {
-        try { onTextDelta?.(delta.reasoning, { kind: 'thinking' }) } catch { /* ignore */ }
+      // Provider-side "extended thinking" / reasoning streams. Four
+      // shapes we care about — surfaced via the same onTextDelta hook
+      // with kind:'thinking' so the UI can render them as a collapsed
+      // block above the visible answer:
+      //
+      //   • Anthropic:   delta.reasoning (string)            — Claude 3.7+
+      //   • OpenAI:      delta.reasoning.content (string)    — o1/o3 stream
+      //   • DeepSeek R1: delta.reasoning_content (string)
+      //   • Generic:     delta.thinking (string)             — some proxies
+      //
+      // All four are fed back as one logical "thinking" stream — the UI
+      // appends them in arrival order into a single foldable block.
+      let thinkingChunk = ''
+      if (typeof delta.reasoning === 'string'        && delta.reasoning)         thinkingChunk += delta.reasoning
+      else if (delta.reasoning && typeof delta.reasoning.content === 'string')   thinkingChunk += delta.reasoning.content
+      if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) thinkingChunk += delta.reasoning_content
+      if (typeof delta.thinking === 'string'         && delta.thinking)          thinkingChunk += delta.thinking
+      if (thinkingChunk) {
+        try { onTextDelta?.(thinkingChunk, { kind: 'thinking' }) } catch { /* ignore */ }
       }
       // Usage on the last chunk
       if (chunk.usage) {
         usage = {
-          prompt:     Number(chunk.usage.prompt_tokens || chunk.usage.input_tokens || 0),
-          completion: Number(chunk.usage.completion_tokens || chunk.usage.output_tokens || 0),
-          total:      Number(chunk.usage.total_tokens || 0),
+          prompt:           Number(chunk.usage.prompt_tokens || chunk.usage.input_tokens || 0),
+          completion:       Number(chunk.usage.completion_tokens || chunk.usage.output_tokens || 0),
+          total:            Number(chunk.usage.total_tokens || 0),
+          // OpenAI o1: completion_tokens_details.reasoning_tokens
+          // Anthropic: usage.thinking_tokens (newer Claude)
+          reasoningTokens:  Number(
+            chunk.usage.completion_tokens_details?.reasoning_tokens
+            || chunk.usage.reasoning_tokens
+            || chunk.usage.thinking_tokens
+            || 0
+          ),
         }
         try { onUsage?.(usage) } catch { /* ignore */ }
       }
