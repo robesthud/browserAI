@@ -24,6 +24,7 @@ Actions:
 | `docker_logs` | yes | Show logs for a compose service, params: `{service, tail}` |
 | `git_status` | yes | Show current commit and dirty files in `/opt/browserai` |
 | `deploy` | no | Reset to `origin/main`, rebuild, restart, health-check |
+| `deploy_safe` | no | Deploy with **automatic rollback**: records current commit, pull+build+up+health-check; if health fails, resets to the previous commit, rebuilds and re-checks |
 | `repair_deploy` | no | Deploy plus diagnostics: pre-status, build/up, health, browserai logs, gemini logs, summary exit codes |
 | `restart` | no | Restart BrowserAI container |
 | `gemini_restart` | no | Restart `gemini-web-proxy.service` |

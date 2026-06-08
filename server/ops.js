@@ -232,6 +232,7 @@ export const OPS_SERVICES = {
       docker_logs: { safe: true, description: 'Show container logs. params: service, tail' },
       git_status: { safe: true, description: 'Show git status in app dir' },
       deploy: { safe: false, description: 'git reset to origin/main, rebuild and restart BrowserAI' },
+      deploy_safe: { safe: false, description: 'Deploy with automatic rollback: record current commit, pull+build+up, health-check; if health fails, reset to the previous commit, rebuild and restart, then re-check. Mirrors a careful deploy-and-revert-on-failure flow.' },
       repair_deploy: { safe: false, description: 'Run a deploy with diagnostics: pre-status, build/up, health checks, and failure logs. Use after confirmation when user asks to deploy/fix deploy.' },
       restart: { safe: false, description: 'Restart browserai container' },
       gemini_restart: { safe: false, description: 'Restart gemini-web-proxy.service' },
@@ -300,6 +301,32 @@ export async function runOpsAction({ service, action, params = {}, confirm = fal
     docker_logs: `cd ${shQuote(APP_DIR)} && docker compose logs --tail=${tail} ${shQuote(serviceName)}`,
     git_status: `cd ${shQuote(APP_DIR)} && git log -1 --oneline && git status --short`,
     deploy: `set -e; cd ${shQuote(APP_DIR)}; git fetch --quiet origin main; git reset --hard origin/main; git log -1 --oneline; scripts/apply-gemini-web-proxy-patch.sh /opt/gemini-web-proxy || true; systemctl restart gemini-web-proxy.service; docker compose build; docker compose up -d; sleep 8; curl -fsS http://localhost/api/health; echo; curl -fsS http://172.17.0.1:8080/health; echo`,
+    deploy_safe: `cd ${shQuote(APP_DIR)}
+set +e
+PREV=$(git rev-parse HEAD); echo "== prev commit == $PREV"
+git fetch --quiet origin main; git reset --hard origin/main; NEW=$(git rev-parse HEAD); echo "== new commit == $NEW"; git log -1 --oneline
+scripts/apply-gemini-web-proxy-patch.sh /opt/gemini-web-proxy || true
+echo "== build =="; docker compose build; BUILD=$?
+echo "== up =="; docker compose up -d; UP=$?
+sleep 8
+echo "== health =="; curl -fsS http://localhost/api/health; H1=$?; echo
+if [ $BUILD -eq 0 ] && [ $UP -eq 0 ] && [ $H1 -eq 0 ]; then
+  docker image prune -f >/dev/null 2>&1
+  echo "== DEPLOY OK == $NEW"
+  exit 0
+fi
+echo "!! DEPLOY FAILED (build:$BUILD up:$UP health:$H1) — ROLLING BACK to $PREV"
+git reset --hard "$PREV"; git log -1 --oneline
+docker compose build; RB_BUILD=$?
+docker compose up -d; RB_UP=$?
+sleep 8
+curl -fsS http://localhost/api/health; RB_H=$?; echo
+if [ $RB_BUILD -eq 0 ] && [ $RB_UP -eq 0 ] && [ $RB_H -eq 0 ]; then
+  echo "== ROLLBACK OK == restored $PREV"
+else
+  echo "!! ROLLBACK ALSO FAILED (build:$RB_BUILD up:$RB_UP health:$RB_H) — manual intervention needed"
+fi
+exit 1`,
     repair_deploy: `cd ${shQuote(APP_DIR)}
 set +e
 echo '== pre git =='; git log -1 --oneline; git status --short
@@ -321,7 +348,7 @@ exit 0`,
   }
   const command = commands[action]
   if (!command) throw new Error(`Action not implemented: ${service}.${action}`)
-  const result = await runSsh(command, { timeoutMs: (action === 'deploy' || action === 'repair_deploy') ? 20 * 60_000 : DEFAULT_TIMEOUT_MS })
+  const result = await runSsh(command, { timeoutMs: ['deploy', 'repair_deploy', 'deploy_safe'].includes(action) ? 20 * 60_000 : DEFAULT_TIMEOUT_MS })
   auditOps({ service, action, status: result.exitCode === 0 ? 'ok' : 'error', exitCode: result.exitCode, ms: Date.now() - started })
   return result
 }
