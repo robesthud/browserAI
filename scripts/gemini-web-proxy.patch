@@ -1,5 +1,5 @@
 diff --git a/server.py b/server.py
-index 121bdc5..586a4ad 100644
+index 121bdc5..154fca5 100644
 --- a/server.py
 +++ b/server.py
 @@ -6,6 +6,9 @@ import json
@@ -161,7 +161,7 @@ index 121bdc5..586a4ad 100644
  async def check_logged_in(page: Page) -> bool:
      try:
          await asyncio.sleep(3)
-@@ -101,10 +237,11 @@ async def init_browser():
+@@ -101,13 +237,15 @@ async def init_browser():
      context = await playwright_instance.chromium.launch_persistent_context(
          user_data_dir=str(PROFILE_DIR),
          headless=False,
@@ -174,11 +174,73 @@ index 121bdc5..586a4ad 100644
              *headless_args
          ],
          viewport={"width": 1280, "height": 900},
-@@ -383,12 +520,17 @@ def format_conversation(messages: List[Message], tools: Optional[List[Tool]] = N
++        accept_downloads=True,
+     )
+     
+     page = await context.new_page()
+@@ -383,12 +521,75 @@ def format_conversation(messages: List[Message], tools: Optional[List[Tool]] = N
      return "\n\n".join(formatted)
  
  
 -async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -> str:
++def _ext_for_mime(mime, fallback_name=''):
++    import mimetypes
++    if fallback_name and '.' in fallback_name:
++        return fallback_name[fallback_name.rfind('.'):]
++    ext = mimetypes.guess_extension(mime or '') or ''
++    return ext or '.bin'
++
++async def download_media_via_buttons(page, last_response):
++    """Click Gemini's native download controls in the latest response and
++    return the ORIGINAL files as data: URLs. This beats screenshots and
++    re-fetching expiring URLs: it yields the real generated image/video."""
++    results = []
++    # Collect candidate download buttons/anchors inside the response block.
++    sels = [
++        'button[aria-label*="Скачать" i]',
++        'button[aria-label*="Загрузить" i]',
++        'button[aria-label*="Сохранить" i]',
++        'button[aria-label*="Download" i]',
++        'a[download]',
++        'button[data-test-id*="download" i]',
++    ]
++    handles = []
++    for sel in sels:
++        try:
++            for h in await last_response.query_selector_all(sel):
++                handles.append(h)
++        except Exception:
++            continue
++    seen_keys = set()
++    for h in handles[:4]:
++        try:
++            async with page.expect_download(timeout=20000) as dl_info:
++                try:
++                    await h.click(timeout=5000)
++                except Exception:
++                    await page.evaluate('(e)=>e.click()', h)
++            download = await dl_info.value
++            tmp = await download.path()
++            if not tmp:
++                continue
++            with open(tmp, 'rb') as f:
++                data = f.read()
++            if not data or len(data) > 60 * 1024 * 1024:
++                continue
++            suggested = download.suggested_filename or ''
++            import mimetypes as _mt
++            mime = _mt.guess_type(suggested)[0] or 'application/octet-stream'
++            key = (len(data), mime)
++            if key in seen_keys:
++                continue
++            seen_keys.add(key)
++            b64 = base64.b64encode(data).decode('ascii')
++            results.append({'mime': mime, 'name': suggested, 'data_url': 'data:' + mime + ';base64,' + b64})
++        except Exception:
++            continue
++    return results
++
++
 +async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None, image_paths: Optional[List[str]] = None) -> str:
      if timeout is None:
          timeout = 300  # 5 minute default
@@ -193,7 +255,7 @@ index 121bdc5..586a4ad 100644
      
      # Count existing responses BEFORE sending
      existing_responses = await page.query_selector_all('div[id^="model-response-message-content"]')
-@@ -448,10 +590,71 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
+@@ -448,10 +649,71 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
      if not response_text:
          raise Exception(f"Timeout after {timeout}s")
      
@@ -268,7 +330,7 @@ index 121bdc5..586a4ad 100644
          
          // Try multiple selectors for code blocks in Gemini
          const selectors = [
-@@ -476,7 +679,7 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
+@@ -476,7 +738,7 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
          // Get full text content
          const text = lastResponse.innerText || lastResponse.textContent || '';
          
@@ -277,7 +339,7 @@ index 121bdc5..586a4ad 100644
      }''')
      
      text_content = extraction.get('text', '').replace('\\_', '_')
-@@ -560,6 +763,89 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
+@@ -560,6 +822,107 @@ async def send_to_gemini(page: Page, text: str, timeout: Optional[int] = None) -
      
      # No tool calls - convert HTML to markdown
      response_text = md(response_text, heading_style="ATX", code_language_callback=lambda el: el.get('class', [''])[0].replace('language-', '') if el.get('class') else '')
@@ -304,6 +366,24 @@ index 121bdc5..586a4ad 100644
 +            response_text = response_text.replace(v_src, v_data)
 +        if v_data not in response_text:
 +            response_text += f"\n\n[generated video]({v_data})"
++
++    # Prefer ORIGINAL files: if no media data URL has been extracted yet, try
++    # clicking Gemini's native download buttons to grab the real generated
++    # image/video file (full quality) instead of a screenshot.
++    if ('data:image' not in response_text and 'data:video' not in response_text):
++        try:
++            downloaded = await download_media_via_buttons(page, last_response)
++        except Exception:
++            downloaded = []
++        for item in downloaded:
++            du = item.get('data_url') or ''
++            mime = item.get('mime') or ''
++            if not du:
++                continue
++            if mime.startswith('video/'):
++                response_text += f"\n\n[generated video]({du})"
++            else:
++                response_text += f"\n\n![generated file]({du})"
 +
 +    # Last-resort fallback: screenshot ONLY the largest img/canvas/video inside
 +    # the response (NOT the whole block, which would include the Gemini input
@@ -367,7 +447,7 @@ index 121bdc5..586a4ad 100644
      
      return response_text.strip()
  
-@@ -672,10 +958,19 @@ async def chat_completions(request: ChatRequest):
+@@ -672,10 +1035,19 @@ async def chat_completions(request: ChatRequest):
      
      async with page_locks[session_id]:
          conversation = format_conversation(request.messages, request.tools)
@@ -389,7 +469,7 @@ index 121bdc5..586a4ad 100644
              print(f"📤 [{time.strftime('%H:%M:%S')}] {response[:80]}...")
              
              # Check for tool calls
-@@ -824,12 +1119,17 @@ async def chat_completions(request: ChatRequest):
+@@ -824,12 +1196,17 @@ async def chat_completions(request: ChatRequest):
  
  @app.get("/v1/models")
  async def list_models():

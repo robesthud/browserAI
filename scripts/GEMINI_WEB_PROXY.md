@@ -17,16 +17,18 @@ as a local OpenAI-compatible bridge to Gemini Web.
   - accepts `content: [{type:'text'}, {type:'image_url'}]`
   - decodes `data:image/...` to a temp file
   - attaches it to Gemini Web via the upload/tools menu
-- Generated image output support:
-  - converts Gemini `blob:` image results to `data:image/png;base64,...`
-  - falls back to screenshotting the generated image block when necessary
-- Generated video output support (Veo):
-  - extracts `<video>` / `generated_video_content` results to `data:video/...`
-    via an in-page authenticated fetch (the raw link is 404 outside the
-    browser session)
+- Generated image/video output support:
+  - inline extraction: `<img>`/`<video>` and `generated_video_content` results
+    are converted to `data:image|video/...` via in-page authenticated fetch
+  - **original-file download**: if no inline data URL is found, the proxy clicks
+    Gemini's native download control (`accept_downloads=True` +
+    `page.expect_download()`) and returns the REAL generated file (full quality,
+    correct format/MIME) as a data URL — not a screenshot
+  - screenshot is only a last resort, and captures just the largest
+    img/canvas/video element, never the surrounding Gemini UI
   - video generation is async; BrowserAI's job runner (`server/jobs.js`)
-    polls the same Gemini session until the finished video appears, then
-    saves it to the workspace
+    polls the same Gemini session until the finished file appears, then saves
+    it to the workspace
 
 ## Apply patch on VPS
 
