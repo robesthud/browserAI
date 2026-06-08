@@ -47,7 +47,7 @@ Final Answer or Ask User / Resume
 | # | Этап | Статус | Коммит / заметка |
 |---|---|---|---|
 | 1 | Жёсткие базовые слои Agent Runtime | ✅ Выполнено | `6f44b85` |
-| 2 | Model Planner / Agent Loop hardening | ✅ Выполнено | `3cb9ec2` |
+| 2 | Model Planner / Agent Loop hardening | ✅ Выполнено | см. журнал выполнения |
 | 3 | Tool Router hardening | ⬜ Не начато | — |
 | 4 | Provider adapters 2.0 | частично ✅ | `802665c`, требуется расширение |
 | 5 | Настоящий streaming protocol | частично ✅ | есть SSE, нужно унифицировать события |
