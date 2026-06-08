@@ -106,7 +106,18 @@ export const workspaceApi = {
       body: JSON.stringify({ parentPath, url, ...options }),
     }),
 
-  downloadUrl: (path) => `${BASE}/download?path=${encodeURIComponent(path)}`,
+  // The download endpoint is consumed as <a href="…">, which cannot send
+  // custom headers — so we MUST embed the chat scope and (optionally) the
+  // inline flag right in the query string. Otherwise the server runs the
+  // download outside the chat's workspace scope and returns a 400 JSON
+  // error which the browser then saves as a tiny .json file (the bug
+  // visible to the user as "generated-….pn….js" of 0.10 KB).
+  downloadUrl: (path, opts = {}) => {
+    const params = [`path=${encodeURIComponent(path)}`]
+    if (activeChatId) params.push(`chatId=${encodeURIComponent(activeChatId)}`)
+    if (opts.inline) params.push('inline=1')
+    return `${BASE}/download?${params.join('&')}`
+  },
 }
 
 export function formatWorkspaceSize(bytes) {
