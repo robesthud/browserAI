@@ -203,10 +203,11 @@ export function buildPlanningDirective(agentContext = {}) {
     `Task classification: ${taskType} / ${complexity}.`,
     'Before doing substantial work, call plan_set with a short checklist unless the task is truly one-step.',
     'After completing a meaningful step, call plan_check for the completed index.',
+    'Always explore the workspace (list_files, read_file, bash) FIRST to gather context before writing code or asking questions.',
     'Always check long-term memory first using recall_facts or kb_search when the task involves user preferences, previous decisions, or recurring context.',
     'Use remember_fact for stable user preferences and kb_add for important documents.',
     'Keep the user-visible final answer honest: mention only actions that actually happened in tool results.',
-    'If you need a decision or missing credential, call ask_user and wait for the answer instead of guessing.',
+    'If you need a decision or missing credential, call ask_user, but ONLY if you cannot find the answer by exploring the workspace.',
     'For code changes: read before edit, edit via tools, then verify_code or run_tests before claiming success.',
     '[/agent_runtime_directive]',
   ].join('\n')

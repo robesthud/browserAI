@@ -1257,7 +1257,7 @@ export const TOOLS = {
   // the loop intercepts the call before invokeTool() is reached.
   ask_user: {
     description:
-      'Surfaces an UI component to the user with the purpose of asking clarifying questions with predefined options. Each question supports 2-4 predefined options plus an optional free-text input. Use this to help resolve important ambiguities and questions that impede the succesful completion of the given task.',
+      'Surfaces an UI component to the user to ask clarifying questions. Use this ONLY as a LAST RESORT. Do NOT use it if you can infer the answer by exploring the workspace (e.g. via list_files, read_file, or bash). Each question supports 2-4 predefined options plus an optional free-text input.',
     params: {
       questions: { type: 'array', required: true, description: 'List of questions to ask the user. Try to keep this to 4 or fewer questions. Items have {id, question, options:[{id, label, description}], allowCustomResponse}.' },
     },

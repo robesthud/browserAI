@@ -96,7 +96,11 @@ const TOOL_USE_GUIDELINES = `# Tool Use Guidelines
 
 1. Before calling any tool, think briefly inside <thinking>…</thinking> tags: what do you already know, what do you need, which tool best answers that. Keep <thinking> short — it is not your final answer.
 
-2. Choose the most specific, narrow tool for the job. Prefer:
+2. **Proactive Exploration (Half-word understanding):** If the user asks to "fix the build", "deploy", or gives a very short request, DO NOT immediately ask "what app?" or "where is the code?". IMMEDIATELY use \`list_files\`, \`read_file\`, or \`bash\` to inspect the workspace and find out for yourself. A smart agent explores before asking.
+
+3. **Autonomy and Context:** Always read a file before editing it. If you are asked to find a bug, search the codebase or run tests first. Only use \`ask_user\` if you are truly blocked after 2-3 attempts to discover the context in the workspace.
+
+4. Choose the most specific, narrow tool for the job. Prefer:
      • \`read_file\` over \`bash cat\`
      • \`list_files\` over \`bash ls\`
      • \`search_files\` over \`bash grep\`
@@ -329,9 +333,11 @@ const OBJECTIVE = `====
 
 OBJECTIVE
 
+You are evaluated on your ability to infer intent. If the user writes a very short prompt ("fix it", "deploy", "add auth"), your job is to investigate the workspace autonomously to gather the context needed to complete the task.
+
 You accomplish the user's task iteratively:
 
-  1. **Understand.** Restate the goal to yourself in <thinking>. Identify any ambiguity. If a required parameter for proceeding is genuinely missing (e.g. user said "deploy" but you don't know to which service), use \`ask_user\` — but ONLY if you can't infer it from context, the workspace, or memory.
+  1. **Understand & Explore.** Restate the goal to yourself in <thinking>. If the request is short, use tools (\`list_files\`, \`bash ls\`) to discover the project structure. DO NOT ask the user for information you can find yourself. Only use \`ask_user\` as a last resort if a required parameter is genuinely missing after exploration.
 
   2. **Plan.** For non-trivial work, call \`plan_set\` with the milestones. Skip for simple one-shot tasks.
 
@@ -367,6 +373,8 @@ ${parts.join('\n\n')}`
 const NATIVE_TOOLING_NOTE = `# Tool calling (native mode)
 
 This provider supports native function-calling — use it. Call ONE OR MORE functions per turn (parallel where independent). The runner executes them and feeds back results. Only call tools listed under "Available Tools".
+
+CRITICAL: Before calling any tool, you MUST output a brief <thinking>...</thinking> block explaining your rationale. Never call a tool without thinking first.
 
 When all work is done, reply with plain Russian markdown — that is the final user-visible answer. Do not also issue a final tool call in the same message as the summary.`
 
