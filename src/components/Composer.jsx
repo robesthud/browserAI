@@ -409,7 +409,7 @@ export default function Composer({
                         <span className="text-cream-dim"><IconFile /></span>
                       )}
                       <div className="flex min-w-0 flex-col">
-                        <span className="max-w-[160px] truncate">{a.name}</span>
+                        <span className="max-w-[110px] truncate sm:max-w-[160px]">{a.name}</span>
                         <span className="text-[10px] text-cream-faint">
                           {formatSize(a.size)}
                         </span>

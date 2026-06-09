@@ -135,24 +135,24 @@ export default function AgentAskUser({
         )}
 
         {!answered ? (
-          <div className="flex items-center justify-end gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <button
               type="button"
               onClick={() => onCancel?.()}
               disabled={sending}
-              className="rounded-lg border border-white/15 px-3 py-1.5 text-[12px] font-medium text-cream-faint transition hover:bg-graphite-700 hover:text-cream disabled:opacity-40"
+              className="min-w-[88px] flex-1 rounded-lg border border-white/15 px-3 py-1.5 text-[12px] font-medium text-cream-faint transition hover:bg-graphite-700 hover:text-cream disabled:opacity-40 sm:flex-none"
             >Отмена</button>
             <button
               type="button"
               onClick={() => quickSubmit('deny')}
               disabled={sending}
-              className="rounded-lg border border-white/15 px-3 py-1.5 text-[12px] font-medium text-cream-soft transition hover:bg-graphite-700 hover:text-cream disabled:opacity-40"
+              className="min-w-[88px] flex-1 rounded-lg border border-white/15 px-3 py-1.5 text-[12px] font-medium text-cream-soft transition hover:bg-graphite-700 hover:text-cream disabled:opacity-40 sm:flex-none"
             >Отклонить</button>
             <button
               type="button"
               onClick={() => quickSubmit('approve')}
               disabled={sending}
-              className="rounded-lg bg-emerald-500 px-3 py-1.5 text-[12px] font-medium text-graphite-900 transition hover:bg-emerald-400 disabled:opacity-40"
+              className="min-w-[88px] flex-1 rounded-lg bg-emerald-500 px-3 py-1.5 text-[12px] font-medium text-graphite-900 transition hover:bg-emerald-400 disabled:opacity-40 sm:flex-none"
             >{sending ? '…' : 'Разрешить'}</button>
           </div>
         ) : (
@@ -217,19 +217,19 @@ export default function AgentAskUser({
       )}
 
       {!answered ? (
-        <div className="mt-2 flex items-center justify-end gap-2">
+        <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
           {normalizedOptions.length > 0 && <span className="mr-auto text-[11px] text-cream-faint">{multi ? `Выбрано: ${selected.length}` : (selected.length ? 'Выбран 1' : 'Не выбрано')}</span>}
           <button
             type="button"
             disabled={sending}
             onClick={() => onCancel?.()}
-            className="rounded-lg border border-white/15 px-3 py-1.5 text-[12px] text-cream-soft transition hover:bg-graphite-700 disabled:opacity-40"
+            className="min-w-[88px] flex-1 rounded-lg border border-white/15 px-3 py-1.5 text-[12px] text-cream-soft transition hover:bg-graphite-700 disabled:opacity-40 sm:flex-none"
           >Отмена</button>
           <button
             type="button"
             disabled={!canSubmit}
             onClick={submit}
-            className="rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-graphite-900 transition disabled:opacity-40"
+            className="min-w-[88px] flex-1 rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-graphite-900 transition disabled:opacity-40 sm:flex-none"
           >{sending ? 'Отправка…' : 'Ответить'}</button>
         </div>
       ) : (

@@ -1187,10 +1187,11 @@ localStorage.removeItem('browserai.devtools')
 | v2.12 | Sidebar / topbar cleanup | ✅ Выполнено | power/dev элементы скрыты за devtools |
 | v2.13 | Message polish / final visual cleanup | ✅ Выполнено | убран step-counter из обычного UI |
 | v2.14 | Conversation flow cleanup | ✅ Выполнено | unified stopped/empty/error states |
-| v2.15 | Retry failed tool button | ⬜ Не начато | — |
-| v2.16 | Export / replay agent trace JSON | ⬜ Не начато | — |
-| v2.17 | E2E test SSE stream shape | ⬜ Не начато | — |
-| v2.18 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
+| v2.15 | Mobile polish / responsive cleanup | ✅ Выполнено | карточки/кнопки не ломают ширину |
+| v2.16 | Retry failed tool button | ⬜ Не начато | — |
+| v2.17 | Export / replay agent trace JSON | ⬜ Не начато | — |
+| v2.18 | E2E test SSE stream shape | ⬜ Не начато | — |
+| v2.19 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
 
 ## v2.1 Developer-only Run Agent Self-Test
 
@@ -1757,6 +1758,33 @@ src/components/MessageList.jsx
 npm run build
 ```
 
+
+## v2.15 Mobile polish / responsive cleanup
+
+### Сделано
+
+Обновлены компоненты:
+
+```text
+src/components/AgentToolBlock.jsx
+src/components/AgentAskUser.jsx
+src/components/Composer.jsx
+```
+
+Улучшения для мобильного пользовательского режима:
+
+- длинные названия действий в tool cards теперь обрезаются и не ломают ширину;
+- summary/error blocks переносят длинные строки;
+- кнопки approval/ask_user cards переносятся и не вылезают за экран;
+- кнопки `Отмена` / `Отклонить` / `Разрешить` получают mobile-friendly ширину;
+- имена attachments в Composer короче на mobile.
+
+### Проверки
+
+```bash
+npm run build
+```
+
 ## Журнал v2
 
 ### 2026-06-09
@@ -1776,6 +1804,7 @@ npm run build
 - Выполнен v2.12: sidebar/topbar cleanup — power/dev элементы скрыты за devtools, обычный topbar/sidebar упрощён.
 - Выполнен v2.13: message polish — internal step counter скрыт за devtools, plan card сделана пользовательской.
 - Выполнен v2.14: conversation flow cleanup — единые состояния stopped/empty/error, tool cards сохраняются при ошибке.
+- Выполнен v2.15: mobile polish — tool/ask cards и attachment chips лучше адаптированы под узкий экран.
 
 
 ### 2026-06-09 — корректировка v2.1

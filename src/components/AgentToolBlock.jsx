@@ -249,7 +249,7 @@ export default function AgentToolBlock({
         className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-white/5 md:gap-2 md:px-3 md:py-2"
       >
         <span className="font-mono text-[11px] text-cream-faint shrink-0">{spec.icon}</span>
-        <span className="shrink-0 font-medium text-cream">{spec.action}</span>
+        <span className="min-w-0 shrink truncate font-medium text-cream" title={spec.action}>{spec.action}</span>
         {argSummary && (
           <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-cream-faint md:text-[12px]" title={argSummary}>
             {argSummary}
@@ -278,7 +278,7 @@ export default function AgentToolBlock({
       {open && (
         <div className="border-t border-white/10 px-2.5 py-2 md:px-3">
           {summary && (
-            <div className={`mb-2 rounded-lg px-2.5 py-1.5 text-[12px] ${ok === false ? 'bg-red-500/10 text-red-200' : 'bg-black/20 text-cream-soft'}`}>
+            <div className={`mb-2 break-words rounded-lg px-2.5 py-1.5 text-[12px] ${ok === false ? 'bg-red-500/10 text-red-200' : 'bg-black/20 text-cream-soft'}`}>
               {summary}
               {ok === false && !isDev ? <div className="mt-1 text-[11px] text-red-200/80">Агент может попробовать другой способ или запросить уточнение.</div> : null}
             </div>
@@ -319,7 +319,7 @@ export default function AgentToolBlock({
             />
           )}
           {diagnostic && (
-            <div className="mb-2 rounded-lg border border-amber-400/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-200">
+            <div className="mb-2 break-words rounded-lg border border-amber-400/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-200">
               ⚠ После записи <code className="rounded bg-graphite-900/60 px-1 py-0.5 font-mono">{diagnostic.path}</code> синтаксис-чек выдал: {diagnostic.error}
             </div>
           )}
