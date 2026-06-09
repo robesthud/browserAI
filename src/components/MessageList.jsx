@@ -210,7 +210,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
           <p className="whitespace-pre-wrap break-words text-[14px] leading-relaxed text-cream-soft">
             {m.content}
           </p>
-        ) : m.error ? (
+        ) : m.error && !hasAgentActivity ? (
           <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[13px] text-red-300">
             <div>⚠ {friendlyAssistantError(m.error, m.providerError)}</div>
             {isDev && (m.providerError || m.error) && (
@@ -372,6 +372,20 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
               </div>
             )}
 
+            {m.error && hasAgentActivity ? (
+              <div className="mt-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[13px] text-red-300">
+                <div>⚠ {friendlyAssistantError(m.error, m.providerError)}</div>
+                {isDev && (m.providerError || m.error) && (
+                  <details className="mt-2 text-[11px] text-red-200/80">
+                    <summary className="cursor-pointer">debug details</summary>
+                    <pre className="thin-scroll mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 font-mono">
+{JSON.stringify(m.providerError || { error: m.error }, null, 2)}
+                    </pre>
+                  </details>
+                )}
+              </div>
+            ) : null}
+
             {m.job ? <JobCard job={m.job} onJobDone={onJobDone} /> : null}
 
             {m.content ? (
@@ -397,7 +411,15 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
               <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-cream/70 align-middle" />
             )}
             {m.stopped && !m.content && (
-              <span className="italic text-cream-faint">— генерация остановлена</span>
+              <div className="mt-2 rounded-lg border border-white/10 bg-graphite-800/40 px-3 py-2 text-[12px] italic text-cream-faint">
+                — генерация остановлена
+              </div>
+            )}
+
+            {!m.pending && !m.stopped && hasAgentActivity && !m.content && !m.error && !(m.job && ['succeeded', 'failed', 'cancelled'].includes(m.job.status)) && (
+              <div className="mt-2 rounded-lg border border-white/10 bg-graphite-800/40 px-3 py-2 text-[12px] text-cream-faint">
+                Агент завершил действия без итогового ответа.
+              </div>
             )}
           </div>
         )}
