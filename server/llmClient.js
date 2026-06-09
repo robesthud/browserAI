@@ -267,7 +267,7 @@ function toAnthropicMessages(messages = []) {
 }
 
 async function callAnthropicOfficial({
-  baseUrl, apiKey, model, messages, temperature = 0.7, tools, toolChoice
+  baseUrl, apiKey, model, messages, temperature = 0.7, tools
 }) {
   const { system, rest } = splitSystemMessages(messages)
   const body = {
@@ -278,7 +278,7 @@ async function callAnthropicOfficial({
   }
   if (tools && tools.length > 0) {
     body.tools = toAnthropicTools(tools)
-    if (toolChoice === 'auto') body.tool_choice = { type: 'auto' }
+    body.tool_choice = { type: 'auto' }
   }
   if (system) body.system = system
   const r = await fetch(joinUrl(baseUrl, 'messages'), {
@@ -324,7 +324,7 @@ async function callAnthropicOfficialStream({
   if (system) body.system = system
   if (tools && tools.length > 0) {
     body.tools = toAnthropicTools(tools)
-    if (toolChoice === 'auto') body.tool_choice = { type: 'auto' }
+    body.tool_choice = { type: 'auto' }
   }
   const r = await fetch(joinUrl(baseUrl, 'messages'), {
     method: 'POST',
@@ -559,7 +559,7 @@ async function callGeminiOfficial({ baseUrl, apiKey, model, messages, temperatur
 
 async function callGeminiOfficialStream({
   baseUrl, apiKey, model, messages, temperature = 0.7, signal,
-  tools, toolChoice, onTextDelta, onToolCallDelta, onUsage,
+  tools, onTextDelta, onToolCallDelta, onUsage,
 }) {
   const { system } = splitSystemMessages(messages)
   const body = {
