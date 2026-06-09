@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { IconBot, IconUser, IconFile, IconCopy, IconEdit, IconRefresh } from '../icons.jsx'
+import { IconBot, IconUser, IconFile, IconCopy, IconEdit, IconRefresh, IconCheck } from '../icons.jsx'
 import { formatSize } from '../lib/files.js'
 import Markdown from '../lib/markdown.jsx'
 import AgentToolBlock from './AgentToolBlock.jsx'
@@ -440,12 +440,28 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                 Агент завершил действия без итогового ответа.
               </div>
             )}
+            
+            {!isUser && !m.pending && !m.error && !m.stopped && <CheckpointBadge toolCalls={m.toolCalls} />}
           </div>
         )}
 
         <Attachments items={m.attachments} />
       </div>
       </div>
+    </div>
+  )
+}
+
+function CheckpointBadge({ toolCalls }) {
+  const hasWrite = (toolCalls || []).some(tc => 
+    tc.ok && tc.status === 'done' && 
+    (tc.name === 'write_file' || tc.name === 'edit_file' || tc.name === 'delete_file' || tc.name === 'replace_across_files')
+  )
+  if (!hasWrite) return null
+  return (
+    <div className="mt-3 flex items-center justify-end gap-1.5 opacity-60 transition-opacity hover:opacity-100">
+      <span className="text-[10px] text-emerald-400"><IconCheck /></span>
+      <span className="text-[10px] uppercase tracking-wider text-emerald-400">Снимок сохранён</span>
     </div>
   )
 }
