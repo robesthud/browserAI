@@ -1880,7 +1880,7 @@ localStorage.setItem('browserai.devtools', '1')
 |---|------|------|--------|
 | v2.21 | Live agent_state streaming | Полноценная передача `agent_state` на фронт в реальном времени с обновлением UI | ⬜ Не начато |
 | v2.22 | Automatic memory integration | ✅ Выполнено (один в один) | Автоматический `recall_facts` / `kb_search` перед сложными задачами в runtime |
-| v2.23 | Full native tool calling | 100% нативная поддержка tool calls для Anthropic, Gemini, DeepSeek, Groq | ✅ Частично (Anthropic + Gemini) |
+| v2.23 | Full native tool calling | ✅ Выполнено (один в один) | 100% нативная поддержка tool calls для Anthropic, Gemini, DeepSeek, Groq |
 | v2.24 | Advanced error recovery | Улучшенный retry + self-healing при ошибках инструментов | ⬜ Не начато |
 | v2.25 | Arena-style final answer formatting | Точное соответствие формата финального ответа (сводка действий + результат) | ⬜ Не начато |
 | v2.26 | Full E2E test coverage | Автоматические тесты ключевых сценариев Agent Mode | ⬜ Не начато |
@@ -1925,8 +1925,8 @@ localStorage.setItem('browserai.devtools', '1')
 
 | ID | Задача | Описание | Приоритет |
 |----|--------|----------|-----------|
-| P3-10 | Native Anthropic tools | 100% нативный формат tool calls для Anthropic | Высокий |
-| P3-11 | Native Gemini tools | 100% нативный формат для Google Gemini | Высокий |
+| P3-10 | Native Anthropic tools | ✅ Выполнено (один в один) | Высокий |
+| P3-11 | Native Gemini tools | ✅ Выполнено (один в один) | Высокий |
 | P3-12 | Native DeepSeek tools | Поддержка DeepSeek native tools (если доступно) | Средний |
 | P3-13 | Groq / OpenRouter parity | Корректная работа с Groq и OpenRouter | Средний |
 | P3-14 | Tool schema validation | Строгая валидация аргументов перед вызовом | Высокий |

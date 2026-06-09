@@ -201,15 +201,63 @@ function toAnthropicBlockArray(content) {
   return Array.isArray(c) ? c : [{ type: 'text', text: String(c || '') }]
 }
 
+function toAnthropicTools(tools = []) {
+  return tools.map(t => ({
+    name: t.function.name,
+    description: t.function.description || '',
+    input_schema: t.function.parameters || { type: 'object', properties: {} }
+  }))
+}
+
 function toAnthropicMessages(messages = []) {
   const out = []
   for (const m of messages || []) {
     if (!m || m.role === 'system') continue
+    
+    if (m.role === 'tool') {
+      const block = {
+        type: 'tool_result',
+        tool_use_id: m.tool_call_id,
+        content: String(m.content || '')
+      }
+      const prev = out[out.length - 1]
+      if (prev?.role === 'user') {
+        prev.content.push(block)
+      } else {
+        out.push({ role: 'user', content: [block] })
+      }
+      continue
+    }
+
     const role = m.role === 'assistant' ? 'assistant' : 'user'
-    const blocks = toAnthropicBlockArray(m.content)
+    const blocks = []
+    
+    if (m.content) {
+      blocks.push(...toAnthropicBlockArray(m.content))
+    }
+    
+    if (m.tool_calls && Array.isArray(m.tool_calls)) {
+      for (const tc of m.tool_calls) {
+        let input = {}
+        try { input = JSON.parse(tc.function.arguments) } catch { /* ignore */ }
+        blocks.push({
+          type: 'tool_use',
+          id: tc.id,
+          name: tc.function.name,
+          input
+        })
+      }
+    }
+    
+    if (blocks.length === 0 && !m.tool_calls) {
+       blocks.push({ type: 'text', text: '' })
+    }
+
     const prev = out[out.length - 1]
     if (prev?.role === role) {
-      prev.content.push({ type: 'text', text: '\n\n' })
+      if (blocks.length > 0 && blocks[0].type === 'text') {
+         prev.content.push({ type: 'text', text: '\n\n' })
+      }
       prev.content.push(...blocks)
     } else {
       out.push({ role, content: blocks })
@@ -219,7 +267,7 @@ function toAnthropicMessages(messages = []) {
 }
 
 async function callAnthropicOfficial({
-  baseUrl, apiKey, model, messages, temperature = 0.7,
+  baseUrl, apiKey, model, messages, temperature = 0.7, tools, toolChoice
 }) {
   const { system, rest } = splitSystemMessages(messages)
   const body = {
@@ -227,6 +275,10 @@ async function callAnthropicOfficial({
     messages: toAnthropicMessages(rest),
     max_tokens: Number(process.env.BROWSERAI_MAX_OUTPUT_TOKENS || 4096),
     temperature,
+  }
+  if (tools && tools.length > 0) {
+    body.tools = toAnthropicTools(tools)
+    if (toolChoice === 'auto') body.tool_choice = { type: 'auto' }
   }
   if (system) body.system = system
   const r = await fetch(joinUrl(baseUrl, 'messages'), {
@@ -259,7 +311,7 @@ async function callAnthropicOfficial({
 
 async function callAnthropicOfficialStream({
   baseUrl, apiKey, model, messages, temperature = 0.7, signal,
-  onTextDelta, onUsage,
+  tools, onTextDelta, onToolCallDelta, onUsage,
 }) {
   const { system, rest } = splitSystemMessages(messages)
   const body = {
@@ -270,6 +322,10 @@ async function callAnthropicOfficialStream({
     stream: true,
   }
   if (system) body.system = system
+  if (tools && tools.length > 0) {
+    body.tools = toAnthropicTools(tools)
+    if (toolChoice === 'auto') body.tool_choice = { type: 'auto' }
+  }
   const r = await fetch(joinUrl(baseUrl, 'messages'), {
     method: 'POST',
     headers: {
@@ -293,12 +349,40 @@ async function callAnthropicOfficialStream({
   let text = ''
   let usage = null
 
+  let currentTool = null
+  const nativeToolCalls = []
+
   function handleData(payload) {
     if (!payload || payload === '[DONE]') return
     const evt = safeJsonParse(payload)
     if (!evt) return
     const delta = evt.delta || {}
-    if (evt.type === 'content_block_delta') {
+    
+    if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
+      currentTool = {
+        id: evt.content_block.id,
+        name: evt.content_block.name,
+        inputArgs: ''
+      }
+      onToolCallDelta?.()
+    } else if (evt.type === 'content_block_delta' && delta.type === 'input_json_delta') {
+      if (currentTool) {
+        currentTool.inputArgs += (delta.partial_json || '')
+        onToolCallDelta?.()
+      }
+    } else if (evt.type === 'content_block_stop' && currentTool) {
+      let args = {}
+      try { args = JSON.parse(currentTool.inputArgs) } catch { /* ignore */ }
+      nativeToolCalls.push({
+        id: currentTool.id,
+        name: currentTool.name,
+        args,
+        raw: { id: currentTool.id, type: 'function', function: { name: currentTool.name, arguments: currentTool.inputArgs } }
+      })
+      currentTool = null
+    }
+
+    if (evt.type === 'content_block_delta' && delta.type === 'text_delta') {
       const t = delta.text || delta.thinking || ''
       if (t) {
         text += t
@@ -310,8 +394,7 @@ async function callAnthropicOfficialStream({
       usage = { ...(usage || {}), completion: out }
     }
     if (evt.type === 'message_start' && evt.message?.usage) {
-      const input = Number(evt.message.usage.input_tokens || 0)
-      usage = { ...(usage || {}), prompt: input }
+      usage = { prompt: Number(evt.message.usage.input_tokens || 0), completion: 0, total: 0 }
     }
   }
 
@@ -332,11 +415,23 @@ async function callAnthropicOfficialStream({
     usage.total = Number(usage.prompt || 0) + Number(usage.completion || 0)
     try { onUsage?.(usage) } catch { /* ignore */ }
   }
-  return { text, toolCalls: [], usage }
+  return { text, toolCalls: nativeToolCalls, usage }
 }
 
 // ── Google Gemini official GenerateContent transport ────────────────────────
+function toGeminiTools(tools = []) {
+  if (!tools || tools.length === 0) return []
+  return [{
+    functionDeclarations: tools.map(t => ({
+      name: t.function.name,
+      description: t.function.description || '',
+      parameters: t.function.parameters || { type: 'object', properties: {} }
+    }))
+  }]
+}
+
 function normalizeGeminiModel(model = '') {
+
   const m = String(model || '').trim()
   return m.startsWith('models/') ? m : `models/${m}`
 }
@@ -361,11 +456,49 @@ function toGeminiContents(messages = []) {
   const out = []
   for (const m of messages || []) {
     if (!m || m.role === 'system') continue
+    
+    if (m.role === 'tool') {
+      const block = {
+        functionResponse: {
+          name: m.name || m.tool_call_id || 'unknown',
+          response: { content: String(m.content || '') }
+        }
+      }
+      const prev = out[out.length - 1]
+      if (prev?.role === 'user') {
+        prev.parts.push(block)
+      } else {
+        out.push({ role: 'user', parts: [block] })
+      }
+      continue
+    }
+
     const role = m.role === 'assistant' ? 'model' : 'user'
-    const parts = toGeminiParts(m.content)
+    const parts = []
+    
+    if (m.content) {
+      parts.push(...toGeminiParts(m.content))
+    }
+    
+    if (m.tool_calls && Array.isArray(m.tool_calls)) {
+      for (const tc of m.tool_calls) {
+        let args = {}
+        try { args = JSON.parse(tc.function.arguments) } catch { /* ignore */ }
+        parts.push({
+          functionCall: { name: tc.function.name, args }
+        })
+      }
+    }
+    
+    if (parts.length === 0 && !m.tool_calls) {
+       parts.push({ text: '' })
+    }
+
     const prev = out[out.length - 1]
     if (prev?.role === role) {
-      prev.parts.push({ text: '\n\n' })
+      if (parts.length > 0 && parts[0].text) {
+         prev.parts.push({ text: '\n\n' })
+      }
       prev.parts.push(...parts)
     } else {
       out.push({ role, parts })
@@ -374,7 +507,7 @@ function toGeminiContents(messages = []) {
   return out
 }
 
-async function callGeminiOfficial({ baseUrl, apiKey, model, messages, temperature = 0.7 }) {
+async function callGeminiOfficial({ baseUrl, apiKey, model, messages, temperature = 0.7, tools }) {
   const { system } = splitSystemMessages(messages)
   const body = {
     contents: toGeminiContents(messages),
@@ -384,6 +517,12 @@ async function callGeminiOfficial({ baseUrl, apiKey, model, messages, temperatur
     },
   }
   if (system) body.systemInstruction = { parts: [{ text: system }] }
+  if (tools && tools.length > 0) {
+    body.tools = toGeminiTools(tools)
+  }
+  if (tools && tools.length > 0) {
+    body.tools = toGeminiTools(tools)
+  }
   const url = `${joinUrl(baseUrl, normalizeGeminiModel(model) + ':generateContent')}?key=${encodeURIComponent(apiKey)}`
   const r = await fetch(url, {
     method: 'POST',
@@ -395,19 +534,32 @@ async function callGeminiOfficial({ baseUrl, apiKey, model, messages, temperatur
   if (!r.ok) throw new Error(`Gemini HTTP ${r.status}: ${raw.slice(0, 500)}`)
   const data = safeJsonParse(raw)
   if (!data) throw new Error(`Gemini returned non-JSON: ${raw.slice(0, 400)}`)
-  const parts = data?.candidates?.[0]?.content?.parts || []
-  const text = parts.map((p) => p.text || '').join('')
+  const text = []
+  const nativeToolCalls = []
+  if (data?.candidates?.[0]?.content?.parts) {
+    for (const p of data.candidates[0].content.parts) {
+      if (p.text) text.push(p.text)
+      if (p.functionCall) {
+        nativeToolCalls.push({
+          id: p.functionCall.name + '-' + Math.random().toString(36).slice(2),
+          name: p.functionCall.name,
+          args: p.functionCall.args,
+          raw: { id: p.functionCall.name + '-' + Math.random().toString(36).slice(2), type: 'function', function: { name: p.functionCall.name, arguments: JSON.stringify(p.functionCall.args) } }
+        })
+      }
+    }
+  }
   const usage = data?.usageMetadata ? {
     prompt: Number(data.usageMetadata.promptTokenCount || 0),
     completion: Number(data.usageMetadata.candidatesTokenCount || 0),
     total: Number(data.usageMetadata.totalTokenCount || 0),
   } : null
-  return { text, toolCalls: [], usage }
+  return { text: text.join(''), toolCalls: nativeToolCalls, usage }
 }
 
 async function callGeminiOfficialStream({
   baseUrl, apiKey, model, messages, temperature = 0.7, signal,
-  onTextDelta, onUsage,
+  tools, toolChoice, onTextDelta, onToolCallDelta, onUsage,
 }) {
   const { system } = splitSystemMessages(messages)
   const body = {
@@ -418,6 +570,9 @@ async function callGeminiOfficialStream({
     },
   }
   if (system) body.systemInstruction = { parts: [{ text: system }] }
+  if (tools && tools.length > 0) {
+    body.tools = toGeminiTools(tools)
+  }
   const url = `${joinUrl(baseUrl, normalizeGeminiModel(model) + ':streamGenerateContent')}?alt=sse&key=${encodeURIComponent(apiKey)}`
   const r = await fetch(url, {
     method: 'POST',
@@ -436,6 +591,7 @@ async function callGeminiOfficialStream({
   let buf = ''
   let text = ''
   let usage = null
+  const nativeToolCalls = []
 
   function handleData(payload) {
     if (!payload || payload === '[DONE]') return
@@ -446,6 +602,15 @@ async function callGeminiOfficialStream({
       if (p.text) {
         text += p.text
         try { onTextDelta?.(p.text) } catch { /* ignore */ }
+      }
+      if (p.functionCall) {
+        nativeToolCalls.push({
+          id: p.functionCall.name + '-' + Math.random().toString(36).slice(2),
+          name: p.functionCall.name,
+          args: p.functionCall.args,
+          raw: { id: p.functionCall.name + '-' + Math.random().toString(36).slice(2), type: 'function', function: { name: p.functionCall.name, arguments: JSON.stringify(p.functionCall.args) } }
+        })
+        try { onToolCallDelta?.() } catch { /* ignore */ }
       }
     }
     if (chunk.usageMetadata) {
@@ -727,9 +892,8 @@ export function supportsNativeTools(baseUrl = '') {
     u.includes('api.mistral.ai')    ||
     u.includes('api.together.xyz')  ||
     u.includes('openrouter.ai')     ||
-    // Google only supports OpenAI-style tools on its /openai compatibility endpoint.
-    // The official GenerateContent endpoint is handled by the universal XML protocol.
-    (u.includes('generativelanguage.googleapis.com') && u.includes('/openai'))
+    u.includes('api.anthropic.com') ||
+    u.includes('generativelanguage.googleapis.com')
   )
 }
 
