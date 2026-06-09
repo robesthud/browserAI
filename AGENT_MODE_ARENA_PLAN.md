@@ -1182,10 +1182,11 @@ localStorage.removeItem('browserai.devtools')
 | v2.7 | Streaming / thinking UX cleanup | ✅ Выполнено | raw thinking скрыт за devtools |
 | v2.8 | Final answer / tool separation cleanup | ✅ Выполнено | действия отдельно, ответ отдельно |
 | v2.9 | Tool / provider error UX cleanup | ✅ Выполнено | user-friendly errors, raw только devtools |
-| v2.10 | Retry failed tool button | ⬜ Не начато | — |
-| v2.11 | Export / replay agent trace JSON | ⬜ Не начато | — |
-| v2.12 | E2E test SSE stream shape | ⬜ Не начато | — |
-| v2.13 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
+| v2.10 | Workspace / file preview UX cleanup | ✅ Выполнено | dev controls скрыты за devtools |
+| v2.11 | Retry failed tool button | ⬜ Не начато | — |
+| v2.12 | Export / replay agent trace JSON | ⬜ Не начато | — |
+| v2.13 | E2E test SSE stream shape | ⬜ Не начато | — |
+| v2.14 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
 
 ## v2.1 Developer-only Run Agent Self-Test
 
@@ -1581,6 +1582,51 @@ Provider-level ошибки в assistant message теперь использую
 npm run build
 ```
 
+
+## v2.10 Workspace / file preview UX cleanup
+
+### Сделано
+
+Обновлён компонент:
+
+```text
+src/components/Workspace.jsx
+```
+
+Обычная workspace-панель теперь показывает пользовательские действия:
+
+- `Файлы`;
+- поиск файлов/папок;
+- загрузка файлов/папок;
+- создание папки/файла;
+- просмотр;
+- скачать;
+- прикрепить в чат;
+- удалить.
+
+Dev/admin controls скрыты из обычного UI и доступны только при:
+
+```js
+localStorage.setItem('browserai.devtools', '1')
+```
+
+Скрыты за devtools:
+
+- grep/search by content;
+- show hidden files;
+- GitHub import button;
+- upload by URL;
+- AI create file;
+- AI Apply Patch.
+
+Это делает workspace похожим на пользовательскую файловую панель, а не на developer console.
+
+### Проверки
+
+```bash
+npm run build
+```
+
 ## Журнал v2
 
 ### 2026-06-09
@@ -1595,6 +1641,7 @@ npm run build
 - Выполнен v2.7: streaming/thinking UX cleanup — raw provider-side thinking скрыт из обычного UI; пользователь видит только индикатор `Агент размышляет…`.
 - Выполнен v2.8: final answer / tool separation cleanup — процесс действий отделён от финального markdown-ответа.
 - Выполнен v2.9: tool/provider error UX cleanup — обычный UI показывает понятные ошибки, raw details только в devtools.
+- Выполнен v2.10: workspace/file preview UX cleanup — dev controls скрыты за devtools, обычная панель показывает только пользовательские файловые действия.
 
 
 ### 2026-06-09 — корректировка v2.1

@@ -15,6 +15,11 @@ import {
 import { sendChat } from '../lib/api.js'
 import { resolveActive } from '../lib/settings.js'
 
+function devtoolsEnabled() {
+  try { return localStorage.getItem('browserai.devtools') === '1' }
+  catch { return false }
+}
+
 function downloadFile(file) {
   const link = document.createElement('a')
   link.href = workspaceApi.downloadUrl(file.path)
@@ -180,6 +185,7 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
   const [pendingPatch, setPendingPatch] = useState(null)
   const fileInputRef = useRef(null)
   const folderInputRef = useRef(null)
+  const isDev = devtoolsEnabled()
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -472,17 +478,17 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
     const common = [
       { id: 'new-folder', label: 'Новая папка' },
       { id: 'new-file', label: 'Новый файл' },
-      { id: 'upload-url', label: 'Загрузить по URL' },
-      { id: 'github-import', label: 'Импорт из GitHub' },
-      { id: 'ai-create', label: 'Создать файл через AI' },
+      isDev ? { id: 'upload-url', label: 'Загрузить по URL' } : null,
+      isDev ? { id: 'github-import', label: 'Импорт из GitHub' } : null,
+      isDev ? { id: 'ai-create', label: 'Создать файл через AI' } : null,
       node?.path ? { id: 'copy-path', label: 'Копировать путь' } : null,
     ]
     const fileItems = node?.type === 'file'
       ? [
           { id: 'preview', label: 'Просмотр' },
           { id: 'edit', label: 'Редактировать' },
-          { id: 'attach-chat', label: 'Прикрепить в Composer' },
-          { id: 'ai-patch', label: 'AI Apply Patch' },
+          { id: 'attach-chat', label: 'Прикрепить в чат' },
+          isDev ? { id: 'ai-patch', label: 'AI Apply Patch' } : null,
           { id: 'download', label: 'Скачать' },
           { id: 'rename', label: 'Переименовать' },
           { id: 'delete', label: 'Удалить', danger: true },
@@ -635,7 +641,7 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
         <div className="flex max-h-full flex-1 flex-col overflow-hidden rounded-xl border border-white/10 bg-graphite-800/40 backdrop-blur-sm">
           <div className="flex items-center justify-between gap-2 border-b border-white/5 px-3 py-2.5">
             <span className="flex items-center gap-2 text-[13px] text-cream">
-              Workspace
+              Файлы
               {tree && (
                 <span className="rounded-full bg-graphite-700/60 px-1.5 text-[11px] text-cream-faint">
                   {nodes.length}
@@ -657,13 +663,15 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
               >
                 <IconFolder />
               </button>
-              <button
-                onClick={() => void importGithub('')}
-                className="grid h-7 min-w-7 place-items-center rounded-lg px-1 text-[11px] font-semibold text-cream-dim transition-colors hover:bg-graphite-750/60 hover:text-cream"
-                title="Импорт из GitHub"
-              >
-                GH
-              </button>
+              {isDev && (
+                <button
+                  onClick={() => void importGithub('')}
+                  className="grid h-7 min-w-7 place-items-center rounded-lg px-1 text-[11px] font-semibold text-cream-dim transition-colors hover:bg-graphite-750/60 hover:text-cream"
+                  title="Импорт из GitHub"
+                >
+                  GH
+                </button>
+              )}
               <button
                 onClick={() =>
                   openNodeMenu(
@@ -672,7 +680,7 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
                   )
                 }
                 className="grid h-7 w-7 place-items-center rounded-lg text-cream-dim transition-colors hover:bg-graphite-750/60 hover:text-cream"
-                title="Новая папка / файл / AI / URL"
+                title="Новая папка / файл"
               >
                 <IconNewChat />
               </button>
@@ -694,41 +702,46 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
               className="w-full rounded-lg border border-white/10 bg-graphite-900 px-3 py-2 text-[12px] text-cream placeholder:text-cream-faint focus:border-cream/30 focus:outline-none"
             />
 
-            <div className="flex gap-2">
-              <input
-                value={contentQuery}
-                onChange={(e) => setContentQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && void runContentSearch()}
-                placeholder="Поиск по содержимому (grep)…"
-                className="w-full rounded-lg border border-white/10 bg-graphite-900 px-3 py-2 text-[12px] text-cream placeholder:text-cream-faint focus:border-cream/30 focus:outline-none"
-              />
-              <button
-                onClick={() => void runContentSearch()}
-                className="rounded-lg border border-white/10 px-3 py-2 text-[12px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream"
-              >
-                grep
-              </button>
-            </div>
+            {isDev && (
+              <>
+                <div className="flex gap-2">
+                  <input
+                    value={contentQuery}
+                    onChange={(e) => setContentQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && void runContentSearch()}
+                    placeholder="Поиск по содержимому…"
+                    className="w-full rounded-lg border border-white/10 bg-graphite-900 px-3 py-2 text-[12px] text-cream placeholder:text-cream-faint focus:border-cream/30 focus:outline-none"
+                  />
+                  <button
+                    onClick={() => void runContentSearch()}
+                    className="rounded-lg border border-white/10 px-3 py-2 text-[12px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream"
+                  >
+                    найти
+                  </button>
+                </div>
 
-            <div className="flex items-center justify-between">
-              <span className="text-[12px] text-cream-soft">
-                Show hidden files {showHidden ? '• on' : '• off'}
-              </span>
-              <button
-                onClick={() => setShowHidden((v) => !v)}
-                role="switch"
-                aria-checked={showHidden}
-                className={`relative shrink-0 h-6 w-11 rounded-full transition-colors ${
-                  showHidden ? 'bg-cream' : 'bg-graphite-600'
-                }`}
-              >
-                <span
-                  className={`absolute top-[3px] h-[18px] w-[18px] rounded-full bg-graphite-900 shadow transition-transform ${
-                    showHidden ? 'translate-x-[22px]' : 'translate-x-[3px]'
-                  }`}
-                />
-              </button>
-            </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[12px] text-cream-soft">
+                    Скрытые файлы {showHidden ? '• вкл' : '• выкл'}
+                  </span>
+                  <button
+                    onClick={() => setShowHidden((v) => !v)}
+                    role="switch"
+                    aria-checked={showHidden}
+                    className={`relative shrink-0 h-6 w-11 rounded-full transition-colors ${
+                      showHidden ? 'bg-cream' : 'bg-graphite-600'
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-[3px] h-[18px] w-[18px] rounded-full bg-graphite-900 shadow transition-transform ${
+                        showHidden ? 'translate-x-[22px]' : 'translate-x-[3px]'
+                      }`}
+                    />
+                  </button>
+                </div>
+              </>
+            )}
+
           </div>
 
           <div className="thin-scroll min-h-0 flex-1 overflow-y-auto px-1.5 py-1.5" onDragOver={(e) => {
@@ -771,7 +784,7 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
               />
             ) : (
               <div className="px-3 py-3 text-[11px] leading-snug text-cream-faint">
-                Пусто. Загрузи файлы, папку, архив или создай файл через контекстное меню.
+                Пусто. Загрузи файлы или создай новый файл через меню.
               </div>
             )}
           </div>
