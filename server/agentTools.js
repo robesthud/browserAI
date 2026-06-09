@@ -981,6 +981,45 @@ export const TOOLS = {
     },
   },
 
+  scrape_url: {
+    description: 'Fetch a web page and extract specific text or attributes using CSS selectors. Useful for targeted extraction (e.g. prices, specific tables) without reading the entire markdown dump. Uses Cheerio internally.',
+    params: {
+      url: { type: 'string', required: true, description: 'The URL of the page to scrape.' },
+      selector: { type: 'string', required: true, description: 'CSS selector (e.g., ".price", "table > tr:nth-child(2)").' },
+      attribute: { type: 'string', optional: true, description: 'Extract a specific attribute (e.g. "href", "src"). If omitted, extracts the text content.' },
+      limit: { type: 'number', optional: true, description: 'Max number of matching elements to return. Default 5, max 50.' },
+    },
+    handler: async ({ url, selector, attribute, limit = 5 } = {}) => {
+      if (!url) return err('url is required')
+      if (!selector) return err('selector is required')
+      try {
+        let cheerio;
+        try {
+          cheerio = await import('cheerio')
+        } catch {
+          return err('cheerio is not installed. Please run "npm install cheerio" in the workspace first.')
+        }
+        const r = await fetch(String(url), {
+           headers: { 'User-Agent': 'Mozilla/5.0 (compatible; BrowserAI/1.0)' },
+           signal: AbortSignal.timeout(15_000)
+        })
+        if (!r.ok) return err(`HTTP ${r.status}`)
+        const html = await r.text()
+        const $ = cheerio.load(html)
+        const matches = []
+        const safeLimit = Math.min(50, Math.max(1, Number(limit) || 5))
+        $(String(selector)).slice(0, safeLimit).each((_, el) => {
+          if (attribute) {
+            matches.push($(el).attr(String(attribute)) || '')
+          } else {
+            matches.push($(el).text().replace(/\\s+/g, ' ').trim())
+          }
+        })
+        return ok({ url, selector, count: matches.length, matches: matches.filter(Boolean) })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
   // Alias of web_fetch following my own naming. Same behaviour, same params,
   // present so models trained on Arena-style names find it.
   fetch_page: {
@@ -1309,6 +1348,49 @@ export const TOOLS = {
         return ok({ reset: had, chatId: _chatId })
       } catch (e) { return err(e.message) }
     },
+  },
+
+  run_python_with_plot: {
+    description: 'Execute a Python script that generates a plot/chart (e.g. using matplotlib, seaborn) and returns the generated image directly to the chat so the user can see it. The script must save the output to "/tmp/plot.png". Automatically installs requested pip packages.',
+    params: {
+      code: { type: 'string', required: true, description: 'Python code to execute. MUST end by saving a figure to "/tmp/plot.png".' },
+      packages: { type: 'array', optional: true, description: 'Array of pip packages to install before running (e.g. ["matplotlib", "pandas", "seaborn"]).' },
+    },
+    handler: async ({ code, packages = [] } = {}) => {
+      if (!code) return err('code is required')
+      if (!code.includes('/tmp/plot.png')) return err('Your code must save the figure to "/tmp/plot.png" (e.g. plt.savefig("/tmp/plot.png"))')
+      
+      try {
+        let setupCmd = 'python3 -m venv /tmp/venv && . /tmp/venv/bin/activate && '
+        if (Array.isArray(packages) && packages.length > 0) {
+          setupCmd += `pip install --quiet --no-cache-dir ${packages.map(p => String(p).replace(/[^a-zA-Z0-9_-]/g, '')).join(' ')} && `
+        }
+        
+        const scriptStr = String(code).replace(/'/g, "'\\''")
+        const fullCmd = `${setupCmd} python -c '${scriptStr}' && base64 -w0 /tmp/plot.png`
+        
+        const r = await runSandboxCommand({
+          command: fullCmd,
+          cwd: '/workspace',
+          timeoutMs: 60_000,
+        })
+        
+        if (r.exitCode !== 0) {
+          return err(`Execution failed: ${r.stderr || r.stdout || 'unknown error'}`)
+        }
+        
+        const lines = String(r.stdout || '').trim().split('\n')
+        const b64 = lines[lines.length - 1]
+        if (!b64 || b64.length < 100) return err('Could not extract base64 PNG from output. Make sure you saved to /tmp/plot.png')
+        
+        return ok({
+          dataUrl: `data:image/png;base64,${b64}`,
+          message: 'Plot generated successfully!'
+        })
+      } catch (e) {
+        return err(e.message)
+      }
+    }
   },
 
   bash_bg: {
