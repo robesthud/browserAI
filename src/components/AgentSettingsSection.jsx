@@ -90,25 +90,42 @@ export default function AgentSettingsSection() {
     }
   }
 
-  // v2.18: Export full agent trace (one-to-one with Arena)
+  // v2.18: Export full agent trace — one-to-one with Arena Agent Mode
   const exportAgentTrace = () => {
     try {
+      // Try to get current chat data from global (set by App/useChats)
+      const chatData = window.__currentChat || null
+      const messages = window.__currentMessages || []
+
       const trace = {
         exportedAt: new Date().toISOString(),
         schema: 'browserai.agent_trace.v1',
-        chat: window.__currentChatData || null,
-        messages: window.__currentMessages || [],
-        note: 'Full agent execution trace for debugging and replay'
+        version: 1,
+        chatId: chatData?.id || null,
+        title: chatData?.title || 'Untitled',
+        messages: messages.map(m => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          agentState: m.agentState || null,
+          agentContext: m.agentContext || null,
+          toolCalls: m.toolCalls || [],
+          thoughts: m.thoughts || []
+        })),
+        note: 'Complete agent execution trace. Can be used for debugging and replay.'
       }
+
       const blob = new Blob([JSON.stringify(trace, null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
       a.download = `agent-trace-${Date.now()}.json`
+      document.body.appendChild(a)
       a.click()
+      document.body.removeChild(a)
       URL.revokeObjectURL(url)
     } catch (e) {
-      alert('Failed to export trace: ' + e.message)
+      alert('Failed to export trace: ' + (e?.message || e))
     }
   }
 
