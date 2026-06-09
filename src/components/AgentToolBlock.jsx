@@ -1,72 +1,60 @@
 import { useState } from 'react'
 import { highlight, detectLangFromPath } from '../lib/syntaxHighlight.js'
 
-/**
- * Inline tool-call card — mobile-first compact layout that mirrors the
- * Arena top bar style: a single-row pill with verb + name + status +
- * duration + chevron. Expanding it reveals arguments and the result.
- *
- * Mobile gets the tighter visual, desktop just slightly larger.
- */
-
 const VERBS = {
-  list_files:      { verb: 'used',  noun: 'List Files',  icon: '📂' },
-  find_projects:   { verb: 'used',  noun: 'Find Projects', icon: '🗂' },
-  read_file:       { verb: 'used',  noun: 'Read File',   icon: '📄' },
-  write_file:      { verb: 'Write', noun: '',            icon: '✏️' },
-  edit_file:       { verb: 'Edit',  noun: '',            icon: '🔧' },
-  delete_file:     { verb: 'used',  noun: 'Delete',      icon: '🗑️' },
-  file_history:    { verb: 'used',  noun: 'History',     icon: '🕓' },
-  restore_file:    { verb: 'used',  noun: 'Restore',     icon: '↩️' },
-  search_files:    { verb: 'used',  noun: 'Search',      icon: '🔎' },
-  download_url:    { verb: 'used',  noun: 'Download',    icon: '📥' },
-  git_status:      { verb: 'used',  noun: 'git status',  icon: '⎇' },
-  git_diff:        { verb: 'used',  noun: 'git diff',    icon: '⎇' },
-  git_commit:      { verb: 'used',  noun: 'git commit',  icon: '⎇' },
-  git_push:        { verb: 'used',  noun: 'git push',    icon: '⎇' },
-  git_pull:        { verb: 'used',  noun: 'git pull',    icon: '⎇' },
-  git_clone:       { verb: 'used',  noun: 'git clone',   icon: '⎇' },
-  github_pr_create:{ verb: 'used',  noun: 'GitHub PR',   icon: '🔀' },
-  web_search:      { verb: 'used',  noun: 'Web Search',  icon: '🌐' },
-  web_fetch:       { verb: 'used',  noun: 'Fetch',       icon: '📥' },
-  fetch_page:      { verb: 'used',  noun: 'Fetch Page',  icon: '📥' },
-  generate_image:  { verb: 'Generate', noun: 'Image',    icon: '🎨' },
-  computer_screenshot:  { verb: 'used',  noun: 'Computer Screenshot', icon: '🖥️' },
-  computer_click:       { verb: 'used',  noun: 'Computer Click',      icon: '🖱️' },
-  computer_double_click:{ verb: 'used',  noun: 'Computer Double-Click', icon: '🖱️' },
-  computer_move:        { verb: 'used',  noun: 'Computer Move',       icon: '🖱️' },
-  computer_scroll:      { verb: 'used',  noun: 'Computer Scroll',     icon: '🖱️' },
-  computer_type:        { verb: 'used',  noun: 'Computer Type',       icon: '⌨️' },
-  computer_key:         { verb: 'used',  noun: 'Computer Key',        icon: '⌨️' },
-  computer_open_app:    { verb: 'Open',  noun: 'App',                 icon: '🖥️' },
-  computer_status:      { verb: 'used',  noun: 'Computer Status',     icon: '🖥️' },
-  bash:            { verb: 'used',  noun: 'Bash',        icon: '>_' },
-  bash_bg:         { verb: 'Spawn', noun: 'background',   icon: '↻' },
-  bash_logs:       { verb: 'used',  noun: 'bg logs',      icon: '📜' },
-  bash_stop:       { verb: 'Stop',  noun: 'background',   icon: '◼' },
-  bash_list:       { verb: 'used',  noun: 'bg list',      icon: '☰' },
-  bash_reset:      { verb: 'Reset', noun: 'shell session', icon: '↺' },
-  verify_code:     { verb: 'used',  noun: 'Verify',      icon: '✅' },
-  browser_open:    { verb: 'used',  noun: 'Open Page',   icon: '🌐' },
-  browser_screenshot:{ verb: 'used',noun: 'Screenshot',  icon: '📸' },
-  browser_click:   { verb: 'used',  noun: 'Click',       icon: '🖱' },
-  browser_type:    { verb: 'used',  noun: 'Type',        icon: '⌨' },
-  browser_close:   { verb: 'used',  noun: 'Close Page',  icon: '✖' },
-  analyze_image:   { verb: 'used',  noun: 'Vision',      icon: '👁' },
-  ops_list_services:{ verb:'used',  noun: 'Ops List',    icon: '🛠' },
-  ops_run_action:  { verb: 'used',  noun: 'Ops Action',  icon: '🛠' },
-  plan_set:        { verb: 'used',  noun: 'Plan',        icon: '📋' },
-  plan_check:      { verb: 'used',  noun: 'Plan check',  icon: '☑️' },
-  use_subagents:   { verb: 'Spawned', noun: 'Sub-agents', icon: '🛰' },
-  remember_fact:   { verb: 'used',  noun: 'Remember',    icon: '🧠' },
-  forget_fact:     { verb: 'used',  noun: 'Forget',      icon: '🧠' },
-  recall_facts:    { verb: 'used',  noun: 'Recall',      icon: '🧠' },
-  kb_add:          { verb: 'used',  noun: 'KB add',      icon: '📚' },
-  kb_search:       { verb: 'used',  noun: 'KB search',   icon: '📚' },
-  kb_list:         { verb: 'used',  noun: 'KB list',     icon: '📚' },
-  kb_delete:       { verb: 'used',  noun: 'KB delete',   icon: '📚' },
-  replace_across_files: { verb: 'Refactor', noun: '',    icon: '🔄' },
-  run_tests:       { verb: 'used',  noun: 'Tests',       icon: '🧪' },
+  list_files:      { action: 'Смотрю файлы', icon: '📂' },
+  find_projects:   { action: 'Ищу проекты', icon: '🗂' },
+  read_file:       { action: 'Читаю файл', icon: '📄' },
+  write_file:      { action: 'Записываю файл', icon: '✏️' },
+  edit_file:       { action: 'Изменяю файл', icon: '🔧' },
+  delete_file:     { action: 'Удаляю', icon: '🗑️' },
+  file_history:    { action: 'Смотрю историю файла', icon: '🕓' },
+  restore_file:    { action: 'Восстанавливаю файл', icon: '↩️' },
+  search_files:    { action: 'Ищу по файлам', icon: '🔎' },
+  download_url:    { action: 'Скачиваю', icon: '📥' },
+  git_status:      { action: 'Проверяю git status', icon: '⎇' },
+  git_diff:        { action: 'Смотрю git diff', icon: '⎇' },
+  git_commit:      { action: 'Создаю git commit', icon: '⎇' },
+  git_push:        { action: 'Пушу изменения', icon: '⎇' },
+  git_pull:        { action: 'Обновляю репозиторий', icon: '⎇' },
+  git_clone:       { action: 'Клонирую репозиторий', icon: '⎇' },
+  github_pr_create:{ action: 'Создаю GitHub PR', icon: '🔀' },
+  web_search:      { action: 'Ищу в интернете', icon: '🌐' },
+  web_fetch:       { action: 'Открываю страницу', icon: '📥' },
+  fetch_page:      { action: 'Открываю страницу', icon: '📥' },
+  generate_image:  { action: 'Генерирую изображение', icon: '🎨' },
+  bash:            { action: 'Запускаю команду', icon: '>_' },
+  bash_bg:         { action: 'Запускаю фоновую задачу', icon: '↻' },
+  bash_logs:       { action: 'Читаю логи задачи', icon: '📜' },
+  bash_stop:       { action: 'Останавливаю задачу', icon: '◼' },
+  bash_list:       { action: 'Смотрю фоновые задачи', icon: '☰' },
+  bash_reset:      { action: 'Сбрасываю shell-сессию', icon: '↺' },
+  verify_code:     { action: 'Проверяю код', icon: '✅' },
+  run_tests:       { action: 'Запускаю тесты', icon: '🧪' },
+  browser_open:    { action: 'Открываю страницу', icon: '🌐' },
+  browser_screenshot:{ action: 'Делаю скриншот', icon: '📸' },
+  browser_click:   { action: 'Кликаю в браузере', icon: '🖱' },
+  browser_type:    { action: 'Ввожу текст', icon: '⌨' },
+  browser_close:   { action: 'Закрываю страницу', icon: '✖' },
+  analyze_image:   { action: 'Анализирую изображение', icon: '👁' },
+  ops_list_services:{ action:'Смотрю сервисы', icon: '🛠' },
+  ops_run_action:  { action: 'Выполняю ops-действие', icon: '🛠' },
+  plan_set:        { action: 'Составляю план', icon: '📋' },
+  plan_check:      { action: 'Отмечаю шаг плана', icon: '☑️' },
+  use_subagents:   { action: 'Запускаю sub-agents', icon: '🛰' },
+  remember_fact:   { action: 'Запоминаю факт', icon: '🧠' },
+  forget_fact:     { action: 'Удаляю факт', icon: '🧠' },
+  recall_facts:    { action: 'Вспоминаю факты', icon: '🧠' },
+  kb_add:          { action: 'Добавляю в базу знаний', icon: '📚' },
+  kb_search:       { action: 'Ищу в базе знаний', icon: '📚' },
+  kb_list:         { action: 'Смотрю базу знаний', icon: '📚' },
+  kb_delete:       { action: 'Удаляю из базы знаний', icon: '📚' },
+  replace_across_files: { action: 'Массово заменяю в файлах', icon: '🔄' },
+}
+
+function devtoolsEnabled() {
+  try { return localStorage.getItem('browserai.devtools') === '1' }
+  catch { return false }
 }
 
 function fmtDuration(ms) {
@@ -83,34 +71,32 @@ function summarizeArgs(name, args = {}) {
     case 'edit_file':
     case 'delete_file':
     case 'file_history':
-    case 'restore_file': return args.path || ''
+    case 'restore_file': return args.path || args.file || ''
     case 'list_files':
     case 'find_projects': return args.path || '/'
-    case 'search_files': return `"${args.query || ''}"`
-    case 'web_search':  return `"${args.query || ''}"`
+    case 'search_files': return `“${args.query || ''}”`
+    case 'web_search':  return `“${args.query || ''}”`
     case 'web_fetch':
+    case 'fetch_page':
     case 'download_url': return args.url || ''
-    case 'browser_open':
+    case 'browser_open': return args.url || ''
     case 'browser_screenshot':
-    case 'browser_close': return args.url || args.session_id || ''
-    case 'browser_click':
-    case 'browser_type':  return args.selector || args.text || ''
+    case 'browser_close': return args.sessionId || args.session_id || ''
+    case 'browser_click': return args.selector || args.text || ''
+    case 'browser_type':  return args.selector || ''
     case 'bash':        return args.command || ''
-    case 'verify_code': return args.path || args.script || 'verify'
+    case 'verify_code': return args.path || args.npm_script || args.node_check || args.command || 'проверка'
+    case 'run_tests':   return args.path || 'tests'
     case 'git_commit':  return args.message || ''
-    case 'git_push':    return args.branch || 'current branch'
+    case 'git_push':    return args.branch || 'текущая ветка'
     case 'github_pr_create': return args.title || ''
-    case 'plan_set':    return args.title || `${args.steps ? '...' : ''}`
+    case 'plan_set':    return args.title || 'план'
     case 'plan_check':  return args.indices || ''
     case 'ops_run_action': return `${args.service || ''}.${args.action || ''}`
     default: return ''
   }
 }
 
-// Tiny "+N / -M lines" hint to surface in the collapsed pill for edit_file.
-// Calculated from the result.oldLines / newLines returned by the new
-// edit_file handler. Falls back to '' if either field is missing
-// (old single-replacement responses).
 function editDeltaPill(result) {
   if (!result || typeof result !== 'object') return ''
   const o = Number(result.oldLines)
@@ -121,7 +107,7 @@ function editDeltaPill(result) {
   return d > 0 ? `+${d} lines` : `${d} lines`
 }
 
-function formatResult(name, result) {
+function formatRawResult(name, result) {
   if (result == null) return ''
   if (typeof result === 'string') return result
   if (name === 'read_file' && result.content) return result.content
@@ -140,6 +126,43 @@ function formatResult(name, result) {
   try { return JSON.stringify(result, null, 2) } catch { return String(result) }
 }
 
+function resultSummary(name, result, ok, error) {
+  if (ok === false) return error ? `Ошибка: ${String(error).slice(0, 220)}` : 'Инструмент завершился с ошибкой'
+  if (!result) return ''
+  if (typeof result === 'string') return result.length ? shortLine(result, 220) : ''
+  switch (name) {
+    case 'read_file':
+      return result.kind === 'image' ? 'Изображение загружено' : `Прочитано ${result.content?.length || result.text?.length || result.size || 0} символов`
+    case 'write_file':
+      return `Файл записан${result.bytes ? ` · ${result.bytes} байт` : ''}`
+    case 'edit_file':
+      return `Изменено: ${result.replaced ?? result.edits?.length ?? 1} правк.${result.deltaBytes != null ? ` · Δ ${result.deltaBytes} байт` : ''}`
+    case 'delete_file': return `Удалено: ${result.deleted || result.path || ''}`
+    case 'list_files': return `Найдено элементов: ${result.children?.length ?? result.files?.length ?? result.count ?? '—'}`
+    case 'search_files': return `Найдено совпадений: ${result.count ?? result.matches?.length ?? 0}`
+    case 'web_search': return `Найдено результатов: ${result.results?.length ?? 0}`
+    case 'web_fetch':
+    case 'fetch_page': return result.title ? `Загружено: ${result.title}` : 'Страница загружена'
+    case 'download_url': return result.extracted ? `Архив распакован · файлов: ${result.files?.length || 0}` : `Скачано: ${result.filename || result.files?.[0] || ''}`
+    case 'bash': return `Команда завершилась с кодом ${result.exitCode ?? '—'}`
+    case 'verify_code': return result.allPassed ? 'Проверка прошла' : 'Проверка нашла проблемы'
+    case 'run_tests': return result.passed ? 'Тесты прошли' : 'Тесты завершились с ошибками'
+    case 'git_status':
+    case 'git_diff':
+    case 'git_commit':
+    case 'git_push':
+    case 'git_pull': return result.exitCode === 0 ? 'Git-команда выполнена' : `Git завершился с кодом ${result.exitCode}`
+    case 'browser_open': return result.title ? `Открыта страница: ${result.title}` : 'Страница открыта'
+    case 'analyze_image': return result.answer ? shortLine(result.answer, 220) : 'Изображение проанализировано'
+    default: return result.message || result.note || result.path || ''
+  }
+}
+
+function shortLine(value = '', max = 140) {
+  const s = String(value || '').replace(/\s+/g, ' ').trim()
+  return s.length > max ? s.slice(0, max) + '…' : s
+}
+
 export default function AgentToolBlock({
   name,
   args,
@@ -151,20 +174,17 @@ export default function AgentToolBlock({
   startedAt,
   finishedAt,
   stream,
-  diagnostic,   // { path, error } when post-write syntax check failed
+  diagnostic,
 }) {
   const [open, setOpen] = useState(false)
-  // MCP tools come back as 'mcp__<server>__<tool>'. Render them with a
-  // distinct icon and a clean human-readable noun so the UI doesn't
-  // dump the raw triple-underscore string.
+  const isDev = devtoolsEnabled()
   const mcpMatch = typeof name === 'string' && name.startsWith('mcp__')
     ? name.match(/^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/)
     : null
   const spec = mcpMatch
-    ? { verb: 'MCP', noun: `${mcpMatch[1]}/${mcpMatch[2]}`, icon: '🔌' }
-    : (VERBS[name] || { verb: 'used', noun: name, icon: '⚙️' })
+    ? { action: `MCP: ${mcpMatch[1]}/${mcpMatch[2]}`, icon: '🔌' }
+    : (VERBS[name] || { action: name || 'Выполняю инструмент', icon: '⚙️' })
 
-  // Status mark like Arena: ✓ / ✗ / spinning dot / queued
   let mark, markCls
   if (status === 'done') {
     if (ok) { mark = '✓'; markCls = 'text-emerald-300' }
@@ -177,33 +197,28 @@ export default function AgentToolBlock({
 
   const duration = startedAt && finishedAt ? fmtDuration(finishedAt - startedAt) : ''
   const argSummary = summarizeArgs(name, args)
-  const body = status === 'done'
-    ? (ok ? formatResult(name, result) : (error || 'unknown error'))
+  const rawBody = status === 'done'
+    ? (ok ? formatRawResult(name, result) : (error || 'unknown error'))
     : ''
+  const summary = status === 'done' ? resultSummary(name, result, ok, error) : ''
   const deltaPill = status === 'done' && ok && (name === 'edit_file' || name === 'write_file')
     ? editDeltaPill(result)
     : ''
-  // Inline screenshot preview for browser_* tools (whenever the result
-  // includes a screenshot path inside /workspace).
+
   const screenshotPath = status === 'done' && ok && result && typeof result === 'object'
     ? (result.screenshotPath || result.screenshot || (typeof result.path === 'string' && /\.(png|jpg|jpeg|webp)$/i.test(result.path) ? result.path : ''))
     : ''
-  // Computer Use tools return their screenshot as an inline data URL so
-  // the UI can render it without going through /api/workspace/download.
   const inlineDataUrl = status === 'done' && ok && result && typeof result === 'object'
     ? (typeof result.dataUrl === 'string' && result.dataUrl.startsWith('data:image/') ? result.dataUrl : '')
     : ''
 
-  // Detect language for syntax highlighting on read_file / write_file / edit_file
   let highlightedHtml = null
-  if (status === 'done' && ok && body) {
+  if (status === 'done' && ok && rawBody && isDev) {
     let lang = ''
     if (name === 'write_file' || name === 'edit_file') lang = detectLangFromPath(args?.path || '')
     else if (name === 'read_file') lang = detectLangFromPath(args?.path || '')
-    else if (name === 'bash')      lang = 'sh'
-    if (lang) {
-      highlightedHtml = highlight(body, lang)
-    }
+    else if (name === 'bash') lang = 'sh'
+    if (lang) highlightedHtml = highlight(rawBody, lang)
   }
 
   return (
@@ -213,46 +228,22 @@ export default function AgentToolBlock({
         onClick={() => setOpen((o) => !o)}
         className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-white/5 md:gap-2 md:px-3 md:py-2"
       >
-        {/* Verb icon (terminal-like) */}
         <span className="font-mono text-[11px] text-cream-faint shrink-0">{spec.icon}</span>
-
-        {/* Verb + noun (compact) */}
-        <span className="flex shrink-0 items-baseline gap-1">
-          <span className="text-cream-faint">{spec.verb}</span>
-          {spec.noun && <span className="font-medium text-cream">{spec.noun}</span>}
-        </span>
-
-        {/* Arg preview (truncated) */}
+        <span className="shrink-0 font-medium text-cream">{spec.action}</span>
         {argSummary && (
           <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-cream-faint md:text-[12px]" title={argSummary}>
             {argSummary}
           </span>
         )}
         {!argSummary && <span className="flex-1" />}
-
-        {/* +N/-M lines pill for edit_file / write_file */}
-        {deltaPill && (
-          <span className="shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 font-mono text-[10px] text-violet-200">{deltaPill}</span>
-        )}
-
-        {/* Status mark */}
+        {deltaPill && <span className="shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 font-mono text-[10px] text-violet-200">{deltaPill}</span>}
         <span className={`shrink-0 text-[13px] leading-none ${markCls}`}>{mark}</span>
-
-        {/* Duration */}
-        {duration && (
-          <span className="shrink-0 font-mono text-[10px] text-cream-faint md:text-[11px]">{duration}</span>
-        )}
-
-        {/* Chevron */}
+        {duration && <span className="shrink-0 font-mono text-[10px] text-cream-faint md:text-[11px]">{duration}</span>}
         <svg width="10" height="10" viewBox="0 0 12 12" className={`shrink-0 opacity-50 transition-transform ${open ? 'rotate-180' : ''}`}>
           <path d="M2 4 L6 8 L10 4" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
 
-      {/* Always-visible mini-tail: when a long-running tool (bash /
-          verify_code / browser_*) is producing stdout LIVE, show the
-          last ~2 lines below the pill without forcing the user to
-          expand. Disappears the moment the tool finishes. */}
       {status === 'running' && stream && !open && (
         <div className="border-t border-white/5 bg-graphite-900/70 px-2.5 py-1 font-mono text-[10px] leading-tight text-cream-faint md:text-[11px]">
           {(() => {
@@ -266,13 +257,19 @@ export default function AgentToolBlock({
 
       {open && (
         <div className="border-t border-white/10 px-2.5 py-2 md:px-3">
-          {args && Object.keys(args).length > 0 && (
-            <details className="mb-1.5 text-[11px] text-cream-faint" open={!body}>
+          {summary && (
+            <div className={`mb-2 rounded-lg px-2.5 py-1.5 text-[12px] ${ok === false ? 'bg-red-500/10 text-red-200' : 'bg-black/20 text-cream-soft'}`}>
+              {summary}
+            </div>
+          )}
+
+          {isDev && args && Object.keys(args).length > 0 && (
+            <details className="mb-1.5 text-[11px] text-cream-faint" open={!rawBody}>
               <summary className="cursor-pointer">аргументы</summary>
               <pre className="thin-scroll mt-1 max-h-32 overflow-auto rounded bg-graphite-900 p-2 font-mono text-[11px] text-cream">{JSON.stringify(args, null, 2)}</pre>
             </details>
           )}
-          {/* Inline screenshot preview for browser_* / computer_* tools */}
+
           {screenshotPath && (
             // eslint-disable-next-line jsx-a11y/img-redundant-alt
             <img
@@ -284,10 +281,6 @@ export default function AgentToolBlock({
             />
           )}
           {inlineDataUrl && (
-            // Computer Use returns base64 directly so we don't have to
-            // round-trip through workspace download. Useful especially
-            // for short-lived screenshots (no point persisting every
-            // mouse-click snapshot to disk).
             // eslint-disable-next-line jsx-a11y/img-redundant-alt
             <img
               src={inlineDataUrl}
@@ -302,7 +295,8 @@ export default function AgentToolBlock({
               ⚠ После записи <code className="rounded bg-graphite-900/60 px-1 py-0.5 font-mono">{diagnostic.path}</code> синтаксис-чек выдал: {diagnostic.error}
             </div>
           )}
-          {status === 'done' ? (
+
+          {status === 'done' && isDev ? (
             highlightedHtml ? (
               <pre
                 className={`thin-scroll max-h-72 overflow-auto whitespace-pre-wrap rounded bg-graphite-900 p-2 font-mono text-[11px] ${ok ? 'text-cream' : 'text-rose-200'}`}
@@ -310,15 +304,11 @@ export default function AgentToolBlock({
               />
             ) : (
               <pre className={`thin-scroll max-h-72 overflow-auto whitespace-pre-wrap rounded bg-graphite-900 p-2 font-mono text-[11px] ${ok ? 'text-cream' : 'text-rose-200'}`}>
-                {body || (ok ? '(пустой результат)' : '(нет сообщения об ошибке)')}
+                {rawBody || (ok ? '(пустой результат)' : '(нет сообщения об ошибке)')}
               </pre>
             )
-          ) : (
+          ) : status !== 'done' ? (
             stream ? (
-              // Live tail of stdout/stderr from a long-running bash /
-              // verify_code call. Auto-scrolls to bottom each render via
-              // overflow-anchor on the wrapper. Capped to last ~8 KB
-              // on the client too (see useChats.js).
               <pre className="thin-scroll max-h-48 overflow-auto whitespace-pre-wrap rounded bg-graphite-900 p-2 font-mono text-[11px] text-cream-faint">
                 {stream}
                 <span className="text-amber-300">▌</span>
@@ -326,10 +316,9 @@ export default function AgentToolBlock({
             ) : (
               <div className="text-cream-faint">выполняется…</div>
             )
-          )}
-          {step != null && (
-            <div className="mt-1 text-right text-[10px] text-cream-faint">шаг #{step}</div>
-          )}
+          ) : null}
+
+          {isDev && step != null && <div className="mt-1 text-right text-[10px] text-cream-faint">шаг #{step}</div>}
         </div>
       )}
     </div>

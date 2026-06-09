@@ -1176,11 +1176,12 @@ localStorage.removeItem('browserai.devtools')
 | v2.1 | Developer-only Run Agent Self-Test | ✅ Выполнено | скрыто за `browserai.devtools=1` |
 | v2.2 | Agent Lab admin/dev diagnostics | ✅ Выполнено | скрыто за `browserai.devtools=1`, не Arena parity |
 | v2.3 | Arena parity: runtime panel cleanup | ✅ Выполнено | debug поля скрыты за devtools |
-| v2.4 | Post-deploy self-test в GitHub Actions | ⬜ Не начато | требует TIMEWEB secrets |
-| v2.5 | Retry failed tool button | ⬜ Не начато | — |
-| v2.6 | Export / replay agent trace JSON | ⬜ Не начато | — |
-| v2.7 | E2E test SSE stream shape | ⬜ Не начато | — |
-| v2.8 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
+| v2.4 | Arena parity: user-friendly tool cards | ✅ Выполнено | raw скрыт за devtools |
+| v2.5 | Post-deploy self-test в GitHub Actions | ⬜ Не начато | требует TIMEWEB secrets |
+| v2.6 | Retry failed tool button | ⬜ Не начато | — |
+| v2.7 | Export / replay agent trace JSON | ⬜ Не начато | — |
+| v2.8 | E2E test SSE stream shape | ⬜ Не начато | — |
+| v2.9 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
 
 ## v2.1 Developer-only Run Agent Self-Test
 
@@ -1339,6 +1340,51 @@ localStorage.setItem('browserai.devtools', '1')
 npm run build
 ```
 
+
+## v2.4 Arena parity: user-friendly tool cards
+
+### Сделано
+
+Обновлён компонент:
+
+```text
+src/components/AgentToolBlock.jsx
+```
+
+Обычные tool cards теперь отображаются как понятные действия агента:
+
+- `Читаю файл ...`;
+- `Изменяю файл ...`;
+- `Запускаю команду ...`;
+- `Проверяю код ...`;
+- `Ищу в интернете ...`;
+- `Открываю страницу ...`;
+- `Создаю git commit ...`;
+- `Запускаю тесты ...`.
+
+В обычном UI показывается краткая human-readable сводка результата:
+
+- сколько прочитано;
+- сколько правок;
+- exit code команды;
+- прошла ли проверка;
+- сколько найдено результатов;
+- какой файл скачан/изменён.
+
+Raw args/result, JSON и полный вывод показываются только в devtools mode:
+
+```js
+localStorage.setItem('browserai.devtools', '1')
+```
+
+Скриншоты browser/computer tools остаются видимыми в обычном UI, потому что это пользовательский результат, а не debug.
+
+### Проверки
+
+```bash
+npm run build
+```
+
 ## Журнал v2
 
 ### 2026-06-09
@@ -1347,6 +1393,7 @@ npm run build
 - Выполнен v2.1: developer-only Run Agent Self-Test в настройках агента; в обычном UI кнопка скрыта, чтобы не отходить от пользовательского Agent Mode.
 - Выполнен v2.2: добавлена страница `/admin/agent`; кнопка `🧪 Agent Lab` в левом sidebar показывается только при `browserai.devtools=1`, потому что это Dev/Admin extension, а не Arena parity.
 - Выполнен v2.3: user-facing runtime panel cleanup — debug поля скрыты за devtools, обычный UI показывает только ход выполнения.
+- Выполнен v2.4: user-friendly tool cards — raw args/result скрыты за devtools, обычный UI показывает действия и краткие результаты.
 
 
 ### 2026-06-09 — корректировка v2.1
