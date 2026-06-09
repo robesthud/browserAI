@@ -51,7 +51,7 @@ Final Answer or Ask User / Resume
 | 3 | Tool Router hardening | ✅ Выполнено (полностью, один в один с Arena) | agentCore.js + agentLoop.js |
 | 4 | Provider adapters 2.0 | ✅ Выполнено (полностью, один в один с Arena) | inferProviderKind + adapter logic |
 | 5 | Streaming Protocol | ✅ Выполнено (полностью, один в один с Arena) | assistant_delta + thinking_delta |
-| 6 | Ask User pause/resume | ✅ Выполнено | см. журнал выполнения |
+| 6 | Ask User pause/resume | ✅ Выполнено (полностью, один в один с Arena) | askUserRegistry.js |
 | 7 | Workspace / Sandbox Policy | ✅ Выполнено | см. журнал выполнения |
 | 8 | Context / Memory / Summarization | ✅ Выполнено | см. журнал выполнения |
 | 9 | UI parity с Arena Agent Mode | ✅ Выполнено | см. журнал выполнения |
