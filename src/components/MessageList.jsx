@@ -3,6 +3,7 @@ import { IconBot, IconUser, IconFile, IconCopy, IconEdit, IconRefresh } from '..
 import { formatSize } from '../lib/files.js'
 import Markdown from '../lib/markdown.jsx'
 import AgentToolBlock from './AgentToolBlock.jsx'
+import AgentRuntimePanel from './AgentRuntimePanel.jsx'
 import AgentThought from './AgentThought.jsx'
 import AgentPlanCard from './AgentPlanCard.jsx'
 import AgentExtendedThinking from './AgentExtendedThinking.jsx'
@@ -324,6 +325,13 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                         {s.currentStep && <div>Шаг: {s.currentStep}</div>}
                         {s.lastErrors?.length > 0 && <div className="text-red-300">Ошибки: {s.lastErrors.length}</div>}
                       </div>
+                    )
+                  }
+
+                  // Arena-style Runtime Panel (live agent state)
+                  if (m.agentState && (m.agentState.plan || m.agentState.goal)) {
+                    items.push(
+                      <AgentRuntimePanel key={`runtime-${m.id}`} state={m.agentState} />
                     )
                   }
 
