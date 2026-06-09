@@ -985,7 +985,7 @@ export const TOOLS = {
   // Alias of web_fetch following my own naming. Same behaviour, same params,
   // present so models trained on Arena-style names find it.
   fetch_page: {
-    description: 'Retrieve the text content of a web page as markdown. Content may be returned in chunks. If hasMore is true, call again with the same url and the next chunkIndex. Alias of web_fetch.',
+    description: 'Retrieve the text content of a web page as markdown. Content may be returned in chunks. If hasMore is true, call again with the same url and the next chunkIndex. PDFs are parsed up to 30 pages; content beyond that won\'t be returned.',
     params: {
       url:        { type: 'string', required: true, description: 'The URL of the page to fetch.' },
       chunkIndex: { type: 'number', optional: true, description: 'Which chunk to return (0-indexed). Omit or pass 0 for the first chunk.' },
