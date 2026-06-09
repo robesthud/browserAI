@@ -187,16 +187,18 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
   const folderInputRef = useRef(null)
   const isDev = devtoolsEnabled()
 
-  const refresh = useCallback(async () => {
-    setLoading(true)
+  const refresh = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
     setError('')
     try {
       const data = await workspaceApi.getTree(showHidden)
       setTree(data.tree)
     } catch (e) {
-      setError(e.message || 'Не удалось загрузить workspace')
+      setError(e.message === 'Failed to fetch' || e.message === 'Load failed' 
+        ? 'Сервер перезапускается или недоступен...' 
+        : (e.message || 'Не удалось загрузить workspace'))
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [showHidden])
 
@@ -213,13 +215,7 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
     onAiBusyChange?.(aiBusy)
   }, [aiBusy, onAiBusyChange])
 
-  useEffect(() => {
-    if (!open) return undefined
-    const id = setTimeout(() => {
-      void refresh()
-    }, 0)
-    return () => clearTimeout(id)
-  }, [open, refresh])
+  
 
   const filteredTree = useMemo(() => {
     if (!tree) return null
