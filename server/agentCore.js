@@ -365,9 +365,15 @@ function validatePathLike(name, value) {
   if (value === undefined || value === null || value === '') return null
   const s = String(value)
   if (s.includes('\0')) return `${name}: NUL byte is not allowed`
+  
+  let check = s
+  if (check === '/workspace' || check === '/home/user') return null
+  if (check.startsWith('/workspace/')) check = check.replace('/workspace/', '')
+  else if (check.startsWith('/home/user/')) check = check.replace('/home/user/', '')
+  
   // Allow absolute sandbox paths only for cwd-like params.
-  if (s.startsWith('/') && name !== 'cwd') return `${name}: absolute paths are not allowed; use workspace-relative paths`
-  const normalised = s.replace(/\\/g, '/')
+  if (check.startsWith('/') && name !== 'cwd') return `${name}: absolute paths are not allowed; use workspace-relative paths`
+  const normalised = check.replace(/\\/g, '/')
   if (normalised === '..' || normalised.startsWith('../') || normalised.includes('/../')) {
     return `${name}: path traversal is not allowed`
   }
@@ -392,7 +398,7 @@ export function validateToolCall(toolName, args = {}, toolDef = null) {
     }
     if (!hasValue) continue
     const actualName = aliases.find((a) => clean[a] !== undefined && clean[a] !== null && clean[a] !== '') || pName
-    const coerced = coerceToolValue(clean[actualName], meta)
+    const coerced = coerceToolValue(clean[actualName], meta, actualName)
     if (!coerced.ok) return { ok: false, args: clean, error: `${actualName}: ${coerced.error}`, warnings }
     clean[actualName] = coerced.value
     if (coerced.warning) warnings.push(`${actualName}: ${coerced.warning}`)
