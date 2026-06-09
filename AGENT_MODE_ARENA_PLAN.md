@@ -52,7 +52,7 @@ Final Answer or Ask User / Resume
 | 4 | Provider adapters 2.0 | ✅ Выполнено (полностью, один в один с Arena) | inferProviderKind + adapter logic |
 | 5 | Streaming Protocol | ✅ Выполнено (полностью, один в один с Arena) | assistant_delta + thinking_delta |
 | 6 | Ask User pause/resume | ✅ Выполнено (полностью, один в один с Arena) | askUserRegistry.js |
-| 7 | Workspace / Sandbox Policy | ✅ Выполнено | см. журнал выполнения |
+| 7 | Workspace / Sandbox Policy | ✅ Выполнено (полностью, один в один с Arena) | workspace.js + sandboxPolicy.js |
 | 8 | Context / Memory / Summarization | ✅ Выполнено | см. журнал выполнения |
 | 9 | UI parity с Arena Agent Mode | ✅ Выполнено | см. журнал выполнения |
 | 10 | Self-test / Regression Suite | ✅ Выполнено | см. журнал выполнения |
