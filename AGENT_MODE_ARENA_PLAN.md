@@ -1115,3 +1115,86 @@ npm run build
   - production deploy workflow больше не падает при отсутствующих TIMEWEB secrets, а пропускает deploy с notice;
   - staging deploy workflow также безопасно пропускается без staging secrets.
   - удалён сломанный `monthly-release.yml` из активных workflows; Android APK остаётся через `build-android-apk.yml` и `release-android-apk.yml`.
+
+---
+
+# Agent Mode v2 Quality Pass
+
+После закрытия этапов 1–11 начинается цикл улучшений качества, диагностики и удобства. Цель — не только иметь backend-архитектуру уровня Arena.ai, но и сделать её удобной для ежедневной эксплуатации.
+
+## v2 backlog
+
+| # | Задача | Статус | Коммит / заметка |
+|---|---|---|---|
+| v2.1 | UI-кнопка Run Agent Self-Test | ✅ Выполнено | см. журнал ниже |
+| v2.2 | Provider / Workspace diagnostics panel | ⬜ Не начато | — |
+| v2.3 | Post-deploy self-test в GitHub Actions | ⬜ Не начато | требует TIMEWEB secrets |
+| v2.4 | Retry failed tool button | ⬜ Не начато | — |
+| v2.5 | Export / replay agent trace JSON | ⬜ Не начато | — |
+| v2.6 | E2E test SSE stream shape | ⬜ Не начато | — |
+| v2.7 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
+
+## v2.1 UI-кнопка Run Agent Self-Test
+
+### Сделано
+
+Обновлён компонент:
+
+```text
+src/components/AgentSettingsSection.jsx
+```
+
+В настройки Agent Mode добавлен блок:
+
+```text
+Agent Mode self-test
+```
+
+Кнопка:
+
+```text
+Run self-test
+```
+
+вызывает backend endpoint:
+
+```text
+POST /api/agent/self-test
+```
+
+UI показывает:
+
+- общий статус `passed` / `failed`;
+- число успешных checks;
+- список checks в раскрываемом `<details>`;
+- ошибку конкретного check, если он упал.
+
+Проверяемые backend-слои:
+
+- provider capabilities;
+- tool validation;
+- path traversal rejection;
+- type coercion;
+- secret redaction;
+- context digest;
+- ask_user lifecycle;
+- workspace read/write/delete.
+
+### Проверки
+
+```bash
+npm run build
+```
+
+### Осталось
+
+- Добавить кнопку запуска provider diagnose рядом с активной моделью.
+- Добавить workspace metadata view.
+- Добавить post-deploy вызов self-test после реального GitHub Actions deploy.
+
+## Журнал v2
+
+### 2026-06-09
+
+- Начат Agent Mode v2 Quality Pass.
+- Выполнен v2.1: UI-кнопка Run Agent Self-Test в настройках агента.
