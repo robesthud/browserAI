@@ -1895,3 +1895,103 @@ localStorage.setItem('browserai.devtools', '1')
 - [ ] Нет визуальных и поведенческих отличий в обычном пользовательском режиме
 
 Дата обновления плана: 2026-06-09
+
+---
+
+## Phase 3: Полная парность с Arena.ai Agent Mode (100%)
+
+**Цель:** После выполнения всех пунктов этого раздела BrowserAI Agent Mode должен быть **идентичен** Agent Mode на Arena.ai по поведению, возможностям и пользовательскому опыту.
+
+### 3.1 Runtime & State Management (Точное соответствие)
+
+| ID | Задача | Описание | Приоритет |
+|----|--------|----------|-----------|
+| P3-01 | Live agent_state broadcasting | Полноценная передача `agent_state` через SSE с обновлением UI в реальном времени | Высокий |
+| P3-02 | agent_context visibility | Показывать context (task type, complexity, workspace) в runtime panel | Высокий |
+| P3-03 | Real-time plan updates | План обновляется live при `plan_set` / `plan_check` | Высокий |
+| P3-04 | Touched files tracking | Полный список затронутых файлов в runtime panel | Средний |
+| P3-05 | Error history | История ошибок с возможностью retry | Высокий |
+
+### 3.2 Memory & Long-term Context
+
+| ID | Задача | Описание | Приоритет |
+|----|--------|----------|-----------|
+| P3-06 | Automatic memory recall | Автоматический вызов `recall_facts` / `kb_search` перед сложными задачами | Высокий |
+| P3-07 | Memory injection | Вставка релевантных фактов в контекст перед планированием | Высокий |
+| P3-08 | User preference memory | Стабильное запоминание предпочтений пользователя | Средний |
+| P3-09 | Project memory | Память о структуре проекта и предыдущих решениях | Средний |
+
+### 3.3 Tool Calling & Providers
+
+| ID | Задача | Описание | Приоритет |
+|----|--------|----------|-----------|
+| P3-10 | Native Anthropic tools | 100% нативный формат tool calls для Anthropic | Высокий |
+| P3-11 | Native Gemini tools | 100% нативный формат для Google Gemini | Высокий |
+| P3-12 | Native DeepSeek tools | Поддержка DeepSeek native tools (если доступно) | Средний |
+| P3-13 | Groq / OpenRouter parity | Корректная работа с Groq и OpenRouter | Средний |
+| P3-14 | Tool schema validation | Строгая валидация аргументов перед вызовом | Высокий |
+
+### 3.4 Error Handling & Recovery
+
+| ID | Задача | Описание | Приоритет |
+|----|--------|----------|-----------|
+| P3-15 | Smart retry mechanism | Автоматический retry с модифицированными аргументами при ошибке | Высокий |
+| P3-16 | Self-healing loops | Агент сам исправляет ошибки (как в Voice Arena) | Средний |
+| P3-17 | Better error messages | Понятные пользователю сообщения об ошибках | Высокий |
+| P3-18 | Fallback strategies | Автоматический переход на альтернативные инструменты | Средний |
+
+### 3.5 Streaming & Thinking UX
+
+| ID | Задача | Описание | Приоритет |
+|----|--------|----------|-----------|
+| P3-19 | Arena-style thinking indicator | Точное соответствие индикатора "Агент размышляет…" | Высокий |
+| P3-20 | Collapsible thinking | Возможность сворачивать/разворачивать thinking blocks | Средний |
+| P3-21 | Provider thinking passthrough | Пропуск raw thinking от провайдера (скрыто в обычном режиме) | Высокий |
+
+### 3.6 Ask User / Human-in-the-loop
+
+| ID | Задача | Описание | Приоритет |
+|----|--------|----------|-----------|
+| P3-22 | Rich ask_user cards | Карточки с опциями, multi-select, custom input | Высокий |
+| P3-23 | Tool approval cards | Красивые карточки подтверждения действий | Высокий |
+| P3-24 | Timeout handling | Корректная обработка timeout'ов ask_user | Средний |
+
+### 3.7 UI/UX Полное соответствие
+
+| ID | Задача | Описание | Приоритет |
+|----|--------|----------|-----------|
+| P3-25 | Exact tool card design | Визуальное соответствие tool cards Arena | Высокий |
+| P3-26 | Runtime panel design | Точное визуальное соответствие runtime panel | Высокий |
+| P3-27 | Final answer formatting | Финальный ответ выглядит точно как в Arena | Высокий |
+| P3-28 | Loading / thinking states | Единообразные состояния загрузки | Средний |
+
+### 3.8 Advanced Capabilities
+
+| ID | Задача | Описание | Приоритет |
+|----|--------|----------|-----------|
+| P3-29 | Sub-agent support | Запуск sub-agents (как `use_subagents`) | Средний |
+| P3-30 | Computer Use / Browser Use | Полноценная поддержка browser/computer use | Высокий |
+| P3-31 | Multi-step workflow visualization | Визуализация сложных многошаговых задач | Средний |
+
+### 3.9 Testing & Quality
+
+| ID | Задача | Описание | Приоритет |
+|----|--------|----------|-----------|
+| P3-32 | Comprehensive E2E tests | Тесты основных сценариев Agent Mode | Высокий |
+| P3-33 | Provider smoke tests | Регулярные тесты всех провайдеров | Высокий |
+| P3-34 | Regression suite | Автоматические регрессионные тесты | Высокий |
+
+### Финальная Checklist (100% Parity)
+
+После выполнения всех пунктов Phase 3 BrowserAI Agent Mode должен:
+
+- [ ] Вести себя **идентично** Arena Agent Mode с точки зрения пользователя
+- [ ] Иметь те же возможности и ограничения
+- [ ] Выглядеть визуально и поведенчески одинаково
+- [ ] Иметь одинаковое качество error handling и recovery
+- [ ] Поддерживать те же провайдеры с нативным tool calling
+- [ ] Иметь сопоставимую производительность и надёжность
+
+**Дата создания Phase 3:** 2026-06-09  
+**Цель:** Полное соответствие с Arena.ai Agent Mode
+
