@@ -200,13 +200,19 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
             {/* Provider-side extended thinking (Claude 3.7+, OpenAI o1/o3,
                 DeepSeek R1). Auto-opens while streaming, folds when done.
                 Distinct from the per-step `thoughts` narrative below. */}
-            {m.thinking && (
+            {m.thinking && isDev ? (
               <AgentExtendedThinking
                 text={m.thinking}
                 pending={Boolean(m.pending)}
                 tokens={Number(m.tokens?.reasoningTokens || 0)}
               />
-            )}
+            ) : null}
+            {m.thinking && !isDev && m.pending ? (
+              <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-graphite-800/60 px-2.5 py-1 text-[12px] text-cream-faint">
+                <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-300" />
+                <span>Агент размышляет…</span>
+              </div>
+            ) : null}
             {isDev && (
               <AgentRuntimePanel
                 context={m.agentContext}

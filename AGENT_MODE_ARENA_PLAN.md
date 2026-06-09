@@ -1179,10 +1179,11 @@ localStorage.removeItem('browserai.devtools')
 | v2.4 | Arena parity: user-friendly tool cards | ✅ Выполнено | raw скрыт за devtools |
 | v2.5 | Arena parity: ask_user / approval cards cleanup | ✅ Выполнено | raw args скрыты за devtools |
 | v2.6 | Post-deploy self-test в GitHub Actions | ⬜ Не начато | требует TIMEWEB secrets |
-| v2.7 | Retry failed tool button | ⬜ Не начато | — |
-| v2.8 | Export / replay agent trace JSON | ⬜ Не начато | — |
-| v2.9 | E2E test SSE stream shape | ⬜ Не начато | — |
-| v2.10 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
+| v2.7 | Streaming / thinking UX cleanup | ✅ Выполнено | raw thinking скрыт за devtools |
+| v2.8 | Retry failed tool button | ⬜ Не начато | — |
+| v2.9 | Export / replay agent trace JSON | ⬜ Не начато | — |
+| v2.10 | E2E test SSE stream shape | ⬜ Не начато | — |
+| v2.11 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
 
 ## v2.1 Developer-only Run Agent Self-Test
 
@@ -1469,6 +1470,39 @@ localStorage.setItem('browserai.devtools', '1')
 npm run build
 ```
 
+
+## v2.7 Streaming / thinking UX cleanup
+
+### Сделано
+
+Обновлён компонент:
+
+```text
+src/components/MessageList.jsx
+```
+
+В обычном пользовательском Agent Mode больше не показывается raw provider-side thinking / reasoning text.
+
+Обычный UI теперь показывает только аккуратный индикатор:
+
+```text
+Агент размышляет…
+```
+
+Полный `AgentExtendedThinking` остаётся доступным только в devtools mode:
+
+```js
+localStorage.setItem('browserai.devtools', '1')
+```
+
+Это соответствует пользовательскому режиму: не раскрывать внутренние рассуждения и не превращать чат в debug console.
+
+### Проверки
+
+```bash
+npm run build
+```
+
 ## Журнал v2
 
 ### 2026-06-09
@@ -1480,6 +1514,7 @@ npm run build
 - Выполнен v2.4: user-friendly tool cards — raw args/result скрыты за devtools, обычный UI показывает действия и краткие результаты.
 - Выполнен v2.5: ask_user / approval cards cleanup — обычный UI показывает только вопрос/подтверждение, raw args только в devtools.
 - Выполнен v2.6: exact user UI cleanup — runtime/debug panels и raw thoughts скрыты из обычного режима, доступны только в devtools.
+- Выполнен v2.7: streaming/thinking UX cleanup — raw provider-side thinking скрыт из обычного UI; пользователь видит только индикатор `Агент размышляет…`.
 
 
 ### 2026-06-09 — корректировка v2.1
