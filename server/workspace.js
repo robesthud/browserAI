@@ -28,8 +28,8 @@ function sanitizeScopeId(id = '') {
 }
 
 function getScopedWorkspaceRoot() {
-  // Arena parity: agent always sees /workspace as root.
-  // We removed per-chat scoping from the visible root so tools behave exactly like Arena.ai Agent Mode.
+  // Arena parity: single clean /workspace root for all agents.
+  // No per-chat subdirectories in the visible workspace.
   return baseWorkspaceRoot
 }
 
