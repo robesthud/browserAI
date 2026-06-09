@@ -964,8 +964,11 @@ export function normalizeProviderError(error, { baseUrl = '', model = '', phase 
   const serverError = status >= 500 || /bad gateway|service unavailable|overloaded/.test(lower)
   const retryable = rateLimited || timeout || serverError
 
+  const networkError = /fetch failed|network error|econnrefused|etimedout|enotfound|socket hang up/i.test(lower)
+  
   let hint = 'Провайдер вернул ошибку. Проверь baseUrl, модель и ключ.'
-  if (authError) hint = 'Проблема авторизации: обнови API key/session token или проверь auth type.'
+  if (networkError) hint = 'Сетевая ошибка или сбой соединения с провайдером. Возможно, сервер недоступен или блокируется (например, РКН).'
+  else if (authError) hint = 'Проблема авторизации: обнови API key/session token или проверь auth type.'
   else if (rateLimited) hint = 'Лимит/квота провайдера. Подожди, смени модель или ключ.'
   else if (timeout) hint = 'Таймаут провайдера. Можно повторить запрос или отключить streaming.'
   else if (serverError) hint = 'Сбой на стороне провайдера/прокси. Обычно помогает retry или fallback provider.'
