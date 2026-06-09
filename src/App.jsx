@@ -9,7 +9,6 @@ import AuthGate from './components/AuthGate.jsx'
 import DeepSeekAdmin from './components/DeepSeekAdmin.jsx'
 import OpsAdmin from './components/OpsAdmin.jsx'
 import AgentAdmin from './components/AgentAdmin.jsx'
-import ModelBar from './components/ModelBar.jsx'
 import ChatSearchModal from './components/ChatSearchModal.jsx'
 import CheckpointsTray from './components/CheckpointsTray.jsx'
 import { downloadChatMarkdown } from './lib/chatExport.js'
@@ -512,21 +511,6 @@ function BrowserApp({ user, reloadAuth }) {
                 cancelAgentQuestion(activeChat.id, messageId, questionId)
               }
             />
-            {/* ModelBar над полем ввода (когда есть сообщения) — только на десктопе.
-                На мобиле выбор модели живёт в шапке (MobileHeaderModelPicker). */}
-            {availableModels.length > 0 && (
-              <div className="hidden md:block">
-                <ModelBar
-                  models={availableModels}
-                  selectedModel={selectedModel}
-                  autoMode={autoMode}
-                  autoHint={autoHint}
-                  onSelectModel={setActiveModel}
-                  onToggleAuto={handleToggleAuto}
-                  dropUp={true}
-                />
-              </div>
-            )}
             <Composer
               hasMessages
               isStreaming={aiWorking}
@@ -546,22 +530,6 @@ function BrowserApp({ user, reloadAuth }) {
               chatId={activeChat?.id || ''}
               {...composerSlashHooks}
             />
-            {/* ModelBar под полем ввода на стартовом экране — дропдаун открывается вниз */}
-            {availableModels.length > 0 && (
-              <div className="flex justify-center pb-4">
-                <div className="w-full max-w-2xl px-4">
-                  <ModelBar
-                    models={availableModels}
-                    selectedModel={selectedModel}
-                    autoMode={autoMode}
-                    autoHint={autoHint}
-                    onSelectModel={setActiveModel}
-                    onToggleAuto={handleToggleAuto}
-                    dropUp={false}
-                  />
-                </div>
-              </div>
-            )}
           </>
         )}
       </main>

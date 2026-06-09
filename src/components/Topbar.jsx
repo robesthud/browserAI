@@ -47,9 +47,9 @@ export default function Topbar({
   })()
 
   return (
-    <header className="flex items-center gap-2 px-3 pb-2 pt-10 md:gap-3 md:px-5 md:py-3.5">
-      {/* Mobile: model picker takes center, hide title to save space */}
-      <div className="flex flex-1 items-center justify-center md:hidden">
+    <header className="flex items-center justify-between gap-2 px-3 pb-2 pt-10 md:gap-3 md:px-5 md:py-3.5">
+      {/* Left/Center: Model Picker (Always visible) + Title (Desktop only) */}
+      <div className="flex min-w-0 flex-1 items-center justify-center gap-2 md:justify-start md:pl-12">
         <MobileHeaderModelPicker
           models={availableModels}
           selectedModel={selectedModel}
@@ -57,14 +57,10 @@ export default function Topbar({
           onSelectModel={onSelectModel}
           onToggleAuto={onToggleAuto}
         />
-      </div>
-
-      {/* Desktop: classic title + badges */}
-      <div className="hidden min-w-0 flex-1 items-center gap-2 pl-12 md:flex">
-        <span className="truncate text-[14px] text-cream-soft">{title}</span>
+        <span className="hidden truncate text-[14px] text-cream-soft md:inline-block">{title}</span>
 
         {devtoolsEnabled && autoModelHint && !aiWorking && (
-          <span className="shrink-0 animate-pulse rounded-full border border-violet-400/30 bg-violet-500/10 px-2 py-0.5 text-[11px] text-violet-300">
+          <span className="hidden shrink-0 animate-pulse rounded-full border border-violet-400/30 bg-violet-500/10 px-2 py-0.5 text-[11px] text-violet-300 md:inline-block">
             {autoModelHint}
           </span>
         )}
@@ -72,7 +68,7 @@ export default function Topbar({
         {!configured && !autoModelHint && (
           <button
             onClick={onOpenSettings}
-            className="shrink-0 rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-0.5 text-[11px] text-amber-300 transition-colors hover:bg-amber-400/20"
+            className="hidden shrink-0 rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-0.5 text-[11px] text-amber-300 transition-colors hover:bg-amber-400/20 md:inline-block"
             title="Введите API-ключ и выберите модель, чтобы начать чат"
           >
             API не настроен
@@ -80,14 +76,8 @@ export default function Topbar({
         )}
 
         {devtoolsEnabled && agentMode && (
-          <span className="ml-auto items-center gap-1 rounded-full border border-emerald-400/40 bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300 inline-flex">
+          <span className="ml-auto hidden items-center gap-1 rounded-full border border-emerald-400/40 bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300 md:inline-flex">
             🤖 Агент
-          </span>
-        )}
-
-        {devtoolsEnabled && autoMode && (
-          <span className="items-center gap-1 rounded-full border border-violet-400/30 bg-violet-500/15 px-2 py-0.5 text-[11px] text-violet-300 inline-flex">
-            ✦ Авто
           </span>
         )}
       </div>
