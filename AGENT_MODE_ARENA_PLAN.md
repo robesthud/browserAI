@@ -55,7 +55,7 @@ Final Answer or Ask User / Resume
 | 7 | Workspace / Sandbox Policy | ✅ Выполнено | см. журнал выполнения |
 | 8 | Context / Memory / Summarization | ✅ Выполнено | см. журнал выполнения |
 | 9 | UI parity с Arena Agent Mode | ✅ Выполнено | см. журнал выполнения |
-| 10 | Self-test / regression suite | ⬜ Не начато | — |
+| 10 | Self-test / Regression Suite | ✅ Выполнено | см. журнал выполнения |
 | 11 | GitHub Actions deploy secrets / CI | ⚠️ Требует настройки secrets | workflow падает без TIMEWEB_* |
 
 ---
@@ -867,24 +867,80 @@ npm run build
 
 ## Этап 10. Self-test / Regression Suite
 
-### Нужно
+### Цель
 
-Добавить:
+Добавить backend self-test, который проверяет основные runtime-слои Agent Mode без необходимости делать реальный LLM-вызов.
+
+### Сделано
+
+Добавлен файл:
 
 ```text
-/api/agent/self-test
+server/agentSelfTest.js
 ```
 
-Проверять:
+Добавлен endpoint:
 
-- provider health
-- streaming
-- tool protocol
-- read/write workspace
-- bash
-- ask_user
-- final answer
-- error handling
+```text
+POST /api/agent/self-test
+```
+
+Self-test возвращает:
+
+```js
+{
+  schema: "browserai.agent_self_test.v1",
+  ok,
+  userId,
+  chatId,
+  createdAt,
+  passed,
+  failed,
+  checks
+}
+```
+
+Проверяются слои:
+
+1. Provider capabilities:
+   - OpenAI-compatible detection;
+   - streaming flag;
+   - universal tools flag.
+2. Tool Router:
+   - required parameter validation;
+   - path traversal rejection;
+   - type coercion для `number` / `boolean`.
+3. Sandbox policy:
+   - secret redaction для GitHub token / password patterns.
+4. Context manager:
+   - `agent_state_digest` marker;
+   - goal;
+   - recent tools.
+5. Ask User registry:
+   - register → answer → promise resolve;
+   - register → cancel → promise reject;
+   - pending count consistency.
+6. Workspace:
+   - scoped write;
+   - read;
+   - delete.
+
+### Проверки
+
+```bash
+node --check server/agentSelfTest.js
+node --check server/index.js
+npx eslint server/agentSelfTest.js server/contextManager.js server/sandboxPolicy.js server/agentCore.js server/llmClient.js
+npm run build
+```
+
+### Осталось после этапа 10
+
+- Добавить UI-кнопку “Run Agent Self-Test”.
+- Добавить self-test для реального SSE stream shape.
+- Добавить optional live provider probe через `/api/agent/provider/diagnose`.
+- Добавить GitHub Actions job, который вызывает unit/self-test на staging.
+- Добавить regression tests для bash sandbox отдельно.
 
 ---
 
@@ -966,3 +1022,7 @@ TIMEWEB_APP_DIR
   - UI отображает `tool_router` warnings;
   - ask_user/tool_approval cards показывают expires countdown;
   - добавлена кнопка cancel для pending questions.
+- Выполнен этап 10 — Self-test / Regression Suite:
+  - добавлен `server/agentSelfTest.js`;
+  - добавлен endpoint `POST /api/agent/self-test`;
+  - проверяются provider capabilities, tool validation, path traversal, type coercion, secret redaction, context digest, ask_user lifecycle, workspace read/write/delete.

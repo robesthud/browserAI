@@ -2858,6 +2858,23 @@ app.post('/api/agent/provider/diagnose', requireAuth, async (req, res) => {
   }
 })
 
+app.post('/api/agent/self-test', requireAuth, async (req, res) => {
+  try {
+    const { runAgentSelfTest } = await import('./agentSelfTest.js')
+    const result = await runAgentSelfTest({
+      userId: req.user?.id || '',
+      chatId: String(req.body?.chatId || '').slice(0, 100),
+    })
+    res.status(result.ok ? 200 : 500).json(result)
+  } catch (e) {
+    res.status(500).json({
+      schema: 'browserai.agent_self_test.v1',
+      ok: false,
+      error: e?.message || String(e),
+    })
+  }
+})
+
 app.get('/api/agent/health', requireAuth, async (req, res) => {
   const sandbox = await sandboxHealth()
   const browser = await browserHealth()
