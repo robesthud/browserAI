@@ -312,6 +312,21 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                     )
                   }
 
+                  // Arena parity: show agent_state (plan, current step, errors)
+                  if (m.agentState) {
+                    const s = m.agentState
+                    items.push(
+                      <div key={`state-${m.id}`} className="mb-2 rounded-lg border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-[12px] text-amber-200">
+                        <div className="flex items-center gap-2 text-[10px] opacity-70">
+                          <span className="font-mono">agent_state</span>
+                          <span className="rounded bg-amber-500/20 px-1.5 py-px text-[9px]">{s.status}</span>
+                        </div>
+                        {s.currentStep && <div>Шаг: {s.currentStep}</div>}
+                        {s.lastErrors?.length > 0 && <div className="text-red-300">Ошибки: {s.lastErrors.length}</div>}
+                      </div>
+                    )
+                  }
+
                   for (const tc of m.toolCalls || []) {
                     const ths = thoughtsByStep.get(tc.step) || []
                     if (isDev) {
