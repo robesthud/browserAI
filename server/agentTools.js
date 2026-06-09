@@ -261,7 +261,7 @@ export const TOOLS = {
       try {
         const tree = await getWorkspaceTree(Boolean(show_hidden))
         // If a subpath was requested, drill into it
-        if (path) {
+        if (path && path !== '.' && path !== '/') {
           const parts = String(path).split('/').filter(Boolean)
           let node = tree
           for (const part of parts) {
@@ -1442,13 +1442,12 @@ export const TOOLS = {
   // https://aistudio.google.com/apikey (free, no billing required).
   generate_image: {
     description:
-      'Generate an image from a text prompt and save it to the workspace. The image is saved to the specified file path, which must end in .jpg, .jpeg, or .png. Use when the user requests an image, illustration, icon, or visual asset. The generated image will be visible in the workspace preview. Requires a Google AI Studio API key (free tier: 100 images/day) either in env GEMINI_API_KEY or stored in Settings.',
+      'Generate an image from a text prompt and save it to the workspace. The image is saved to the specified file path, which must end in .jpg, .jpeg, or .png. Use when the user requests an image, illustration, icon, or visual asset. The generated image will be visible in the workspace preview.',
     params: {
-      file_path: { type: 'string', required: true, description: "Relative path to save the generated image (e.g. 'images/hero.jpg', 'logo.png'). Must end in .jpg, .jpeg, or .png." },
-      prompt:    { type: 'string', required: true, description: 'Text prompt describing the image to generate.' },
-      model:     { type: 'string', optional: true, description: 'Optional override. Default: gemini-2.5-flash-image-preview ("Nano Banana"). Try imagen-4.0-generate-001 for higher quality.' },
+      file_path: { type: 'string', required: true, description: "Relative path to save the generated image (e.g., 'images/hero.jpg', 'logo.png'). Must end in .jpg, .jpeg, or .png." },
+      prompt:    { type: 'string', required: true, description: 'Text prompt describing the image to generate' },
     },
-    handler: async ({ file_path, prompt, model, _signal } = {}) => {
+    handler: async ({ file_path, prompt, _signal } = {}) => {
       if (!file_path) return err('file_path is required')
       if (!prompt)    return err('prompt is required')
       if (!/\.(jpe?g|png)$/i.test(file_path)) {
