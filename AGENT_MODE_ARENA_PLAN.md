@@ -1029,7 +1029,7 @@ npm run build
 
 ### Что осталось после этапа 11
 
-- Добавить GitHub repository secrets для автоматического production deploy:
+- Для автоматического production deploy добавить GitHub repository secrets через скрипт `scripts/setup-timeweb-github-secrets.sh`:
   - `TIMEWEB_SSH_KEY`
   - `TIMEWEB_HOST`
   - `TIMEWEB_USER`
@@ -1039,6 +1039,12 @@ npm run build
 - Добавить post-deploy call к `/api/agent/self-test` после успешного deploy.
 - Добавить branch protection: CI required before merge.
 - Убрать ручной SSH deploy после настройки secrets.
+
+### Попытка автоматической настройки secrets
+
+Была предпринята попытка записать GitHub Actions secrets через временный GitHub token, но GitHub API вернул `403`: у текущего token есть права на push, но нет прав на управление repository secrets. Сгенерированный временный SSH public key был удалён с Timeweb, private key не сохранялся.
+
+Для настройки автодеплоя нужен запуск `scripts/setup-timeweb-github-secrets.sh` от GitHub owner/admin через `gh auth login`.
 
 ---
 
