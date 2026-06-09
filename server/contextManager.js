@@ -168,8 +168,10 @@ export function compactMiddle(convo, { keepTail = 8 } = {}) {
   const digest = {
     role: 'user',
     content:
-      '[context-manager: tier-2 digest of earlier turns — full text dropped to free context]\n\n' +
-      lines.join('\n').slice(0, 4000),
+      '<arena-system-message>\nTier-2 digest of earlier turns (full text dropped to free context):\n\n' +
+      lines.join('\n').slice(0, 4000) +
+      '\n</arena-system-message>'
+
   }
   convo.splice(middleStart, middle.length, digest)
   return true
@@ -186,7 +188,7 @@ export function emergencyDrop(convo, { keepTail = 4 } = {}) {
   const dropped = convo.length - middleEnd - middleStart
   const digest = {
     role: 'user',
-    content: `[context-manager: tier-3 emergency drop — ${dropped} earlier messages discarded; only the system prompt and the last ${keepTail} turns remain]`,
+    content: `<arena-system-message>\nTier-3 emergency drop — ${dropped} earlier messages discarded; only the system prompt and the last ${keepTail} turns remain.\n</arena-system-message>`,
   }
   convo.splice(middleStart, middleEnd - middleStart, digest)
   return true
@@ -274,7 +276,7 @@ export function renderAgentStateDigest(agentState = {}, recentToolHistory = []) 
   })
   const tools = (recentToolHistory || []).slice(-15).map((h) => `${h.ok ? '✓' : '✗'} ${h.tool}`).join(', ')
   const lines = [
-    '[agent_state_digest — authoritative task-level memory; keep this when compacting context]',
+    '<arena-system-message>\nAuthoritative task-level memory (agent_state_digest):',
     `status: ${agentState.status || 'unknown'}`,
     `goal: ${String(agentState.goal || '').slice(0, 600)}`,
     `currentStep: ${String(agentState.currentStep || '').slice(0, 240)}`,
@@ -286,7 +288,7 @@ export function renderAgentStateDigest(agentState = {}, recentToolHistory = []) 
     agentState.nextActions?.length ? `nextActions:\n- ${agentState.nextActions.slice(0, 8).join('\n- ')}` : '',
     tools ? `recentTools: ${tools}` : '',
     `toolStats: total=${agentState.toolStats?.total || 0}, ok=${agentState.toolStats?.ok || 0}, failed=${agentState.toolStats?.failed || 0}`,
-    '[/agent_state_digest]',
+    '</arena-system-message>',
   ].filter(Boolean)
   return lines.join('\n').slice(0, 5000)
 }
@@ -300,7 +302,7 @@ export function upsertAgentStateDigest(convo, agentState, recentToolHistory = []
   if (!Array.isArray(convo)) return false
   const digest = renderAgentStateDigest(agentState, recentToolHistory)
   if (!digest) return false
-  const marker = '[agent_state_digest'
+  const marker = '<arena-system-message>\nAuthoritative task-level memory'
   for (let i = convo.length - 1; i >= 0; i -= 1) {
     const c = typeof convo[i]?.content === 'string' ? convo[i].content : ''
     if (c.startsWith(marker)) convo.splice(i, 1)

@@ -46,10 +46,10 @@ export async function runAgentSelfTest({ userId = '', chatId = '' } = {}) {
   }))
 
   checks.push(await test('tool-validation-coercion', async () => {
-    const v = validateToolCall('bash', { command: 'echo ok', timeout: '2', persist: 'false' }, TOOLS.bash)
+    const v = validateToolCall('bash', { command: 'echo ok', timeout: '2', cwd: '/test' }, TOOLS.bash)
     assert(v.ok === true, 'bash args should validate')
     assert(v.args.timeout === 2, 'timeout should coerce to number')
-    assert(v.args.persist === false, 'persist should coerce to boolean')
+    assert(v.args.cwd === '/test', 'cwd should coerce to string')
     return { args: v.args, warnings: v.warnings }
   }))
 
@@ -72,7 +72,7 @@ export async function runAgentSelfTest({ userId = '', chatId = '' } = {}) {
       nextActions: ['finish'],
       toolStats: { total: 2, ok: 2, failed: 0 },
     }, [{ tool: 'read_file', ok: true }])
-    assert(digest.includes('[agent_state_digest'), 'digest marker missing')
+    assert(digest.includes('<arena-system-message>\nAuthoritative task-level memory (agent_state_digest):'), 'digest marker missing')
     assert(digest.includes('self-test goal'), 'goal missing')
     assert(digest.includes('recentTools'), 'recent tools missing')
     return { chars: digest.length }

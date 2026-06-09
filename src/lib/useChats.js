@@ -132,10 +132,10 @@ function messageToHistoryEntry(m) {
       return { role: 'user', content }
     }
 
-    const content = atts.length
-      ? `${m.content || ''}\n\nAttachments:\n${atts.map((a) => `- ${a.name} (${a.type})`).join('\n')}`
+const content = atts.length
+      ? `${m.content || ''}\n\n<arena-system-message>\nThe user attached the following files:\n${atts.map((a) => a.name).join('\n')}\n</arena-system-message>`
       : (m.content || '')
-    return { role: 'user', content }
+    return { role: 'user', content: content.trim() }
   }
   // assistant
   const lines = []

@@ -748,7 +748,7 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
             e.preventDefault()
             e.dataTransfer.dropEffect = 'move'
           }} onDrop={onRootDrop} onContextMenu={(e) => openNodeMenu(e, { type: 'dir', path: '', name: 'workspace' })}>
-            {loading ? (
+            {loading && !tree ? (
               <div className="px-3 py-3 text-[12px] text-cream-faint">Загрузка…</div>
             ) : error ? (
               <div className="px-3 py-3 text-[12px] text-red-300">⚠ {error}</div>
