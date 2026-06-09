@@ -677,7 +677,8 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
   function parseXmlBody(body, openAttrs) {
     const nameMatch =
       body.match(/<xai:tool_name>([^<]+)<\/xai:tool_name>/i) ||
-      body.match(/<tool_name>([^<]+)<\/tool_name>/i)
+      body.match(/<tool_name>([^<]+)<\/tool_name>/i) ||
+      body.match(/<name>([^<]+)<\/name>/i)
     let tool = nameMatch ? nameMatch[1].trim() : ''
     if (!tool) {
       const m = openAttrs.match(/name="([^"]+)"/i)
