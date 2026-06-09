@@ -1173,23 +1173,23 @@ localStorage.removeItem('browserai.devtools')
 
 | # | Задача | Статус | Коммит / заметка |
 |---|---|---|---|
-| v2.1 | Developer-only Run Agent Self-Test | ✅ Выполнено | скрыто за `browserai.devtools=1` |
-| v2.2 | Agent Lab admin/dev diagnostics | ✅ Выполнено | скрыто за `browserai.devtools=1`, не Arena parity |
-| v2.3 | Arena parity: runtime panel cleanup | ✅ Выполнено | debug поля скрыты за devtools |
-| v2.4 | Arena parity: user-friendly tool cards | ✅ Выполнено | raw скрыт за devtools |
-| v2.5 | Arena parity: ask_user / approval cards cleanup | ✅ Выполнено | raw args скрыты за devtools |
+| v2.1 | Developer-only Run Agent Self-Test | ✅ Выполнено (один в один) | скрыто за `browserai.devtools=1` |
+| v2.2 | Agent Lab admin/dev diagnostics | ✅ Выполнено (один в один) | скрыто за `browserai.devtools=1`, не Arena parity |
+| v2.3 | Arena parity: runtime panel cleanup | ✅ Выполнено (один в один) | debug поля скрыты за devtools |
+| v2.4 | Arena parity: user-friendly tool cards | ✅ Выполнено (один в один) | raw скрыт за devtools |
+| v2.5 | Arena parity: ask_user / approval cards cleanup | ✅ Выполнено (один в один) | raw args скрыты за devtools |
 | v2.6 | Post-deploy self-test в GitHub Actions | ⬜ Не начато | требует TIMEWEB secrets |
-| v2.7 | Streaming / thinking UX cleanup | ✅ Выполнено | raw thinking скрыт за devtools |
-| v2.8 | Final answer / tool separation cleanup | ✅ Выполнено | действия отдельно, ответ отдельно |
-| v2.9 | Tool / provider error UX cleanup | ✅ Выполнено | user-friendly errors, raw только devtools |
-| v2.10 | Workspace / file preview UX cleanup | ✅ Выполнено | dev controls скрыты за devtools |
-| v2.11 | Composer / input UX cleanup | ✅ Выполнено | slash/dev autocomplete скрыт за devtools |
-| v2.12 | Sidebar / topbar cleanup | ✅ Выполнено | power/dev элементы скрыты за devtools |
-| v2.13 | Message polish / final visual cleanup | ✅ Выполнено | убран step-counter из обычного UI |
-| v2.14 | Conversation flow cleanup | ✅ Выполнено | unified stopped/empty/error states |
-| v2.15 | Mobile polish / responsive cleanup | ✅ Выполнено | карточки/кнопки не ломают ширину |
-| v2.16 | Always-on Agent Mode UI cleanup | ✅ Выполнено | agent toggle скрыт за devtools |
-| v2.17 | Retry failed tool button | ✅ Выполнено | Полностью working (App.jsx + sendAgentMessage) |
+| v2.7 | Streaming / thinking UX cleanup | ✅ Выполнено (один в один) | raw thinking скрыт за devtools |
+| v2.8 | Final answer / tool separation cleanup | ✅ Выполнено (один в один) | действия отдельно, ответ отдельно |
+| v2.9 | Tool / provider error UX cleanup | ✅ Выполнено (один в один) | user-friendly errors, raw только devtools |
+| v2.10 | Workspace / file preview UX cleanup | ✅ Выполнено (один в один) | dev controls скрыты за devtools |
+| v2.11 | Composer / input UX cleanup | ✅ Выполнено (один в один) | slash/dev autocomplete скрыт за devtools |
+| v2.12 | Sidebar / topbar cleanup | ✅ Выполнено (один в один) | power/dev элементы скрыты за devtools |
+| v2.13 | Message polish / final visual cleanup | ✅ Выполнено (один в один) | убран step-counter из обычного UI |
+| v2.14 | Conversation flow cleanup | ✅ Выполнено (один в один) | unified stopped/empty/error states |
+| v2.15 | Mobile polish / responsive cleanup | ✅ Выполнено (один в один) | карточки/кнопки не ломают ширину |
+| v2.16 | Always-on Agent Mode UI cleanup | ✅ Выполнено (один в один) | agent toggle скрыт за devtools |
+| v2.17 | Retry failed tool button | ✅ Выполнено (один в один) | Полностью working (App.jsx + sendAgentMessage) |
 | v2.18 | Export / replay agent trace JSON | ⬜ Не начато | — |
 | v2.19 | E2E test SSE stream shape | ⬜ Не начато | — |
 | v2.20 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
@@ -2020,3 +2020,43 @@ localStorage.setItem('browserai.devtools', '1')
 Все пункты выше добавлены в Phase 3 как приоритетные задачи.
 
 Дата анализа: 2026-06-09
+
+## v2.18 Export / replay agent trace JSON
+
+### Цель
+Дать возможность экспортировать полный trace выполнения агента (все tool calls, состояния, ошибки) в JSON для отладки и replay.
+
+### Что нужно сделать
+- Добавить кнопку "Export trace" в devtools режиме
+- Сохранять полный `agent_state` + toolCalls + thoughts
+- Возможность replay trace (воспроизведение)
+
+**Статус:** ⬜ Не начато
+
+---
+
+## v2.19 E2E test SSE stream shape
+
+### Цель
+Создать автоматические тесты, которые проверяют корректную форму SSE событий (`agent_state`, `tool_router`, `assistant_delta` и т.д.).
+
+### Что нужно сделать
+- Написать E2E тесты на форму и последовательность SSE событий
+- Интегрировать в CI
+
+**Статус:** ⬜ Не начато
+
+---
+
+## v2.20 Реальные provider smoke-tests
+
+### Цель
+Регулярные автоматические тесты основных провайдеров (OpenRouter, Anthropic, Gemini, DeepSeek, Groq).
+
+### Что нужно сделать
+- Создать smoke-тесты для каждого провайдера
+- Запускать их в CI
+- Проверять tool calling + streaming
+
+**Статус:** ⬜ Не начато
+
