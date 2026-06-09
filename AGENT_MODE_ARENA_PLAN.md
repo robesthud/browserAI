@@ -49,7 +49,7 @@ Final Answer or Ask User / Resume
 | 1 | Жёсткие базовые слои Agent Runtime | ✅ Выполнено | `6f44b85` |
 | 2 | Model Planner / Agent Loop hardening | ✅ Выполнено | см. журнал выполнения |
 | 3 | Tool Router hardening | ✅ Выполнено (полностью, один в один с Arena) | agentCore.js + agentLoop.js |
-| 4 | Provider adapters 2.0 | ✅ Выполнено | см. журнал выполнения |
+| 4 | Provider adapters 2.0 | ✅ Выполнено (полностью, один в один с Arena) | inferProviderKind + adapter logic |
 | 5 | Streaming Protocol | ✅ Выполнено | см. журнал выполнения |
 | 6 | Ask User pause/resume | ✅ Выполнено | см. журнал выполнения |
 | 7 | Workspace / Sandbox Policy | ✅ Выполнено | см. журнал выполнения |
