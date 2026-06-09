@@ -303,6 +303,15 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                     if (!thoughtsByStep.has(t.step)) thoughtsByStep.set(t.step, [])
                     thoughtsByStep.get(t.step).push(t)
                   }
+                  // Arena parity: show agent_context if present
+                  if (m.agentContext) {
+                    items.push(
+                      <div key={`ctx-${m.id}`} className="mb-2 rounded-lg border border-blue-500/30 bg-blue-950/30 px-3 py-1.5 text-[12px] text-blue-200">
+                        <span className="font-mono text-[10px] opacity-60">context</span> {m.agentContext.task?.type || 'general'} · {m.agentContext.task?.complexity || 'medium'}
+                      </div>
+                    )
+                  }
+
                   for (const tc of m.toolCalls || []) {
                     const ths = thoughtsByStep.get(tc.step) || []
                     if (isDev) {
