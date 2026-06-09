@@ -10,7 +10,7 @@
  */
 export default function AgentPlanCard({ plan, hideBorder = false }) {
   if (!plan || !Array.isArray(plan.steps) || plan.steps.length === 0) return null
-  const done = plan.steps.filter((s) => stepItem.done).length
+  const done = plan.steps.filter((s) => s.done).length
   const total = plan.steps.length
   const pct = total > 0 ? Math.round((done / total) * 100) : 0
 
@@ -38,7 +38,7 @@ export default function AgentPlanCard({ plan, hideBorder = false }) {
                 ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-300'
                 : 'border-white/15 text-cream-faint'
             }`}>{stepItem.done ? '✓' : ''}</span>
-            <span className={`min-w-0 ${s.done ? 'text-cream-faint line-through' : ''}`}>
+            <span className={`min-w-0 ${stepItem.done ? 'text-cream-faint line-through' : ''}`}>
               {stepItem.text}
               {stepItem.note ? <span className="ml-1 text-[11px] text-cream-faint">— {stepItem.note}</span> : null}
             </span>
