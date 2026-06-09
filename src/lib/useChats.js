@@ -88,14 +88,26 @@ function summarizeToolCallForHistory(tc) {
   // For some tools, include a few facts from the result so the model
   // knows what the disk now looks like.
   const r = tc.result
+  if (!r && !tc.error) return outline
+
+  const clip = (str, head = 1500, tail = 500) => {
+    const s = String(str || '')
+    if (s.length <= head + tail + 100) return s
+    return `${s.slice(0, head)}\n...[${s.length - head - tail} omitted]...\n${s.slice(-tail)}`
+  }
+
   if (tc.name === 'edit_file' && r?.bytesWritten) outline += `  → ${r.bytesWritten}b written`
   else if (tc.name === 'write_file' && r?.bytesWritten) outline += `  → ${r.bytesWritten}b written`
-  else if (tc.name === 'list_files' && Array.isArray(r?.entries)) outline += `  → ${r.entries.length} entries`
-  else if (tc.name === 'read_file' && typeof r?.content === 'string') outline += `  → ${r.content.length}b read`
-  else if (tc.name === 'bash' && r?.exitCode != null) outline += `  → exit ${r.exitCode}`
-  else if (tc.name === 'web_search' && Array.isArray(r?.results)) outline += `  → ${r.results.length} results`
+  else if (tc.name === 'list_files' && Array.isArray(r?.entries)) {
+    outline += `  → ${r.entries.length} entries:\n` + clip(r.entries.map(e => `${e.isDirectory ? '[DIR]' : '[FILE]'} ${e.name}`).join('\n'))
+  }
+  else if (tc.name === 'read_file' && typeof r?.content === 'string') outline += `  → \n${clip(r.content, 2000, 1000)}`
+  else if (tc.name === 'bash') outline += `  → exit ${r?.exitCode}\nSTDOUT:\n${clip(r?.stdout || '', 2000, 1000)}\nSTDERR:\n${clip(r?.stderr || '', 1000, 500)}`
+  else if (tc.name === 'web_search' && Array.isArray(r?.results)) outline += `  → ${r.results.length} results\n${clip(JSON.stringify(r.results), 2000, 500)}`
+  else if (tc.name === 'web_fetch') outline += `  → \n${clip(r?.text || '', 2000, 1000)}`
   else if (tc.name === 'download_url' && r?.savedPath) outline += `  → ${r.savedPath}`
-  if (tc.error) outline += `  ! ${String(tc.error).slice(0, 120)}`
+  
+  if (tc.error) outline += `  ! ${String(tc.error).slice(0, 500)}`
   return outline
 }
 
