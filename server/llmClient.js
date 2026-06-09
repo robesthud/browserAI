@@ -694,7 +694,10 @@ async function callOpenAICompatibleStream({
   }
   if (Array.isArray(tools) && tools.length > 0) {
     body.tools = tools
-    body.tool_choice = toolChoice
+    // ZhipuAI / GLM often reject explicit tool_choice="auto" or crash if it's sent.
+    if (!/glm/i.test(model)) {
+      body.tool_choice = toolChoice
+    }
   }
 
   const url = joinUrl(baseUrl, 'chat/completions')
