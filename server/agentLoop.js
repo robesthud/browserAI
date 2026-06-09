@@ -962,7 +962,7 @@ async function runAgentInner({
       if (useNativeTools) {
         convo.push({ role: 'tool', tool_call_id: `auto-mem-${idx}`, name: toolName, content: obsStr })
       } else {
-        convo.push({ role: 'user', content: `[tool_result name="${toolName}" ok=${Boolean(r.ok)}]\n${obsStr}\n[/tool_result]` })
+        convo.push({ role: 'user', content: `<arena-system-message>\nTool result for ${toolName}:\nok: ${Boolean(r.ok)}\n</arena-system-message>\n${obsStr}` })
       }
     }
     sse(res, 'agent_state', agentState)
@@ -1618,9 +1618,12 @@ async function runAgentInner({
             content: obsContent,
           })
         } else {
-          convo.push({
+                    convo.push({
             role: 'user',
-            content: `[tool_result name="${call.tool}" ok=${r.ok}]\n${obsContent}\n[/tool_result]`,
+            content: `<arena-system-message>
+Tool result for ${call.tool}:
+ok: ${r.ok}
+</arena-system-message>\n${obsContent}`,
           })
         }
       }
