@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
 import AgentRuntimePanel from './AgentRuntimePanel.jsx'
 import AgentToolBlock from './AgentToolBlock.jsx'
-import Markdown from './Markdown.jsx'
+import Markdown from '../lib/markdown.jsx'
+import AgentThought from './AgentThought.jsx'
+import AgentAskUser from './AgentAskUser.jsx'
+import AgentPlanCard from './AgentPlanCard.jsx'
 
 function JsonBlock({ data }) {
   if (!data) return null
@@ -209,17 +212,82 @@ export default function AgentAdmin() {
                    routerWarnings={replayTrace.warnings || []}
                  />
                ) : null}
-               {Array.isArray(replayTrace.tools) && replayTrace.tools.length > 0 && (
-                 <div className="space-y-2 mt-4 border-t border-white/10 pt-4">
-                   <h3 className="text-[13px] font-medium">Инструменты</h3>
-                   {replayTrace.tools.map((t, idx) => (
-                     <AgentToolBlock key={idx} toolName={t.name || t.tool} args={t.args} result={t.result} error={t.error} isDev={true} />
-                   ))}
+               
+               <div className="space-y-3 mt-4 border-t border-white/10 pt-4">
+                  {(() => {
+                    const items = []
+                    let plan = null
+                    for (const tc of replayTrace.tools || []) {
+                      if (tc.status !== 'done' || !tc.ok) continue
+                      if ((tc.name === 'plan_set' || tc.tool === 'plan_set') && Array.isArray(tc.result?.plan)) {
+                        plan = { title: tc.result.title || '', steps: tc.result.plan.map((s) => ({ ...s })) }
+                      } else if ((tc.name === 'plan_check' || tc.tool === 'plan_check') && plan && Array.isArray(tc.result?.checked)) {
+                        for (const i of tc.result.checked) {
+                          const idx = Number(i)
+                          const step = plan.steps.find((s) => s.idx === idx)
+                          if (step) {
+                            step.done = true
+                            if (tc.result.note) step.note = tc.result.note
+                          }
+                        }
+                      }
+                    }
+
+                    if (plan) items.push(<AgentPlanCard key="plan" plan={plan} />)
+
+                    const thoughtsByStep = new Map()
+                    for (const t of replayTrace.thoughts || []) {
+                      if (!thoughtsByStep.has(t.step)) thoughtsByStep.set(t.step, [])
+                      thoughtsByStep.get(t.step).push(t)
+                    }
+
+                    for (const tc of replayTrace.tools || []) {
+                      const ths = thoughtsByStep.get(tc.step) || []
+                      for (const t of ths) {
+                        items.push(<AgentThought key={`th-${tc.step}-${t.at}`} text={t.text} />)
+                      }
+                      thoughtsByStep.delete(tc.step)
+                      const name = tc.name || tc.tool
+                      if (name === 'plan_set' || name === 'plan_check') continue
+                      items.push(
+                        <AgentToolBlock
+                          key={`tool-${tc.step}-${name}`}
+                          toolName={name}
+                          args={tc.args}
+                          status={tc.status}
+                          result={tc.result}
+                          error={tc.error}
+                          diagnostics={tc.diagnostics}
+                          isDev={true}
+                        />
+                      )
+                    }
+
+                    for (const [step, ths] of thoughtsByStep.entries()) {
+                      for (const t of ths) {
+                        items.push(<AgentThought key={`th-late-${step}-${t.at}`} text={t.text} />)
+                      }
+                    }
+
+                    return items
+                  })()}
+               </div>
+
+               {Array.isArray(replayTrace.askUsers) && replayTrace.askUsers.length > 0 && (
+                 <div className="mt-4 space-y-3 border-t border-white/10 pt-4">
+                    {replayTrace.askUsers.map(q => (
+                       <AgentAskUser
+                         key={q.id}
+                         question={q}
+                         answered={true}
+                       />
+                    ))}
                  </div>
                )}
+
                {replayTrace.error || replayTrace.providerError ? (
                  <div className="mt-4 border-t border-red-500/20 pt-4 text-red-400">
-                   <h3 className="text-[13px] font-medium">Ошибка</h3>
+                   <h3 className="text-[13px] font-medium mb-1">Ошибка</h3>
                    <pre className="text-[11px] whitespace-pre-wrap">{JSON.stringify(replayTrace.providerError || replayTrace.error, null, 2)}</pre>
                  </div>
                ) : null}
