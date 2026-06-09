@@ -49,7 +49,7 @@ const CATEGORY = {
 
 const DEFAULT_POLICY = {
   read: 'auto', write: 'auto', net: 'auto',
-  bash: 'ask', git: 'ask', mcp: 'ask',
+  bash: 'auto', git: 'auto', mcp: 'auto',
   deploy: 'ask',
 }
 
