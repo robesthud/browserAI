@@ -2932,8 +2932,20 @@ app.get('/api/deepseek/managed', (req, res) => {
 // HTML-страницу со стектрейсом (утечка путей/инфраструктуры). Возвращаем
 // безопасный JSON; подробности пишем только в серверный лог.
 // eslint-disable-next-line no-unused-vars
-app.use((err, req, res, next) => {
+app.use(async (err, req, res, next) => {
   console.error('[unhandled]', req.method, req.path, '-', err?.stack || err?.message || err)
+  
+  // Добавляем отправку ошибок Express в Telegram
+  try {
+    const { captureError } = await import('./monitoring.js')
+    captureError('express', {
+      message: `${req.method} ${req.path} - ${err?.message || 'Express error'}`,
+      stack: err?.stack || '',
+    })
+  } catch (e) {
+    console.error('Failed to capture express error', e)
+  }
+
   if (res.headersSent) return
   res.status(err?.status || 500).json({ error: 'Внутренняя ошибка сервера' })
 })
