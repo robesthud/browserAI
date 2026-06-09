@@ -61,16 +61,16 @@ services:
   # directory the main app sees so file ops from the LLM are visible
   # in the UI immediately.
   agent-sandbox:
-    image: alpine:3.20
+    image: ubuntu:22.04
     container_name: agent-sandbox
     restart: unless-stopped
     # Stay alive idling so `docker exec` works at any time.
-    command: sh -c "apk add --no-cache nodejs npm git curl grep findutils bash jq >/dev/null && adduser -D -u 1000 agent || true && tail -f /dev/null"
+    command: bash -c "apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl git grep bash jq python3 python3-pip build-essential nodejs npm >/dev/null 2>&1 && useradd -m -u 1000 agent || true && tail -f /dev/null"
     user: "0:0"  # boot as root only long enough to install packages; commands run as 1000 via -u
     read_only: false
     tmpfs:
       - /tmp:size=64m
-      - /home/agent:size=64m,uid=1000,gid=1000
+      - /home/agent:size=64m,uid=1000,gid=1000,mode=1777,exec
     working_dir: /workspace
     volumes:
       - ${WORKSPACE_DIR:-./workspace}:/workspace
