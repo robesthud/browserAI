@@ -1175,11 +1175,12 @@ localStorage.removeItem('browserai.devtools')
 |---|---|---|---|
 | v2.1 | Developer-only Run Agent Self-Test | ✅ Выполнено | скрыто за `browserai.devtools=1` |
 | v2.2 | Agent Lab admin/dev diagnostics | ✅ Выполнено | скрыто за `browserai.devtools=1`, не Arena parity |
-| v2.3 | Post-deploy self-test в GitHub Actions | ⬜ Не начато | требует TIMEWEB secrets |
-| v2.4 | Retry failed tool button | ⬜ Не начато | — |
-| v2.5 | Export / replay agent trace JSON | ⬜ Не начато | — |
-| v2.6 | E2E test SSE stream shape | ⬜ Не начато | — |
-| v2.7 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
+| v2.3 | Arena parity: runtime panel cleanup | ✅ Выполнено | debug поля скрыты за devtools |
+| v2.4 | Post-deploy self-test в GitHub Actions | ⬜ Не начато | требует TIMEWEB secrets |
+| v2.5 | Retry failed tool button | ⬜ Не начато | — |
+| v2.6 | Export / replay agent trace JSON | ⬜ Не начато | — |
+| v2.7 | E2E test SSE stream shape | ⬜ Не начато | — |
+| v2.8 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
 
 ## v2.1 Developer-only Run Agent Self-Test
 
@@ -1291,6 +1292,53 @@ npm run build
 - Добавить export/replay agent trace.
 - Добавить retry failed tool UI.
 
+
+## v2.3 Arena parity: user-facing runtime panel cleanup
+
+### Сделано
+
+Обновлён компонент:
+
+```text
+src/components/AgentRuntimePanel.jsx
+```
+
+Обычный пользовательский режим теперь показывает только полезный прогресс:
+
+- статус;
+- текущий шаг;
+- счётчик плана `done/total`;
+- план;
+- ошибки;
+- затронутые файлы;
+- следующие действия.
+
+Технические детали скрыты из обычного UI и доступны только при devtools flag:
+
+```js
+localStorage.setItem('browserai.devtools', '1')
+```
+
+Только в devtools показываются:
+
+- stream protocol;
+- provider kind;
+- model id;
+- native/universal tools mode;
+- workspace scope;
+- complexity/max steps;
+- router warnings;
+- raw goal;
+- toolStats.
+
+Это приближает обычный Agent Mode к пользовательскому интерфейсу, а не debug console.
+
+### Проверки
+
+```bash
+npm run build
+```
+
 ## Журнал v2
 
 ### 2026-06-09
@@ -1298,6 +1346,7 @@ npm run build
 - Начат Agent Mode v2 Quality Pass.
 - Выполнен v2.1: developer-only Run Agent Self-Test в настройках агента; в обычном UI кнопка скрыта, чтобы не отходить от пользовательского Agent Mode.
 - Выполнен v2.2: добавлена страница `/admin/agent`; кнопка `🧪 Agent Lab` в левом sidebar показывается только при `browserai.devtools=1`, потому что это Dev/Admin extension, а не Arena parity.
+- Выполнен v2.3: user-facing runtime panel cleanup — debug поля скрыты за devtools, обычный UI показывает только ход выполнения.
 
 
 ### 2026-06-09 — корректировка v2.1
