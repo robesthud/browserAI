@@ -103,8 +103,8 @@ export function buildAgentContext({ provider = {}, history = [], extraSystem = '
     model: {
       id: provider.model || '',
       providerKind,
-      supportsNativeTools: providerKind === 'openai-compatible',
-      usesUniversalToolProtocol: providerKind !== 'openai-compatible',
+      supportsNativeTools: ['openai-compatible', 'anthropic-official', 'google-gemini-official'].includes(providerKind),
+      usesUniversalToolProtocol: !['openai-compatible', 'anthropic-official', 'google-gemini-official'].includes(providerKind),
     },
     task: {
       lastUserChars: userText.length,
