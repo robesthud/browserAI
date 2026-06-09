@@ -356,6 +356,7 @@ function parseXmlFunctionCalls(text) {
     const nameMatch =
       content.match(/<xai:tool_name>([^<]+)<\/xai:tool_name>/i) ||
       content.match(/<tool_name>([^<]+)<\/tool_name>/i) ||
+      content.match(/<name>([^<]+)<\/name>/i) ||
       openAttrs.match(/name\s*=\s*["']([^"']+)["']/i)
     if (!nameMatch) continue
     const name = nameMatch[1].trim()
@@ -1609,7 +1610,17 @@ async function runAgentInner({
         // Per-tool budget (tier 0 of the context manager): tightens
         // structured tools like list_files to ~2 KB while letting
         // read_file have ~12 KB. Replaces the old uniform clipForLLM().
-        const obsContent = clipToolOutput(call.tool, obsRaw, provider?.model)
+        let obsContent = clipToolOutput(call.tool, obsRaw, provider?.model)
+
+        // v2.26: Computer Use Multimodal Parity (G-04)
+        // If the tool returned a dataUrl (screenshot), we inject it as a multimodal block 
+        // if native tools are active (since text fallback doesn't cleanly handle vision arrays yet).
+        if (r.ok && typeof r.result === 'object' && r.result?.dataUrl && useNativeTools) {
+          obsContent = [
+            { type: 'text', text: clipToolOutput(call.tool, { ...obsRaw, dataUrl: undefined }, provider?.model) },
+            { type: 'image_url', image_url: { url: r.result.dataUrl } }
+          ]
+        }
 
         if (call.nativeId) {
           convo.push({
