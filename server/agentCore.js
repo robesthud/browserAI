@@ -316,13 +316,23 @@ function typeLabel(value) {
   return typeof value
 }
 
-function coerceToolValue(value, schema = {}) {
+function coerceToolValue(value, schema = {}, pName = '') {
   const expected = schema.type || 'string'
-  if (value === undefined || value === null) return { ok: true, value }
+  let cleanValue = value
+
+  if (expected === 'string' && typeof cleanValue === 'string') {
+    if (PATH_PARAM_RE.test(pName)) {
+      if (cleanValue === '/workspace' || cleanValue === '/home/user') cleanValue = ''
+      else if (cleanValue.startsWith('/workspace/')) cleanValue = cleanValue.replace('/workspace/', '')
+      else if (cleanValue.startsWith('/home/user/')) cleanValue = cleanValue.replace('/home/user/', '')
+    }
+  }
+
+  if (cleanValue === undefined || cleanValue === null) return { ok: true, value: cleanValue }
 
   if (expected === 'string') {
-    if (typeof value === 'string') return { ok: true, value }
-    return { ok: true, value: String(value), warning: `coerced ${typeLabel(value)} to string` }
+    if (typeof cleanValue === 'string') return { ok: true, value: cleanValue }
+    return { ok: true, value: String(cleanValue), warning: `coerced ${typeLabel(cleanValue)} to string` }
   }
   if (expected === 'number') {
     if (typeof value === 'number' && Number.isFinite(value)) return { ok: true, value }

@@ -95,9 +95,9 @@ export default function AgentRuntimePanel({ context, state, aiWorking, isDev }) 
             <div>
               <div className="text-[11px] font-medium text-cream-faint uppercase tracking-wide mb-0.5">Touched Files</div>
               <div className="flex flex-wrap gap-1.5 mt-1">
-                {files.map(f => (
-                  <span key={f} className="rounded bg-black/20 border border-white/5 px-1.5 py-0.5 font-mono text-[10px] text-emerald-200">
-                    {f}
+                {files.map((fileStr, fileIdx) => (
+                  <span key={fileStr} className="rounded bg-black/20 border border-white/5 px-1.5 py-0.5 font-mono text-[10px] text-emerald-200">
+                    {fileStr}
                   </span>
                 ))}
               </div>
@@ -108,9 +108,9 @@ export default function AgentRuntimePanel({ context, state, aiWorking, isDev }) 
             <div>
               <div className="text-[11px] font-medium text-cream-faint uppercase tracking-wide mb-0.5 text-red-300/70">Last Errors</div>
               <div className="space-y-1">
-                {errors.map((err, i) => (
-                  <div key={i} className="rounded bg-red-500/10 border border-red-500/20 p-1.5 text-[11px] text-red-200 font-mono break-words">
-                    {err}
+                {errors.map((errorStr, errIdx) => (
+                  <div key={errIdx} className="rounded bg-red-500/10 border border-red-500/20 p-1.5 text-[11px] text-red-200 font-mono break-words">
+                    {errorStr}
                   </div>
                 ))}
               </div>
