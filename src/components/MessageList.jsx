@@ -330,6 +330,12 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                         finishedAt={tc.finishedAt}
                         stream={tc.stream}
                         diagnostic={tc.diagnostic}
+                        onRetry={(tool) => {
+                          // Arena-style retry: re-execute the exact same tool call
+                          window.dispatchEvent(new CustomEvent('agent:retry-tool', { 
+                            detail: { name: tool.name, args: tool.args } 
+                          }))
+                        }}
                       />,
                     )
                   }

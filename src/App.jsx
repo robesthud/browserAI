@@ -327,6 +327,20 @@ function BrowserApp({ user, reloadAuth }) {
     setAutoHint(null)
   }, [activeId])
 
+  // v2.17: Retry failed tool (Arena parity)
+  useEffect(() => {
+    const handler = (e) => {
+      const { name, args } = e.detail || {}
+      if (!name || !activeChat) return
+
+      // Re-execute the tool by sending a targeted agent message
+      const retryText = `[RETRY_TOOL] Повтори tool "${name}" с аргументами: ${JSON.stringify(args)}`
+      sendAgentMessage(retryText).catch(() => {})
+    }
+    window.addEventListener('agent:retry-tool', handler)
+    return () => window.removeEventListener('agent:retry-tool', handler)
+  }, [activeChat, sendAgentMessage])
+
   const providerOverrideForModel = (model) => {
     const key = findKeyForModel(settings, model)
     if (!key) return null
