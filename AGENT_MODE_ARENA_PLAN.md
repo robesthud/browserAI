@@ -1126,7 +1126,7 @@ npm run build
 
 | # | Задача | Статус | Коммит / заметка |
 |---|---|---|---|
-| v2.1 | UI-кнопка Run Agent Self-Test | ✅ Выполнено | см. журнал ниже |
+| v2.1 | Developer-only Run Agent Self-Test | ✅ Выполнено | скрыто за `browserai.devtools=1` |
 | v2.2 | Provider / Workspace diagnostics panel | ⬜ Не начато | — |
 | v2.3 | Post-deploy self-test в GitHub Actions | ⬜ Не начато | требует TIMEWEB secrets |
 | v2.4 | Retry failed tool button | ⬜ Не начато | — |
@@ -1144,10 +1144,16 @@ npm run build
 src/components/AgentSettingsSection.jsx
 ```
 
-В настройки Agent Mode добавлен блок:
+В настройки Agent Mode добавлен developer-only блок:
 
 ```text
 Agent Mode self-test
+```
+
+Важно: блок скрыт в обычном пользовательском UI и показывается только если включить devtools:
+
+```js
+localStorage.setItem('browserai.devtools', '1')
 ```
 
 Кнопка:
@@ -1197,4 +1203,16 @@ npm run build
 ### 2026-06-09
 
 - Начат Agent Mode v2 Quality Pass.
-- Выполнен v2.1: UI-кнопка Run Agent Self-Test в настройках агента.
+- Выполнен v2.1: developer-only Run Agent Self-Test в настройках агента; в обычном UI кнопка скрыта, чтобы не отходить от пользовательского Agent Mode.
+
+
+### 2026-06-09 — корректировка v2.1
+
+- По замечанию пользователя self-test кнопка убрана из обычного пользовательского интерфейса.
+- Кнопка остаётся доступной только в devtools-режиме:
+
+```js
+localStorage.setItem('browserai.devtools', '1')
+```
+
+Это сохраняет основной Agent Mode ближе к пользовательскому интерфейсу Arena-style, а diagnostics остаются для разработчика/admin.
