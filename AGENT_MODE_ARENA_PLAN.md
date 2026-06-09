@@ -1882,7 +1882,7 @@ localStorage.setItem('browserai.devtools', '1')
 | v2.22 | Automatic memory integration | ✅ Выполнено (один в один) | Автоматический `recall_facts` / `kb_search` перед сложными задачами в runtime |
 | v2.23 | Full native tool calling | ✅ Выполнено (один в один) | 100% нативная поддержка tool calls для Anthropic, Gemini, DeepSeek, Groq |
 | v2.24 | Advanced error recovery | ✅ Выполнено (один в один) | Улучшенный retry + self-healing при ошибках инструментов |
-| v2.25 | Arena-style final answer formatting | Точное соответствие формата финального ответа (сводка действий + результат) | ⬜ Не начато |
+| v2.25 | Arena-style final answer formatting | ✅ Выполнено (один в один) | Точное соответствие формата финального ответа (сводка действий + результат) |
 | v2.26 | Full E2E test coverage | Автоматические тесты ключевых сценариев Agent Mode | ⬜ Не начато |
 
 ### Финальная checklist (один в один с Arena)

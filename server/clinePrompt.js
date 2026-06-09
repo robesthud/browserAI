@@ -469,6 +469,7 @@ they're cheaper.
     RULES(cwd),
     SYSTEM_INFORMATION(cwd),
     MEMORY,
+    '# Final Answer Formatting\nWhen you have finished the task and are ready to provide the final answer, YOU MUST follow this exact format:\n1. Provide a very brief, high-level summary of what you did (1-2 sentences).\n2. Follow with the actual result or answer to the user\'s query.\n3. NEVER dump a wall of "I ran this tool, then I saw this, then I ran that". The user already sees the tool cards in the UI. Focus ONLY on the final outcome.\n4. Your final answer should be clean, direct, and formatted in Markdown.',
     OBJECTIVE,
     buildUserInstructionsSection(extraSystem, modelHint, recall, projectRules, recentActivity),
   ]
