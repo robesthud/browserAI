@@ -28,9 +28,15 @@ function sanitizeScopeId(id = '') {
 }
 
 function getScopedWorkspaceRoot() {
-  // Arena parity: single clean /workspace root for all agents.
-  // No per-chat subdirectories in the visible workspace.
+  const chatId = workspaceScope.getStore()?.chatId
+  if (chatId) return path.join(baseWorkspaceRoot, 'chats', chatId)
   return baseWorkspaceRoot
+}
+
+function getContainerWorkspaceRoot() {
+  const chatId = workspaceScope.getStore()?.chatId
+  if (chatId) return `/workspace/chats/${chatId}`
+  return '/workspace'
 }
 
 function getScopedHistoryRoot() {
