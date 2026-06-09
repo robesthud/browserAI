@@ -48,11 +48,11 @@ function makeSentinel() {
   return '__BA' + Math.random().toString(36).slice(2, 10).toUpperCase() + 'END__'
 }
 
-function openSession(chatId) {
+function openSession(chatId, cwd = '/workspace') {
   const args = [
     'exec', '-i',
     '--user', process.env.AGENT_SANDBOX_USER || '0:0',
-    '-w', '/workspace',
+    '-w', cwd,
     SANDBOX_CONTAINER,
     'bash', '--noprofile', '--norc',
   ]
@@ -100,7 +100,10 @@ export function runInSession({ chatId, command, timeoutMs = 60_000, signal, onSt
   if (typeof command !== 'string' || !command) return Promise.reject(new Error('command must be a non-empty string'))
 
   let session = SESSIONS.get(chatId)
-  if (!session || !session.alive) session = openSession(chatId)
+  if (!session || !session.alive) {
+    const cwd = arguments[0]?.cwd || '/workspace'
+    session = openSession(chatId, cwd)
+  }
 
   return new Promise((resolve, reject) => {
     const job = { command, timeoutMs, signal, onStdout, onStderr, resolve, reject }

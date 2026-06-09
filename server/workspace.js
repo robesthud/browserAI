@@ -1065,4 +1065,5 @@ export {
   withWorkspaceScope,
   deleteWorkspaceScope,
   sanitizeScopeId,
+  getContainerWorkspaceRoot,
 }

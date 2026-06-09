@@ -21,6 +21,7 @@ import {
   searchWorkspaceContent,
   getFileHistory,
   restoreFileRevision,
+  getContainerWorkspaceRoot,
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
 import { runSandboxCommand } from './agentSandbox.js'
@@ -67,7 +68,8 @@ function safeWorkspaceCwd(relPath = '') {
   if (raw.includes('\0') || raw === '..' || raw.startsWith('../') || raw.includes('/../')) {
     throw new Error('invalid workspace path')
   }
-  return raw ? `/workspace/${raw}` : '/workspace'
+  const root = getContainerWorkspaceRoot()
+  return raw ? `${root}/${raw}` : root
 }
 
 async function runGit({ path = '', command, timeout_sec = 30 } = {}) {
@@ -1285,12 +1287,9 @@ export const TOOLS = {
       timeout: { type: 'number',  optional: true, description: 'Maximum seconds before the command is terminated. Default 120, max 1800.' },
       persist: { type: 'boolean', optional: true, description: 'Default true — use the per-chat persistent session. Set false for a fresh one-shot shell.' },
     },
-    handler: async ({
-      command, cwd = '/workspace',
-      timeout, timeout_sec,            // accept both my-style `timeout` and legacy `timeout_sec`
-      persist = true,
-      _signal, _onStdout, _onStderr, _chatId,
-    } = {}) => {
+    handler: async (args = {}) => {
+      let { command, cwd, timeout, timeout_sec, persist = true, _signal, _onStdout, _onStderr, _chatId } = args
+      if (!cwd) cwd = getContainerWorkspaceRoot()
       if (!command) return err('command is required')
       const rawSecs = Number(timeout ?? timeout_sec ?? 120)
       const timeoutMs = Math.min(1_800_000, Math.max(1_000, (Number.isFinite(rawSecs) ? rawSecs : 120) * 1000))
@@ -1302,7 +1301,7 @@ export const TOOLS = {
         // its working directory directly.
         if (persist && _chatId) {
           const { runInSession } = await import('./shellSession.js')
-          const wrappedCommand = (cwd && cwd !== '/workspace')
+          const wrappedCommand = (cwd && cwd !== getContainerWorkspaceRoot())
             ? `( cd ${JSON.stringify(cwd)} && ${command} )`
             : String(command)
           const r = await runInSession({
@@ -1337,7 +1336,7 @@ export const TOOLS = {
           stderr: truncate(r.stderr, 3000),
           exitCode: r.exitCode,
           persistent: false,
-          cwd: cwd || '/workspace',
+          cwd: cwd || getContainerWorkspaceRoot(),
           truncated: r.truncated || false,
           cancelled: r.cancelled || false,
         })
@@ -1407,11 +1406,12 @@ export const TOOLS = {
       command: { type: 'string', required: true, description: 'Shell command to spawn in the background.' },
       name:    { type: 'string', optional: true, description: 'Human-readable label shown in bash_list (default: first 60 chars of command).' },
     },
-    handler: async ({ command, name = '', _chatId = '' } = {}) => {
+    handler: async (args = {}) => {
+      let { command, name = '', _chatId = '' } = args
       if (!command) return err('command is required')
       try {
         const { startBackgroundTask } = await import('./shellSession.js')
-        const t = startBackgroundTask({ chatId: _chatId, command: String(command), name })
+        const t = startBackgroundTask({ chatId: _chatId, command: String(command), name, cwd: getContainerWorkspaceRoot() })
         return ok({ taskId: t.taskId, name: t.name, command: t.command, startedAt: t.startedAt })
       } catch (e) { return err(e.message) }
     },
