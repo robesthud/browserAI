@@ -293,7 +293,7 @@ export const TOOLS = {
     description:
       'Read a file from the workspace. Text files return their content. Images (jpg, png, webp, gif, bmp) return as visible content. Other binary types return metadata only.',
     params: {
-      path: { type: 'string', required: true, description: 'Path relative to workspace root, e.g. "src/app.js" or "images/dog.jpg".' },
+      path: { type: 'string', required: true, description: "Relative file path in the workspace (e.g., 'notes.txt', 'src/app.js', 'images/dog.jpg')" },
     },
     handler: async ({ path } = {}) => {
       if (!path) return err('path is required')
@@ -362,10 +362,10 @@ export const TOOLS = {
 
   // ── Workspace: write ───────────────────────────────────────────────────
   write_file: {
-    description: 'Create or fully overwrite a text file in the workspace. Use this for any file you want to save or modify wholesale.',
+    description: 'Create or overwrite a file in the workspace. Provide the full file content.',
     params: {
-      path: { type: 'string', required: true, description: 'Path relative to workspace root.' },
-      content: { type: 'string', required: true, description: 'Full file contents to write.' },
+      path: { type: 'string', required: true, description: "Relative file path in the workspace (e.g., 'notes.txt', 'src/app.js', 'data/events.csv')" },
+      content: { type: 'string', required: true, description: 'The full file content to write' },
     },
     handler: async ({ path, content = '' } = {}) => {
       if (!path) return err('path is required')
@@ -399,12 +399,11 @@ export const TOOLS = {
 
   edit_file: {
     description:
-      'Edit a file by searching for existing text and replacing it. It uses fuzzy matching that tolerates whitespace and indentation differences. Only the first match is replaced. For multiple surgical edits in the same file pass `edits: [{old_text, new_text}, …]` — applied in order.',
+      'Edit a file by searching for existing text and replacing it. It uses fuzzy matching that tolerates whitespace and indentation differences.',
     params: {
-      path: { type: 'string', required: true, description: 'Relative file path in the workspace (e.g. \'notes.txt\', \'src/app.js\', \'index.html\').' },
-      old_text: { type: 'string', optional: true, description: 'The text to find in the file. Uses fuzzy matching that tolerates whitespace and indentation differences. Only the first match is replaced.' },
-      new_text: { type: 'string', optional: true, description: 'The replacement text. Use an empty string to delete the matched text.' },
-      edits: { type: 'string', optional: true, description: 'JSON array of { old_text, new_text } objects for multiple edits in one call.' },
+      path: { type: 'string', required: true, description: "Relative file path in the workspace (e.g., 'notes.txt', 'src/app.js', 'index.html')" },
+      old_text: { type: 'string', required: true, description: 'The text to find in the file. Uses fuzzy matching that tolerates whitespace and indentation differences. Only the first match is replaced.' },
+      new_text: { type: 'string', required: true, description: 'The replacement text. Use an empty string to delete the matched text.' },
     },
     handler: async ({ path, file, old_text, new_text = '', edits } = {}) => {
       const filePath = path || file   // backward-compat alias
@@ -929,10 +928,10 @@ export const TOOLS = {
   // ── Web ────────────────────────────────────────────────────────────────
   web_search: {
     description:
-      'Search the web for current information. Returns relevant results with titles, URLs, and content snippets. Use when you need facts, recent events, or information beyond your training data. Each result has a numeric id and url that should be cited in the form [id](url) for every claim taken from search results.',
+      "Search the web for current information. Returns relevant results with titles, URLs, and content snippets. Use when you need facts, recent events, or information beyond your training data. When citing results, use the result's numeric id and url in this exact format: [id](url). For example, if a result has id=1 and url=https://example.com, cite it as [1](https://example.com). Do NOT use [source](url) or any other format. Every claim from search results must have a citation.",
     params: {
-      query: { type: 'string', required: true, description: 'The search query.' },
-      depth: { type: 'string', optional: true, description: 'Controls how many results are fetched and how much content is extracted from each. "1" — fewer results / shorter excerpts (fast); "2" — middle; "3" — more results / longer excerpts (uses more context). Default "2".' },
+      query: { type: 'string', required: true, description: 'The search query' },
+      depth: { type: 'string', required: true, description: 'The search tool accepts a depth parameter (1, 2, or 3) that controls how many results are fetched and how much content is extracted from each. At depth 1, fewer results are retrieved with shorter excerpts. At depth 3, more results are retrieved with longer, more detailed excerpts per source. Depth 2 falls between the two. Higher depth consumes more of the context window.' },
     },
     handler: async ({ query, depth = '2', limit } = {}) => {
       if (!query) return err('query is required')
@@ -1219,13 +1218,9 @@ export const TOOLS = {
   // the loop intercepts the call before invokeTool() is reached.
   ask_user: {
     description:
-      'Surfaces a UI component to the user with the purpose of asking clarifying questions with predefined options. Each question supports 2-6 predefined options plus an optional free-text input. Use this to help resolve important ambiguities and questions that impede the successful completion of the given task. Accepts either a single {question, options[]} (legacy form) OR an array of {questions:[{id, question, options[2-6], allowCustomResponse}]} (Arena form).',
+      'Surfaces an UI component to the user with the purpose of asking clarifying questions with predefined options. Each question supports 2-4 predefined options plus an optional free-text input. Use this to help resolve important ambiguities and questions that impede the succesful completion of the given task.',
     params: {
-      question:     { type: 'string', optional: true, description: 'Single-question form: the question text shown to the user.' },
-      options:      { type: 'array',  optional: true, description: 'Single-question form: array of {id, label, description?} — choices the user can pick. 2-6 options.' },
-      multi:        { type: 'boolean', optional: true, description: 'Single-question form: allow multiple selections. Default: true.' },
-      allow_custom: { type: 'boolean', optional: true, description: 'Single-question form: allow free-text answer. Default: true.' },
-      questions:    { type: 'array', optional: true, description: 'Multi-question form (Arena style): array of {id, question, options:[{id,label,description?}], allowCustomResponse?}. 1-6 questions per call.' },
+      questions: { type: 'array', required: true, description: 'List of questions to ask the user. Try to keep this to 4 or fewer questions. Items have {id, question, options:[{id, label, description}], allowCustomResponse}.' },
     },
     // Placeholder handler — the agent loop short-circuits this tool and
     // resolves it via askUserRegistry. Kept so the schema validates and
