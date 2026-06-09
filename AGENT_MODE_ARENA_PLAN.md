@@ -1183,10 +1183,11 @@ localStorage.removeItem('browserai.devtools')
 | v2.8 | Final answer / tool separation cleanup | ✅ Выполнено | действия отдельно, ответ отдельно |
 | v2.9 | Tool / provider error UX cleanup | ✅ Выполнено | user-friendly errors, raw только devtools |
 | v2.10 | Workspace / file preview UX cleanup | ✅ Выполнено | dev controls скрыты за devtools |
-| v2.11 | Retry failed tool button | ⬜ Не начато | — |
-| v2.12 | Export / replay agent trace JSON | ⬜ Не начато | — |
-| v2.13 | E2E test SSE stream shape | ⬜ Не начато | — |
-| v2.14 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
+| v2.11 | Composer / input UX cleanup | ✅ Выполнено | slash/dev autocomplete скрыт за devtools |
+| v2.12 | Retry failed tool button | ⬜ Не начато | — |
+| v2.13 | Export / replay agent trace JSON | ⬜ Не начато | — |
+| v2.14 | E2E test SSE stream shape | ⬜ Не начато | — |
+| v2.15 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
 
 ## v2.1 Developer-only Run Agent Self-Test
 
@@ -1627,6 +1628,39 @@ localStorage.setItem('browserai.devtools', '1')
 npm run build
 ```
 
+
+## v2.11 Composer / input UX cleanup
+
+### Сделано
+
+Обновлён компонент:
+
+```text
+src/components/Composer.jsx
+```
+
+Обычный Composer теперь чище:
+
+- placeholder: `Напишите сообщение…`;
+- кнопка workspace attachment называется `Из файлов`;
+- attachment chips не показывают technical label `vision-ready`;
+- slash-command autocomplete скрыт из обычного UI;
+- slash commands обрабатываются только в devtools mode.
+
+Devtools mode:
+
+```js
+localStorage.setItem('browserai.devtools', '1')
+```
+
+В devtools остаются slash commands и autocomplete для разработчика/power-user.
+
+### Проверки
+
+```bash
+npm run build
+```
+
 ## Журнал v2
 
 ### 2026-06-09
@@ -1642,6 +1676,7 @@ npm run build
 - Выполнен v2.8: final answer / tool separation cleanup — процесс действий отделён от финального markdown-ответа.
 - Выполнен v2.9: tool/provider error UX cleanup — обычный UI показывает понятные ошибки, raw details только в devtools.
 - Выполнен v2.10: workspace/file preview UX cleanup — dev controls скрыты за devtools, обычная панель показывает только пользовательские файловые действия.
+- Выполнен v2.11: composer/input UX cleanup — slash/dev autocomplete скрыт за devtools, обычный input стал проще.
 
 
 ### 2026-06-09 — корректировка v2.1

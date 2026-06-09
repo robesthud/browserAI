@@ -14,6 +14,11 @@ import { filterWorkspaceTree, workspaceApi } from '../lib/workspace.js'
 import { runSlashCommand, parseMentions } from '../lib/slashCommands.js'
 import SlashAutocomplete from './SlashAutocomplete.jsx'
 
+function devtoolsEnabled() {
+  try { return localStorage.getItem('browserai.devtools') === '1' }
+  catch { return false }
+}
+
 function WorkspacePickerModal({ open, onClose, onPick }) {
   const [tree, setTree] = useState(null)
   const [search, setSearch] = useState('')
@@ -132,6 +137,7 @@ export default function Composer({
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
   const fileInputRef = useRef(null)
   const taRef = useRef(null)
+  const isDev = devtoolsEnabled()
 
   const addFiles = async (fileList) => {
     if (!fileList || fileList.length === 0) return
@@ -230,7 +236,7 @@ export default function Composer({
     // ── Slash-command interception ──
     // If the first non-whitespace token is /<cmd>, route to runSlashCommand
     // which may either consume the input entirely or rewrite it.
-    if (t.startsWith('/')) {
+    if (isDev && t.startsWith('/')) {
       try {
         const slashRes = await runSlashCommand(t, {
           newChat: onSlashClear,
@@ -371,7 +377,7 @@ export default function Composer({
             className={`relative rounded-2xl border bg-graphite-800 p-2 shadow-[0_8px_40px_-12px_rgba(0,0,0,0.6)] transition-colors md:rounded-3xl md:p-4
               ${dragOver ? 'border-cream/40 bg-graphite-750' : 'border-white/[0.06]'}`}
           >
-            {autocompleteOpen && (
+            {isDev && autocompleteOpen && (
               <SlashAutocomplete
                 text={text}
                 caret={caret}
@@ -405,7 +411,7 @@ export default function Composer({
                       <div className="flex min-w-0 flex-col">
                         <span className="max-w-[160px] truncate">{a.name}</span>
                         <span className="text-[10px] text-cream-faint">
-                          {formatSize(a.size)}{isImage ? ' · vision-ready' : ''}
+                          {formatSize(a.size)}
                         </span>
                       </div>
                       <button
@@ -452,7 +458,7 @@ export default function Composer({
                 }
               }}
               rows={1}
-              placeholder="Спросите что угодно…"
+              placeholder="Напишите сообщение…"
               className="block w-full resize-none border-0 bg-transparent px-2 pb-2 pt-1 text-[14px]
                          text-cream placeholder:text-cream-faint focus:outline-none focus:ring-0 md:pb-3 md:text-[15px]"
             />
@@ -479,7 +485,7 @@ export default function Composer({
                            md:h-auto md:w-auto md:gap-2 md:px-3.5 md:py-2"
                 >
                   <IconFolder />
-                  <span className="hidden md:inline">Workspace</span>
+                  <span className="hidden md:inline">Из файлов</span>
                 </button>
 
                 <button
