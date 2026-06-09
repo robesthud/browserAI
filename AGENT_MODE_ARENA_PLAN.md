@@ -1035,6 +1035,7 @@ npm run build
   - `TIMEWEB_USER`
   - `TIMEWEB_APP_DIR`
 - Опционально добавить staging secrets.
+- Android monthly auto workflow удалён из активных workflows, потому что отдельные `build-android-apk.yml` и `release-android-apk.yml` уже покрывают APK-сборки и не должны ломать основной CI/CD.
 - Добавить post-deploy call к `/api/agent/self-test` после успешного deploy.
 - Добавить branch protection: CI required before merge.
 - Убрать ручной SSH deploy после настройки secrets.
@@ -1107,3 +1108,4 @@ npm run build
   - CI проверяет agent runtime modules через `node --check`, ESLint critical modules и `npm run build`;
   - production deploy workflow больше не падает при отсутствующих TIMEWEB secrets, а пропускает deploy с notice;
   - staging deploy workflow также безопасно пропускается без staging secrets.
+  - удалён сломанный `monthly-release.yml` из активных workflows; Android APK остаётся через `build-android-apk.yml` и `release-android-apk.yml`.
