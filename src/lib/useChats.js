@@ -91,7 +91,8 @@ function summarizeToolCallForHistory(tc) {
   if (!r && !tc.error) return outline
 
   const clip = (str, head = 1500, tail = 500) => {
-    const s = String(str || '')
+    // Strip ANSI codes so LLM doesn't see garbage like \x1b[31m
+    const s = String(str || '').replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '')
     if (s.length <= head + tail + 100) return s
     return `${s.slice(0, head)}\n...[${s.length - head - tail} omitted]...\n${s.slice(-tail)}`
   }

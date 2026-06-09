@@ -30,9 +30,17 @@ import { upsertFact, forgetFact, listFacts } from './userMemory.js'
 import { addDocument, deleteDocument, listDocuments, searchKnowledge } from './knowledgeBase.js'
 
 // ── Utility ─────────────────────────────────────────────────────────────────
+function stripAnsi(str) {
+  // Removes standard ANSI color/control codes which clutter LLM context
+  return str.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '')
+}
+
 function truncate(str, max = 8000) {
-  const s = String(str ?? '')
-  return s.length > max ? s.slice(0, max) + `\n... [truncated, ${s.length - max} more chars]` : s
+  const s = stripAnsi(String(str ?? ''))
+  if (s.length <= max) return s
+  const head = Math.floor(max * 0.3) // 30% from the start
+  const tail = Math.floor(max * 0.7) // 70% from the end (usually where the error is)
+  return s.slice(0, head) + `\n\n... [truncated, ${s.length - max} more chars] ...\n\n` + s.slice(-tail)
 }
 
 function ok(result) { return { ok: true, result } }
@@ -1270,7 +1278,7 @@ export const TOOLS = {
   // ── Shell (sandboxed, persistent) ─────────────────────────────────────
   bash: {
     description:
-      'Run a bash command in the sandboxed workspace. Commands run in the provided cwd, defaulting to /workspace, without a controlling terminal and with stdin closed. Working directory changes, shell variables, aliases, functions, history, exported environment changes, and background process state are not preserved across calls UNLESS persist=true (default — uses a per-chat persistent shell session). The workspace is at /workspace; files outside that root are not persisted in snapshots.',
+      'Run a bash command in the sandboxed workspace. Commands run in the provided cwd, defaulting to /workspace, without a controlling terminal and with stdin closed. IMPORTANT: Interactive commands will hang until timeout! Always use non-interactive flags (e.g. apt-get install -y, npm init -y). Working directory changes, exported environment variables, and background process state ARE PRESERVED across calls by default (persist=true) using a per-chat persistent shell session. Long-running commands (servers) MUST be run using bash_bg, otherwise this tool will block.',
     params: {
       command: { type: 'string',  required: true, description: 'The bash command to execute.' },
       cwd:     { type: 'string',  optional: true, description: 'Working directory for this command. Defaults to /workspace.' },
