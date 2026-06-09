@@ -1191,7 +1191,7 @@ localStorage.removeItem('browserai.devtools')
 | v2.16 | Always-on Agent Mode UI cleanup | ✅ Выполнено (один в один) | agent toggle скрыт за devtools |
 | v2.17 | Retry failed tool button | ✅ Выполнено (один в один) | Полностью working (App.jsx + sendAgentMessage) |
 | v2.18 | Export / replay agent trace JSON | ✅ Выполнено (один в один) | Полноценный экспорт trace (agentState + toolCalls + thoughts) |
-| v2.19 | E2E test SSE stream shape | ⬜ Не начато | — |
+| v2.19 | E2E test SSE stream shape | ✅ Выполнено (один в один) | Базовые тесты формы SSE событий |
 | v2.20 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
 
 ## v2.1 Developer-only Run Agent Self-Test
