@@ -913,13 +913,16 @@ async function runAgentInner({
       autoTools.push('kb_search')
     }
     
+    // Generate valid tool_call_ids for native providers
+    const autoIds = autoTools.map((_, i) => `call_automem${Math.random().toString(36).slice(2)}${i}`)
+
     // 1. Simulate the assistant asking for these tools
     if (useNativeTools) {
       convo.push({
         role: 'assistant',
         content: 'Проверяю базу знаний и память перед началом...',
         tool_calls: autoTools.map((t, i) => ({
-          id: `auto-mem-${i}`,
+          id: autoIds[i],
           type: 'function',
           function: { name: t, arguments: JSON.stringify(t === 'kb_search' ? { query: autoQuery, top_k: 3 } : {}) }
         }))
@@ -962,7 +965,7 @@ async function runAgentInner({
       const obsStr = clipToolOutput(toolName, typeof obsRaw === 'string' ? obsRaw : JSON.stringify(obsRaw, null, 2))
       
       if (useNativeTools) {
-        convo.push({ role: 'tool', tool_call_id: `auto-mem-${idx}`, name: toolName, content: obsStr })
+        convo.push({ role: 'tool', tool_call_id: autoIds[idx], name: toolName, content: obsStr })
       } else {
         convo.push({ role: 'user', content: `<arena-system-message>\nTool result for ${toolName}:\nok: ${Boolean(r.ok)}\n</arena-system-message>\n${obsStr}` })
       }
@@ -1272,40 +1275,9 @@ async function runAgentInner({
 
       // ── Safety nets pass: stuck-loop, pre-deploy verify, plan dedupe.
       // Pre-deploy verify can short-circuit the whole turn (push-back).
-      const blockedReasons = []
-      for (const c of calls) {
-        if (violatesPreDeployVerify(c, recentToolHistory)) {
-          blockedReasons.push(
-            `Прежде чем ${c.tool === 'git_push' ? 'пушить' : 'коммитить'} — запусти verify_code и убедись что код проходит. ` +
-            `Текущий запрос на ${c.tool} заблокирован.`,
-          )
-          break
-        }
-      }
-      if (blockedReasons.length && !pushedBackThisTurn) {
-        pushedBackThisTurn = true
-        sse(res, 'thought', { step, text: 'Заблокировал git_push/commit — нет успешного verify_code за последние шаги. Перезапрашиваю.' })
-        convo.push({ role: 'user', content: blockedReasons.join('\n') })
-        continue
-      }
 
-      // Stuck-loop detector: same exact (tool, args) called STUCK_THRESHOLD
-      // times in a row. Push back ONCE per turn, telling the model to vary.
-      for (const c of calls) {
-        const fp = callFingerprint(c)
-        if (isStuckLoop(recentCallFingerprints, fp) && !pushedBackThisTurn) {
-          pushedBackThisTurn = true
-          sse(res, 'thought', { step, text: `Цикл: тот же вызов ${c.tool} повторяется. Прошу попробовать другой подход.` })
-          convo.push({
-            role: 'user',
-            content:
-              `Ты уже звал ${c.tool} с теми же аргументами ${STUCK_THRESHOLD} раз подряд и результат не помогает. ` +
-              `Попробуй другой инструмент или другие параметры; не повторяй идентичный вызов.`,
-          })
-          break
-        }
-      }
-      if (pushedBackThisTurn) continue
+
+
 
       // Dedupe plan_check before invocation.
       for (let i = 0; i < calls.length; i += 1) {
@@ -1321,11 +1293,17 @@ async function runAgentInner({
       // Run all tools in parallel. ask_user is sequential within its own
       // dispatch (it blocks waiting for the user) — it should rarely be
       // batched with other calls, but if a model does it, we await both.
-      const results = await Promise.all(calls.map(async (call, idx) => {
-        // Record fingerprint BEFORE running so the next turn sees it
-        // (otherwise the very next call could match itself and trigger).
+const results = await Promise.all(calls.map(async (call, idx) => {
         recentCallFingerprints.push(callFingerprint(call))
         if (recentCallFingerprints.length > 20) recentCallFingerprints.shift()
+
+        // Safety nets
+        if (violatesPreDeployVerify(call, recentToolHistory)) {
+           return { call, r: makeToolErrorResult('Blocked: you must verify_code successfully before committing/pushing.'), pushedBack: true, isBlocked: true }
+        }
+        if (isStuckLoop(recentCallFingerprints, callFingerprint(call))) {
+           return { call, r: makeToolErrorResult(`Blocked: Stuck in a loop. You called this exact tool with these arguments ${STUCK_THRESHOLD} times in a row. Try a different approach.`), pushedBack: true, isBlocked: true }
+        }
 
         // ── Tool Router hardening ─────────────────────────────────
         // Validate and coerce arguments BEFORE approval/execution. This
@@ -1351,13 +1329,7 @@ async function runAgentInner({
             sse(res, 'thought', { step, text: `ОШИБКА СХЕМЫ ${call.tool}: ${validation.error}. Запрашиваю исправление.` })
             
             const schemaErrStr = `[schema_validation_error]\nTool '${call.tool}' rejected your arguments: ${validation.error}\nFix the arguments and try again.\n[/schema_validation_error]`
-            if (useNativeTools) {
-              // We must complete the native tool roundtrip before pushing back
-              convo.push({ role: 'tool', tool_call_id: call.nativeId, name: call.tool, content: schemaErrStr })
-            } else {
-              convo.push({ role: 'user', content: schemaErrStr })
-            }
-            return { call, pushedBack: true }
+            return { call, r: makeToolErrorResult(schemaErrStr), pushedBack: true, isSchemaErr: true }
           }
 
           // If we already pushed back this turn, or it's aborted, fall through to hard failure
@@ -1517,22 +1489,9 @@ async function runAgentInner({
            pushedBackThisTurn = true
            sse(res, 'thought', { step, text: `Ошибка выполнения ${call.tool}. Даю агенту шанс исправить.` })
            const execErrStr = `[execution_error]\nTool '${call.tool}' failed: ${r.error}\nConsider this error, fix the parameters or try a different approach.\n[/execution_error]`
-           if (useNativeTools) {
-             convo.push({ role: 'tool', tool_call_id: call.nativeId, name: call.tool, content: execErrStr })
-           } else {
-             convo.push({ role: 'user', content: execErrStr })
-           }
-           // We still update state and emit tool_result so the UI shows the red card
            updateAgentStateFromTool(agentState, call.tool, r, call.args || {})
-           sse(res, 'tool_result', {
-             step, sub: idx,
-             name: call.tool,
-             ok: Boolean(r.ok),
-             result: r.ok ? r.result : undefined,
-             error: r.ok ? undefined : r.error,
-             structured: structuredResult,
-           })
-           return { call, pushedBack: true }
+           sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: r.error, structured: structuredResult })
+           return { call, r: makeToolErrorResult(execErrStr), pushedBack: true, isExecErr: true }
         }
 
         updateAgentStateFromTool(agentState, call.tool, r, call.args || {})
