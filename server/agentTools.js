@@ -790,11 +790,20 @@ export const TOOLS = {
         const saved = await uploadFromUrl(parentPath, String(url), { branch: String(branch || '') })
         const tree = await getWorkspaceTree(false)
         const node = drillTree(tree, parentPath) || tree
+        const projects = collectProjectsFromTree(tree)
+        const groundingNote = `POST-FETCH GROUNDING (CRITICAL FOR ALL MODELS): download_url succeeded. Files are NOW LOCAL in /workspace/${parentPath || ''}. 
+State: local copy exists. 
+You MUST immediately use ONLY workspace tools for analysis: list_files, find_projects (detected ${projects.length} projects), read_file, search_files, bash on local paths.
+NEVER call download_url, git_clone, web_search or any remote tool on the original URL again unless user says "обнови" or "pull latest".
+Tree snippet at destination: ${JSON.stringify(node).slice(0,800)}
+Projects: ${JSON.stringify(projects.slice(0,5))}`
         return ok({
           url,
           destination: parentPath || '/',
           ...saved,
           tree: node,
+          postFetchGrounding: groundingNote,
+          localProjects: projects.slice(0,5),
         })
       } catch (e) { return err(e.message) }
     },
@@ -853,11 +862,28 @@ export const TOOLS = {
       if (!url) return err('url is required')
       const depthArg = Math.min(100, Math.max(1, Number(depth) || 1))
       const nameArg = name ? ` ${shellQuote(name)}` : ''
-      return runGit({
+      const gitResult = await runGit({
         path,
         command: `git clone --depth ${depthArg} ${shellQuote(url)}${nameArg} && find . -maxdepth 2 -type f | sed 's#^./##' | head -80`,
         timeout_sec: 120,
       })
+      if (gitResult.ok) {
+        const tree = await getWorkspaceTree(false)
+        const projects = collectProjectsFromTree(tree)
+        const groundingNote = `POST-FETCH GROUNDING (CRITICAL FOR ALL MODELS): git_clone succeeded for ${url}. Files are NOW LOCAL in /workspace. 
+State: local copy exists (git history present). 
+You MUST immediately use ONLY workspace tools: list_files, find_projects (detected ${projects.length} projects), read_file on local paths (package.json, README etc), search_files, bash (local).
+NEVER re-call git_clone, download_url or remote tools on ${url} for "analyze", "проанализируй", "what is in the project".
+Recent clone output: ${gitResult.result?.stdout?.slice(0,600) || ""}
+Projects found: ${JSON.stringify(projects.slice(0,5))}`
+        return ok({
+          ...gitResult.result,
+          postFetchGrounding: groundingNote,
+          localProjects: projects.slice(0,5),
+          url,
+        })
+      }
+      return gitResult
     },
   },
 

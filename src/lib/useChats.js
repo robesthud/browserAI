@@ -107,6 +107,12 @@ function summarizeToolCallForHistory(tc) {
   else if (tc.name === 'web_search' && Array.isArray(r?.results)) outline += `  → ${r.results.length} results\n${clip(JSON.stringify(r.results), 2000, 500)}`
   else if (tc.name === 'web_fetch') outline += `  → \n${clip(r?.text || '', 2000, 1000)}`
   else if (tc.name === 'download_url' && r?.savedPath) outline += `  → ${r.savedPath}`
+  else if (tc.name === 'download_url' || tc.name === 'git_clone') {
+    const dest = r?.savedPath || r?.destination || r?.path || '/workspace'
+    const grounding = r?.postFetchGrounding || (r?.localProjects ? `Local projects: ${r.localProjects.length}` : '')
+    outline += `  → SUCCESS. Files NOW LOCAL at ${dest}. 
+**NEXT: ONLY use list_files / find_projects / read_file / search_files / local bash. DO NOT re-use remote download/git/web tools for this project. ${grounding}**`
+  }
   
   if (tc.error) outline += `  ! ${String(tc.error).slice(0, 500)}`
   return outline
