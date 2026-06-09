@@ -8,6 +8,7 @@ import SettingsModal from './components/SettingsModal.jsx'
 import AuthGate from './components/AuthGate.jsx'
 import DeepSeekAdmin from './components/DeepSeekAdmin.jsx'
 import OpsAdmin from './components/OpsAdmin.jsx'
+import AgentAdmin from './components/AgentAdmin.jsx'
 import ModelBar from './components/ModelBar.jsx'
 import ChatSearchModal from './components/ChatSearchModal.jsx'
 import CheckpointsTray from './components/CheckpointsTray.jsx'
@@ -609,6 +610,13 @@ export default function App() {
     return (
       <AuthGate>
         {() => <OpsAdmin />}
+      </AuthGate>
+    )
+  }
+  if (pathname === '/admin/agent') {
+    return (
+      <AuthGate>
+        {() => <AgentAdmin />}
       </AuthGate>
     )
   }

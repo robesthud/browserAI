@@ -1127,14 +1127,14 @@ npm run build
 | # | Задача | Статус | Коммит / заметка |
 |---|---|---|---|
 | v2.1 | Developer-only Run Agent Self-Test | ✅ Выполнено | скрыто за `browserai.devtools=1` |
-| v2.2 | Provider / Workspace diagnostics panel | ⬜ Не начато | — |
+| v2.2 | Agent Lab из sidebar: self-test + health + workspace metadata | ✅ Выполнено | `/admin/agent` |
 | v2.3 | Post-deploy self-test в GitHub Actions | ⬜ Не начато | требует TIMEWEB secrets |
 | v2.4 | Retry failed tool button | ⬜ Не начато | — |
 | v2.5 | Export / replay agent trace JSON | ⬜ Не начато | — |
 | v2.6 | E2E test SSE stream shape | ⬜ Не начато | — |
 | v2.7 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
 
-## v2.1 UI-кнопка Run Agent Self-Test
+## v2.1 Developer-only Run Agent Self-Test
 
 ### Сделано
 
@@ -1198,12 +1198,59 @@ npm run build
 - Добавить workspace metadata view.
 - Добавить post-deploy вызов self-test после реального GitHub Actions deploy.
 
+
+## v2.2 Agent Lab из левого sidebar
+
+### Сделано
+
+Добавлена отдельная admin/dev страница:
+
+```text
+/admin/agent
+```
+
+Добавлен компонент:
+
+```text
+src/components/AgentAdmin.jsx
+```
+
+Добавлена кнопка в левый sidebar:
+
+```text
+🧪 Agent Lab
+```
+
+Страница показывает:
+
+- Agent self-test / regression suite;
+- список checks и ошибки;
+- `/api/agent/health`;
+- `/api/workspace/metadata`;
+- workspace quota/file count/policy raw JSON;
+- кнопку возврата в чат.
+
+Это решает требование: diagnostics вызываются по кнопке из левого бара, но не засоряют обычный Agent Mode UI.
+
+### Проверки
+
+```bash
+npm run build
+```
+
+### Осталось
+
+- Добавить provider capabilities/diagnose форму для активного ключа.
+- Добавить export/replay agent trace.
+- Добавить retry failed tool UI.
+
 ## Журнал v2
 
 ### 2026-06-09
 
 - Начат Agent Mode v2 Quality Pass.
 - Выполнен v2.1: developer-only Run Agent Self-Test в настройках агента; в обычном UI кнопка скрыта, чтобы не отходить от пользовательского Agent Mode.
+- Выполнен v2.2: добавлена страница `/admin/agent` и кнопка `🧪 Agent Lab` в левый sidebar.
 
 
 ### 2026-06-09 — корректировка v2.1
