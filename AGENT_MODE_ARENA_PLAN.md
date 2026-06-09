@@ -50,8 +50,8 @@ Final Answer or Ask User / Resume
 | 2 | Model Planner / Agent Loop hardening | ✅ Выполнено | см. журнал выполнения |
 | 3 | Tool Router hardening | ✅ Выполнено (полностью, один в один с Arena) | agentCore.js + agentLoop.js |
 | 4 | Provider adapters 2.0 | ✅ Выполнено (полностью, один в один с Arena) | native tools for Anthropic + Gemini |
-| 5 | Streaming Protocol | ✅ Выполнено (полностью, один в один с Arena) | assistant_delta + thinking_delta |
-| 6 | Ask User pause/resume | ✅ Выполнено (полностью, один в один с Arena) | askUserRegistry.js |
+| 5 | Streaming Protocol | ✅ Выполнено (полностью, один в один с Arena) |
+| 6 | Ask User pause/resume | ✅ Выполнено (полностью, один в один с Arena) |
 | 7 | Workspace / Sandbox Policy | ✅ Выполнено (полностью, один в один с Arena) | single /workspace root, no per-chat scoping |
 | 8 | Context / Memory / Summarization | ✅ Выполнено | см. журнал выполнения |
 | 9 | UI parity с Arena Agent Mode | ✅ Выполнено | см. журнал выполнения |
