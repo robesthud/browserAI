@@ -90,6 +90,28 @@ export default function AgentSettingsSection() {
     }
   }
 
+  // v2.18: Export full agent trace (one-to-one with Arena)
+  const exportAgentTrace = () => {
+    try {
+      const trace = {
+        exportedAt: new Date().toISOString(),
+        schema: 'browserai.agent_trace.v1',
+        chat: window.__currentChatData || null,
+        messages: window.__currentMessages || [],
+        note: 'Full agent execution trace for debugging and replay'
+      }
+      const blob = new Blob([JSON.stringify(trace, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `agent-trace-${Date.now()}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      alert('Failed to export trace: ' + e.message)
+    }
+  }
+
   // ── MCP servers ─────────────────────────────────────────────────────
   const [mcp, setMcp] = useState({ servers: [] })
   const [mcpConfig, setMcpConfig] = useState({})
@@ -235,6 +257,13 @@ export default function AgentSettingsSection() {
               disabled={selfTestRunning}
               className="shrink-0 rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-graphite-900 transition hover:scale-[1.02] disabled:opacity-50"
             >{selfTestRunning ? 'Проверяю…' : 'Run self-test'}</button>
+            <button
+              type="button"
+              onClick={exportAgentTrace}
+              className="shrink-0 rounded-lg border border-white/20 px-3 py-1.5 text-[12px] font-medium text-cream transition hover:bg-white/10"
+            >
+              Export trace
+            </button>
           </div>
 
           {selfTest && (
