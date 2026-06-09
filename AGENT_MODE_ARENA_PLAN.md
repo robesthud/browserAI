@@ -1879,7 +1879,7 @@ localStorage.setItem('browserai.devtools', '1')
 | # | Этап | Цель | Статус |
 |---|------|------|--------|
 | v2.21 | Live agent_state streaming | Полноценная передача `agent_state` на фронт в реальном времени с обновлением UI | ⬜ Не начато |
-| v2.22 | Automatic memory integration | Автоматический `recall_facts` / `kb_search` перед сложными задачами | ✅ Усилено в planning directive |
+| v2.22 | Automatic memory integration | ✅ Выполнено (один в один) | Автоматический `recall_facts` / `kb_search` перед сложными задачами в runtime |
 | v2.23 | Full native tool calling | 100% нативная поддержка tool calls для Anthropic, Gemini, DeepSeek, Groq | ✅ Частично (Anthropic + Gemini) |
 | v2.24 | Advanced error recovery | Улучшенный retry + self-healing при ошибках инструментов | ⬜ Не начато |
 | v2.25 | Arena-style final answer formatting | Точное соответствие формата финального ответа (сводка действий + результат) | ⬜ Не начато |
@@ -1916,8 +1916,8 @@ localStorage.setItem('browserai.devtools', '1')
 
 | ID | Задача | Описание | Приоритет |
 |----|--------|----------|-----------|
-| P3-06 | Automatic memory recall | Автоматический вызов `recall_facts` / `kb_search` перед сложными задачами | Высокий |
-| P3-07 | Memory injection | Вставка релевантных фактов в контекст перед планированием | Высокий |
+| P3-06 | Automatic memory recall | ✅ Выполнено (один в один) | Высокий |
+| P3-07 | Memory injection | ✅ Выполнено (один в один) | Высокий |
 | P3-08 | User preference memory | Стабильное запоминание предпочтений пользователя | Средний |
 | P3-09 | Project memory | Память о структуре проекта и предыдущих решениях | Средний |
 
