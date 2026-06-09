@@ -1866,3 +1866,32 @@ localStorage.setItem('browserai.devtools', '1')
 ```
 
 - `/admin/agent` остаётся доступной как отдельная admin/dev diagnostics page.
+
+---
+
+## Дальнейший план (после v2.20) — Полная парность с Arena.ai Agent Mode
+
+### Цель
+Довести BrowserAI Agent Mode до **точного соответствия** по поведению, UX и возможностям с Agent Mode на Arena.ai.
+
+### Новые этапы
+
+| # | Этап | Цель | Статус |
+|---|------|------|--------|
+| v2.21 | Live agent_state streaming | Полноценная передача `agent_state` на фронт в реальном времени с обновлением UI | ⬜ Не начато |
+| v2.22 | Automatic memory integration | Автоматический `recall_facts` / `kb_search` перед сложными задачами | ✅ Усилено в planning directive |
+| v2.23 | Full native tool calling | 100% нативная поддержка tool calls для Anthropic, Gemini, DeepSeek, Groq | ✅ Частично (Anthropic + Gemini) |
+| v2.24 | Advanced error recovery | Улучшенный retry + self-healing при ошибках инструментов | ⬜ Не начато |
+| v2.25 | Arena-style final answer formatting | Точное соответствие формата финального ответа (сводка действий + результат) | ⬜ Не начато |
+| v2.26 | Full E2E test coverage | Автоматические тесты ключевых сценариев Agent Mode | ⬜ Не начато |
+
+### Финальная checklist (один в один с Arena)
+
+- [ ] Runtime panel показывает актуальное `agent_state` в реальном времени
+- [ ] Memory tools используются автоматически
+- [ ] Все основные провайдеры используют нативный tool calling
+- [ ] Retry + self-healing работает стабильно
+- [ ] Финальный ответ выглядит точно как в Arena
+- [ ] Нет визуальных и поведенческих отличий в обычном пользовательском режиме
+
+Дата обновления плана: 2026-06-09
