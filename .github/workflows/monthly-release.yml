@@ -1,14 +1,25 @@
 name: Monthly Auto Release
 
-# Автоматический релиз каждое 1-е число месяца в 09:00 UTC
-# Также можно запустить вручную через Actions → Run workflow
 on:
   schedule:
     - cron: '0 9 1 * *'
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish GitHub Release after building APK'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
 
 permissions:
   contents: write
+
+concurrency:
+  group: monthly-android-release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -33,10 +44,13 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
-      - name: Restore signing key from secret
+      - name: Restore or create signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
-          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android-app/app/debug.keystore
+          set -euo pipefail
+          if [ -n "${KEYSTORE_BASE64:-}" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android-app/app/debug.keystore
           elif [ -f "android-app/app/debug.keystore" ]; then
             echo "✓ Keystore found in repo"
           else
@@ -54,15 +68,14 @@ jobs:
       - name: Set version from date
         working-directory: android-app
         run: |
+          set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
           import re
-          from datetime import datetime
+          from datetime import datetime, timezone
 
-          now = datetime.utcnow()
-          # versionCode: YYYYMMDD как число, например 20260601
+          now = datetime.now(timezone.utc)
           version_code = int(now.strftime('%Y%m%d'))
-          # versionName: 2026.6.1
           version_name = f"{now.year}.{now.month}.{now.day}"
 
           p = Path('app/build.gradle')
@@ -75,31 +88,32 @@ jobs:
 
       - name: Build release APK
         working-directory: android-app
-        run: gradle assembleRelease --no-daemon --stacktrace
+        run: ./gradlew assembleRelease --no-daemon --stacktrace || gradle assembleRelease --no-daemon --stacktrace
 
       - name: Get version info
         id: version
         run: |
           VERSION=$(date -u +"%Y.%-m.%-d")
           TAG="android-v$(date -u +"%Y%m%d")"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Rename APK
         run: |
+          set -euo pipefail
           mkdir -p release
           cp android-app/app/build/outputs/apk/release/app-release.apk \
-             release/BrowserAI-${{ steps.version.outputs.version }}.apk
+             "release/BrowserAI-${{ steps.version.outputs.version }}.apk"
 
       - name: Create GitHub Release
+        if: ${{ github.event_name == 'schedule' || inputs.publish == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Удаляем старый тег если существует (перезапись ежемесячного релиза)
-          gh release delete ${{ steps.version.outputs.tag }} --yes 2>/dev/null || true
-
-          gh release create ${{ steps.version.outputs.tag }} \
-            release/BrowserAI-${{ steps.version.outputs.version }}.apk \
+          set -euo pipefail
+          gh release delete "${{ steps.version.outputs.tag }}" --yes 2>/dev/null || true
+          gh release create "${{ steps.version.outputs.tag }}" \
+            "release/BrowserAI-${{ steps.version.outputs.version }}.apk" \
             --title "BrowserAI Android ${{ steps.version.outputs.version }}" \
             --notes "Ежемесячный автоматический релиз ${{ steps.version.outputs.version }}.
 
@@ -107,3 +121,11 @@ jobs:
 
 Что нового: актуальная версия сервера и безопасности." \
             --latest
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Monthly Android release" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "* status: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "* ref: ${{ github.ref }}" >> "$GITHUB_STEP_SUMMARY"
