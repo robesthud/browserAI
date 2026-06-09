@@ -7,6 +7,7 @@ import AgentThought from './AgentThought.jsx'
 import AgentPlanCard from './AgentPlanCard.jsx'
 import AgentExtendedThinking from './AgentExtendedThinking.jsx'
 import AgentAskUser from './AgentAskUser.jsx'
+import AgentRuntimePanel from './AgentRuntimePanel.jsx'
 import JobCard from './JobCard.jsx'
 import usePullToRefresh from '../lib/usePullToRefresh.js'
 import useSwipeActions from '../lib/useSwipeActions.js'
@@ -85,7 +86,7 @@ function WorkingSpinner() {
   )
 }
 
-function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, onJobDone, onBranch }) {
+function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, onCancelAskUser, onJobDone, onBranch }) {
   const isUser = m.role === 'user'
 
   // Mobile swipe-left -> reveal action buttons (regenerate / copy).
@@ -200,6 +201,13 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                 tokens={Number(m.tokens?.reasoningTokens || 0)}
               />
             )}
+            <AgentRuntimePanel
+              context={m.agentContext}
+              state={m.agentState}
+              protocol={m.streamProtocol}
+              routerWarnings={m.routerWarnings || []}
+            />
+
             {/* Agent loop: interleave intermediate thoughts and tool calls by step,
                 so the UI shows the model planning before each action — same UX as
                 Cursor / Arena. */}
@@ -307,11 +315,13 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                     allowCustom={q.allowCustom}
                     answered={q.answered}
                     answer={q.answer}
+                    expiresAt={q.expiresAt}
                     kind={q.kind || 'question'}
                     tool={q.tool || ''}
                     category={q.category || ''}
                     args={q.args || null}
                     onSubmit={(payload) => onAnswerAskUser?.(q.id, payload)}
+                    onCancel={() => onCancelAskUser?.(q.id)}
                   />
                 ))}
               </div>
@@ -341,7 +351,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
   )
 }
 
-export default function MessageList({ messages, aiWorking, onEdit, onRegenerate, onRefresh, onAnswerAskUser, onJobDone, onBranch }) {
+export default function MessageList({ messages, aiWorking, onEdit, onRegenerate, onRefresh, onAnswerAskUser, onCancelAskUser, onJobDone, onBranch }) {
   const bottomRef = useRef(null)
   const scrollRef = useRef(null)
   const prevLenRef = useRef(messages.length)
@@ -442,6 +452,7 @@ export default function MessageList({ messages, aiWorking, onEdit, onRegenerate,
             onJobDone={onJobDone}
             onBranch={onBranch}
             onAnswerAskUser={(questionId, payload) => onAnswerAskUser?.(m.id, questionId, payload)}
+            onCancelAskUser={(questionId) => onCancelAskUser?.(m.id, questionId)}
           />
         ))}
       </div>

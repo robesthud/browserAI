@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 /**
  * Multi-select question card rendered when the agent emits an
@@ -21,7 +21,9 @@ export default function AgentAskUser({
   allowCustom = true,
   answered = false,
   answer = null,        // { selected, custom } when answered
+  expiresAt = null,
   onSubmit,
+  onCancel,
   // ── approval-mode extras (set when kind === 'approval') ────────────
   kind = 'question',    // 'question' | 'approval'
   tool = '',
@@ -32,6 +34,14 @@ export default function AgentAskUser({
   const [custom, setCustom] = useState(answered ? (answer?.custom || '') : '')
   const [sending, setSending] = useState(false)
   const isApproval = kind === 'approval'
+  const expiresLabel = useMemo(() => {
+    if (!expiresAt || answered) return ''
+    const ms = Number(expiresAt) - Date.now()
+    if (!Number.isFinite(ms) || ms <= 0) return 'истекает сейчас'
+    const min = Math.floor(ms / 60000)
+    const sec = Math.floor((ms % 60000) / 1000)
+    return min > 0 ? `истекает через ${min}м ${sec}с` : `истекает через ${sec}с`
+  }, [expiresAt, answered])
 
   // For approval mode: one-click submit (no checkbox dance, no custom text).
   const quickSubmit = async (verdict /* 'approve' | 'deny' */) => {
@@ -98,6 +108,7 @@ export default function AgentAskUser({
           <span className="text-[11px] font-semibold uppercase tracking-wider text-cream-faint">
             🔐 запрошено разрешение
           </span>
+          {expiresLabel && <span className="text-[10px] text-amber-300">{expiresLabel}</span>}
           <span className="rounded-full border border-white/15 bg-graphite-900/60 px-1.5 py-0.5 font-mono text-[10px] text-cream-soft">
             {category}
           </span>
@@ -112,6 +123,12 @@ export default function AgentAskUser({
         )}
         {!answered ? (
           <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => onCancel?.()}
+              disabled={sending}
+              className="rounded-lg border border-white/15 px-3 py-1.5 text-[12px] font-medium text-cream-faint transition hover:bg-graphite-700 hover:text-cream disabled:opacity-40"
+            >Отмена</button>
             <button
               type="button"
               onClick={() => quickSubmit('deny')}
@@ -136,7 +153,10 @@ export default function AgentAskUser({
 
   return (
     <div className="my-2 rounded-xl border border-cream/15 bg-graphite-800/80 p-3 text-[13px] md:text-[14px]">
-      <div className="mb-2 font-medium text-cream">❓ {question}</div>
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <div className="font-medium text-cream">❓ {question}</div>
+        {expiresLabel && <div className="shrink-0 text-[10px] text-amber-300">{expiresLabel}</div>}
+      </div>
 
       <div className="space-y-1">
         {options.map((opt) => {
@@ -185,6 +205,12 @@ export default function AgentAskUser({
           <span className="text-[11px] text-cream-faint">
             {multi ? `Выбрано: ${selected.length}` : (selected.length ? 'Выбран 1' : 'Не выбрано')}
           </span>
+          <button
+            type="button"
+            disabled={sending}
+            onClick={() => onCancel?.()}
+            className="rounded-lg border border-white/15 px-3 py-1.5 text-[12px] text-cream-soft transition hover:bg-graphite-700 disabled:opacity-40"
+          >Отмена</button>
           <button
             type="button"
             disabled={!canSubmit}

@@ -227,6 +227,7 @@ function BrowserApp({ user, reloadAuth }) {
     sendMessage,
     sendAgentMessage,
     answerAgentQuestion,
+    cancelAgentQuestion,
     stop,
   } = useChats(settings)
 
@@ -485,6 +486,9 @@ function BrowserApp({ user, reloadAuth }) {
               onBranch={(messageId) => activeChat && branchFromMessage(activeChat.id, messageId)}
               onAnswerAskUser={(messageId, questionId, payload) =>
                 answerAgentQuestion(activeChat.id, messageId, questionId, payload)
+              }
+              onCancelAskUser={(messageId, questionId) =>
+                cancelAgentQuestion(activeChat.id, messageId, questionId)
               }
             />
             {/* ModelBar над полем ввода (когда есть сообщения) — только на десктопе.

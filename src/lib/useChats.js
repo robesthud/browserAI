@@ -565,6 +565,24 @@ export function useChats(settings) {
             signal: controller.signal,
             onEvent: (kind, data) => {
               switch (kind) {
+                case 'stream_protocol':
+                  patchAssistant((m) => ({ ...m, streamProtocol: data.payload || data }))
+                  break
+                case 'agent_context':
+                  patchAssistant((m) => ({ ...m, agentContext: data.payload || data }))
+                  break
+                case 'agent_state':
+                  patchAssistant((m) => ({ ...m, agentState: data.payload || data }))
+                  break
+                case 'tool_router':
+                  patchAssistant((m) => ({
+                    ...m,
+                    routerWarnings: [
+                      ...(m.routerWarnings || []),
+                      { step: data.step, sub: data.sub, name: data.name, warnings: data.warnings || [] },
+                    ],
+                  }))
+                  break
                 case 'thinking':
                   // Optional: we could surface a "thinking" indicator
                   break
@@ -622,7 +640,7 @@ export function useChats(settings) {
                     ...m,
                     toolCalls: (m.toolCalls || []).map((tc) =>
                       tc.step === data.step && tc.name === data.name
-                        ? { ...tc, status: 'done', ok: data.ok, result: data.result, error: data.error, finishedAt: Date.now() }
+                        ? { ...tc, status: 'done', ok: data.ok, result: data.result, error: data.error, structured: data.structured, finishedAt: Date.now() }
                         : tc,
                     ),
                   }))
@@ -704,6 +722,7 @@ export function useChats(settings) {
                         options: data.options || [],
                         multi: data.multi !== false,
                         allowCustom: data.allow_custom !== false,
+                        expiresAt: data.expiresAt || null,
                         answered: false,
                         answer: null,
                       },
@@ -732,6 +751,7 @@ export function useChats(settings) {
                         options: ['approve', 'deny'],
                         multi: false,
                         allowCustom: false,
+                        expiresAt: data.expiresAt || null,
                         answered: false,
                         answer: null,
                       },
@@ -756,7 +776,7 @@ export function useChats(settings) {
                   haptics.success()
                   break
                 case 'error':
-                  patchAssistant((m) => ({ ...m, error: data.message || 'agent error', pending: false }))
+                  patchAssistant((m) => ({ ...m, error: data.message || 'agent error', providerError: data.providerError || null, pending: false }))
                   haptics.error()
                   break
                 case 'usage':
@@ -837,6 +857,33 @@ export function useChats(settings) {
     haptics.tap()
   }, [])
 
+
+  const cancelAgentQuestion = useCallback(async (chatId, messageId, questionId, reason = 'cancelled by user') => {
+    try {
+      await fetch(`/api/agent/questions/${encodeURIComponent(questionId)}/cancel`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      })
+    } catch (e) {
+      console.warn('cancelAgentQuestion failed:', e?.message || e)
+    }
+    setChats((prev) => prev.map((c) => c.id !== chatId ? c : {
+      ...c,
+      messages: c.messages.map((m) => {
+        if (m.id !== messageId) return m
+        return {
+          ...m,
+          askUsers: (m.askUsers || []).map((q) =>
+            q.id === questionId ? { ...q, answered: true, answer: { selected: ['cancelled'], custom: reason }, cancelled: true } : q,
+          ),
+        }
+      }),
+    }))
+    haptics.tap()
+  }, [])
+
   return {
     chats,
     activeChat,
@@ -853,6 +900,7 @@ export function useChats(settings) {
     sendMessage,
     sendAgentMessage,
     answerAgentQuestion,
+    cancelAgentQuestion,
     stop,
   }
 }

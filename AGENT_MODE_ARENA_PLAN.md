@@ -54,7 +54,7 @@ Final Answer or Ask User / Resume
 | 6 | Ask User pause/resume | ✅ Выполнено | см. журнал выполнения |
 | 7 | Workspace / Sandbox Policy | ✅ Выполнено | см. журнал выполнения |
 | 8 | Context / Memory / Summarization | ✅ Выполнено | см. журнал выполнения |
-| 9 | UI parity с Arena Agent Mode | частично ✅ | есть tool cards/thoughts, нужно показывать agent_context/state |
+| 9 | UI parity с Arena Agent Mode | ✅ Выполнено | см. журнал выполнения |
 | 10 | Self-test / regression suite | ⬜ Не начато | — |
 | 11 | GitHub Actions deploy secrets / CI | ⚠️ Требует настройки secrets | workflow падает без TIMEWEB_* |
 
@@ -780,21 +780,88 @@ npm run build
 
 ## Этап 9. UI parity с Arena Agent Mode
 
-### Нужно
+### Цель
 
-- Отображать agent context.
-- Отображать agent state.
-- Отдельные блоки:
-  - plan
-  - current step
-  - tool timeline
-  - pending approvals
-  - final verification
-- Кнопки:
-  - stop
-  - approve/deny
-  - retry failed tool
-  - continue from state
+Подключить фронтенд к backend runtime-слоям Agent Mode: context, state, stream protocol, tool router warnings, ask_user lifecycle.
+
+### Сделано
+
+Добавлен компонент:
+
+```text
+src/components/AgentRuntimePanel.jsx
+```
+
+Он показывает внутри assistant message:
+
+- stream protocol version;
+- agent status;
+- task type / complexity;
+- provider kind;
+- model id;
+- tool protocol (`native + universal` или `universal XML`);
+- workspace scope/cwd;
+- effective max steps;
+- goal;
+- current step;
+- plan с чекбоксами;
+- touched files;
+- last errors;
+- next actions;
+- tool router warnings;
+- toolStats.
+
+Обновлён `src/lib/useChats.js`:
+
+- обрабатывает SSE events:
+  - `stream_protocol`
+  - `agent_context`
+  - `agent_state`
+  - `tool_router`
+- сохраняет их в assistant message:
+  - `streamProtocol`
+  - `agentContext`
+  - `agentState`
+  - `routerWarnings`
+- `tool_result` теперь сохраняет `structured` result;
+- `error` теперь сохраняет `providerError`;
+- `ask_user` и `tool_approval` сохраняют `expiresAt`.
+
+Обновлён `src/components/MessageList.jsx`:
+
+- рендерит `AgentRuntimePanel`;
+- передаёт `expiresAt` в question cards;
+- добавляет cancel handler для pending questions.
+
+Обновлён `src/components/AgentAskUser.jsx`:
+
+- показывает countdown/expiration label;
+- добавлена кнопка `Отмена`;
+- approval cards тоже показывают expires label.
+
+Обновлён `src/App.jsx`:
+
+- проброшен `cancelAgentQuestion`.
+
+Добавлен UI cancel lifecycle:
+
+```text
+question card → Отмена → POST /api/agent/questions/:id/cancel
+```
+
+### Проверки
+
+```bash
+npm run build
+```
+
+### Осталось после этапа 9
+
+- Добавить отдельную diagnostics панель provider/workspace.
+- Добавить retry failed tool button.
+- Добавить replay/export agent trace UI.
+- Добавить full mobile optimization для runtime panel.
+- Перевести весь UI на чтение `payload`, оставив legacy fallback.
 
 ---
 
@@ -892,3 +959,10 @@ TIMEWEB_APP_DIR
   - agent loop теперь поддерживает task-level memory digest перед каждым LLM call;
   - digest защищает goal/plan/errors/touchedFiles/recentTools от потери при context compaction;
   - memory разделена на user-level, project-level, task-level и raw short-term context.
+- Выполнен этап 9 — UI parity с Arena Agent Mode:
+  - добавлен `AgentRuntimePanel`;
+  - UI теперь отображает `agent_context`, `agent_state`, `stream_protocol`;
+  - UI показывает current step, plan, touched files, errors, next actions, toolStats;
+  - UI отображает `tool_router` warnings;
+  - ask_user/tool_approval cards показывают expires countdown;
+  - добавлена кнопка cancel для pending questions.
