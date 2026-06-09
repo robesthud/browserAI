@@ -15,20 +15,20 @@ export default function AgentPlanCard({ plan }) {
   const pct = total > 0 ? Math.round((done / total) * 100) : 0
 
   return (
-    <div className="my-2 overflow-hidden rounded-xl border border-violet-400/20 bg-violet-500/5 p-3 text-[13px]">
+    <div className="my-2 overflow-hidden rounded-xl border border-white/10 bg-graphite-800/45 p-3 text-[13px]">
       <div className="mb-2 flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <span className="shrink-0">📋</span>
           <span className="truncate font-medium text-cream">
-            {plan.title || 'Plan'}
+            {plan.title || 'План действий'}
           </span>
         </div>
-        <span className="shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 font-mono text-[11px] text-violet-200">
+        <span className="shrink-0 rounded bg-graphite-700/70 px-1.5 py-0.5 font-mono text-[11px] text-cream-faint">
           {done} / {total}
         </span>
       </div>
       <div className="mb-2 h-1.5 overflow-hidden rounded-full bg-graphite-900/60">
-        <div className="h-full bg-violet-400 transition-all" style={{ width: `${Math.max(2, pct)}%` }} />
+        <div className="h-full bg-cream/70 transition-all" style={{ width: `${Math.max(2, pct)}%` }} />
       </div>
       <ol className="space-y-1">
         {plan.steps.map((s) => (

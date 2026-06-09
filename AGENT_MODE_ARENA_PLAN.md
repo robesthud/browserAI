@@ -1185,10 +1185,11 @@ localStorage.removeItem('browserai.devtools')
 | v2.10 | Workspace / file preview UX cleanup | ✅ Выполнено | dev controls скрыты за devtools |
 | v2.11 | Composer / input UX cleanup | ✅ Выполнено | slash/dev autocomplete скрыт за devtools |
 | v2.12 | Sidebar / topbar cleanup | ✅ Выполнено | power/dev элементы скрыты за devtools |
-| v2.13 | Retry failed tool button | ⬜ Не начато | — |
-| v2.14 | Export / replay agent trace JSON | ⬜ Не начато | — |
-| v2.15 | E2E test SSE stream shape | ⬜ Не начато | — |
-| v2.16 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
+| v2.13 | Message polish / final visual cleanup | ✅ Выполнено | убран step-counter из обычного UI |
+| v2.14 | Retry failed tool button | ⬜ Не начато | — |
+| v2.15 | Export / replay agent trace JSON | ⬜ Не начато | — |
+| v2.16 | E2E test SSE stream shape | ⬜ Не начато | — |
+| v2.17 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
 
 ## v2.1 Developer-only Run Agent Self-Test
 
@@ -1703,6 +1704,32 @@ localStorage.setItem('browserai.devtools', '1')
 npm run build
 ```
 
+
+## v2.13 Message polish / final visual cleanup
+
+### Сделано
+
+Обновлены компоненты:
+
+```text
+src/components/MessageList.jsx
+src/components/AgentPlanCard.jsx
+```
+
+Из обычного UI убран внутренний счётчик tool-steps `Шаг N из M`, потому что это технический прогресс исполнения, а не пользовательский смысл. Он остаётся только в devtools.
+
+Plan card стала менее debug-яркой и более пользовательской:
+
+- заголовок по умолчанию `План действий`;
+- нейтральная графитовая карточка вместо яркой violet/debug стилистики;
+- progress bar в нейтральном стиле.
+
+### Проверки
+
+```bash
+npm run build
+```
+
 ## Журнал v2
 
 ### 2026-06-09
@@ -1720,6 +1747,7 @@ npm run build
 - Выполнен v2.10: workspace/file preview UX cleanup — dev controls скрыты за devtools, обычная панель показывает только пользовательские файловые действия.
 - Выполнен v2.11: composer/input UX cleanup — slash/dev autocomplete скрыт за devtools, обычный input стал проще.
 - Выполнен v2.12: sidebar/topbar cleanup — power/dev элементы скрыты за devtools, обычный topbar/sidebar упрощён.
+- Выполнен v2.13: message polish — internal step counter скрыт за devtools, plan card сделана пользовательской.
 
 
 ### 2026-06-09 — корректировка v2.1

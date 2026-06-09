@@ -290,7 +290,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
 
                   const items = []
                   if (plan) items.push(<AgentPlanCard key="plan" plan={plan} />)
-                  if (totalSteps > 1 && aiWorking) {
+                  if (isDev && totalSteps > 1 && aiWorking) {
                     items.push(
                       <div key="step-progress" className="px-1 text-[11px] text-cream-faint">
                         Шаг {doneSteps} из {totalSteps}…
