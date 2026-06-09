@@ -235,6 +235,7 @@ export function useChats(settings) {
 
   const selectChat = useCallback((id) => {
     setActiveId(id)
+    if (id) workspaceApi.initChatWorkspace(id).catch(() => {})
   }, [])
 
   const deleteChat = useCallback(
