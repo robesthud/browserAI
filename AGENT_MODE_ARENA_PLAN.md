@@ -53,7 +53,7 @@ Final Answer or Ask User / Resume
 | 5 | Streaming Protocol | ✅ Выполнено (полностью, один в один с Arena) |
 | 6 | Ask User pause/resume | ✅ Выполнено (полностью, один в один с Arena) |
 | 7 | Workspace / Sandbox Policy | ✅ Выполнено (полностью, один в один с Arena) | single /workspace root, no per-chat scoping |
-| 8 | Context / Memory / Summarization | ✅ Выполнено | см. журнал выполнения |
+| 8 | Context / Memory / Summarization | ✅ Выполнено (полностью, один в один с Arena) | enhanced memory directive |
 | 9 | UI parity с Arena Agent Mode | ✅ Выполнено | см. журнал выполнения |
 | 10 | Self-test / Regression Suite | ✅ Выполнено | см. журнал выполнения |
 | 11 | CI/CD | ✅ Выполнено | см. журнал выполнения |
