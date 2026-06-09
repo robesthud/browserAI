@@ -1,7 +1,7 @@
 import { useState } from "react"
 import AgentPlanCard from './AgentPlanCard.jsx'
 
-export default function AgentRuntimePanel({ context, state, aiWorking }) {
+export default function AgentRuntimePanel({ context, state, aiWorking, isDev }) {
   const isRunning = state?.status === 'running' || state?.status === 'planning'
   const [open, setOpen] = useState(isRunning)
 
@@ -50,7 +50,7 @@ export default function AgentRuntimePanel({ context, state, aiWorking }) {
       {open && (
         <div className="p-3 space-y-3">
           {/* P3-02 Context Visibility */}
-          {context && (
+          {isDev && context && (
             <div className="flex flex-wrap items-center gap-2 mb-3">
               {context.task?.type && (
                  <span className="rounded bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.5 text-[10px] text-blue-200">

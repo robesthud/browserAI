@@ -298,6 +298,7 @@ export default function AgentAdmin() {
                    state={replayTrace.agentState}
                    protocol={{ version: 1 }}
                    routerWarnings={replayTrace.warnings || []}
+                   isDev={true}
                  />
                ) : null}
                
