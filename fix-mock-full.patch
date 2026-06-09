@@ -1,0 +1,171 @@
+--- tests/sse-stream-shape.test.js
++++ tests/sse-stream-shape.test.js
+@@ -3,6 +3,7 @@
+ import * as llmClient from '../server/llmClient.js'
+ import * as agentTools from '../server/agentTools.js'
+ 
++
+ vi.mock('../server/llmClient.js', () => {
+   return {
+     callLLMStream: vi.fn(),
+@@ -23,12 +24,14 @@
+   }
+ })
+ 
+-vi.mock('../server/agentTools.js', () => {
++vi.mock('../server/agentTools.js', async (importOriginal) => {
++  const actual = await importOriginal()
+   return {
++    ...actual,
+     invokeTool: vi.fn(async (tool, args, opts) => {
+       // Simulate live progress streaming (stdout)
+       opts?.onStdout?.('mock stdout progress')
+       return { ok: true, result: 'mocked tool result' }
+     })
+   }
+ })
+@@ -42,16 +45,17 @@
+   }
+ })
+ 
+-describe('SSE Stream Shape (v2.19 - Arena Parity)', () => {
+-  it('should emit the correct sequence and shape of SSE events for a simple task', async () => {
++describe('SSE Stream Shape (v2.19 - Strict Arena Parity)', () => {
++  it('should emit the exact sequence and schema of SSE events', async () => {
++    // 1. Prepare Mock: Step 1 emits a thought and a tool call (with thinking_delta)
+     llmClient.callLLMStream
+       .mockImplementationOnce(async ({ onTextDelta }) => {
+         await onTextDelta('', { kind: 'thinking' })
+         const toolCall = {
+-          name: 'bash',
+-          args: { command: 'echo "hello"', timeout: 120 }
++          name: 'read_file',
++          args: { path: 'notes.txt' }
+         }
+-        return { text: '', reasoning: 'I need to run bash.', toolCalls: [toolCall], usage: { prompt: 10, completion: 5 } }
++        return { text: 'I need to read a file.', reasoning: 'I need to look at notes.txt.', toolCalls: [toolCall], usage: { prompt: 10, completion: 5 } }
+       })
++      // Step 2 emits the final streamed text
+       .mockImplementationOnce(async ({ onTextDelta }) => {
+-        await onTextDelta('Hello from bash.', { kind: 'text' })
+-        return { text: 'Hello from bash.', reasoning: '', toolCalls: [], usage: { prompt: 20, completion: 10 } }
++        await onTextDelta('The', { kind: 'text' })
++        await onTextDelta(' file is good.', { kind: 'text' })
++        return { text: 'The file is good.', reasoning: '', toolCalls: [], usage: { prompt: 20, completion: 10 } }
+       })
+ 
+     const events = []
+@@ -74,6 +78,7 @@
+               events.push({ event: currentEvent, data: payload })
+             } catch (e) {
++              console.error("Failed to parse SSE data:", dataStr)
+             }
+           }
+         }
+@@ -91,52 +96,65 @@
+     })
+ 
+-    expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/event-stream; charset=utf-8')
++    // Strict Envelope Checks
++    let expectedSeq = 1
++    for (const e of events) {
++      const data = e.data
+       
++      // 1. Envelope Schema Check
++      expect(data.schema).toBe('browserai.agent_stream_event.v1')
+       
++      // 2. Event name matches wrapper
++      expect(data.event).toBe(e.event)
+       
++      // 3. Strict Sequence increments by 1
++      expect(data.seq).toBe(expectedSeq++)
+       
++      // 4. Timestamp is present and looks like ISO
++      expect(data.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
+       
++      // 5. Payload vs Legacy fields parity
++      // In normaliseSsePayload, `payload` object is spread at the top level
++      if (data.payload) {
++        for (const key of Object.keys(data.payload)) {
++          expect(data[key]).toEqual(data.payload[key])
++        }
++      }
++    }
++
+     const eventNames = events.map(e => e.event)
+     
+-    expect(eventNames[0]).toBe('stream_protocol')
+-    expect(events[0].data).toHaveProperty('schema', 'browserai.agent_stream_event.v1')
+-    expect(events[0].data.payload).toHaveProperty('version', 1)
++    // Strict Start Sequence
++    expect(eventNames[0]).toBe('stream_protocol')
++    expect(eventNames[1]).toBe('agent_context')
++    expect(eventNames[2]).toBe('agent_state')
+     
+-    const contextEvents = events.filter(e => e.event === 'agent_context')
+-    expect(contextEvents.length).toBeGreaterThan(0)
+-    expect(contextEvents[0].data.payload).toHaveProperty('schema', 'browserai.agent_context.v1')
++    // Check specific event inner schemas
++    const contextData = events.find(e => e.event === 'agent_context').data.payload
++    expect(contextData.schema).toBe('browserai.agent_context.v1')
++    expect(contextData).toHaveProperty('workspace')
++    expect(contextData).toHaveProperty('model')
++    expect(contextData).toHaveProperty('task')
+ 
+-    const stateEvents = events.filter(e => e.event === 'agent_state')
+-    expect(stateEvents.length).toBeGreaterThan(0)
+-    const lastState = stateEvents[stateEvents.length - 1].data.payload
+-    expect(lastState).toHaveProperty('schema', 'browserai.agent_state.v1')
+-    expect(lastState).toHaveProperty('status')
+-    expect(lastState).toHaveProperty('currentStep')
++    const stateData = events.find(e => e.event === 'agent_state').data.payload
++    expect(stateData.schema).toBe('browserai.agent_state.v1')
++    expect(stateData).toHaveProperty('status')
++    expect(stateData).toHaveProperty('goal')
++    expect(stateData).toHaveProperty('plan')
+ 
+-    expect(eventNames).toContain('thinking_delta')
+-    
+     // Check for tool lifecycle
++    expect(eventNames).toContain('thinking') // Emitted at start of step
++    expect(eventNames).toContain('thought') // Contains "I need to read a file."
+     expect(eventNames).toContain('tool_start')
++    expect(eventNames).toContain('tool_progress') // We must see stdout streamed!
+     expect(eventNames).toContain('tool_result')
++    expect(eventNames.filter(e => e === 'agent_state').length).toBeGreaterThan(1) // state updates after tool
+     
+-    const toolStart = events.find(e => e.event === 'tool_start').data.payload
+-    expect(toolStart).toHaveProperty('name', 'bash')
+-    expect(toolStart).toHaveProperty('args')
++    const thoughtData = events.find(e => e.event === 'thought').data.payload
++    expect(thoughtData).toHaveProperty('text', 'I need to read a file.')
+ 
+     const toolResultData = events.find(e => e.event === 'tool_result').data.payload
++    expect(toolResultData.structured.schema).toBe('browserai.tool_result.v1')
++    expect(toolResultData.structured).toHaveProperty('ok', true)
+ 
+-    expect(eventNames[eventNames.length - 1]).toBe('done')
+-    const doneEvent = events[events.length - 1].data.payload
+-    expect(doneEvent).toHaveProperty('reason', 'stop')
++    // Final answer streamed
++    expect(eventNames).toContain('assistant_delta')
++    expect(eventNames).toContain('assistant') // MUST flush final complete text
+     
+-    for (const e of events) {
+-      if (e.event === 'done') continue 
+-      if (e.data.schema) {
+-        expect(e.data.schema).toBe('browserai.agent_stream_event.v1')
+-        expect(e.data).toHaveProperty('seq')
+-        expect(e.data).toHaveProperty('timestamp')
+-      }
+-    }
++    const assistantData = events.find(e => e.event === 'assistant').data.payload
++    expect(assistantData).toHaveProperty('text', 'The file is good.')
++
++    // Done at the end
++    expect(eventNames[eventNames.length - 1]).toBe('done')
++    const doneData = events[events.length - 1].data.payload
++    expect(doneData).toHaveProperty('reason', 'stop')
++    expect(doneData).toHaveProperty('tokens')
+   })
+ })

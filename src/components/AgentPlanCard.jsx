@@ -8,14 +8,14 @@
  *   plan:  { title, steps: [{idx, text, done, note}] }
  * The component is purely presentational.
  */
-export default function AgentPlanCard({ plan }) {
+export default function AgentPlanCard({ plan, hideBorder = false }) {
   if (!plan || !Array.isArray(plan.steps) || plan.steps.length === 0) return null
   const done = plan.steps.filter((s) => s.done).length
   const total = plan.steps.length
   const pct = total > 0 ? Math.round((done / total) * 100) : 0
 
   return (
-    <div className="my-2 overflow-hidden rounded-xl border border-white/10 bg-graphite-800/45 p-3 text-[13px]">
+    <div className={`overflow-hidden text-[13px] ${hideBorder ? "" : "my-2 rounded-xl border border-white/10 bg-graphite-800/45 p-3"}`}>
       <div className="mb-2 flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <span className="shrink-0">📋</span>

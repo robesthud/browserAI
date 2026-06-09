@@ -200,6 +200,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
             <button
               onClick={() => {
                 const trace = {
+                  schema: 'browserai.agent_trace.v1',
                   id: m.id,
                   role: 'assistant',
                   content: m.content,
@@ -271,14 +272,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                 <span>Агент размышляет…</span>
               </div>
             ) : null}
-            {isDev && (
-              <AgentRuntimePanel
-                context={m.agentContext}
-                state={m.agentState}
-                protocol={m.streamProtocol}
-                routerWarnings={m.routerWarnings || []}
-              />
-            )}
+            
 
             {/* Agent loop: interleave intermediate thoughts and tool calls by step,
                 so the UI shows the model planning before each action — same UX as
@@ -286,83 +280,18 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
             {(Array.isArray(m.toolCalls) && m.toolCalls.length > 0) || (Array.isArray(m.thoughts) && m.thoughts.length > 0) ? (
               <div className="mb-2 space-y-1">
                 {(() => {
-                  // ─── Pass 1: fold plan_set + plan_check calls into a single
-                  // PlanCard so we don't show 5 separate toolblocks for what
-                  // is really one checklist. The card lives at the TOP of
-                  // the message and updates as plan_check arrives.
-                  let plan = null
-                  for (const tc of m.toolCalls || []) {
-                    if (tc.status !== 'done' || !tc.ok) continue
-                    if (tc.name === 'plan_set' && Array.isArray(tc.result?.plan)) {
-                      plan = { title: tc.result.title || '', steps: tc.result.plan.map((s) => ({ ...s })) }
-                    } else if (tc.name === 'plan_check' && plan && Array.isArray(tc.result?.checked)) {
-                      for (const i of tc.result.checked) {
-                        const idx = Number(i)
-                        const step = plan.steps.find((s) => s.idx === idx)
-                        if (step) {
-                          step.done = true
-                          if (tc.result.note) step.note = tc.result.note
-                        }
-                      }
-                    }
-                  }
-
-                  // ─── Pass 2: progress counter "Step N of M" — purely
-                  // cosmetic, derived from how many distinct tool steps
-                  // have completed vs how many are still running.
-                  const stepIds = new Set()
-                  let doneSteps = 0
-                  for (const tc of m.toolCalls || []) {
-                    if (tc.name === 'plan_set' || tc.name === 'plan_check') continue
-                    stepIds.add(tc.step)
-                    if (tc.status === 'done') doneSteps += 1
-                  }
-                  const totalSteps = stepIds.size
-
                   const items = []
-                  if (plan) items.push(<AgentPlanCard key="plan" plan={plan} />)
-                  if (isDev && totalSteps > 1 && aiWorking) {
-                    items.push(
-                      <div key="step-progress" className="px-1 text-[11px] text-cream-faint">
-                        Шаг {doneSteps} из {totalSteps}…
-                      </div>,
-                    )
-                  }
 
                   const thoughtsByStep = new Map()
                   for (const t of m.thoughts || []) {
                     if (!thoughtsByStep.has(t.step)) thoughtsByStep.set(t.step, [])
                     thoughtsByStep.get(t.step).push(t)
                   }
-                  // Arena parity: show agent_context if present
-                  if (m.agentContext) {
-                    items.push(
-                      <div key={`ctx-${m.id}`} className="mb-2 rounded-lg border border-blue-500/30 bg-blue-950/30 px-3 py-1.5 text-[12px] text-blue-200">
-                        <span className="font-mono text-[10px] opacity-60">context</span> {m.agentContext.task?.type || 'general'} · {m.agentContext.task?.complexity || 'medium'}
-                      </div>
-                    )
-                  }
+                  
 
-                  // Arena parity: show agent_state (plan, current step, errors)
+                  // Live agent_state streaming
                   if (m.agentState) {
-                    const s = m.agentState
-                    items.push(
-                      <div key={`state-${m.id}`} className="mb-2 rounded-lg border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-[12px] text-amber-200">
-                        <div className="flex items-center gap-2 text-[10px] opacity-70">
-                          <span className="font-mono">agent_state</span>
-                          <span className="rounded bg-amber-500/20 px-1.5 py-px text-[9px]">{s.status}</span>
-                        </div>
-                        {s.currentStep && <div>Шаг: {s.currentStep}</div>}
-                        {s.lastErrors?.length > 0 && <div className="text-red-300">Ошибки: {s.lastErrors.length}</div>}
-                      </div>
-                    )
-                  }
-
-                  // Arena-style Runtime Panel (live agent state)
-                  if (m.agentState && (m.agentState.plan || m.agentState.goal)) {
-                    items.push(
-                      <AgentRuntimePanel key={`runtime-${m.id}`} state={m.agentState} />
-                    )
+                    items.push(<AgentRuntimePanel key={`runtime-${m.id}`} context={m.agentContext} state={m.agentState} aiWorking={aiWorking} />)
                   }
 
                   for (const tc of m.toolCalls || []) {

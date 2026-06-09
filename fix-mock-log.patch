@@ -1,0 +1,18 @@
+--- tests/sse-stream-shape.test.js
++++ tests/sse-stream-shape.test.js
+@@ -42,6 +42,7 @@
+     // The first call returns a tool call: bash
+     // The second call returns final answer
+     llmClient.callLLMStream
+       .mockImplementationOnce(async ({ onTextDelta }) => {
++        console.log("MOCK CALL 1 EXECUTED")
+         await onTextDelta('', { kind: 'thinking' })
+         const toolCall = {
+           name: 'bash',
+@@ -51,6 +52,7 @@
+       })
+       .mockImplementationOnce(async ({ onTextDelta }) => {
++        console.log("MOCK CALL 2 EXECUTED")
+         await onTextDelta('Hello from bash.', { kind: 'text' })
+         return { text: 'Hello from bash.', reasoning: '', toolCalls: [], usage: { prompt: 20, completion: 10 } }
+       })

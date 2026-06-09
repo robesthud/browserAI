@@ -321,7 +321,7 @@ export default function AgentAdmin() {
                       }
                     }
 
-                    if (plan) items.push(<AgentPlanCard key="plan" plan={plan} />)
+                    
 
                     const thoughtsByStep = new Map()
                     for (const t of replayTrace.thoughts || []) {

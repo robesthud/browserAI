@@ -1,0 +1,10 @@
+--- tests/sse-stream-shape.test.js
++++ tests/sse-stream-shape.test.js
+@@ -109,6 +109,7 @@
+     
+     // We expect certain events in the stream
+     const eventNames = events.map(e => e.event)
++    console.log("EVENT NAMES =>", eventNames)
+     
+     // stream_protocol MUST be the first event
+     expect(eventNames[0]).toBe('stream_protocol')

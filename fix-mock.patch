@@ -1,0 +1,22 @@
+--- tests/sse-stream-shape.test.js
++++ tests/sse-stream-shape.test.js
+@@ -2,6 +2,7 @@
+ import { runAgent } from '../server/agentLoop.js'
+ import * as llmClient from '../server/llmClient.js'
++import * as agentTools from '../server/agentTools.js'
+ 
+ // Mocking the LLM client to avoid real network calls
+ vi.mock('../server/llmClient.js', async (importOriginal) => {
+@@ -34,6 +35,17 @@
+   }
+ })
+ 
++vi.mock('../server/agentTools.js', async (importOriginal) => {
++  const mod = await importOriginal()
++  return {
++    ...mod,
++    invokeTool: vi.fn(async () => ({ ok: true, result: 'mocked tool result' }))
++  }
++})
++
+ describe('SSE Stream Shape (v2.19 - Arena Parity)', () => {

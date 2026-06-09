@@ -1,0 +1,50 @@
+--- tests/sse-stream-shape.test.js
++++ tests/sse-stream-shape.test.js
+@@ -3,6 +3,7 @@
+ import * as llmClient from '../server/llmClient.js'
+ import * as agentTools from '../server/agentTools.js'
+ 
++
+ vi.mock('../server/llmClient.js', () => {
+   return {
+     callLLMStream: vi.fn(),
+@@ -23,12 +24,14 @@
+   }
+ })
+ 
+-vi.mock('../server/agentTools.js', () => {
++vi.mock('../server/agentTools.js', async (importOriginal) => {
++  const actual = await importOriginal()
+   return {
++    ...actual,
+     invokeTool: vi.fn(async (tool, args, opts) => {
+       // Simulate live progress streaming (stdout)
+       opts?.onStdout?.('mock stdout progress')
+       return { ok: true, result: 'mocked tool result' }
+     })
+   }
+ })
+@@ -42,16 +45,17 @@
+   }
+ })
+ 
+-describe('SSE Stream Shape (v2.19 - Arena Parity)', () => {
+-  it('should emit the correct sequence and shape of SSE events for a simple task', async () => {
++describe('SSE Stream Shape (v2.19 - Strict Arena Parity)', () => {
++  it('should emit the exact sequence and schema of SSE events', async () => {
++    // 1. Prepare Mock: Step 1 emits a thought and a tool call (with thinking_delta)
+     llmClient.callLLMStream
+       .mockImplementationOnce(async ({ onTextDelta }) => {
+         await onTextDelta('', { kind: 'thinking' })
+         const toolCall = {
+-          name: 'bash',
+-          args: { command: 'echo "hello"', timeout: 120 }
++          name: 'read_file',
++          args: { path: 'notes.txt' }
+         }
+-        return { text: '', reasoning: 'I need to run bash.', toolCalls: [toolCall], usage: { prompt: 10, completion: 5 } }
++        return { text: 'I need to read a file.', reasoning: 'I need to look at notes.txt.', toolCalls: [toolCall], usage: { prompt: 10, completion: 5 } }
+       })
++      // Step 2 emits the final streamed text
+       .mockImplementationOnce(async ({ onTextDelta }) => {
+-        await onTextDelta('Hello from bash.', { kind: 'text' })
