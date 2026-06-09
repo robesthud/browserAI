@@ -21,12 +21,15 @@ jobs:
     name: Pull + rebuild on Timeweb STAGING
     runs-on: ubuntu-latest
     environment: staging
+    env:
+      HAS_TIMEWEB_STAGING_SECRETS: ${{ secrets.TIMEWEB_STAGING_SSH_KEY != '' && secrets.TIMEWEB_STAGING_HOST != '' && secrets.TIMEWEB_STAGING_USER != '' && secrets.TIMEWEB_STAGING_APP_DIR != '' }}
 
     steps:
       - name: Checkout (for audit only)
         uses: actions/checkout@v4
 
       - name: Configure SSH
+        if: env.HAS_TIMEWEB_STAGING_SECRETS == 'true'
         env:
           DEPLOY_KEY:  ${{ secrets.TIMEWEB_STAGING_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.TIMEWEB_STAGING_HOST }}
@@ -38,6 +41,7 @@ jobs:
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: git pull + docker compose up -d --build
+        if: env.HAS_TIMEWEB_STAGING_SECRETS == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.TIMEWEB_STAGING_HOST }}
           DEPLOY_USER: ${{ secrets.TIMEWEB_STAGING_USER }}
@@ -54,6 +58,12 @@ jobs:
                docker image prune -f
                sleep 5
                curl -fsS http://localhost/api/health"
+
+      - name: Skip staging deploy notice
+        if: env.HAS_TIMEWEB_STAGING_SECRETS != 'true'
+        run: |
+          echo "::notice::Timeweb staging deploy skipped: staging secrets are not configured."
+          echo "### Timeweb staging deploy skipped" >> $GITHUB_STEP_SUMMARY
 
       - name: Post-deploy summary
         if: always()

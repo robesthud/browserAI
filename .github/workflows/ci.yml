@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web-and-agent-checks:
+    name: Build + agent runtime checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax-check critical server modules
+        run: |
+          node --check server/agentCore.js
+          node --check server/agentLoop.js
+          node --check server/agentSelfTest.js
+          node --check server/agentSandbox.js
+          node --check server/askUserRegistry.js
+          node --check server/contextManager.js
+          node --check server/index.js
+          node --check server/llmClient.js
+          node --check server/sandboxPolicy.js
+          node --check server/workspace.js
+
+      - name: ESLint critical agent modules
+        run: |
+          npx eslint \
+            server/agentSelfTest.js \
+            server/askUserRegistry.js \
+            server/contextManager.js \
+            server/sandboxPolicy.js \
+            server/agentCore.js \
+            server/llmClient.js
+
+      - name: Build web app
+        run: npm run build

@@ -56,7 +56,7 @@ Final Answer or Ask User / Resume
 | 8 | Context / Memory / Summarization | ✅ Выполнено | см. журнал выполнения |
 | 9 | UI parity с Arena Agent Mode | ✅ Выполнено | см. журнал выполнения |
 | 10 | Self-test / Regression Suite | ✅ Выполнено | см. журнал выполнения |
-| 11 | GitHub Actions deploy secrets / CI | ⚠️ Требует настройки secrets | workflow падает без TIMEWEB_* |
+| 11 | CI/CD | ✅ Выполнено | см. журнал выполнения |
 
 ---
 
@@ -946,9 +946,55 @@ npm run build
 
 ## Этап 11. CI/CD
 
-### Сейчас
+### Цель
 
-GitHub Actions deploy падает, потому что не заданы secrets:
+Сделать CI/CD безопасным и предсказуемым:
+
+- push в `main` должен проверять сборку и agent runtime modules;
+- deploy workflow не должен падать, если Timeweb secrets не настроены;
+- автоматический deploy должен включаться только при наличии нужных secrets.
+
+### Сделано
+
+Добавлен workflow:
+
+```text
+.github/workflows/ci.yml
+```
+
+Он запускается на:
+
+```text
+push main
+pull_request main
+workflow_dispatch
+```
+
+Проверяет:
+
+```bash
+npm ci
+node --check server/agentCore.js
+node --check server/agentLoop.js
+node --check server/agentSelfTest.js
+node --check server/agentSandbox.js
+node --check server/askUserRegistry.js
+node --check server/contextManager.js
+node --check server/index.js
+node --check server/llmClient.js
+node --check server/sandboxPolicy.js
+node --check server/workspace.js
+npx eslint server/agentSelfTest.js server/askUserRegistry.js server/contextManager.js server/sandboxPolicy.js server/agentCore.js server/llmClient.js
+npm run build
+```
+
+Обновлён production deploy workflow:
+
+```text
+.github/workflows/deploy-timeweb.yml
+```
+
+Теперь он проверяет наличие secrets:
 
 ```text
 TIMEWEB_SSH_KEY
@@ -957,11 +1003,41 @@ TIMEWEB_USER
 TIMEWEB_APP_DIR
 ```
 
-### Нужно
+Если secrets не заданы, workflow не падает, а пишет notice:
 
-- Либо добавить secrets в GitHub.
-- Либо изменить workflow под временный token/SSH method.
-- Либо сделать отдельный manual deploy script.
+```text
+Timeweb deploy skipped: set TIMEWEB_SSH_KEY, TIMEWEB_HOST, TIMEWEB_USER and TIMEWEB_APP_DIR secrets to enable automatic deploy.
+```
+
+Обновлён staging deploy workflow:
+
+```text
+.github/workflows/deploy-timeweb-staging.yml
+```
+
+Если staging secrets не заданы, staging deploy тоже пропускается безопасно.
+
+### Проверки
+
+Локально выполнено:
+
+```bash
+npm run build
+```
+
+Продакшен деплой по-прежнему выполнен вручную через SSH, потому что GitHub secrets в репозитории пока не настроены.
+
+### Что осталось после этапа 11
+
+- Добавить GitHub repository secrets для автоматического production deploy:
+  - `TIMEWEB_SSH_KEY`
+  - `TIMEWEB_HOST`
+  - `TIMEWEB_USER`
+  - `TIMEWEB_APP_DIR`
+- Опционально добавить staging secrets.
+- Добавить post-deploy call к `/api/agent/self-test` после успешного deploy.
+- Добавить branch protection: CI required before merge.
+- Убрать ручной SSH deploy после настройки secrets.
 
 ---
 
@@ -1026,3 +1102,8 @@ TIMEWEB_APP_DIR
   - добавлен `server/agentSelfTest.js`;
   - добавлен endpoint `POST /api/agent/self-test`;
   - проверяются provider capabilities, tool validation, path traversal, type coercion, secret redaction, context digest, ask_user lifecycle, workspace read/write/delete.
+- Выполнен этап 11 — CI/CD:
+  - добавлен `.github/workflows/ci.yml`;
+  - CI проверяет agent runtime modules через `node --check`, ESLint critical modules и `npm run build`;
+  - production deploy workflow больше не падает при отсутствующих TIMEWEB secrets, а пропускает deploy с notice;
+  - staging deploy workflow также безопасно пропускается без staging secrets.
