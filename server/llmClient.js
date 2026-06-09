@@ -97,9 +97,28 @@ async function callDeepSeekManaged({ baseUrl, apiKey, model, messages, extraHead
 }
 
 // ── OpenAI-compatible transport ─────────────────────────────────────────────
+function normalizeOpenAIMessages(messages = []) {
+  const out = []
+  for (const m of messages) {
+    if (!m) continue
+    const prev = out[out.length - 1]
+    
+    // Strict providers like GLM-4 and some Anthropic proxies reject consecutive messages of the same role.
+    // Merge consecutive 'user' or 'assistant' messages if they don't have tool calls.
+    if (prev && prev.role === m.role && m.role === 'user') {
+      prev.content = String(prev.content || '') + '\n\n' + String(m.content || '')
+    } else if (prev && prev.role === m.role && m.role === 'assistant' && !m.tool_calls && !prev.tool_calls) {
+      prev.content = String(prev.content || '') + '\n\n' + String(m.content || '')
+    } else {
+      out.push({ ...m })
+    }
+  }
+  return out
+}
+
 async function callOpenAICompatible({
   baseUrl, apiKey, authType = 'bearer', authHeader = '',
-  extraHeaders = {}, model, messages, temperature = 0.7,
+  extraHeaders = {}, model, messages: rawMessages, temperature = 0.7,
   tools, toolChoice = 'auto',
 }) {
   const headers = {
@@ -659,7 +678,7 @@ async function callGeminiOfficialStream({
 // the non-streaming variant.
 async function callOpenAICompatibleStream({
   baseUrl, apiKey, authType = 'bearer', authHeader = '',
-  extraHeaders = {}, model, messages, temperature = 0.7,
+  extraHeaders = {}, model, messages: rawMessages, temperature = 0.7,
   tools, toolChoice = 'auto', signal,
   onTextDelta, onToolCallDelta, onUsage,
 }) {
@@ -669,7 +688,7 @@ async function callOpenAICompatibleStream({
     ...buildSessionHeaders({ baseUrl, apiKey, authType, authHeader, extraHeaders }),
   }
   const body = {
-    model, messages, temperature,
+    model, messages: normalizeOpenAIMessages(rawMessages), temperature,
     stream: true,
     stream_options: { include_usage: true }, // OpenAI: usage in final chunk
   }
