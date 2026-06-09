@@ -53,7 +53,7 @@ Final Answer or Ask User / Resume
 | 5 | Streaming Protocol | ✅ Выполнено | см. журнал выполнения |
 | 6 | Ask User pause/resume | ✅ Выполнено | см. журнал выполнения |
 | 7 | Workspace / Sandbox Policy | ✅ Выполнено | см. журнал выполнения |
-| 8 | Context memory / summarization | частично ✅ | есть contextManager, нужен agent state digest |
+| 8 | Context / Memory / Summarization | ✅ Выполнено | см. журнал выполнения |
 | 9 | UI parity с Arena Agent Mode | частично ✅ | есть tool cards/thoughts, нужно показывать agent_context/state |
 | 10 | Self-test / regression suite | ⬜ Не начато | — |
 | 11 | GitHub Actions deploy secrets / CI | ⚠️ Требует настройки secrets | workflow падает без TIMEWEB_* |
@@ -692,20 +692,89 @@ npm run build
 
 ## Этап 8. Context / Memory / Summarization
 
-### Уже есть
+### Цель
 
-- `contextManager.js`
-- user facts
-- semantic memory
-- knowledge base
-- project rules injection
+Сделать память агента многоуровневой, чтобы при длинных задачах и auto-compact агент не терял цель, план, ошибки, затронутые файлы и выполненные действия.
 
-### Осталось
+### Уже было
 
-- Agent state digest.
-- Summary of completed actions.
-- Использовать state при auto-compact.
-- Отдельная память task-level vs user-level.
+- `contextManager.js` с multi-tier compaction:
+  - tier 1: сжатие старых tool outputs;
+  - tier 2: digest старых turns;
+  - tier 3: emergency drop;
+- user facts;
+- semantic memory;
+- knowledge base;
+- project rules injection;
+- recent workspace activity note.
+
+### Сделано сейчас
+
+Добавлено в `server/contextManager.js`:
+
+- `renderAgentStateDigest(...)`
+- `upsertAgentStateDigest(...)`
+
+Теперь в conversation поддерживается ровно один authoritative task-level memory block:
+
+```text
+[agent_state_digest — authoritative task-level memory; keep this when compacting context]
+status: ...
+goal: ...
+currentStep: ...
+completedSteps: ...
+plan: ...
+touchedFiles: ...
+lastErrors: ...
+openQuestions: ...
+nextActions: ...
+recentTools: ...
+toolStats: ...
+[/agent_state_digest]
+```
+
+`server/agentLoop.js` теперь перед каждым LLM-вызовом вызывает:
+
+```js
+upsertAgentStateDigest(convo, agentState, recentToolHistory)
+```
+
+Digest вставляется сразу после system prompt и обновляется на каждом шаге, не копится в истории и не создаёт spam.
+
+Это разделяет память на уровни:
+
+```text
+user-level memory      → user facts / semantic memory
+project-level context  → project rules / knowledge base / workspace activity
+task-level memory      → agent_state_digest
+raw short-term context → последние turns/tool results
+```
+
+При context compaction агент сохраняет:
+
+- цель задачи;
+- текущий статус;
+- план и отметки выполнения;
+- последние ошибки;
+- файлы, которые реально менялись;
+- следующие действия;
+- последние tools.
+
+### Проверки
+
+```bash
+node --check server/contextManager.js
+node --check server/agentLoop.js
+npx eslint server/contextManager.js server/sandboxPolicy.js server/agentCore.js server/llmClient.js
+npm run build
+```
+
+### Осталось после этапа 8
+
+- UI: показывать task-level digest/debug trace.
+- Добавить более умный final summary renderer на основе agent_state + workspace activity.
+- Добавить e2e-тест long context compaction.
+- Persist task digest between server restarts if needed.
 
 ---
 
@@ -817,3 +886,9 @@ TIMEWEB_APP_DIR
   - добавлен `getWorkspaceMetadata`;
   - добавлен endpoint `/api/workspace/metadata`;
   - `agent_context.workspace` теперь содержит public policy.
+- Выполнен этап 8 — Context / Memory / Summarization:
+  - добавлен `renderAgentStateDigest`;
+  - добавлен `upsertAgentStateDigest`;
+  - agent loop теперь поддерживает task-level memory digest перед каждым LLM call;
+  - digest защищает goal/plan/errors/touchedFiles/recentTools от потери при context compaction;
+  - memory разделена на user-level, project-level, task-level и raw short-term context.

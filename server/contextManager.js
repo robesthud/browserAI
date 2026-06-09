@@ -257,3 +257,55 @@ export default {
   manageContext,
   applyAnthropicCacheHints,
 }
+
+/**
+ * Render a compact task-level memory block from the live agent_state.
+ * This is different from user memory / semantic memory: it is ephemeral
+ * per-run state that helps the model survive context compaction without
+ * forgetting the goal, plan, touched files, errors and verification status.
+ */
+export function renderAgentStateDigest(agentState = {}, recentToolHistory = []) {
+  if (!agentState || typeof agentState !== 'object') return ''
+  const planSteps = Array.isArray(agentState.plan?.steps) ? agentState.plan.steps : []
+  const done = new Set(Array.isArray(agentState.plan?.done) ? agentState.plan.done.map(Number) : [])
+  const planLines = planSteps.slice(0, 20).map((s) => {
+    const idx = Number(s.idx)
+    return `${done.has(idx) || s.done ? '[x]' : '[ ]'} ${idx || '?'} ${String(s.text || '').slice(0, 180)}`
+  })
+  const tools = (recentToolHistory || []).slice(-15).map((h) => `${h.ok ? '✓' : '✗'} ${h.tool}`).join(', ')
+  const lines = [
+    '[agent_state_digest — authoritative task-level memory; keep this when compacting context]',
+    `status: ${agentState.status || 'unknown'}`,
+    `goal: ${String(agentState.goal || '').slice(0, 600)}`,
+    `currentStep: ${String(agentState.currentStep || '').slice(0, 240)}`,
+    agentState.completedSteps?.length ? `completedSteps:\n- ${agentState.completedSteps.slice(-12).join('\n- ')}` : '',
+    planLines.length ? `plan:\n${planLines.join('\n')}` : '',
+    agentState.touchedFiles?.length ? `touchedFiles: ${agentState.touchedFiles.slice(-20).join(', ')}` : '',
+    agentState.lastErrors?.length ? `lastErrors:\n- ${agentState.lastErrors.slice(-8).join('\n- ')}` : '',
+    agentState.openQuestions?.length ? `openQuestions:\n- ${agentState.openQuestions.slice(-6).join('\n- ')}` : '',
+    agentState.nextActions?.length ? `nextActions:\n- ${agentState.nextActions.slice(0, 8).join('\n- ')}` : '',
+    tools ? `recentTools: ${tools}` : '',
+    `toolStats: total=${agentState.toolStats?.total || 0}, ok=${agentState.toolStats?.ok || 0}, failed=${agentState.toolStats?.failed || 0}`,
+    '[/agent_state_digest]',
+  ].filter(Boolean)
+  return lines.join('\n').slice(0, 5000)
+}
+
+/**
+ * Keep exactly one agent_state_digest message in the conversation, directly
+ * after the system prompt. Updating one stable message prevents digest spam
+ * while guaranteeing tier-2/tier-3 compaction keeps the current task state.
+ */
+export function upsertAgentStateDigest(convo, agentState, recentToolHistory = []) {
+  if (!Array.isArray(convo)) return false
+  const digest = renderAgentStateDigest(agentState, recentToolHistory)
+  if (!digest) return false
+  const marker = '[agent_state_digest'
+  for (let i = convo.length - 1; i >= 0; i -= 1) {
+    const c = typeof convo[i]?.content === 'string' ? convo[i].content : ''
+    if (c.startsWith(marker)) convo.splice(i, 1)
+  }
+  const insertAt = convo[0]?.role === 'system' ? 1 : 0
+  convo.splice(insertAt, 0, { role: 'user', content: digest })
+  return true
+}

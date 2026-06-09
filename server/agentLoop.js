@@ -38,7 +38,10 @@ import {
   callLLM, callLLMStream, supportsNativeTools, supportsStreaming, normalizeProviderError,
 } from './llmClient.js'
 import { registerQuestion } from './askUserRegistry.js'
-import { clipToolOutput, manageContext, applyAnthropicCacheHints, contextUsageFraction } from './contextManager.js'
+import {
+  clipToolOutput, manageContext, applyAnthropicCacheHints, contextUsageFraction,
+  upsertAgentStateDigest,
+} from './contextManager.js'
 import { buildClineSystemPrompt } from './clinePrompt.js'
 import { recordSpend, checkCap, chatTotalUsd } from './costTracker.js'
 import { shouldUseCheapEditor, wrapProviderForEditor, routingLabel } from './architectEditor.js'
@@ -908,6 +911,11 @@ async function runAgentInner({
       }
       step += 1
       pushedBackThisTurn = false
+      // Keep an authoritative task-level memory message in-context.
+      // This protects goal/plan/touchedFiles/errors from being lost when
+      // the context manager compacts older raw turns.
+      upsertAgentStateDigest(convo, agentState, recentToolHistory)
+
       // Multi-tier context manager: shrink old tool outputs first
       // (tier 1, 45 %), digest the oldest third next (tier 2, 65 %),
       // emergency-drop everything but last 4 turns if we're really
