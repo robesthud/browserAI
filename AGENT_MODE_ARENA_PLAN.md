@@ -1189,7 +1189,7 @@ localStorage.removeItem('browserai.devtools')
 | v2.14 | Conversation flow cleanup | ✅ Выполнено | unified stopped/empty/error states |
 | v2.15 | Mobile polish / responsive cleanup | ✅ Выполнено | карточки/кнопки не ломают ширину |
 | v2.16 | Always-on Agent Mode UI cleanup | ✅ Выполнено | agent toggle скрыт за devtools |
-| v2.17 | Retry failed tool button | ✅ Выполнено | AgentToolBlock.jsx + onRetry prop |
+| v2.17 | Retry failed tool button | ✅ Выполнено | Полностью working (App.jsx + sendAgentMessage) |
 | v2.18 | Export / replay agent trace JSON | ⬜ Не начато | — |
 | v2.19 | E2E test SSE stream shape | ⬜ Не начато | — |
 | v2.20 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
