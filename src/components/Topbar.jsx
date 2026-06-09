@@ -41,6 +41,11 @@ export default function Topbar({
   costToday = 0,
   costCap = 0,
 }) {
+  const devtoolsEnabled = (() => {
+    try { return localStorage.getItem('browserai.devtools') === '1' }
+    catch { return false }
+  })()
+
   return (
     <header className="flex items-center gap-2 px-3 pb-2 pt-10 md:gap-3 md:px-5 md:py-3.5">
       {/* Mobile: model picker takes center, hide title to save space */}
@@ -58,7 +63,7 @@ export default function Topbar({
       <div className="hidden min-w-0 flex-1 items-center gap-2 pl-12 md:flex">
         <span className="truncate text-[14px] text-cream-soft">{title}</span>
 
-        {autoModelHint && !aiWorking && (
+        {devtoolsEnabled && autoModelHint && !aiWorking && (
           <span className="shrink-0 animate-pulse rounded-full border border-violet-400/30 bg-violet-500/10 px-2 py-0.5 text-[11px] text-violet-300">
             {autoModelHint}
           </span>
@@ -74,13 +79,13 @@ export default function Topbar({
           </button>
         )}
 
-        {agentMode && (
+        {devtoolsEnabled && agentMode && (
           <span className="ml-auto items-center gap-1 rounded-full border border-emerald-400/40 bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300 inline-flex">
             🤖 Агент
           </span>
         )}
 
-        {autoMode && (
+        {devtoolsEnabled && autoMode && (
           <span className="items-center gap-1 rounded-full border border-violet-400/30 bg-violet-500/15 px-2 py-0.5 text-[11px] text-violet-300 inline-flex">
             ✦ Авто
           </span>
@@ -90,7 +95,7 @@ export default function Topbar({
       {/* Right: search / export / tokens / workspace toggle + desktop-only logout */}
       <div className="flex shrink-0 items-center gap-1.5 md:gap-2">
         {/* Token usage badge — only on desktop, only when there's something to show */}
-        {totalTokens > 0 && (
+        {devtoolsEnabled && totalTokens > 0 && (
           <span
             className="hidden rounded-full border border-white/10 bg-graphite-800/60 px-2 py-0.5 font-mono text-[11px] text-cream-faint md:inline"
             title={`Использовано токенов за чат: ${totalTokens}`}
@@ -100,7 +105,7 @@ export default function Topbar({
         )}
 
         {/* USD spend today — turns amber > 50% of cap, red > 90% */}
-        {costToday > 0 && (
+        {devtoolsEnabled && costToday > 0 && (
           <span
             className={[
               'hidden rounded-full border px-2 py-0.5 font-mono text-[11px] md:inline',
@@ -116,7 +121,7 @@ export default function Topbar({
           </span>
         )}
 
-        {onOpenSearch && (
+        {devtoolsEnabled && onOpenSearch && (
           <button
             type="button"
             onClick={onOpenSearch}
@@ -125,7 +130,7 @@ export default function Topbar({
           >🔎</button>
         )}
 
-        {onOpenCheckpoints && (
+        {devtoolsEnabled && onOpenCheckpoints && (
           <button
             type="button"
             onClick={onOpenCheckpoints}
@@ -134,7 +139,7 @@ export default function Topbar({
           >💾</button>
         )}
 
-        {onExportChat && (
+        {devtoolsEnabled && onExportChat && (
           <button
             type="button"
             onClick={onExportChat}

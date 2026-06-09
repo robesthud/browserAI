@@ -130,24 +130,26 @@ export default function Sidebar({
             </span>
           </button>
 
-          {/* Web AI toggle */}
-          <button
-            onClick={() => onToggleWebAI?.(!useWebAI)}
-            className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors ${
-              useWebAI
-                ? 'bg-cream/10 text-cream hover:bg-cream/15'
-                : 'text-cream-soft hover:bg-graphite-750 hover:text-cream'
-            }`}
-            title="Подмешивать результаты веб-поиска к ответам модели"
-          >
-            <span className="flex items-center gap-3">
-              <span className="text-base leading-none">🌐</span>
-              <span>Web AI</span>
-            </span>
-            <span className={`text-[11px] font-medium ${useWebAI ? 'text-cream' : 'text-cream-faint'}`}>
-              {useWebAI ? 'Вкл' : 'Выкл'}
-            </span>
-          </button>
+          {/* Web AI toggle — power/dev control, hidden from normal Agent Mode UI. */}
+          {devtoolsEnabled && (
+            <button
+              onClick={() => onToggleWebAI?.(!useWebAI)}
+              className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors ${
+                useWebAI
+                  ? 'bg-cream/10 text-cream hover:bg-cream/15'
+                  : 'text-cream-soft hover:bg-graphite-750 hover:text-cream'
+              }`}
+              title="Подмешивать результаты веб-поиска к ответам модели"
+            >
+              <span className="flex items-center gap-3">
+                <span className="text-base leading-none">🌐</span>
+                <span>Web AI</span>
+              </span>
+              <span className={`text-[11px] font-medium ${useWebAI ? 'text-cream' : 'text-cream-faint'}`}>
+                {useWebAI ? 'Вкл' : 'Выкл'}
+              </span>
+            </button>
+          )}
 
           {/* Agent Lab — developer/admin diagnostics, hidden from normal Agent Mode UI. */}
           {devtoolsEnabled && (

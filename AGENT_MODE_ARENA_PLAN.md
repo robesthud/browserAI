@@ -1184,10 +1184,11 @@ localStorage.removeItem('browserai.devtools')
 | v2.9 | Tool / provider error UX cleanup | ✅ Выполнено | user-friendly errors, raw только devtools |
 | v2.10 | Workspace / file preview UX cleanup | ✅ Выполнено | dev controls скрыты за devtools |
 | v2.11 | Composer / input UX cleanup | ✅ Выполнено | slash/dev autocomplete скрыт за devtools |
-| v2.12 | Retry failed tool button | ⬜ Не начато | — |
-| v2.13 | Export / replay agent trace JSON | ⬜ Не начато | — |
-| v2.14 | E2E test SSE stream shape | ⬜ Не начато | — |
-| v2.15 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
+| v2.12 | Sidebar / topbar cleanup | ✅ Выполнено | power/dev элементы скрыты за devtools |
+| v2.13 | Retry failed tool button | ⬜ Не начато | — |
+| v2.14 | Export / replay agent trace JSON | ⬜ Не начато | — |
+| v2.15 | E2E test SSE stream shape | ⬜ Не начато | — |
+| v2.16 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
 
 ## v2.1 Developer-only Run Agent Self-Test
 
@@ -1661,6 +1662,47 @@ localStorage.setItem('browserai.devtools', '1')
 npm run build
 ```
 
+
+## v2.12 Sidebar / topbar cleanup
+
+### Сделано
+
+Обновлены компоненты:
+
+```text
+src/components/Sidebar.jsx
+src/components/Topbar.jsx
+```
+
+Обычный sidebar/topbar теперь не показывает power/dev шум:
+
+- `Web AI` toggle скрыт за devtools;
+- auto-model hint скрыт за devtools;
+- `Агент` / `Авто` badges в topbar скрыты за devtools;
+- token/cost badges скрыты за devtools;
+- search/checkpoints/export topbar buttons скрыты за devtools.
+
+Обычный пользовательский topbar оставляет базовый UX:
+
+- title/model picker;
+- workspace toggle;
+- API warning, если не настроено;
+- logout.
+
+Devtools mode:
+
+```js
+localStorage.setItem('browserai.devtools', '1')
+```
+
+возвращает power-user controls.
+
+### Проверки
+
+```bash
+npm run build
+```
+
 ## Журнал v2
 
 ### 2026-06-09
@@ -1677,6 +1719,7 @@ npm run build
 - Выполнен v2.9: tool/provider error UX cleanup — обычный UI показывает понятные ошибки, raw details только в devtools.
 - Выполнен v2.10: workspace/file preview UX cleanup — dev controls скрыты за devtools, обычная панель показывает только пользовательские файловые действия.
 - Выполнен v2.11: composer/input UX cleanup — slash/dev autocomplete скрыт за devtools, обычный input стал проще.
+- Выполнен v2.12: sidebar/topbar cleanup — power/dev элементы скрыты за devtools, обычный topbar/sidebar упрощён.
 
 
 ### 2026-06-09 — корректировка v2.1
