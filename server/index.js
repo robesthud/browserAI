@@ -2679,7 +2679,11 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
   let projectRulesNote = ''
   try {
     if (chatId) {
-      const events = await withWorkspaceScope(chatId, () => listRecentWorkspaceActivity({ sinceMs: 60 * 60 * 1000, limit: 50 }))
+      // FIX: also timeout the recent activity query (can be slow on large workspaces after first agent task).
+      const events = await Promise.race([
+        withWorkspaceScope(chatId, () => listRecentWorkspaceActivity({ sinceMs: 60 * 60 * 1000, limit: 50 })),
+        new Promise((r) => setTimeout(() => r([]), 3000)),
+      ]).catch(() => [])
       if (events.length) {
         const lines = events.map((e) => {
           const iso = new Date(e.ts).toISOString().slice(11, 19)
@@ -2730,10 +2734,18 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
     const lastUser = [...safeHistory].reverse().find((m) => m.role === 'user')
     if (lastUser?.content && req.user?.id) {
       const { renderRecallForPrompt } = await import('./semanticMemory.js')
-      recallNote = await renderRecallForPrompt(req.user.id, lastUser.content, {
-        topK: 5,
-        provider: { baseUrl, apiKey, authType, authHeader, extraHeaders: mergedExtraHeaders, model },
-      })
+      // FIX: wrap semantic recall (which may do a provider /embeddings call) in a hard timeout.
+      // Previously a slow/hanging embeddings fetch on the second+ agent task in a chat could
+      // block the entire request handler before any SSE headers or events were sent,
+      // leaving the UI spinner spinning forever with no visible progress.
+      // 6s is generous for a cheap embed + cosine; if it times out we just proceed with no extra recall note.
+      recallNote = await Promise.race([
+        renderRecallForPrompt(req.user.id, lastUser.content, {
+          topK: 5,
+          provider: { baseUrl, apiKey, authType, authHeader, extraHeaders: mergedExtraHeaders, model },
+        }),
+        new Promise((r) => setTimeout(() => r(''), 6000)),
+      ]).catch(() => '')
     }
   } catch (e) { console.warn('[agent] recall failed:', e?.message || e) }
 
