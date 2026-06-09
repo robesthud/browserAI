@@ -10,7 +10,7 @@
  */
 export default function AgentPlanCard({ plan, hideBorder = false }) {
   if (!plan || !Array.isArray(plan.steps) || plan.steps.length === 0) return null
-  const done = plan.steps.filter((s) => s.done).length
+  const done = plan.steps.filter((s) => stepItem.done).length
   const total = plan.steps.length
   const pct = total > 0 ? Math.round((done / total) * 100) : 0
 
@@ -31,16 +31,16 @@ export default function AgentPlanCard({ plan, hideBorder = false }) {
         <div className="h-full bg-cream/70 transition-all" style={{ width: `${Math.max(2, pct)}%` }} />
       </div>
       <ol className="space-y-1">
-        {plan.steps.map((s) => (
-          <li key={s.idx} className="flex items-start gap-2 text-cream-soft">
+        {plan.steps.map((stepItem, stepIdx) => (
+          <li key={stepItem.idx || stepIdx} className="flex items-start gap-2 text-cream-soft">
             <span className={`mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
-              s.done
+              stepItem.done
                 ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-300'
                 : 'border-white/15 text-cream-faint'
-            }`}>{s.done ? '✓' : ''}</span>
+            }`}>{stepItem.done ? '✓' : ''}</span>
             <span className={`min-w-0 ${s.done ? 'text-cream-faint line-through' : ''}`}>
-              {s.text}
-              {s.note ? <span className="ml-1 text-[11px] text-cream-faint">— {s.note}</span> : null}
+              {stepItem.text}
+              {stepItem.note ? <span className="ml-1 text-[11px] text-cream-faint">— {stepItem.note}</span> : null}
             </span>
           </li>
         ))}
