@@ -1180,10 +1180,11 @@ localStorage.removeItem('browserai.devtools')
 | v2.5 | Arena parity: ask_user / approval cards cleanup | ✅ Выполнено | raw args скрыты за devtools |
 | v2.6 | Post-deploy self-test в GitHub Actions | ⬜ Не начато | требует TIMEWEB secrets |
 | v2.7 | Streaming / thinking UX cleanup | ✅ Выполнено | raw thinking скрыт за devtools |
-| v2.8 | Retry failed tool button | ⬜ Не начато | — |
-| v2.9 | Export / replay agent trace JSON | ⬜ Не начато | — |
-| v2.10 | E2E test SSE stream shape | ⬜ Не начато | — |
-| v2.11 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
+| v2.8 | Final answer / tool separation cleanup | ✅ Выполнено | действия отдельно, ответ отдельно |
+| v2.9 | Retry failed tool button | ⬜ Не начато | — |
+| v2.10 | Export / replay agent trace JSON | ⬜ Не начато | — |
+| v2.11 | E2E test SSE stream shape | ⬜ Не начато | — |
+| v2.12 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
 
 ## v2.1 Developer-only Run Agent Self-Test
 
@@ -1503,6 +1504,40 @@ localStorage.setItem('browserai.devtools', '1')
 npm run build
 ```
 
+
+## v2.8 Final answer / tool separation cleanup
+
+### Сделано
+
+Обновлён компонент:
+
+```text
+src/components/MessageList.jsx
+```
+
+Обычный Agent Mode теперь визуально разделяет:
+
+1. процесс выполнения;
+2. финальный ответ.
+
+Если агент выполняет tools, но финального текста ещё нет, показывается аккуратный индикатор:
+
+```text
+Агент выполняет действия…
+```
+
+Когда финальный ответ появляется, он рендерится отдельным markdown-блоком ниже actions/tool cards, с тонким разделителем.
+
+Пульсирующий cursor больше не висит в пустом assistant bubble, когда агент занят только tool actions.
+
+Это соответствует пользовательскому режиму: сначала виден процесс, потом отдельный итоговый ответ.
+
+### Проверки
+
+```bash
+npm run build
+```
+
 ## Журнал v2
 
 ### 2026-06-09
@@ -1515,6 +1550,7 @@ npm run build
 - Выполнен v2.5: ask_user / approval cards cleanup — обычный UI показывает только вопрос/подтверждение, raw args только в devtools.
 - Выполнен v2.6: exact user UI cleanup — runtime/debug panels и raw thoughts скрыты из обычного режима, доступны только в devtools.
 - Выполнен v2.7: streaming/thinking UX cleanup — raw provider-side thinking скрыт из обычного UI; пользователь видит только индикатор `Агент размышляет…`.
+- Выполнен v2.8: final answer / tool separation cleanup — процесс действий отделён от финального markdown-ответа.
 
 
 ### 2026-06-09 — корректировка v2.1

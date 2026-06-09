@@ -94,6 +94,13 @@ function WorkingSpinner() {
 function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, onCancelAskUser, onJobDone, onBranch }) {
   const isUser = m.role === 'user'
   const isDev = devtoolsEnabled()
+  const hasAgentActivity = !isUser && Boolean(
+    (Array.isArray(m.toolCalls) && m.toolCalls.length > 0) ||
+    (Array.isArray(m.askUsers) && m.askUsers.length > 0) ||
+    (Array.isArray(m.thoughts) && m.thoughts.length > 0) ||
+    m.thinking ||
+    m.job,
+  )
 
   // Mobile swipe-left -> reveal action buttons (regenerate / copy).
   // The hook is a no-op on desktop because there are no touch events.
@@ -346,14 +353,27 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
             )}
 
             {m.job ? <JobCard job={m.job} onJobDone={onJobDone} /> : null}
-            {m.content ? <Markdown text={m.content} /> : null}
+
+            {m.content ? (
+              <div className={hasAgentActivity ? 'mt-3 border-t border-white/10 pt-3' : ''}>
+                <Markdown text={m.content} />
+              </div>
+            ) : null}
+
+            {m.pending && hasAgentActivity && !m.content && !(m.job && ['succeeded', 'failed', 'cancelled'].includes(m.job.status)) && (
+              <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-graphite-800/60 px-2.5 py-1 text-[12px] text-cream-faint">
+                <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-300" />
+                <span>Агент выполняет действия…</span>
+              </div>
+            )}
+
             {/*
               Hide the pulsing cursor when the message owns a job that has
-              already reached a terminal state (succeeded / failed / cancelled).
-              Otherwise an old failed video card from history kept showing the
-              "...is typing" indicator forever after a page reload.
+              already reached a terminal state (succeeded / failed / cancelled),
+              or while an agent is only showing tool/action progress. The
+              final answer gets its own Markdown block once text arrives.
             */}
-            {m.pending && !(m.job && ['succeeded', 'failed', 'cancelled'].includes(m.job.status)) && (
+            {m.pending && !hasAgentActivity && !(m.job && ['succeeded', 'failed', 'cancelled'].includes(m.job.status)) && (
               <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-cream/70 align-middle" />
             )}
             {m.stopped && !m.content && (
