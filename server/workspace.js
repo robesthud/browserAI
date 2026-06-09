@@ -28,9 +28,9 @@ function sanitizeScopeId(id = '') {
 }
 
 function getScopedWorkspaceRoot() {
-  const scope = workspaceScope.getStore()
-  const chatId = sanitizeScopeId(scope?.chatId || '')
-  return chatId ? path.join(baseWorkspaceRoot, 'chats', chatId) : baseWorkspaceRoot
+  // Arena parity: agent always sees /workspace as root.
+  // We removed per-chat scoping from the visible root so tools behave exactly like Arena.ai Agent Mode.
+  return baseWorkspaceRoot
 }
 
 function getScopedHistoryRoot() {
