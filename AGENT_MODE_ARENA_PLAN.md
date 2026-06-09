@@ -1881,7 +1881,7 @@ localStorage.setItem('browserai.devtools', '1')
 | v2.21 | Live agent_state streaming | Полноценная передача `agent_state` на фронт в реальном времени с обновлением UI | ⬜ Не начато |
 | v2.22 | Automatic memory integration | ✅ Выполнено (один в один) | Автоматический `recall_facts` / `kb_search` перед сложными задачами в runtime |
 | v2.23 | Full native tool calling | ✅ Выполнено (один в один) | 100% нативная поддержка tool calls для Anthropic, Gemini, DeepSeek, Groq |
-| v2.24 | Advanced error recovery | Улучшенный retry + self-healing при ошибках инструментов | ⬜ Не начато |
+| v2.24 | Advanced error recovery | ✅ Выполнено (один в один) | Улучшенный retry + self-healing при ошибках инструментов |
 | v2.25 | Arena-style final answer formatting | Точное соответствие формата финального ответа (сводка действий + результат) | ⬜ Не начато |
 | v2.26 | Full E2E test coverage | Автоматические тесты ключевых сценариев Agent Mode | ⬜ Не начато |
 
@@ -1935,8 +1935,8 @@ localStorage.setItem('browserai.devtools', '1')
 
 | ID | Задача | Описание | Приоритет |
 |----|--------|----------|-----------|
-| P3-15 | Smart retry mechanism | Автоматический retry с модифицированными аргументами при ошибке | Высокий |
-| P3-16 | Self-healing loops | Агент сам исправляет ошибки (как в Voice Arena) | Средний |
+| P3-15 | Smart retry mechanism | ✅ Выполнено (один в один) | Высокий |
+| P3-16 | Self-healing loops | ✅ Выполнено (один в один) | Средний |
 | P3-17 | Better error messages | Понятные пользователю сообщения об ошибках | Высокий |
 | P3-18 | Fallback strategies | Автоматический переход на альтернативные инструменты | Средний |
 
@@ -2011,7 +2011,7 @@ localStorage.setItem('browserai.devtools', '1')
 | G-03 | Native tool calling (Anthropic/Gemini) | ✅ Выполнено | 100% нативная поддержка | Высокий |
 | G-04 | Computer Use / Browser Use | Почти отсутствует | Реализовать browser_use, computer_use tools | Высокий |
 | G-05 | Sub-agents | Отсутствует | Поддержка `use_subagents` | Средний |
-| G-06 | Advanced self-healing | Минимальный retry | Автоматическое исправление ошибок | Высокий |
+| G-06 | Advanced self-healing | ✅ Выполнено (один в один) | Автоматическое исправление ошибок | Высокий |
 | G-07 | E2E тесты Agent Mode | Почти нет | Создать набор E2E тестов | Средний |
 | G-08 | Multi-turn memory across chats | Слабая | Долгосрочная память между сессиями | Средний |
 

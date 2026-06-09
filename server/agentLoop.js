@@ -1334,6 +1334,31 @@ async function runAgentInner({
         const validation = validateToolCall(call.tool, call.args || {}, toolDef)
         if (!validation.ok) {
           const r0 = makeToolErrorResult(validation.error, { warnings: validation.warnings })
+          
+          // ── v2.24 Advanced error recovery (Schema Retry) ──
+          // If the model messed up the tool arguments (missing required, 
+          // wrong type, hallucinated property), don't just log it and fail. 
+          // Give it a loud, specific warning and push back ONCE per turn 
+          // to let it self-correct natively.
+          if (!pushedBackThisTurn && !aborted) {
+            pushedBackThisTurn = true
+            sse(res, 'tool_result', {
+              step, sub: idx, name: call.tool, ok: false,
+              error: r0.error, structured: normalizeToolResult(call.tool, r0, { step, sub: idx, readBack: false }), router: { validation },
+            })
+            sse(res, 'thought', { step, text: `ОШИБКА СХЕМЫ ${call.tool}: ${validation.error}. Запрашиваю исправление.` })
+            
+            const schemaErrStr = `[schema_validation_error]\nTool '${call.tool}' rejected your arguments: ${validation.error}\nFix the arguments and try again.\n[/schema_validation_error]`
+            if (useNativeTools) {
+              // We must complete the native tool roundtrip before pushing back
+              convo.push({ role: 'tool', tool_call_id: call.nativeId, name: call.tool, content: schemaErrStr })
+            } else {
+              convo.push({ role: 'user', content: schemaErrStr })
+            }
+            return { call, pushedBack: true }
+          }
+
+          // If we already pushed back this turn, or it's aborted, fall through to hard failure
           const structuredResult = normalizeToolResult(call.tool, r0, { step, sub: idx, readBack: Boolean(call._readBack) })
           updateAgentStateFromTool(agentState, call.tool, r0, call.args || {})
           sse(res, 'tool_result', {
@@ -1481,6 +1506,33 @@ async function runAgentInner({
         const structuredResult = normalizeToolResult(call.tool, r, {
           step, sub: idx, readBack: Boolean(call._readBack),
         })
+        
+        // ── v2.24 Advanced error recovery (Execution Self-Healing) ──
+        // If a file write, bash command, or search fails, don't just dump the 
+        // error and move on. Push back so the model notices it and retries 
+        // (e.g. creating a missing directory, fixing a bash syntax error).
+        if (!r.ok && !pushedBackThisTurn && !aborted && cat !== 'ask') {
+           pushedBackThisTurn = true
+           sse(res, 'thought', { step, text: `Ошибка выполнения ${call.tool}. Даю агенту шанс исправить.` })
+           const execErrStr = `[execution_error]\nTool '${call.tool}' failed: ${r.error}\nConsider this error, fix the parameters or try a different approach.\n[/execution_error]`
+           if (useNativeTools) {
+             convo.push({ role: 'tool', tool_call_id: call.nativeId, name: call.tool, content: execErrStr })
+           } else {
+             convo.push({ role: 'user', content: execErrStr })
+           }
+           // We still update state and emit tool_result so the UI shows the red card
+           updateAgentStateFromTool(agentState, call.tool, r, call.args || {})
+           sse(res, 'tool_result', {
+             step, sub: idx,
+             name: call.tool,
+             ok: Boolean(r.ok),
+             result: r.ok ? r.result : undefined,
+             error: r.ok ? undefined : r.error,
+             structured: structuredResult,
+           })
+           return { call, pushedBack: true }
+        }
+
         updateAgentStateFromTool(agentState, call.tool, r, call.args || {})
         sse(res, 'tool_result', {
           step, sub: idx,
@@ -1510,7 +1562,12 @@ async function runAgentInner({
 
       // Update tracking state from THIS round's results so the next
       // iteration's safety nets have fresh data.
-      for (const { call, r } of results) {
+      let sawPushBack = false
+      for (const res of results) {
+        if (!res) continue
+        if (res.pushedBack) sawPushBack = true
+        if (!res.call || !res.r) continue
+        const { call, r } = res
         recentToolHistory.push({ tool: call.tool, ok: Boolean(r.ok), at: Date.now() })
         if (call.tool === 'plan_set' && r.ok && Array.isArray(r.result?.plan)) {
           planState.done = new Set()
@@ -1518,6 +1575,7 @@ async function runAgentInner({
           for (const i of r.result.checked) planState.done.add(Number(i))
         }
       }
+      if (sawPushBack) continue
       if (recentToolHistory.length > 40) recentToolHistory.splice(0, recentToolHistory.length - 40)
 
       // Feed every observation back into the conversation — one message
