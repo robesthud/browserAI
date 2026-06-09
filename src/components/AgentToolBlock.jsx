@@ -195,6 +195,7 @@ export default function AgentToolBlock({
   finishedAt,
   stream,
   diagnostic,
+  onRetry,
 }) {
   const [open, setOpen] = useState(false)
   const isDev = devtoolsEnabled()
@@ -281,6 +282,15 @@ export default function AgentToolBlock({
             <div className={`mb-2 break-words rounded-lg px-2.5 py-1.5 text-[12px] ${ok === false ? 'bg-red-500/10 text-red-200' : 'bg-black/20 text-cream-soft'}`}>
               {summary}
               {ok === false && !isDev ? <div className="mt-1 text-[11px] text-red-200/80">Агент может попробовать другой способ или запросить уточнение.</div> : null}
+
+              {ok === false && onRetry && (
+                <button
+                  onClick={() => onRetry({ name, args })}
+                  className="mt-2 inline-flex items-center gap-1 rounded bg-red-500/20 px-3 py-1 text-[12px] font-medium text-red-200 hover:bg-red-500/30 active:bg-red-500/40"
+                >
+                  ↻ Retry
+                </button>
+              )}
             </div>
           )}
 
