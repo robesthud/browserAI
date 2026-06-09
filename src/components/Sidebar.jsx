@@ -26,6 +26,11 @@ export default function Sidebar({
   useWebAI,
   onToggleWebAI,
 }) {
+  const devtoolsEnabled = (() => {
+    try { return localStorage.getItem('browserai.devtools') === '1' }
+    catch { return false }
+  })()
+
   return (
     <aside
       className={`fixed inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col overflow-hidden border-r border-white/5 bg-graphite-800
@@ -144,16 +149,18 @@ export default function Sidebar({
             </span>
           </button>
 
-          {/* Agent Lab */}
-          <button
-            onClick={() => { window.location.href = '/admin/agent' }}
-            className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left text-[13px]
-                       text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream"
-            title="Agent Lab: self-test, runtime diagnostics, workspace metadata"
-          >
-            <span className="text-base leading-none">🧪</span>
-            <span>Agent Lab</span>
-          </button>
+          {/* Agent Lab — developer/admin diagnostics, hidden from normal Agent Mode UI. */}
+          {devtoolsEnabled && (
+            <button
+              onClick={() => { window.location.href = '/admin/agent' }}
+              className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left text-[13px]
+                         text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream"
+              title="Agent Lab: self-test, runtime diagnostics, workspace metadata"
+            >
+              <span className="text-base leading-none">🧪</span>
+              <span>Agent Lab</span>
+            </button>
+          )}
 
           {/* Settings */}
           <button

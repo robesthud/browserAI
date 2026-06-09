@@ -1118,6 +1118,53 @@ npm run build
 
 ---
 
+# Strategy: Arena parity vs Dev/Admin extensions
+
+Важно: не смешиваем два направления.
+
+## Arena parity
+
+Это пользовательский Agent Mode, который должен быть похож на Arena-style агентный режим:
+
+- чат;
+- streaming assistant output;
+- tool cards;
+- thinking/thought blocks;
+- ask_user / approval cards;
+- workspace/files/preview;
+- runtime state только как часть агентного исполнения, без лишних developer-кнопок.
+
+## Dev/Admin extensions
+
+Это дополнительные инструменты разработки и эксплуатации BrowserAI, которых нет в обычном пользовательском Agent Mode:
+
+- Agent Lab;
+- Run self-test;
+- provider diagnostics;
+- workspace metadata;
+- raw JSON/debug panels;
+- future trace replay/export.
+
+Эти функции не считаются “один в один как Arena UI” и должны быть:
+
+- либо на отдельных admin pages;
+- либо скрыты за devtools flag;
+- не должны засорять основной пользовательский чат/Agent Mode.
+
+Devtools flag:
+
+```js
+localStorage.setItem('browserai.devtools', '1')
+```
+
+Отключение:
+
+```js
+localStorage.removeItem('browserai.devtools')
+```
+
+---
+
 # Agent Mode v2 Quality Pass
 
 После закрытия этапов 1–11 начинается цикл улучшений качества, диагностики и удобства. Цель — не только иметь backend-архитектуру уровня Arena.ai, но и сделать её удобной для ежедневной эксплуатации.
@@ -1127,7 +1174,7 @@ npm run build
 | # | Задача | Статус | Коммит / заметка |
 |---|---|---|---|
 | v2.1 | Developer-only Run Agent Self-Test | ✅ Выполнено | скрыто за `browserai.devtools=1` |
-| v2.2 | Agent Lab из sidebar: self-test + health + workspace metadata | ✅ Выполнено | `/admin/agent` |
+| v2.2 | Agent Lab admin/dev diagnostics | ✅ Выполнено | скрыто за `browserai.devtools=1`, не Arena parity |
 | v2.3 | Post-deploy self-test в GitHub Actions | ⬜ Не начато | требует TIMEWEB secrets |
 | v2.4 | Retry failed tool button | ⬜ Не начато | — |
 | v2.5 | Export / replay agent trace JSON | ⬜ Не начато | — |
@@ -1215,7 +1262,7 @@ npm run build
 src/components/AgentAdmin.jsx
 ```
 
-Добавлена кнопка в левый sidebar:
+Добавлена кнопка в левый sidebar, но только в devtools mode:
 
 ```text
 🧪 Agent Lab
@@ -1230,7 +1277,7 @@ src/components/AgentAdmin.jsx
 - workspace quota/file count/policy raw JSON;
 - кнопку возврата в чат.
 
-Это решает требование: diagnostics вызываются по кнопке из левого бара, но не засоряют обычный Agent Mode UI.
+Это решает требование: diagnostics вызываются по кнопке из левого бара в devtools/admin режиме, но не засоряют обычный пользовательский Agent Mode UI.
 
 ### Проверки
 
@@ -1250,7 +1297,7 @@ npm run build
 
 - Начат Agent Mode v2 Quality Pass.
 - Выполнен v2.1: developer-only Run Agent Self-Test в настройках агента; в обычном UI кнопка скрыта, чтобы не отходить от пользовательского Agent Mode.
-- Выполнен v2.2: добавлена страница `/admin/agent` и кнопка `🧪 Agent Lab` в левый sidebar.
+- Выполнен v2.2: добавлена страница `/admin/agent`; кнопка `🧪 Agent Lab` в левом sidebar показывается только при `browserai.devtools=1`, потому что это Dev/Admin extension, а не Arena parity.
 
 
 ### 2026-06-09 — корректировка v2.1
@@ -1263,3 +1310,16 @@ localStorage.setItem('browserai.devtools', '1')
 ```
 
 Это сохраняет основной Agent Mode ближе к пользовательскому интерфейсу Arena-style, а diagnostics остаются для разработчика/admin.
+
+
+### 2026-06-09 — корректировка стратегии Agent Lab
+
+- Подтверждено: в обычном пользовательском Agent Mode нет Agent Lab, поэтому это не Arena parity.
+- Кнопка `🧪 Agent Lab` скрыта из обычного левого sidebar.
+- Теперь она показывается только если включён devtools flag:
+
+```js
+localStorage.setItem('browserai.devtools', '1')
+```
+
+- `/admin/agent` остаётся доступной как отдельная admin/dev diagnostics page.
