@@ -969,6 +969,7 @@ export function normalizeProviderError(error, { baseUrl = '', model = '', phase 
   else if (rateLimited) hint = 'Лимит/квота провайдера. Подожди, смени модель или ключ.'
   else if (timeout) hint = 'Таймаут провайдера. Можно повторить запрос или отключить streaming.'
   else if (serverError) hint = 'Сбой на стороне провайдера/прокси. Обычно помогает retry или fallback provider.'
+  else if (status === 400) hint = 'Провайдер отклонил запрос (HTTP 400). Возможно, выбрана модель без поддержки функций, или параметры запроса неверны.'
   else if (/model/i.test(raw) && /not|unknown|invalid|не/i.test(raw)) hint = 'Похоже, модель недоступна. Обнови список моделей или выбери другую.'
 
   return {

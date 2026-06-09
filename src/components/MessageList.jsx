@@ -88,6 +88,7 @@ function friendlyAssistantError(message = '', providerError = null) {
   if (/401|403|unauthorized|forbidden|invalid api key|invalid token/.test(lower)) return 'Проблема авторизации: проверь ключ или токен провайдера.'
   if (/429|rate limit|quota|лимит|квота/.test(lower)) return 'Провайдер ограничил запросы или квоту. Попробуй позже или выбери другой ключ.'
   if (/timeout|timed out|aborted|таймаут/.test(lower)) return 'Провайдер не ответил вовремя. Можно повторить запрос.'
+  if (/400|bad request/.test(lower)) return 'Провайдер отклонил запрос (HTTP 400). Возможно, параметры или формат инструментов не поддерживаются.'
   if (/model|not found|unknown|invalid/.test(lower)) return 'Модель недоступна или указана неверно. Проверь выбранную модель.'
   if (/network|fetch|bad gateway|service unavailable|502|503/.test(lower)) return 'Сетевая ошибка или временный сбой провайдера.'
   return raw ? raw.slice(0, 240) : 'Агент столкнулся с ошибкой.'
