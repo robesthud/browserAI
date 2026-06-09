@@ -1906,11 +1906,11 @@ localStorage.setItem('browserai.devtools', '1')
 
 | ID | Задача | Описание | Приоритет |
 |----|--------|----------|-----------|
-| P3-01 | Live agent_state broadcasting | Полноценная передача `agent_state` через SSE с обновлением UI в реальном времени | Высокий |
-| P3-02 | agent_context visibility | Показывать context (task type, complexity, workspace) в runtime panel | Высокий |
-| P3-03 | Real-time plan updates | План обновляется live при `plan_set` / `plan_check` | Высокий |
-| P3-04 | Touched files tracking | Полный список затронутых файлов в runtime panel | Средний |
-| P3-05 | Error history | История ошибок с возможностью retry | Высокий |
+| P3-01 | Live agent_state broadcasting | ✅ Выполнено (один в один) | Высокий |
+| P3-02 | agent_context visibility | ✅ Выполнено (один в один) | Высокий |
+| P3-03 | Real-time plan updates | ✅ Выполнено (один в один) | Высокий |
+| P3-04 | Touched files tracking | ✅ Выполнено (один в один) | Средний |
+| P3-05 | Error history | ✅ Выполнено (один в один) | Высокий |
 
 ### 3.2 Memory & Long-term Context
 
@@ -2006,9 +2006,9 @@ localStorage.setItem('browserai.devtools', '1')
 
 | ID | Возможность | Текущее состояние в проекте | Что нужно | Приоритет |
 |----|-------------|-----------------------------|-----------|-----------|
-| G-01 | Live agent_state streaming | Частично (отправляется, но UI обновляется слабо) | Полноценный live runtime panel | Высокий |
-| G-02 | Автоматический memory recall | Только в planning directive | Вызов recall_facts перед сложными задачами в runtime | Высокий |
-| G-03 | Native tool calling (Anthropic/Gemini) | Улучшено, но неполно | Довести до 100% нативной поддержки | Высокий |
+| G-01 | Live agent_state streaming | ✅ Выполнено | Полноценный live runtime panel | Высокий |
+| G-02 | Автоматический memory recall | ✅ Выполнено | Вызов recall_facts перед сложными задачами в runtime | Высокий |
+| G-03 | Native tool calling (Anthropic/Gemini) | ✅ Выполнено | 100% нативная поддержка | Высокий |
 | G-04 | Computer Use / Browser Use | Почти отсутствует | Реализовать browser_use, computer_use tools | Высокий |
 | G-05 | Sub-agents | Отсутствует | Поддержка `use_subagents` | Средний |
 | G-06 | Advanced self-healing | Минимальный retry | Автоматическое исправление ошибок | Высокий |
