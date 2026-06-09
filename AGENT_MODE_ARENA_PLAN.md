@@ -2031,7 +2031,7 @@ localStorage.setItem('browserai.devtools', '1')
 - Сохранять полный `agent_state` + toolCalls + thoughts
 - Возможность replay trace (воспроизведение)
 
-**Статус:** ⬜ Не начато
+**Статус:** ✅ Выполнено
 
 ---
 
@@ -2044,7 +2044,7 @@ localStorage.setItem('browserai.devtools', '1')
 - Написать E2E тесты на форму и последовательность SSE событий
 - Интегрировать в CI
 
-**Статус:** ⬜ Не начато
+**Статус:** ✅ Выполнено
 
 ---
 

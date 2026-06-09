@@ -1,4 +1,7 @@
 import { useEffect, useState } from 'react'
+import AgentRuntimePanel from './AgentRuntimePanel.jsx'
+import AgentToolBlock from './AgentToolBlock.jsx'
+import Markdown from './Markdown.jsx'
 
 function JsonBlock({ data }) {
   if (!data) return null
@@ -26,6 +29,7 @@ export default function AgentAdmin() {
   const [health, setHealth] = useState(null)
   const [workspace, setWorkspace] = useState(null)
   const [loadingMeta, setLoadingMeta] = useState(false)
+  const [replayTrace, setReplayTrace] = useState(null)
 
   const refreshMeta = async () => {
     setLoadingMeta(true)
@@ -166,6 +170,73 @@ export default function AgentAdmin() {
             ) : <div className="text-[12px] text-cream-faint">загрузка…</div>}
           </div>
         </section>
+      
+        <section className="rounded-2xl border border-white/10 bg-graphite-800/45 p-4 mt-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-[15px] font-medium">Replay Agent Trace</h2>
+              <p className="text-[12px] text-cream-faint">Загрузите JSON с trace-экспортом для просмотра состояния.</p>
+            </div>
+            <label className="cursor-pointer rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-graphite-900">
+              Загрузить JSON
+              <input 
+                type="file" 
+                accept=".json" 
+                className="hidden" 
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if(!f) return
+                  const r = new FileReader()
+                  r.onload = (ev) => {
+                    try {
+                       setReplayTrace(JSON.parse(ev.target.result))
+                    } catch(err) {
+                       alert('Invalid JSON')
+                    }
+                  }
+                  r.readAsText(f)
+                }}
+              />
+            </label>
+          </div>
+          {replayTrace && (
+            <div className="mt-4 space-y-4 rounded-xl border border-white/10 bg-graphite-900 p-4">
+               {replayTrace.agentContext || replayTrace.agentState ? (
+                 <AgentRuntimePanel 
+                   context={replayTrace.agentContext}
+                   state={replayTrace.agentState}
+                   protocol={{ version: 1 }}
+                   routerWarnings={replayTrace.warnings || []}
+                 />
+               ) : null}
+               {Array.isArray(replayTrace.tools) && replayTrace.tools.length > 0 && (
+                 <div className="space-y-2 mt-4 border-t border-white/10 pt-4">
+                   <h3 className="text-[13px] font-medium">Инструменты</h3>
+                   {replayTrace.tools.map((t, idx) => (
+                     <AgentToolBlock key={idx} toolName={t.name || t.tool} args={t.args} result={t.result} error={t.error} isDev={true} />
+                   ))}
+                 </div>
+               )}
+               {replayTrace.error || replayTrace.providerError ? (
+                 <div className="mt-4 border-t border-red-500/20 pt-4 text-red-400">
+                   <h3 className="text-[13px] font-medium">Ошибка</h3>
+                   <pre className="text-[11px] whitespace-pre-wrap">{JSON.stringify(replayTrace.providerError || replayTrace.error, null, 2)}</pre>
+                 </div>
+               ) : null}
+               {replayTrace.content && (
+                 <div className="mt-4 border-t border-white/10 pt-4">
+                   <h3 className="text-[13px] font-medium mb-2">Финальный ответ</h3>
+                   <div className="text-[14px] leading-relaxed text-cream-soft"><Markdown text={replayTrace.content} /></div>
+                 </div>
+               )}
+               <details className="mt-4 border-t border-white/10 pt-4">
+                  <summary className="text-[12px] cursor-pointer text-cream-faint">Сырой JSON</summary>
+                  <JsonBlock data={replayTrace} />
+               </details>
+            </div>
+          )}
+        </section>
+
       </main>
     </div>
   )
