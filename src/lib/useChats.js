@@ -433,14 +433,16 @@ export function useChats(settings) {
           saveGeneratedMediaToWorkspace(chatId, acc).catch(() => {})
         } else patchAssistant({ pending: false })
         haptics.success()
-      } catch (err) {
+} catch (err) {
         if (err.name === 'AbortError') {
           patchAssistant({ pending: false, stopped: true })
           haptics.tap()
         } else {
           patchAssistant({
             pending: false,
-            error: err.message || 'Неизвестная ошибка',
+            error: err.message === 'Failed to fetch' || err.message === 'Load failed' 
+                   ? 'Связь с сервером BrowserAI прервана (проверьте интернет или VPN)' 
+                   : err.message || 'Неизвестная ошибка',
           })
           haptics.error()
         }
