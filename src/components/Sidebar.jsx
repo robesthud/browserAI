@@ -111,24 +111,26 @@ export default function Sidebar({
 
         {/* низ: режимы + настройки */}
         <div className="space-y-1 border-t border-white/5 px-2.5 py-2.5">
-          {/* Agent mode toggle */}
-          <button
-            onClick={() => onToggleAgentMode?.(!agentMode)}
-            className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors ${
-              agentMode
-                ? 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/20'
-                : 'text-cream-soft hover:bg-graphite-750 hover:text-cream'
-            }`}
-            title="Агентский режим: модель может читать/писать файлы, искать в вебе и запускать shell-команды"
-          >
-            <span className="flex items-center gap-3">
-              <span className="text-base leading-none">🤖</span>
-              <span>Агент</span>
-            </span>
-            <span className={`text-[11px] font-medium ${agentMode ? 'text-emerald-300' : 'text-cream-faint'}`}>
-              {agentMode ? 'Вкл' : 'Выкл'}
-            </span>
-          </button>
+          {/* Agent mode toggle — devtools only. Normal UI runs with Agent Mode enabled. */}
+          {devtoolsEnabled && (
+            <button
+              onClick={() => onToggleAgentMode?.(!agentMode)}
+              className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors ${
+                agentMode
+                  ? 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/20'
+                  : 'text-cream-soft hover:bg-graphite-750 hover:text-cream'
+              }`}
+              title="Агентский режим: модель может читать/писать файлы, искать в вебе и запускать shell-команды"
+            >
+              <span className="flex items-center gap-3">
+                <span className="text-base leading-none">🤖</span>
+                <span>Агент</span>
+              </span>
+              <span className={`text-[11px] font-medium ${agentMode ? 'text-emerald-300' : 'text-cream-faint'}`}>
+                {agentMode ? 'Вкл' : 'Выкл'}
+              </span>
+            </button>
+          )}
 
           {/* Web AI toggle — power/dev control, hidden from normal Agent Mode UI. */}
           {devtoolsEnabled && (

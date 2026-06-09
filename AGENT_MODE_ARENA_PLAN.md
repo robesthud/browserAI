@@ -1188,10 +1188,11 @@ localStorage.removeItem('browserai.devtools')
 | v2.13 | Message polish / final visual cleanup | ✅ Выполнено | убран step-counter из обычного UI |
 | v2.14 | Conversation flow cleanup | ✅ Выполнено | unified stopped/empty/error states |
 | v2.15 | Mobile polish / responsive cleanup | ✅ Выполнено | карточки/кнопки не ломают ширину |
-| v2.16 | Retry failed tool button | ⬜ Не начато | — |
-| v2.17 | Export / replay agent trace JSON | ⬜ Не начато | — |
-| v2.18 | E2E test SSE stream shape | ⬜ Не начато | — |
-| v2.19 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
+| v2.16 | Always-on Agent Mode UI cleanup | ✅ Выполнено | agent toggle скрыт за devtools |
+| v2.17 | Retry failed tool button | ⬜ Не начато | — |
+| v2.18 | Export / replay agent trace JSON | ⬜ Не начато | — |
+| v2.19 | E2E test SSE stream shape | ⬜ Не начато | — |
+| v2.20 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
 
 ## v2.1 Developer-only Run Agent Self-Test
 
@@ -1785,6 +1786,40 @@ src/components/Composer.jsx
 npm run build
 ```
 
+
+## v2.16 Always-on Agent Mode UI cleanup
+
+### Сделано
+
+Обновлены компоненты:
+
+```text
+src/App.jsx
+src/components/Sidebar.jsx
+```
+
+В обычном пользовательском UI скрыт тумблер `Агент`, потому что Agent Mode должен быть поведением по умолчанию, а не режимной debug-настройкой.
+
+При обычном использовании:
+
+```text
+effectiveAgentMode = true
+```
+
+Даже если раньше в localStorage было `browserai.agentMode=0`, обычный пользователь не останется незаметно без agent tools.
+
+Тумблер `Агент` доступен только в devtools mode:
+
+```js
+localStorage.setItem('browserai.devtools', '1')
+```
+
+### Проверки
+
+```bash
+npm run build
+```
+
 ## Журнал v2
 
 ### 2026-06-09
@@ -1805,6 +1840,7 @@ npm run build
 - Выполнен v2.13: message polish — internal step counter скрыт за devtools, plan card сделана пользовательской.
 - Выполнен v2.14: conversation flow cleanup — единые состояния stopped/empty/error, tool cards сохраняются при ошибке.
 - Выполнен v2.15: mobile polish — tool/ask cards и attachment chips лучше адаптированы под узкий экран.
+- Выполнен v2.16: always-on Agent Mode UI cleanup — тумблер Агент скрыт за devtools, в обычном UI agent mode включён по умолчанию.
 
 
 ### 2026-06-09 — корректировка v2.1

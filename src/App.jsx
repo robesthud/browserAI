@@ -170,6 +170,11 @@ function BrowserApp({ user, reloadAuth }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  const devtoolsEnabled = (() => {
+    try { return localStorage.getItem('browserai.devtools') === '1' }
+    catch { return false }
+  })()
+
   // Agent mode — model is allowed to call tools (workspace / web / bash /
   // github / download_url). Default ON: users overwhelmingly expect AI to
   // be able to download files / clone repos / read attachments etc., and
@@ -191,6 +196,7 @@ function BrowserApp({ user, reloadAuth }) {
       // localStorage may be unavailable
     }
   }, [agentMode])
+  const effectiveAgentMode = devtoolsEnabled ? agentMode : true
 
   const {
     settings,
@@ -340,7 +346,7 @@ function BrowserApp({ user, reloadAuth }) {
   }
 
   const shouldUseAgentForText = (text, taskType) => {
-    if (!agentMode) return false
+    if (!effectiveAgentMode) return false
     const lower = String(text || '').toLowerCase()
     // Phrases that *unambiguously* need tools (download files, manage workspace,
     // run shell, hit GitHub, etc.). When any of these are present we ALWAYS
@@ -412,7 +418,7 @@ function BrowserApp({ user, reloadAuth }) {
         onSelect={handleSelectChat}
         onDelete={deleteChat}
         onOpenSettings={() => setSettingsOpen(true)}
-        agentMode={agentMode}
+        agentMode={effectiveAgentMode}
         onToggleAgentMode={setAgentMode}
         useWebAI={settings.useWebAI}
         onToggleWebAI={(next) => setParams({ useWebAI: next })}
