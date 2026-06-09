@@ -1427,6 +1427,48 @@ localStorage.setItem('browserai.devtools', '1')
 npm run build
 ```
 
+
+## v2.6 Exact user UI: hide runtime/debug panels from normal mode
+
+### Сделано
+
+Обновлён компонент:
+
+```text
+src/components/MessageList.jsx
+```
+
+В обычном пользовательском Agent Mode теперь скрыты:
+
+- `AgentRuntimePanel`;
+- raw `AgentThought` blocks;
+- stream protocol / provider / max steps / router warnings;
+- task debug state.
+
+Они доступны только в devtools mode:
+
+```js
+localStorage.setItem('browserai.devtools', '1')
+```
+
+Обычный UI теперь показывает только:
+
+- сообщения пользователя/ассистента;
+- tool/action cards;
+- plan card;
+- ask_user cards;
+- approval cards;
+- provider-side extended thinking, если модель сама его отдаёт в отдельном блоке;
+- финальный ответ.
+
+Это соответствует правилу: пользовательский режим не должен выглядеть как debug console.
+
+### Проверки
+
+```bash
+npm run build
+```
+
 ## Журнал v2
 
 ### 2026-06-09
@@ -1437,6 +1479,7 @@ npm run build
 - Выполнен v2.3: user-facing runtime panel cleanup — debug поля скрыты за devtools, обычный UI показывает только ход выполнения.
 - Выполнен v2.4: user-friendly tool cards — raw args/result скрыты за devtools, обычный UI показывает действия и краткие результаты.
 - Выполнен v2.5: ask_user / approval cards cleanup — обычный UI показывает только вопрос/подтверждение, raw args только в devtools.
+- Выполнен v2.6: exact user UI cleanup — runtime/debug panels и raw thoughts скрыты из обычного режима, доступны только в devtools.
 
 
 ### 2026-06-09 — корректировка v2.1

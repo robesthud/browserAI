@@ -12,6 +12,11 @@ import JobCard from './JobCard.jsx'
 import usePullToRefresh from '../lib/usePullToRefresh.js'
 import useSwipeActions from '../lib/useSwipeActions.js'
 
+function devtoolsEnabled() {
+  try { return localStorage.getItem('browserai.devtools') === '1' }
+  catch { return false }
+}
+
 function Attachments({ items }) {
   if (!items?.length) return null
   return (
@@ -88,6 +93,7 @@ function WorkingSpinner() {
 
 function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, onCancelAskUser, onJobDone, onBranch }) {
   const isUser = m.role === 'user'
+  const isDev = devtoolsEnabled()
 
   // Mobile swipe-left -> reveal action buttons (regenerate / copy).
   // The hook is a no-op on desktop because there are no touch events.
@@ -201,12 +207,14 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                 tokens={Number(m.tokens?.reasoningTokens || 0)}
               />
             )}
-            <AgentRuntimePanel
-              context={m.agentContext}
-              state={m.agentState}
-              protocol={m.streamProtocol}
-              routerWarnings={m.routerWarnings || []}
-            />
+            {isDev && (
+              <AgentRuntimePanel
+                context={m.agentContext}
+                state={m.agentState}
+                protocol={m.streamProtocol}
+                routerWarnings={m.routerWarnings || []}
+              />
+            )}
 
             {/* Agent loop: interleave intermediate thoughts and tool calls by step,
                 so the UI shows the model planning before each action — same UX as
@@ -264,10 +272,12 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                   }
                   for (const tc of m.toolCalls || []) {
                     const ths = thoughtsByStep.get(tc.step) || []
-                    for (const t of ths) {
-                      items.push(
-                        <AgentThought key={`th-${tc.step}-${t.at}`} text={t.text} />,
-                      )
+                    if (isDev) {
+                      for (const t of ths) {
+                        items.push(
+                          <AgentThought key={`th-${tc.step}-${t.at}`} text={t.text} />,
+                        )
+                      }
                     }
                     thoughtsByStep.delete(tc.step)
                     // Hide plan_set / plan_check tool blocks themselves —
@@ -292,10 +302,12 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                   }
                   // any leftover thoughts (no matching tool) — render at the end
                   for (const [step, ths] of thoughtsByStep) {
-                    for (const t of ths) {
-                      items.push(
-                        <AgentThought key={`th-late-${step}-${t.at}`} text={t.text} />,
-                      )
+                    if (isDev) {
+                      for (const t of ths) {
+                        items.push(
+                          <AgentThought key={`th-late-${step}-${t.at}`} text={t.text} />,
+                        )
+                      }
                     }
                   }
                   return items
