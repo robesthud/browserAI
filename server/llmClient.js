@@ -688,7 +688,7 @@ async function callOpenAICompatibleStream({
     ...buildSessionHeaders({ baseUrl, apiKey, authType, authHeader, extraHeaders }),
   }
   const body = {
-    model, messages: normalizeOpenAIMessages(rawMessages), temperature: /glm/i.test(model) && temperature === 1 ? 0.99 : temperature,
+    model, messages: normalizeOpenAIMessages(rawMessages), temperature: /glm/i.test(model) && temperature >= 1 ? 0.99 : temperature,
     stream: true,
     stream_options: { include_usage: true }, // OpenAI: usage in final chunk
   }
