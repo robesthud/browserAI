@@ -126,8 +126,28 @@ function formatRawResult(name, result) {
   try { return JSON.stringify(result, null, 2) } catch { return String(result) }
 }
 
+function friendlyToolError(name, error = '') {
+  const raw = String(error || '')
+  const lower = raw.toLowerCase()
+  if (/path traversal|invalid path|null bytes|absolute paths/i.test(raw)) return 'Путь заблокирован политикой безопасности workspace'
+  if (/not found|no such file|enoent|файл .*не найден/i.test(lower)) {
+    if (['read_file', 'edit_file', 'delete_file', 'file_history', 'restore_file'].includes(name)) return 'Файл не найден'
+    return 'Ресурс не найден'
+  }
+  if (/permission|eacces|access denied|forbidden|403/i.test(lower)) return 'Недостаточно прав для выполнения действия'
+  if (/timeout|timed out|killed after/i.test(lower)) return 'Действие заняло слишком много времени и было остановлено'
+  if (/cancelled|canceled/i.test(lower)) return 'Действие отменено'
+  if (/old_text not found|not found in/i.test(lower) && name === 'edit_file') return 'Текст для замены не найден в файле'
+  if (/syntax|parse|unexpected token|unclosed|unbalanced/i.test(lower)) return 'Обнаружена ошибка синтаксиса'
+  if (/exit code|exit \d+|command failed/i.test(lower) || name === 'bash') return 'Команда завершилась с ошибкой'
+  if (/network|fetch|enotfound|econnrefused|econnreset/i.test(lower)) return 'Сетевая операция не удалась'
+  if (/rate limit|quota|429/i.test(lower)) return 'Провайдер ограничил запросы или квоту'
+  if (/unauthorized|invalid api key|401/i.test(lower)) return 'Проблема авторизации или ключа'
+  return 'Действие завершилось с ошибкой'
+}
+
 function resultSummary(name, result, ok, error) {
-  if (ok === false) return error ? `Ошибка: ${String(error).slice(0, 220)}` : 'Инструмент завершился с ошибкой'
+  if (ok === false) return friendlyToolError(name, error)
   if (!result) return ''
   if (typeof result === 'string') return result.length ? shortLine(result, 220) : ''
   switch (name) {
@@ -260,7 +280,15 @@ export default function AgentToolBlock({
           {summary && (
             <div className={`mb-2 rounded-lg px-2.5 py-1.5 text-[12px] ${ok === false ? 'bg-red-500/10 text-red-200' : 'bg-black/20 text-cream-soft'}`}>
               {summary}
+              {ok === false && !isDev ? <div className="mt-1 text-[11px] text-red-200/80">Агент может попробовать другой способ или запросить уточнение.</div> : null}
             </div>
+          )}
+
+          {isDev && ok === false && error && (
+            <details className="mb-1.5 text-[11px] text-cream-faint">
+              <summary className="cursor-pointer">raw error</summary>
+              <pre className="thin-scroll mt-1 max-h-32 overflow-auto rounded bg-graphite-900 p-2 font-mono text-[11px] text-rose-200">{String(error)}</pre>
+            </details>
           )}
 
           {isDev && args && Object.keys(args).length > 0 && (

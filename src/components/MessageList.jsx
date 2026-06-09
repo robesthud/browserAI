@@ -81,6 +81,18 @@ function CopyButton({ text }) {
   )
 }
 
+function friendlyAssistantError(message = '', providerError = null) {
+  if (providerError?.hint) return providerError.hint
+  const raw = String(message || '')
+  const lower = raw.toLowerCase()
+  if (/401|403|unauthorized|forbidden|invalid api key|invalid token/.test(lower)) return 'Проблема авторизации: проверь ключ или токен провайдера.'
+  if (/429|rate limit|quota|лимит|квота/.test(lower)) return 'Провайдер ограничил запросы или квоту. Попробуй позже или выбери другой ключ.'
+  if (/timeout|timed out|aborted|таймаут/.test(lower)) return 'Провайдер не ответил вовремя. Можно повторить запрос.'
+  if (/model|not found|unknown|invalid/.test(lower)) return 'Модель недоступна или указана неверно. Проверь выбранную модель.'
+  if (/network|fetch|bad gateway|service unavailable|502|503/.test(lower)) return 'Сетевая ошибка или временный сбой провайдера.'
+  return raw ? raw.slice(0, 240) : 'Агент столкнулся с ошибкой.'
+}
+
 function WorkingSpinner() {
   return (
     <span
@@ -200,7 +212,15 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
           </p>
         ) : m.error ? (
           <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[13px] text-red-300">
-            ⚠ {m.error}
+            <div>⚠ {friendlyAssistantError(m.error, m.providerError)}</div>
+            {isDev && (m.providerError || m.error) && (
+              <details className="mt-2 text-[11px] text-red-200/80">
+                <summary className="cursor-pointer">debug details</summary>
+                <pre className="thin-scroll mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 font-mono">
+{JSON.stringify(m.providerError || { error: m.error }, null, 2)}
+                </pre>
+              </details>
+            )}
           </div>
         ) : (
           <div className="text-[14px] leading-relaxed text-cream-soft">

@@ -1181,10 +1181,11 @@ localStorage.removeItem('browserai.devtools')
 | v2.6 | Post-deploy self-test в GitHub Actions | ⬜ Не начато | требует TIMEWEB secrets |
 | v2.7 | Streaming / thinking UX cleanup | ✅ Выполнено | raw thinking скрыт за devtools |
 | v2.8 | Final answer / tool separation cleanup | ✅ Выполнено | действия отдельно, ответ отдельно |
-| v2.9 | Retry failed tool button | ⬜ Не начато | — |
-| v2.10 | Export / replay agent trace JSON | ⬜ Не начато | — |
-| v2.11 | E2E test SSE stream shape | ⬜ Не начато | — |
-| v2.12 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
+| v2.9 | Tool / provider error UX cleanup | ✅ Выполнено | user-friendly errors, raw только devtools |
+| v2.10 | Retry failed tool button | ⬜ Не начато | — |
+| v2.11 | Export / replay agent trace JSON | ⬜ Не начато | — |
+| v2.12 | E2E test SSE stream shape | ⬜ Не начато | — |
+| v2.13 | Реальные provider smoke-tests | ⬜ Не начато | OpenRouter/Anthropic/Gemini/DeepSeek/Groq |
 
 ## v2.1 Developer-only Run Agent Self-Test
 
@@ -1538,6 +1539,48 @@ src/components/MessageList.jsx
 npm run build
 ```
 
+
+## v2.9 Tool / provider error UX cleanup
+
+### Сделано
+
+Обновлены компоненты:
+
+```text
+src/components/AgentToolBlock.jsx
+src/components/MessageList.jsx
+```
+
+Обычный пользовательский UI теперь показывает короткие понятные ошибки вместо raw текста:
+
+- `Файл не найден`;
+- `Путь заблокирован политикой безопасности workspace`;
+- `Команда завершилась с ошибкой`;
+- `Действие заняло слишком много времени и было остановлено`;
+- `Проблема авторизации или ключа`;
+- `Провайдер ограничил запросы или квоту`;
+- `Сетевая ошибка или временный сбой провайдера`.
+
+Для tool errors обычный UI показывает подсказку:
+
+```text
+Агент может попробовать другой способ или запросить уточнение.
+```
+
+Raw tool error, stderr/stack и structured providerError скрыты в обычном режиме и доступны только в devtools:
+
+```js
+localStorage.setItem('browserai.devtools', '1')
+```
+
+Provider-level ошибки в assistant message теперь используют `providerError.hint`, если он есть.
+
+### Проверки
+
+```bash
+npm run build
+```
+
 ## Журнал v2
 
 ### 2026-06-09
@@ -1551,6 +1594,7 @@ npm run build
 - Выполнен v2.6: exact user UI cleanup — runtime/debug panels и raw thoughts скрыты из обычного режима, доступны только в devtools.
 - Выполнен v2.7: streaming/thinking UX cleanup — raw provider-side thinking скрыт из обычного UI; пользователь видит только индикатор `Агент размышляет…`.
 - Выполнен v2.8: final answer / tool separation cleanup — процесс действий отделён от финального markdown-ответа.
+- Выполнен v2.9: tool/provider error UX cleanup — обычный UI показывает понятные ошибки, raw details только в devtools.
 
 
 ### 2026-06-09 — корректировка v2.1
