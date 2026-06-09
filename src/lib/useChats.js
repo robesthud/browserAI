@@ -205,6 +205,9 @@ export function useChats(settings) {
     const initial = loadChats()
     return initial.length > 0 ? initial[0].id : null
   })
+
+  const [workspaceRevision, setWorkspaceRevision] = useState(0)
+
   const [isStreaming, setIsStreaming] = useState(false)
   // Ids of long-running background jobs (gemini video/image, document gen).
   // The UI treats an active job like streaming: progress, locked input, Stop.
@@ -658,6 +661,9 @@ export function useChats(settings) {
                         : tc,
                     ),
                   }))
+                  if (['bash', 'write_file', 'edit_file', 'download_url', 'delete_file'].includes(data.name)) {
+                    setWorkspaceRevision(Date.now())
+                  }
                   // Small haptic so the user can feel progress in long
                   // agent runs even without looking at the screen.
                   haptics.tap()
@@ -901,6 +907,7 @@ export function useChats(settings) {
   return {
     chats,
     activeChat,
+    workspaceRevision,
     activeId,
     isStreaming,
     jobBusy: activeJobs.length > 0,

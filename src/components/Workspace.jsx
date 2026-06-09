@@ -168,7 +168,7 @@ function ContextMenu({ state, onClose, onAction }) {
   )
 }
 
-export default function Workspace({ open, onClose, settings, chatId, onSendToChat, onAiBusyChange }) {
+export default function Workspace({ open, onClose, settings, chatId, onSendToChat, onAiBusyChange, revision }) {
   const [showHidden, setShowHidden] = useState(false)
   const [search, setSearch] = useState('')
   const [contentQuery, setContentQuery] = useState('')
@@ -201,6 +201,12 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
       if (!silent) setLoading(false)
     }
   }, [showHidden])
+
+  useEffect(() => {
+    if (open && revision) {
+      void refresh(true)
+    }
+  }, [revision, open, refresh])
 
   useEffect(() => {
     workspaceApi.setChatId(chatId || '')

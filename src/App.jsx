@@ -221,6 +221,7 @@ function BrowserApp({ user, reloadAuth }) {
   const {
     chats,
     activeChat,
+    workspaceRevision,
     activeId,
     isStreaming,
     jobBusy,
@@ -535,6 +536,7 @@ function BrowserApp({ user, reloadAuth }) {
       </main>
 
       <Workspace
+        revision={workspaceRevision}
         open={workspaceOpen}
         onClose={toggleWorkspace}
         settings={settings}
