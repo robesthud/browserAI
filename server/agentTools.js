@@ -189,7 +189,6 @@ async function quickSyntaxCheck(relPath, content) {
     return { available: false }
   } catch (e) { return { available: false, error: e.message } }
 }
-}
 
 function checkBalance(src) {
   const pairs = { '(': ')', '[': ']', '{': '}' }
