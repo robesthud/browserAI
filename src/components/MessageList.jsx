@@ -289,96 +289,71 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                     if (!thoughtsByStep.has(t.step)) thoughtsByStep.set(t.step, [])
                     thoughtsByStep.get(t.step).push(t)
                   }
-                  
 
-                  // Collapsible execution details
-                  const showDetailed = isDev || showTechnical
-                  
-                  if (!showDetailed && (m.agentState || (m.toolCalls?.length > 0 && m.toolCalls.some(tc => tc.name !== 'plan_set' && tc.name !== 'plan_check')) || m.thoughts?.length > 0)) {
-                    items.push(
-                      <button 
-                        key="show-more"
-                        onClick={() => setShowTechnical(true)}
-                        className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-graphite-800/40 px-3 py-1 text-[11px] text-cream-faint hover:bg-graphite-750 hover:text-cream-soft transition-colors"
-                      >
-                        <span>🔍 Показать ход выполнения ({m.toolCalls?.length || 0} действий)</span>
-                      </button>
-                    )
+                  // 1:1 Arena Parity: AgentRuntimePanel (debug state) is ONLY for devtools.
+                  if (isDev && m.agentState) {
+                    items.push(<AgentRuntimePanel key={`runtime-${m.id}`} context={m.agentContext} state={m.agentState} aiWorking={aiWorking} isDev={isDev} />)
                   }
 
-                  if (showDetailed) {
-                    // Live agent_state streaming
-                    if (m.agentState) {
-                      items.push(<AgentRuntimePanel key={`runtime-${m.id}`} context={m.agentContext} state={m.agentState} aiWorking={aiWorking} isDev={isDev} />)
-                    }
-
-                    // Legacy fallback for old chats without saved agentState
-                    if (!m.agentState) {
-                      let plan = null
-                      for (const tc of m.toolCalls || []) {
-                        if (tc.status !== 'done' || !tc.ok) continue
-                        if (tc.name === 'plan_set' && Array.isArray(tc.result?.plan)) {
-                          plan = { title: tc.result.title || '', steps: tc.result.plan.map((s) => ({ ...s })) }
-                        } else if (tc.name === 'plan_check' && plan && Array.isArray(tc.result?.checked)) {
-                          for (const i of tc.result.checked) {
-                            const idx = Number(i)
-                            const step = plan.steps.find((s) => s.idx === idx)
-                            if (step) {
-                              step.done = true
-                              if (tc.result.note) step.note = tc.result.note
-                            }
+                  // 1:1 Arena Parity: Tool cards and Plan are ALWAYS visible during/after execution.
+                  // No "Show more" buttons or extra technical toggles.
+                  
+                  // Plan logic
+                  let plan = m.agentState?.plan
+                  if (!plan) {
+                    // Legacy fallback for old chats
+                    for (const tc of m.toolCalls || []) {
+                      if (tc.status !== 'done' || !tc.ok) continue
+                      if (tc.name === 'plan_set' && Array.isArray(tc.result?.plan)) {
+                        plan = { title: tc.result.title || '', steps: tc.result.plan.map((s) => ({ ...s })) }
+                      } else if (tc.name === 'plan_check' && plan && Array.isArray(tc.result?.checked)) {
+                        for (const i of tc.result.checked) {
+                          const idx = Number(i)
+                          const step = plan.steps.find((s) => s.idx === idx)
+                          if (step) {
+                            step.done = true
+                            if (tc.result.note) step.note = tc.result.note
                           }
                         }
                       }
-                      if (plan) items.push(<AgentPlanCard key="plan" plan={plan} />)
                     }
+                  }
+                  if (plan && plan.steps?.length > 0) {
+                    items.push(<AgentPlanCard key="plan" plan={plan} />)
+                  }
 
-                    for (const tc of m.toolCalls || []) {
-                      const ths = thoughtsByStep.get(tc.step) || []
-                      if (showDetailed) {
-                        for (const t of ths) {
-                          items.push(
-                            <AgentThought key={`th-${tc.step}-${t.at}`} text={t.text} />,
-                          )
-                        }
-                      }
-                      thoughtsByStep.delete(tc.step)
-                      // Hide plan_set / plan_check tool blocks themselves —
-                      // they're already represented by AgentPlanCard above.
-                      if (tc.name === 'plan_set' || tc.name === 'plan_check') continue
-                      items.push(
-                        <AgentToolBlock
-                          key={tc.id}
-                          step={tc.step}
-                          name={tc.name}
-                          args={tc.args}
-                          status={tc.status}
-                          ok={tc.ok}
-                          result={tc.result}
-                          error={tc.error}
-                          startedAt={tc.startedAt}
-                          finishedAt={tc.finishedAt}
-                          stream={tc.stream}
-                          diagnostic={tc.diagnostic}
-                          onRetry={(tool) => {
-                            // Arena-style retry: re-execute the exact same tool call
-                            window.dispatchEvent(new CustomEvent('agent:retry-tool', { 
-                              detail: { name: tool.name, args: tool.args } 
-                            }))
-                          }}
-                        />,
-                      )
+                  for (const tc of m.toolCalls || []) {
+                    const ths = thoughtsByStep.get(tc.step) || []
+                    // Thoughts are shown only if they contain text (narrative)
+                    for (const t of ths) {
+                      items.push(<AgentThought key={`th-${tc.step}-${t.at}`} text={t.text} />)
                     }
-                    // any leftover thoughts (no matching tool) — render at the end
-                    for (const [step, ths] of thoughtsByStep) {
-                      if (isDev) {
-                        for (const t of ths) {
-                          items.push(
-                            <AgentThought key={`th-late-${step}-${t.at}`} text={t.text} />,
-                          )
-                        }
-                      }
-                    }
+                    thoughtsByStep.delete(tc.step)
+
+                    // Hide plan tools — they are rendered as the AgentPlanCard above.
+                    if (tc.name === 'plan_set' || tc.name === 'plan_check') continue
+
+                    items.push(
+                      <AgentToolBlock
+                        key={tc.id}
+                        step={tc.step}
+                        name={tc.name}
+                        args={tc.args}
+                        status={tc.status}
+                        ok={tc.ok}
+                        result={tc.result}
+                        error={tc.error}
+                        startedAt={tc.startedAt}
+                        finishedAt={tc.finishedAt}
+                        stream={tc.stream}
+                        diagnostic={tc.diagnostic}
+                        onRetry={(tool) => {
+                          window.dispatchEvent(new CustomEvent('agent:retry-tool', { 
+                            detail: { name: tool.name, args: tool.args } 
+                          }))
+                        }}
+                      />,
+                    )
                   }
                   return items
                 })()}
@@ -431,10 +406,10 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
               </div>
             ) : null}
 
-            {m.pending && hasAgentActivity && !m.content && !(m.job && ['succeeded', 'failed', 'cancelled'].includes(m.job.status)) && (
+            {m.pending && !m.content && !(m.job && ['succeeded', 'failed', 'cancelled'].includes(m.job.status)) && (
               <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-graphite-800/60 px-2.5 py-1 text-[12px] text-cream-faint">
-                <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-300" />
-                <span>Агент выполняет действия…</span>
+                <span className={`inline-block h-2 w-2 animate-pulse rounded-full ${m.agentState?.status === 'thinking' || (!m.agentState && !hasAgentActivity) ? 'bg-amber-300' : 'bg-emerald-300'}`} />
+                <span>{m.agentState?.status === 'thinking' || (!m.agentState && !hasAgentActivity) ? 'Агент размышляет…' : 'Агент выполняет действия…'}</span>
               </div>
             )}
 

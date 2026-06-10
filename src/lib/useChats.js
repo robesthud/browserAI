@@ -636,7 +636,7 @@ export function useChats(settings) {
                   // user sees a response within ms instead of waiting
                   // for the full assistant message to land.
                   patchAssistant((m) => {
-                    const id = `${data.step}-${data.name}`
+                    const id = `${data.step}-${data.sub || 0}-${data.name}`
                     if ((m.toolCalls || []).some((tc) => tc.id === id)) return m
                     return {
                       ...m,
@@ -644,7 +644,7 @@ export function useChats(settings) {
                       toolCalls: [
                         ...(m.toolCalls || []),
                         {
-                          id, step: data.step, name: data.name, args: data.args,
+                          id, step: data.step, sub: data.sub || 0, name: data.name, args: data.args,
                           status: 'queued', startedAt: Date.now(),
                         },
                       ],
@@ -653,7 +653,7 @@ export function useChats(settings) {
                   break
                 case 'tool_start':
                   patchAssistant((m) => {
-                    const id = `${data.step}-${data.name}`
+                    const id = `${data.step}-${data.sub || 0}-${data.name}`
                     const existing = (m.toolCalls || []).find((tc) => tc.id === id)
                     if (existing) {
                       // tool_preview already created the pill — flip status.
@@ -671,7 +671,7 @@ export function useChats(settings) {
                       toolCalls: [
                         ...(m.toolCalls || []),
                         {
-                          id, step: data.step, name: data.name, args: data.args,
+                          id, step: data.step, sub: data.sub || 0, name: data.name, args: data.args,
                           status: 'running', startedAt: Date.now(),
                         },
                       ],
@@ -682,7 +682,7 @@ export function useChats(settings) {
                   patchAssistant((m) => ({
                     ...m,
                     toolCalls: (m.toolCalls || []).map((tc) =>
-                      tc.step === data.step && tc.name === data.name
+                      tc.step === data.step && (tc.sub === data.sub || (data.sub == null && tc.name === data.name))
                         ? { ...tc, status: 'done', ok: data.ok, result: data.result, error: data.error, structured: data.structured, finishedAt: Date.now() }
                         : tc,
                     ),

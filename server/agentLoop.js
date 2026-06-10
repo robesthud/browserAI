@@ -426,7 +426,15 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       pushedBackThisTurn = false
       upsertAgentStateDigest(convo, agentState, recentToolHistory)
       manageContext(convo, provider?.model)
+      
+      // v2.21: Live agent_state streaming — update status to 'thinking'
+      // before the LLM call so the UI shows the agent is "processing"
+      // instead of just "running" (which implies tool execution).
+      agentState.status = 'thinking'
+      agentState.currentStep = `Step ${step}: Thinking...`
+      agentState.updatedAt = new Date().toISOString()
       sse(res, 'thinking', { step })
+      sse(res, 'agent_state', agentState)
 
       const capCheck = checkCap(userId)
       if (!capCheck.ok) { sse(res, 'error', { message: capCheck.reason }); sseDone(res, { steps: step, reason: 'cap-reached' }, tokens); res.end(); return }
