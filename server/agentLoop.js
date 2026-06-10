@@ -366,21 +366,21 @@ function getRecoveryHint(tool, error, args = {}) {
     if (path) {
       const parts = path.split('/').filter(Boolean)
       const parent = parts.length > 1 ? parts.slice(0, -1).join('/') : '/'
-      return `File "${path}" not found. Try calling list_files(path="${parent}") to check the exact filename and casing (Linux is case-sensitive).`
+      return `File "${path}" not found. 
+ACTION: Call list_files(path="${parent}") to verify the exact filename and casing. Remember: Linux is CASE-SENSITIVE.`
     }
     return 'Resource not found. Verify the path using list_files.'
   }
   
   if (err.includes('path traversal') || err.includes('policy')) {
-    return 'Security policy blocked this path. Stay inside /workspace and do not use ../ or absolute paths outside the root.'
+    return 'Security policy blocked this path. Stay inside /workspace and do not use ../ or absolute paths.'
   }
   
   if (tool === 'edit_file' && (err.includes('old_text not found') || err.includes('not found in'))) {
-    return `Could not find the exact old_text block in the file. Re-read the file with read_file to see its current state (it might have changed since you last saw it) and then try edit_file again with an exact match.`
-  }
-  
-  if (tool === 'bash' && (err.includes('command not found') || err.includes('127'))) {
-    return `Shell command failed. Check if the tool is installed in the sandbox. Use \`apt-get update && apt-get install -y <package>\` if needed.`
+    return `The block of code you tried to replace was not found EXACTLY as written. 
+ACTION: 
+1. Call read_file(path="${path}") to get the LATEST version of the code. 
+2. Ensure your old_text matches the indentation and whitespace 100%.`
   }
   
   return null
@@ -663,11 +663,11 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
           const hint = getRecoveryHint(call.tool, r.error, call.args)
           if (hint) {
             pushedBackThisTurn = true
-            sse(res, 'thought', { step, sub: idx, text: `Авто-коррекция: ${call.tool} — ${r.error}. Исправляю…` })
-            // 1:1 Arena Parity: Self-Correction push-back.
-            // We tell the model EXACTLY what it did wrong and how to fix it,
-            // effectively forcing a reasoning correction turn.
-            const rErr = makeToolErrorResult(`[exec_error] ${r.error}.\n\nREQUIRED ACTION TO RECOVER:\n${hint}\n\nDo not apologize. Call the suggested tool immediately.`)
+            sse(res, 'thought', { step, sub: idx, text: `ОШИБКА: ${call.tool} — ${r.error}. Исправляю…` })
+            
+            // #45 FIX: Absolute Grounding. We inject a loud system message that 
+            // the model CANNOT ignore, effectively forcing a "reasoning correction" step.
+            const rErr = makeToolErrorResult(`[exec_error] ${r.error}.\n\nREQUIRED ACTION TO RECOVER:\n${hint}\n\nExecute this action now.`)
             sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
             return { call, r: rErr, pushedBack: true }
           }
