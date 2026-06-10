@@ -4,7 +4,6 @@ import AgentToolBlock from './AgentToolBlock.jsx'
 import Markdown from '../lib/markdown.jsx'
 import AgentThought from './AgentThought.jsx'
 import AgentAskUser from './AgentAskUser.jsx'
-import AgentPlanCard from './AgentPlanCard.jsx'
 
 function JsonBlock({ data }) {
   if (!data) return null

@@ -359,7 +359,7 @@ function BrowserApp({ user, reloadAuth }) {
     }
   }
 
-  const shouldUseAgentForText = (text, taskType) => {
+  const shouldUseAgentForText = () => {
     if (!effectiveAgentMode) return false
     // #32 FIX: Project Engine Mode. 
     // If agent mode is enabled, ALWAYS use the agent loop. 

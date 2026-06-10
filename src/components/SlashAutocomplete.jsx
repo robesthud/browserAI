@@ -78,6 +78,14 @@ export default function SlashAutocomplete({ text, caret, chatId, onAccept, onClo
       .map((p) => ({ label: p, hint: '', replacement: '@' + (p.includes(' ') ? `"${p}"` : p) + ' ' }))
   }
 
+  const accept = (row) => {
+    if (!row) return
+    const startToken = mode === 'slash' ? slashMatch.index + (slashMatch[1] === '\n' ? 1 : 0)
+                                        : mentionMatch.index + (mentionMatch[0].startsWith(' ') ? 1 : 0)
+    const newText = text.slice(0, startToken) + row.replacement + text.slice(caret)
+    onAccept?.(newText, startToken + row.replacement.length)
+  }
+
   // Keyboard handler attached on the parent's textarea via a window listener.
   useEffect(() => {
     if (!mode || rows.length === 0) return
@@ -95,14 +103,6 @@ export default function SlashAutocomplete({ text, caret, chatId, onAccept, onClo
   }, [mode, rows, active])
 
   if (!mode || rows.length === 0) return null
-
-  const accept = (row) => {
-    if (!row) return
-    const startToken = mode === 'slash' ? slashMatch.index + (slashMatch[1] === '\n' ? 1 : 0)
-                                        : mentionMatch.index + (mentionMatch[0].startsWith(' ') ? 1 : 0)
-    const newText = text.slice(0, startToken) + row.replacement + text.slice(caret)
-    onAccept?.(newText, startToken + row.replacement.length)
-  }
 
   return (
     <div className="absolute bottom-full left-2 z-30 mb-1 w-72 max-w-[90vw] overflow-hidden rounded-xl border border-white/10 bg-graphite-800 shadow-2xl">

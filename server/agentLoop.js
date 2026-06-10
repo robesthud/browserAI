@@ -15,21 +15,20 @@
  *   Fallbacks: Native OpenAI tool_calls (when supported) and
  *            legacy JSON-in-fenced-block format.
  */
-import { TOOLS, renderToolsForPrompt, invokeTool } from './agentTools.js'
+import { TOOLS, invokeTool } from './agentTools.js'
 import { withWorkspaceScope, readWorkspaceFile } from './workspace.js'
 import {
   callLLM, callLLMStream, supportsNativeTools, supportsStreaming, normalizeProviderError,
 } from './llmClient.js'
 import { registerQuestion } from './askUserRegistry.js'
 import {
-  clipToolOutput, manageContext, applyAnthropicCacheHints, contextUsageFraction,
+  clipToolOutput, manageContext, applyAnthropicCacheHints,
   upsertAgentStateDigest,
 } from './contextManager.js'
 import { buildClineSystemPrompt } from './clinePrompt.js'
-import { recordSpend, checkCap, chatTotalUsd } from './costTracker.js'
+import { recordSpend, checkCap } from './costTracker.js'
 import { shouldUseCheapEditor, wrapProviderForEditor, routingLabel } from './architectEditor.js'
 import { requiresApproval, categoryOf } from './approvalGate.js'
-import { recordCheckpoint } from './checkpoints.js'
 import {
   buildAgentContext, normalizeToolResult, createAgentState,
   buildPlanningDirective, updateAgentStateFromTool,
@@ -39,13 +38,9 @@ import {
 const DEFAULT_MAX_STEPS = 15
 const DEFAULT_DEADLINE_MS = 5 * 60 * 1000
 
-const TOOL_FENCE_RE = /```(?:json|tool|tool_call)?\s*\n?\s*(\{[\s\S]*?\})\s*\n?\s*```/i
-
 // ── System prompt builder ───────────────────────────────────────────────────
 function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null } = {}) {
-  if (String(process.env.BROWSERAI_PROMPT_STYLE || 'cline').toLowerCase() === 'legacy') {
-    return buildSystemPromptLegacy({ extraSystem, native, extraTools })
-  }
+  // NOTE: the 'legacy' prompt style was removed — cline style is always used.
   return buildClineSystemPrompt({
     extraSystem,
     native,
@@ -54,10 +49,6 @@ function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null
   })
 }
 
-function buildSystemPromptLegacy({ extraSystem = '', native = false, extraTools = null } = {}) {
-  // Legacy prompt implementation... (truncated for brevity in this task)
-  return 'Legacy prompt not fully implemented in this restore pass.'
-}
 
 // ── Native tools spec ───────────────────────────────────────────────────────
 function buildNativeToolsSpec(extraTools = null) {
@@ -137,7 +128,7 @@ function violatesPreDeployVerify(call, recentToolHistory) {
 
 function dedupePlanCheck(call, planState) {
   if (call.tool !== 'plan_check') return call
-  let indices = []
+  let indices
   try {
     indices = Array.isArray(call.args?.indices) ? call.args.indices : JSON.parse(String(call.args?.indices || '[]'))
   } catch { return call }
@@ -171,7 +162,7 @@ function parseXmlFunctionCalls(text) {
     }
     const invokeJsonMatch = content.match(/<invoke[^>]*>([\s\S]*?)<\/invoke>/i)
     if (invokeJsonMatch) {
-      try { Object.assign(args, JSON.parse(invokeJsonMatch[1].trim())) } catch {}
+      try { Object.assign(args, JSON.parse(invokeJsonMatch[1].trim())) } catch { /* best-effort: ignore */ }
     }
     calls.push({ tool: name, args })
   }
@@ -186,22 +177,6 @@ function looksLikeUnapplliedCodeReply(text = '', history = []) {
   return /(созда|напиши|сделай|реализуй|исправ|поправ|почини|refactor|fix|create|new)/i.test(askText)
 }
 
-function extractTextToolCall(text = '', extraTools = null) {
-  const fence = TOOL_FENCE_RE.exec(text)
-  const candidates = []
-  if (fence) candidates.push(fence[1])
-  const trimmed = String(text).trim()
-  if (trimmed.startsWith('{') && trimmed.endsWith('}')) candidates.push(trimmed)
-  for (const raw of candidates) {
-    try {
-      const obj = JSON.parse(raw)
-      const known = obj && typeof obj.tool === 'string' && (TOOLS[obj.tool] || (extraTools && extraTools[obj.tool]))
-      if (known) return { tool: obj.tool, args: obj.args || {} }
-    } catch {}
-  }
-  return null
-}
-
 // ── SSE helpers ─────────────────────────────────────────────────────────────
 function normaliseSsePayload(res, event, data) {
   const seq = (res.__browseraiAgentSseSeq = Number(res.__browseraiAgentSseSeq || 0) + 1)
@@ -211,11 +186,11 @@ function normaliseSsePayload(res, event, data) {
 }
 
 function sse(res, event, data) {
-  try { res.write(`event: ${event}\ndata: ${JSON.stringify(normaliseSsePayload(res, event, data))}\n\n`) } catch {}
+  try { res.write(`event: ${event}\ndata: ${JSON.stringify(normaliseSsePayload(res, event, data))}\n\n`) } catch { /* best-effort: ignore */ }
 }
 
 function sseKeepAlive(res) {
-  try { res.write(': keep-alive\n\n') } catch {}
+  try { res.write(': keep-alive\n\n') } catch { /* best-effort: ignore */ }
 }
 
 // ── Reflection ──────────────────────────────────────────────────────────────
@@ -229,7 +204,7 @@ async function runReflectionCheck({ provider, ask, draft, toolHistory }) {
       const strong = suggestStrongSibling(provider.model)
       if (strong) reviewModel = strong
     }
-  } catch {}
+  } catch { /* best-effort: ignore */ }
   const reply = await callLLM({
     baseUrl: provider.baseUrl, apiKey: provider.apiKey, model: reviewModel,
     messages: [{ role: 'system', content: 'Terse reviewer.' }, { role: 'user', content: prompt }],
@@ -374,7 +349,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   try {
     const { loadCustomToolsFor } = await import('./customTools.js')
     const map = loadCustomToolsFor(userId); if (Object.keys(map).length) extraTools = map
-  } catch {}
+  } catch { /* best-effort: ignore */ }
 
   let useNativeTools = supportsNativeTools(provider.baseUrl)
   let systemPrompt = buildSystemPrompt({ extraSystem, native: useNativeTools, extraTools })
@@ -415,7 +390,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
           const text = typeof r.result === 'string' ? r.result : JSON.stringify(r.result)
           if (text && text !== '{}' && text !== '[]') convo.push({ role: 'user', content: `<arena-system-message>\nAuto-memory (${mc.tool}):\n${text.slice(0, 4000)}\n</arena-system-message>` })
         }
-      } catch {} // memory preload is best-effort — never blocks the run
+      } catch { /* best-effort: ignore */ } // memory preload is best-effort — never blocks the run
     }
   }
 
@@ -433,11 +408,11 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
         try {
           const lessons = await withWorkspaceScope(chatId, () => readWorkspaceFile('.browserai/lessons.md').catch(() => null))
           if (lessons?.text) convo.push({ role: 'user', content: `<arena-system-message>\nLessons Learned:\n${lessons.text}\n</arena-system-message>` })
-        } catch {}
+        } catch { /* best-effort: ignore */ }
         try {
           const r = await invokeTool('build_repo_map', { path: '', _userId: userId }, { signal: abortCtl.signal, userId, chatId, extraTools })
           if (r.ok) convo.push({ role: 'user', content: `<arena-system-message>\nInitial Repo Map:\n${r.result}\n</arena-system-message>` })
-        } catch {}
+        } catch { /* best-effort: ignore */ }
       }
 
       if (Date.now() > deadline) {
@@ -477,7 +452,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       }
 
       let spendNote = null
-      try { spendNote = recordSpend({ userId, chatId, model: activeProvider.model, usage: reply?.usage || {} }) } catch {}
+      try { spendNote = recordSpend({ userId, chatId, model: activeProvider.model, usage: reply?.usage || {} }) } catch { /* best-effort: ignore */ }
       if (reply?.usage) sse(res, 'usage', { step, ...reply.usage, totals: { ...tokens }, cost: spendNote?.cost || 0 })
 
       let calls = []
@@ -518,7 +493,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
             const learnPrompt = `What technical lesson was learned? Russian, max 1 sentence.`
             const learnReply = await callLLM({ baseUrl: provider.baseUrl, apiKey: provider.apiKey, model: provider.model, messages: [...convo.slice(-4), { role: 'user', content: learnPrompt }], temperature: 0.1 })
             const lesson = String(learnReply?.text || '').trim(); if (lesson.length < 200) await invokeTool('save_lesson', { lesson, _chatId: chatId })
-          } catch {}
+          } catch { /* best-effort: ignore */ }
         }
         sseDone(res, { steps: step, reason: 'final' }, tokens); res.end(); return
       }
@@ -562,7 +537,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
         if (call.tool !== 'ask_user' && requiresApproval(call.tool, userId)) {
           const { id: aqId, promise: aqPromise, expiresAt } = registerQuestion({ kind: 'tool_approval', userId, chatId, step, sub: idx, tool: call.tool, category: categoryOf(call.tool), question: `Approve ${call.tool}?`, options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }] })
           sse(res, 'tool_approval', { step, sub: idx, question_id: aqId, expiresAt, tool: call.tool, args: call.args })
-          let approved = false; try { const ans = await aqPromise; const pick = Array.isArray(ans?.selected) ? String(ans.selected[0]) : String(ans?.text || ans); approved = ['approve', 'yes', 'ok', 'allow', 'true'].includes(pick.toLowerCase().trim()) } catch {}
+          let approved = false; try { const ans = await aqPromise; const pick = Array.isArray(ans?.selected) ? String(ans.selected[0]) : String(ans?.text || ans); approved = ['approve', 'yes', 'ok', 'allow', 'true'].includes(pick.toLowerCase().trim()) } catch { /* best-effort: ignore */ }
           if (!approved) return { call, r: { ok: false, error: 'User denied.' } }
         }
 
@@ -601,7 +576,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       }
     }
     if (step >= maxSteps) { sse(res, 'error', { message: `Stopped after ${maxSteps} steps` }); sseDone(res, { steps: step, reason: 'max-steps' }, tokens) }
-  } catch (e) { sse(res, 'error', { message: e.message }); sseDone(res, { steps: step, reason: 'crash' }, tokens) } finally { try { res.end() } catch {} }
+  } catch (e) { sse(res, 'error', { message: e.message }); sseDone(res, { steps: step, reason: 'crash' }, tokens) } finally { try { res.end() } catch { /* best-effort: ignore */ } }
 }
 
 function sseDone(res, payload, tokens) { sse(res, 'done', { ...payload, tokens }) }

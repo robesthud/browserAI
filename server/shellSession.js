@@ -120,11 +120,9 @@ function processQueue(session) {
   session.lastUsed = Date.now()
 
   const sentOut = makeSentinel()
-  const sentErr = makeSentinel()
   const startedAt = Date.now()
 
   let outBuf = ''
-  let errBuf = ''
   let stdoutClipped = ''
   let stderrClipped = ''
   let killed = false
@@ -145,7 +143,6 @@ function processQueue(session) {
   }
   const onStderrData = (chunk) => {
     const s = chunk.toString('utf8')
-    errBuf += s
     if (job.onStderr) { try { job.onStderr(s) } catch { /* ignore */ } }
     if (stderrClipped.length < 6_000) stderrClipped = (stderrClipped + s).slice(0, 6_000)
   }

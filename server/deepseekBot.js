@@ -17,7 +17,7 @@ import {
   setSession,
   getCachedModels,
 } from './deepseekTokenRefresher.js'
-import { runOpsAction, listOpsServices } from './ops.js'
+import { runOpsAction } from './ops.js'
 import { sandboxHealth } from './agentSandbox.js'
 import { browserHealth } from './browserTools.js'
 
@@ -141,7 +141,7 @@ async function fmtHealth() {
 
 // ── Handlers ───────────────────────────────────────────────────────────────
 
-async function handleAction(chatId, messageId, data, msg) {
+async function handleAction(chatId, messageId, data) {
   if (data === 'menu:main') {
     return edit(chatId, messageId, '*🛠 BrowserAI Admin Menu*', { reply_markup: MAIN_KBD })
   }
@@ -178,7 +178,7 @@ async function handleAction(chatId, messageId, data, msg) {
 
   // Ops Actions: ops:service:action[:param]
   if (data.startsWith('ops:')) {
-    const [_, service, action, param] = data.split(':')
+    const [, service, action, param] = data.split(':')
     const params = param ? { service: param, tail: 100 } : {}
     
     const waitMsg = await reply(chatId, `⏳ Executing \`${service}.${action}\`...`)
@@ -223,7 +223,7 @@ async function handleCommand(msg) {
   
   if (cmd === '/settoken' && arg) {
     const s = await setSession({ userToken: arg, source: 'tg-admin-bot' })
-    try { await tg('deleteMessage', { chat_id: chatId, message_id: msg.message_id }) } catch {}
+    try { await tg('deleteMessage', { chat_id: chatId, message_id: msg.message_id }) } catch { /* ignore */ }
     return reply(chatId, '🔐 Token updated.\n\n' + fmtDeepSeek(s))
   }
 }
@@ -243,14 +243,14 @@ async function poll() {
           } else if (upd.callback_query) {
             const cb = upd.callback_query
             await answer(cb.id)
-            handleAction(cb.message.chat.id, cb.message.message_id, cb.data, cb.message).catch(e => warn('handleAction:', e.message))
+            handleAction(cb.message.chat.id, cb.message.message_id, cb.data).catch(e => warn('handleAction:', e.message))
           }
         }
       } else if (data && !data.ok) {
         warn('getUpdates error:', data.description)
         await new Promise(r => setTimeout(r, 5000))
       }
-    } catch (e) {
+    } catch {
       await new Promise(r => setTimeout(r, POLL_INTERVAL_MS))
     }
   }

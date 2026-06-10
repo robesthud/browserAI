@@ -20,7 +20,6 @@
  * round-trip.
  */
 import { spawn } from 'node:child_process'
-import { promises as fs } from 'node:fs'
 
 const SANDBOX = process.env.COMPUTER_SANDBOX_CONTAINER || 'computer-sandbox'
 
@@ -152,10 +151,9 @@ export async function computerType({ text, signal } = {}) {
     const proc = spawn('docker', ['exec', '-i', SANDBOX, 'bash', '-lc', 'DISPLAY=:99 xdotool type --delay 20 --file -'], { stdio: ['pipe', 'pipe', 'pipe'] })
     let err = ''
     proc.stderr.on('data', (c) => { err += c.toString('utf8') })
-    let killed = false
     let onAbort
     if (signal) {
-      onAbort = () => { killed = true; try { proc.kill('SIGKILL') } catch { /* ignore */ } }
+      onAbort = () => { try { proc.kill('SIGKILL') } catch { /* ignore */ } }
       if (signal.aborted) onAbort()
       else signal.addEventListener('abort', onAbort, { once: true })
     }

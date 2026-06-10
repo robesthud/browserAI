@@ -75,7 +75,7 @@ function messageSize(m) {
 function summarizeToolCallForHistory(tc) {
   if (!tc?.name) return ''
   const args = tc.args || {}
-  let preview = ''
+  let preview
   if (args.path)         preview = args.path
   else if (args.command) preview = String(args.command).replace(/\s+/g, ' ').slice(0, 200)
   else if (args.query)   preview = `"${String(args.query).slice(0, 120)}"`
@@ -92,6 +92,7 @@ function summarizeToolCallForHistory(tc) {
 
   const clip = (str, head = 1500, tail = 500) => {
     // Strip ANSI codes so LLM doesn't see garbage like \x1b[31m
+    // eslint-disable-next-line no-control-regex -- intentionally matching ANSI escape codes
     const s = String(str || '').replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '')
     if (s.length <= head + tail + 100) return s
     return `${s.slice(0, head)}\n...[${s.length - head - tail} omitted]...\n${s.slice(-tail)}`

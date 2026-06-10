@@ -95,7 +95,7 @@ export default function AgentRuntimePanel({ context, state, aiWorking, isDev }) 
             <div>
               <div className="text-[11px] font-medium text-cream-faint uppercase tracking-wide mb-0.5">Touched Files</div>
               <div className="flex flex-wrap gap-1.5 mt-1">
-                {files.map((fileStr, fileIdx) => (
+                {files.map((fileStr) => (
                   <span key={fileStr} className="rounded bg-black/20 border border-white/5 px-1.5 py-0.5 font-mono text-[10px] text-emerald-200">
                     {fileStr}
                   </span>

@@ -30,7 +30,7 @@
  *      → returns a shallow clone of provider with model swapped
  */
 import dbHandle from './db.js'
-import { suggestCheapSibling, lookupModel } from './modelKnowledge.js'
+import { suggestCheapSibling } from './modelKnowledge.js'
 
 function userMode(userId = '') {
   try {

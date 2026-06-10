@@ -24,6 +24,10 @@ services:
       - GITHUB_REPO=${GITHUB_REPO:-robesthud/browserAI}
       # App-level secrets
       - SESSION_SECRET=${SESSION_SECRET:-change-me}
+      # AUTH_SECRET signs/encrypts sessions and the encrypted cloud-sync
+      # payloads (HKDF -> AES-256-GCM). MUST be a long random string in
+      # production — the code falls back to a known dev default otherwise.
+      - AUTH_SECRET=${AUTH_SECRET:-}
       - APP_URL=${APP_URL:-http://localhost}
       # Workspace path shared by API and agent-sandbox. Without this the API
       # defaults to /data/workspace while bash tools write to /workspace.

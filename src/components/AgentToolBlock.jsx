@@ -309,7 +309,6 @@ export default function AgentToolBlock({
           )}
 
           {screenshotPath && (
-            // eslint-disable-next-line jsx-a11y/img-redundant-alt
             <img
               src={`/api/workspace/download?path=${encodeURIComponent(screenshotPath)}&inline=1`}
               alt={`screenshot: ${screenshotPath}`}
@@ -319,7 +318,6 @@ export default function AgentToolBlock({
             />
           )}
           {inlineDataUrl && (
-            // eslint-disable-next-line jsx-a11y/img-redundant-alt
             <img
               src={inlineDataUrl}
               alt={`computer-sandbox screen at ${name}`}

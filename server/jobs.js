@@ -155,7 +155,8 @@ export function cancelJob(id) {
   return setJobPatch(id, { status: 'cancelled', error: 'Отменено пользователем', finishedAt: now() })
 }
 
-function isCancelled(id) {
+// Runners poll this between long steps to stop work the user cancelled.
+export function isCancelled(id) {
   return cancelled.has(id)
 }
 

@@ -22,7 +22,7 @@
  * client, they just produce a final summary. Hard caps: 8 steps,
  * 60 s wall-clock, 12 KB final answer.
  */
-import { callLLM, supportsNativeTools } from './llmClient.js'
+import { callLLM } from './llmClient.js'
 // NB: avoid a static `import { invokeTool } from './agentTools.js'` —
 // agentTools.js dynamically registers OUR exported USE_SUBAGENTS_TOOL,
 // which makes the import graph cyclic. We resolve invokeTool lazily

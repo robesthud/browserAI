@@ -33,10 +33,6 @@ function policyMatchesPreset(p, preset) {
 }
 
 export default function AgentSettingsSection() {
-  const devtoolsEnabled = (() => {
-    try { return localStorage.getItem('browserai.devtools') === '1' }
-    catch { return false }
-  })()
 
   // ── Approval policy ─────────────────────────────────────────────────
   const [policy, setPolicy] = useState(null)

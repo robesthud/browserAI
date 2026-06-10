@@ -298,7 +298,7 @@ export async function streamChat({
         const raw = line.slice(5).trim()
         if (!raw) continue
         if (raw === '[DONE]') {
-          try { reader.cancel() } catch {}
+          try { reader.cancel() } catch { /* stream already closed */ }
           return acc
         }
 

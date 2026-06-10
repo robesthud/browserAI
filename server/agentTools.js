@@ -34,6 +34,7 @@ import { buildRepoMap } from './repoMap.js'
 // ── Utility ─────────────────────────────────────────────────────────────────
 function stripAnsi(str) {
   // Removes standard ANSI color/control codes which clutter LLM context
+  // eslint-disable-next-line no-control-regex -- intentionally matching ANSI escape codes
   return str.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '')
 }
 
@@ -191,7 +192,6 @@ async function quickSyntaxCheck(relPath, content) {
       // and a brace/paren balance check for everything else.
       if (ext === 'js' || ext === 'mjs' || ext === 'cjs') {
         try {
-          // eslint-disable-next-line no-new-func
           new Function(String(content))
           return { available: true, ok: true, kind: 'syntax', lang: ext }
         } catch (e) {
@@ -769,8 +769,8 @@ export const TOOLS = {
         timeoutMs: 8000,
       })
       const probeOut = probe.stdout || ''
-      let cmd = ''
-      let runner = ''
+      let cmd
+      let runner
       if (probeOut.includes('NODE')) { runner = 'npm test'; cmd = 'npm test --silent --if-present' }
       else if (probeOut.includes('PY'))   { runner = 'pytest';      cmd = 'pytest -q || python -m pytest -q' }
       else if (probeOut.includes('RUST')) { runner = 'cargo test';  cmd = 'cargo test --quiet' }
@@ -1703,7 +1703,7 @@ Projects found: ${JSON.stringify(projects.slice(0,5))}`
     params: {
       lesson: { type: 'string', required: true, description: 'The lesson to remember (e.g., "Always use port 8080 for the server").' },
     },
-    handler: async ({ lesson, _chatId }) => {
+    handler: async ({ lesson }) => {
       if (!lesson) return err('lesson is required')
       const lessonFile = '.browserai/lessons.md'
       try {

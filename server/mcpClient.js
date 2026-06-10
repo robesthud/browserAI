@@ -100,7 +100,7 @@ function startStdioServer(name, cfg) {
       try {
         const msg = JSON.parse(line)
         handleRpcMessage(slot, msg)
-      } catch (e) {
+      } catch {
         // Some servers print logging on stdout — non-JSON lines are ignored.
       }
     }

@@ -25,7 +25,6 @@ const KEEP_LAST = Number(process.env.BACKUP_KEEP_LAST || 7)
 
 const S3_ENDPOINT = process.env.S3_ENDPOINT || ''
 const S3_BUCKET = process.env.S3_BUCKET || ''
-const S3_REGION = process.env.S3_REGION || 'ru-1'
 const S3_ACCESS = process.env.S3_ACCESS_KEY || process.env.AWS_ACCESS_KEY_ID || ''
 const S3_SECRET = process.env.S3_SECRET_KEY || process.env.AWS_SECRET_ACCESS_KEY || ''
 

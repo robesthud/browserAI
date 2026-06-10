@@ -18,6 +18,15 @@ export default defineConfig([
       globals: globals.browser,
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
+    rules: {
+      // React-compiler-driven advisory rules (perf hints, not bugs). Keep
+      // them visible as warnings, but don't fail CI on legacy components.
+      'react-hooks/set-state-in-effect': 'warn',
+      'react-hooks/immutability': 'warn',
+      'react-hooks/purity': 'warn',
+      'react-hooks/preserve-manual-memoization': 'warn',
+      'react-hooks/refs': 'warn',
+    },
   },
   // Бэкенд (Node.js)
   {

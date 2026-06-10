@@ -350,7 +350,8 @@ async function handlePlainChat(user, userText) {
     // and edit the placeholder once. (Streaming would require duplicating
     // the SSE parser per provider; for the bot a single final edit is
     // perfectly acceptable.)
-    const { ok: _ok, error: _err, suggestion: _s, message: _m, ...cleanProvider } = provider
+    const cleanProvider = { ...provider }
+    delete cleanProvider.ok; delete cleanProvider.error; delete cleanProvider.suggestion; delete cleanProvider.message
     const r = await callLLM({
       ...cleanProvider,
       messages: history,
@@ -473,7 +474,7 @@ async function handleAgentChat(user, userText) {
         else if (data.result?.content) resultSnippet = String(data.result.content).slice(0, 800)
         else if (data.error) resultSnippet = data.error
         
-        const text = `${icon} *Завершено:* \`${data.name}\`\n${resultSnippet ? '\n\`\`\`\n' + resultSnippet + '\n\`\`\`' : ''}`
+        const text = `${icon} *Завершено:* \`${data.name}\`\n${resultSnippet ? '\n```\n' + resultSnippet + '\n```' : ''}`
         try { await editMessage(user.chat_id, id, text) } catch { /* ignore */ }
         break
       }
@@ -492,7 +493,8 @@ async function handleAgentChat(user, userText) {
 
   try {
     // Strip the gateway-only `ok` flag before handing the provider to the agent loop.
-    const { ok: _ok, error: _err, suggestion: _s, message: _m, ...cleanProvider } = provider
+    const cleanProvider = { ...provider }
+    delete cleanProvider.ok; delete cleanProvider.error; delete cleanProvider.suggestion; delete cleanProvider.message
     await runAgent({
       provider: cleanProvider,
       history,

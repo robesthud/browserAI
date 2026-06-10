@@ -33,7 +33,8 @@ export function categoryOf(toolName) {
  * Checks if a tool call requires explicit user confirmation.
  * Global defaults can be overridden per-user via a fact 'tool_policy=low|high'.
  */
-export function requiresApproval(toolName, userId) {
+// (userId reserved for future per-user policies)
+export function requiresApproval(toolName) {
   if (SAFE_TOOLS.has(toolName)) return false
   
   // Default: moderate safety — confirm shell/ops/git, allow selective writes.
@@ -44,7 +45,7 @@ export function requiresApproval(toolName, userId) {
   return false
 }
 
-export function loadPolicy(userId) {
+export function loadPolicy() {
   return {
     schema: 'browserai.approval_policy.v1',
     requireApprovalFor: ['shell', 'ops', 'git'],

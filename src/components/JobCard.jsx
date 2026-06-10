@@ -77,7 +77,6 @@ function FileTile({ path, chatId }) {
       )}
       {kind === 'image' && (
         // Lazy load so the chat scroll is snappy when the user has many cards.
-        // eslint-disable-next-line jsx-a11y/img-redundant-alt
         <img
           src={inlineHref}
           alt={label}
