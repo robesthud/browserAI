@@ -82,11 +82,17 @@ function localEmbed(text) {
 async function providerEmbed(text, provider) {
   if (!provider?.baseUrl || !provider?.apiKey) return null
   if (provider.apiKey === '__managed__' || provider.apiKey === '__gateway__') return null
+  
   // Pick a sensible embeddings model based on provider hostname.
   let model = 'text-embedding-3-small'
   if (provider.baseUrl.includes('mistral')) model = 'mistral-embed'
   else if (provider.baseUrl.includes('cohere')) model = 'embed-english-v3.0'
   else if (provider.baseUrl.includes('voyage')) model = 'voyage-3-lite'
+  
+  // #14 FIX: deepseek and some other providers don't support /embeddings at all
+  // or use a different base URL. If it's deepseek, don't even try - save time and hang risk.
+  if (provider.baseUrl.includes('deepseek.com')) return null
+
   const url = `${String(provider.baseUrl).replace(/\/$/, '')}/embeddings`
   try {
     const r = await fetch(url, {
