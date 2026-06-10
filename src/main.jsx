@@ -14,6 +14,21 @@ if (import.meta.env.MODE === 'production' || import.meta.env.PROD) {
   void registerServiceWorker()
 }
 
+// Handle Chunk Load Errors (dynamic import failures after a new deploy)
+// This globally catches the "Failed to fetch dynamically imported module" error
+// and triggers a single reload to get the latest version.
+window.addEventListener('error', (e) => {
+  if (e.message?.includes('dynamically imported module') || e.message?.includes('chunk')) {
+    const lastReload = Number(localStorage.getItem('browserai.last_auto_reload') || 0);
+    const now = Date.now();
+    // Throttle to once per 10s to avoid reload loops
+    if (now - lastReload > 10000) {
+      localStorage.setItem('browserai.last_auto_reload', String(now));
+      window.location.reload();
+    }
+  }
+}, true);
+
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <ErrorBoundary>

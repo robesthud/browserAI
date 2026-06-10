@@ -540,7 +540,17 @@ export function useChats(settings) {
         )
       }
 
-      const { streamAgent } = await import('./agentStream.js')
+      let streamAgent;
+      try {
+        const mod = await import('./agentStream.js');
+        streamAgent = mod.streamAgent;
+      } catch (err) {
+        if (err.message?.includes('dynamically imported module') || err.name === 'TypeError') {
+          window.location.reload();
+          return;
+        }
+        throw err;
+      }
 
       // Build the LLM history: same as chat but agent loop wants strict
       // role,content only. Drop the empty assistant placeholder we just
