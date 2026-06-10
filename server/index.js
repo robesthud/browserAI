@@ -199,10 +199,18 @@ const _corsOrigin = process.env.CORS_ORIGIN
   || (process.env.APP_URL ? process.env.APP_URL : null)
 
 // #40 FIX: More robust CORS origin matching. 
-// If accessed via raw IP, ensure both the IP and the configured APP_URL are allowed.
 const corsOptions = (origin, callback) => {
-  const allowed = [_corsOrigin, process.env.APP_URL].filter(Boolean);
-  if (!origin || allowed.some(a => origin.startsWith(a.replace(/\/$/, ''))) || process.env.NODE_ENV !== 'production') {
+  const allowed = [_corsOrigin, process.env.APP_URL].filter(Boolean).map(a => String(a).replace(/\/$/, ''));
+  
+  const isAllowed = !origin || allowed.some(a => {
+    try {
+      return typeof origin === 'string' && origin.startsWith(a);
+    } catch {
+      return false;
+    }
+  });
+
+  if (isAllowed || process.env.NODE_ENV !== 'production') {
     callback(null, { origin: true, credentials: true });
   } else {
     callback(new Error('Not allowed by CORS'));
