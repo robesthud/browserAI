@@ -2758,15 +2758,14 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
       }
 
       // First-turn auto-read of project rules. The frontend marks the very
-      // first message of a chat with a `[browserai-first-turn]` token in
-      // extraSystem — when we see it we briefly look in the workspace for
-      // commonly-used "rules for AI agents" files and inject up to 8 KB of
-      // them as project context. Saves the model from having to run
-      // list_files + read_file before it even understands the codebase.
-      if (String(extraSystem || '').includes('[browserai-first-turn]')) {
-        const rules = await withWorkspaceScope(chatId, () => readProjectRules())
-        if (rules) projectRulesNote = rules
-      }
+  // first message of a chat with a `[browserai-first-turn]` token in
+  // extraSystem — when we see it we briefly look in the workspace for
+  // commonly-used "rules for AI agents" files and inject up to 12 KB of
+  // them as project context. This is the 1:1 Arena Parity fix.
+  if (String(extraSystem || '').includes('[browserai-first-turn]')) {
+    const rules = await withWorkspaceScope(chatId, () => readProjectRules())
+    if (rules) projectRulesNote = rules
+  }
     }
   } catch (e) {
     console.warn('[agent] workspace activity digest failed:', e?.message || e)
