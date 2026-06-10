@@ -197,9 +197,18 @@ app.use(limiter)
 // APP_URL объявляется ниже, поэтому читаем из env напрямую здесь
 const _corsOrigin = process.env.CORS_ORIGIN
   || (process.env.APP_URL ? process.env.APP_URL : null)
-const corsOptions = _corsOrigin
-  ? { origin: _corsOrigin, credentials: true }
-  : { origin: true, credentials: true }
+
+// #40 FIX: More robust CORS origin matching. 
+// If accessed via raw IP, ensure both the IP and the configured APP_URL are allowed.
+const corsOptions = (origin, callback) => {
+  const allowed = [_corsOrigin, process.env.APP_URL].filter(Boolean);
+  if (!origin || allowed.some(a => origin.startsWith(a.replace(/\/$/, ''))) || process.env.NODE_ENV !== 'production') {
+    callback(null, { origin: true, credentials: true });
+  } else {
+    callback(new Error('Not allowed by CORS'));
+  }
+};
+
 app.use(cors(corsOptions))
 app.use(express.json({ limit: '50mb' }))
 

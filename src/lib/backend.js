@@ -38,11 +38,15 @@ async function req(path, options = {}) {
   }
 }
 
-export async function ping(timeoutMs = 1500) {
+export async function ping(timeoutMs = 5000) {
   try {
     const controller = new AbortController()
     const t = setTimeout(() => controller.abort(), timeoutMs)
-    const res = await fetch(`${BASE}/health`, { signal: controller.signal })
+    // #39 FIX: Use cache: 'no-store' to ensure we are actually hitting the server
+    const res = await fetch(`${BASE}/health`, { 
+      signal: controller.signal,
+      cache: 'no-store'
+    })
     clearTimeout(t)
     if (!res.ok) return false
     const contentType = res.headers.get('content-type') || ''
