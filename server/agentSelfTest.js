@@ -26,32 +26,33 @@ export async function runAgentSelfTest({ userId, chatId } = {}) {
     checks: [],
   }
 
-  function check(name, fn) {
+  async function check(name, fn) {
+    const start = Date.now()
     try {
-      fn()
+      await fn()
       results.passed += 1
-      results.checks.push({ name, ok: true })
+      results.checks.push({ name, ok: true, durationMs: Date.now() - start })
     } catch (e) {
       results.failed += 1
       results.ok = false
-      results.checks.push({ name, ok: false, error: e.message })
+      results.checks.push({ name, ok: false, error: e.message, durationMs: Date.now() - start })
     }
   }
 
   // 1. Provider Layer
-  check('provider_capabilities_detection', () => {
+  await check('provider_capabilities_detection', async () => {
     const caps = getProviderCapabilities('https://api.openai.com/v1', 'gpt-4o')
     if (caps.kind !== 'openai-compatible') throw new Error('Bad provider kind')
     if (!caps.features.nativeTools) throw new Error('Native tools should be enabled for OpenAI')
   })
 
   // 2. Tool Router
-  check('tool_router_validation', () => {
+  await check('tool_router_validation', async () => {
     // В Agent Mode пути нормализуются. Проверяем, что абсолютный путь /workspace/foo.js 
     // превращается в foo.js
     const v = validateToolCall('read_file', { path: '/workspace/foo.js' })
-    if (v.error) throw new Error(`Validator failed: ${v.error}`)
-    if (v.args.path !== 'foo.js') throw new Error(`Prefix cleanup failed. Got: ${v.args.path}`)
+    if (!v.ok) throw new Error(`Validator returned error: ${v.error}`)
+    if (v.args.path !== 'foo.js') throw new Error(`Prefix cleanup failed. Expected "foo.js", got: ${v.args.path}`)
     
     // Проверка на выход за пределы папки
     const v2 = validateToolCall('read_file', { path: '../../etc/passwd' })
@@ -59,14 +60,14 @@ export async function runAgentSelfTest({ userId, chatId } = {}) {
   })
 
   // 3. Sandbox Policy
-  check('secret_redaction', () => {
+  await check('secret_redaction', async () => {
     const sensitive = 'My key is ghp_1234567890abcdefGHJK'
     const redacted = redactSecrets(sensitive)
     if (redacted.includes('ghp_')) throw new Error('Redaction failed: sensitive pattern still present')
   })
 
   // 4. Context & Memory
-  check('context_digest_integrity', () => {
+  await check('context_digest_integrity', async () => {
     const convo = [{ role: 'system', content: 'Sys' }]
     const state = createAgentState({ history: [{ role: 'user', content: 'Goal' }] })
     upsertAgentStateDigest(convo, state, [])
@@ -75,11 +76,11 @@ export async function runAgentSelfTest({ userId, chatId } = {}) {
   })
 
   // 5. Ask User Registry
-  check('ask_user_lifecycle', async () => {
+  await check('ask_user_lifecycle', async () => {
     const { id, promise } = registerQuestion({ kind: 'ask_user', userId, chatId, question: 'Yes?' })
     answerQuestion(id, { text: 'Yes' }, { userId })
     const ans = await promise
-    if (ans.text !== 'Yes') throw new Error('Answer mismatch')
+    if (ans?.text !== 'Yes') throw new Error('Answer mismatch or rejected')
   })
 
   // 6. Workspace Scoping
