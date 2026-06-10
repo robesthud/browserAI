@@ -153,11 +153,6 @@ function fuzzyFindMatch(haystack, needle) {
     }
   } catch { /* ignore */ }
   return null
-}
-
-  return null
-}
-
 // ── Auto-diagnostics after a write ─────────────────────────────────────────
 //
 // Cline-style "what changed → what broke" feedback loop. After a successful
