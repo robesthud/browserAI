@@ -1574,6 +1574,100 @@ Projects found: ${JSON.stringify(projects.slice(0,5))}`
   //     OR whose api_key starts with 'AIza' (the Google API key shape).
   // If no key is found, returns a clear error pointing the user at
   // https://aistudio.google.com/apikey (free, no billing required).
+  // ── Image generation (Arena-style: file_path + prompt) ────────────────
+  generate_image: {
+    description:
+      'Generate an image from a text prompt and save it to the workspace. The image is saved to the specified file path, which must end in .jpg, .jpeg, or .png. Use when the user requests an image, illustration, icon, or visual asset. The generated image will be visible in the workspace preview.',
+    params: {
+      file_path: { type: 'string', required: true, description: "Relative path to save the generated image (e.g., 'images/hero.jpg', 'logo.png'). Must end in .jpg, .jpeg, or .png." },
+      prompt:    { type: 'string', required: true, description: 'Text prompt describing the image to generate' },
+    },
+    handler: async ({ file_path, prompt, _signal } = {}) => {
+      if (!file_path) return err('file_path is required')
+      if (!prompt)    return err('prompt is required')
+      if (!/\.(jpe?g|png)$/i.test(file_path)) {
+        return err('file_path must end in .jpg, .jpeg, or .png')
+      }
+
+      // Discover a Google API key.
+      let apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || ''
+      if (!apiKey) {
+        try {
+          const dbModule = await import('./db.js')
+          const rows = dbModule.default.prepare(
+            "SELECT api_key, model FROM keys WHERE base_url LIKE '%googleapis.com%' OR api_key LIKE 'AIza%' LIMIT 1"
+          ).all()
+          if (rows.length) apiKey = rows[0].api_key
+        } catch { /* fall through */ }
+      }
+      if (!apiKey) {
+        return err(
+          'Нет Google API key. Получи бесплатный на https://aistudio.google.com/apikey (без карты, 100 картинок/день) ' +
+          'и добавь его в Settings → API Keys с base_url https://generativelanguage.googleapis.com/v1beta/openai/'
+        )
+      }
+
+      const targetModel = 'gemini-2.0-flash-exp' // or other image capable model
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent`
+      try {
+        const r = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey,
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: String(prompt) }] }],
+            generationConfig: { responseModalities: ['Image'] },
+          }),
+          signal: _signal || AbortSignal.timeout(120_000),
+        })
+        const text = await r.text()
+        if (!r.ok) {
+          return err(`Google API HTTP ${r.status}: ${truncate(text, 400)}`)
+        }
+        let data
+        try { data = JSON.parse(text) } catch { return err(`Google API returned non-JSON: ${truncate(text, 200)}`) }
+
+        let b64 = ''
+        let mime = 'image/png'
+        const parts = data?.candidates?.[0]?.content?.parts || []
+        for (const p of parts) {
+          if (p?.inlineData?.data) {
+            b64 = p.inlineData.data
+            mime = p.inlineData.mimeType || mime
+            break
+          }
+        }
+        if (!b64) {
+          const finishReason = data?.candidates?.[0]?.finishReason || 'unknown'
+          return err(`Google API returned no image (finish=${finishReason}).`)
+        }
+
+        const { writeFile, mkdir } = await import('node:fs/promises')
+        const pathMod = await import('node:path')
+        const ws = await import('./workspace.js')
+        const safe = ws.default?.safePath || ws.safePath
+        const destAbs = typeof safe === 'function'
+          ? safe(file_path)
+          : pathMod.join(process.env.WORKSPACE_ROOT || '/workspace', file_path)
+        await mkdir(pathMod.dirname(destAbs), { recursive: true })
+        const buf = Buffer.from(b64, 'base64')
+        await writeFile(destAbs, buf)
+
+        return ok({
+          file_path,
+          bytes: buf.length,
+          mime,
+          dataUrl: `data:${mime};base64,${b64}`,
+          note: 'Image saved and shown inline.',
+        })
+      } catch (e) {
+        return err(`generate_image: ${e?.message || String(e)}`)
+      }
+    },
+  },
+
   // ── Sub-agents ────────────────────────────────────────────────────────
   use_subagents: {
     description: 'Spawn up to 5 focused, read-only sub-agents in parallel. Each gets its own prompt and returns a short summary. Use when you need to read many files / explore many areas to answer a single question — saves 70-90 % of your own context budget vs reading them inline. Sub-agents cannot write/commit/deploy.',

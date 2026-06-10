@@ -53,9 +53,14 @@ export async function buildRepoMap(rootRel = '') {
         map += `${'  '.repeat(depth)}📁 ${entry.name}/\n`
         await walk(fullPath, depth + 1)
       } else if (EXT_REGEX.test(entry.name) || entry.name === 'package.json' || entry.name === 'Dockerfile') {
-        const content = await fs.readFile(fullPath, 'utf8').catch(() => '')
-        const symbols = extractSymbols(content)
-        map += `${'  '.repeat(depth)}📄 ${entry.name}${symbols.length ? ' -> (' + symbols.join(', ') + ')' : ''}\n`
+        const stat = await fs.stat(fullPath).catch(() => null)
+        if (stat && stat.size < 50000) { // Only read files under 50KB for symbols
+          const content = await fs.readFile(fullPath, 'utf8').catch(() => '')
+          const symbols = extractSymbols(content)
+          map += `${'  '.repeat(depth)}📄 ${entry.name}${symbols.length ? ' -> (' + symbols.join(', ') + ')' : ''}\n`
+        } else {
+          map += `${'  '.repeat(depth)}📄 ${entry.name}\n`
+        }
       }
       
       if (map.length > MAX_MAP_SIZE) break
