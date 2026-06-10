@@ -26,6 +26,18 @@ export function streamAgent({ chatId = '', history, provider, extraSystem = '', 
   const controller = signal ? null : new AbortController()
   const actualSignal = signal || controller.signal
 
+  // CRITICAL: the caller's promise resolves only when a 'done' event
+  // arrives. If the connection drops mid-stream (server redeploy, flaky
+  // mobile network, proxy timeout) the reader just ends — without a
+  // synthetic 'done' the UI spinner would spin forever and silently
+  // swallow every next message (Composer ignores submits while
+  // isStreaming). Track it and always emit one.
+  let sawDone = false
+  const emit = (kind, data) => {
+    if (kind === 'done') sawDone = true
+    onEvent?.(kind, data)
+  }
+
   ;(async () => {
     try {
       const res = await fetch('/api/agent/chat', {
@@ -50,13 +62,14 @@ export function streamAgent({ chatId = '', history, provider, extraSystem = '', 
       })
       if (!res.ok) {
         const text = await res.text().catch(() => '')
-        onEvent?.('error', { message: `HTTP ${res.status}: ${text || res.statusText}` })
-        onEvent?.('done', { reason: 'http-error' })
+        emit('error', { message: `HTTP ${res.status}: ${text || res.statusText}` })
+        emit('done', { reason: 'http-error' })
         return
       }
       const reader = res.body?.getReader()
       if (!reader) {
-        onEvent?.('error', { message: 'No response body' })
+        emit('error', { message: 'No response body' })
+        emit('done', { reason: 'no-body' })
         return
       }
       const decoder = new TextDecoder()
@@ -78,15 +91,21 @@ export function streamAgent({ chatId = '', history, provider, extraSystem = '', 
           const raw = dataLines.join('\n')
           let parsed = raw
           try { parsed = JSON.parse(raw) } catch { /* keep string */ }
-          onEvent?.(evt, parsed)
+          emit(evt, parsed)
         }
+      }
+      // Stream ended without an explicit 'done' (connection cut mid-run,
+      // server restarted, LB idle-timeout). Surface it instead of hanging.
+      if (!sawDone) {
+        emit('error', { message: 'Поток оборвался до завершения ответа (сервер перезапущен или потеряна связь). Попробуйте ещё раз.' })
+        emit('done', { reason: 'stream-cut' })
       }
     } catch (e) {
       if (e?.name === 'AbortError') {
-        onEvent?.('done', { reason: 'aborted' })
+        emit('done', { reason: 'aborted' })
       } else {
-        onEvent?.('error', { message: e?.message || String(e) })
-        onEvent?.('done', { reason: 'exception' })
+        emit('error', { message: e?.message || String(e) })
+        emit('done', { reason: 'exception' })
       }
     }
   })()

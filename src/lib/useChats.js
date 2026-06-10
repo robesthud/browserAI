@@ -544,7 +544,16 @@ export function useChats(settings) {
         const mod = await import('./agentStream.js');
         streamAgent = mod.streamAgent;
       } catch (err) {
+        // CRITICAL: this block runs AFTER setIsStreaming(true) but OUTSIDE
+        // the try/finally below — if we leave without resetting the flag,
+        // the spinner spins forever and Composer silently ignores every
+        // following message (the exact "второй запрос виснет" bug).
+        if (abortRef.current === controller) abortRef.current = null
+        setIsStreaming(false)
+        patchAssistant({ pending: false, error: 'Приложение обновилось на сервере — страница будет перезагружена…' })
         if (err.message?.includes('dynamically imported module') || err.name === 'TypeError') {
+          // Stale bundle after a redeploy: the old index.html references a
+          // chunk hash that no longer exists. Reload to pick up the new build.
           window.location.reload();
           return;
         }

@@ -479,7 +479,12 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
         const lastUserAsk = [...history].reverse().find((m) => m.role === 'user')?.content || ''
         const didRealWork = recentToolHistory.some((h) => h.ok && !['ask_user', 'recall_facts', 'plan_check', 'plan_set'].includes(h.tool))
         if (didRealWork && !convo.some(m => m.role === 'user' && String(m.content).startsWith('[reflection]')) && !aborted) {
-          const verdict = await runReflectionCheck({ provider, ask: lastUserAsk, draft: reply.text || '', toolHistory: recentToolHistory }).catch(() => null)
+          // Hard 20s cap: reflection is advisory — a hanging provider call
+          // here must never block stream completion (same spinner-hang class).
+          const verdict = await Promise.race([
+            runReflectionCheck({ provider, ask: lastUserAsk, draft: reply.text || '', toolHistory: recentToolHistory }),
+            new Promise((r) => setTimeout(() => r(null), 20_000)),
+          ]).catch(() => null)
           if (verdict?.needsMoreWork) {
             sse(res, 'thought', { step, text: `Самопроверка: ${verdict.reason}` })
             convo.push({ role: 'user', content: `[reflection] Gaps identified:\n${verdict.reason}` }); continue
@@ -488,14 +493,27 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
         if (streamedFinalAnswer) sse(res, 'assistant', { text: reply.text || '' })
         else await streamFinalAnswer(res, reply.text || '')
 
+        // CRITICAL ORDER: send 'done' and close the stream FIRST. The
+        // lesson-extraction below makes an extra LLM call — if it hangs
+        // (slow provider, dead DeepSeek session) while 'done' hasn't been
+        // sent, the UI spinner never stops and the Composer silently
+        // swallows every next message. Lessons are best-effort background
+        // work and must never delay stream completion.
+        sseDone(res, { steps: step, reason: 'final' }, tokens); res.end()
         if (didRealWork && !aborted && userId) {
-          try {
-            const learnPrompt = `What technical lesson was learned? Russian, max 1 sentence.`
-            const learnReply = await callLLM({ baseUrl: provider.baseUrl, apiKey: provider.apiKey, model: provider.model, messages: [...convo.slice(-4), { role: 'user', content: learnPrompt }], temperature: 0.1 })
-            const lesson = String(learnReply?.text || '').trim(); if (lesson.length < 200) await invokeTool('save_lesson', { lesson, _chatId: chatId })
-          } catch { /* best-effort: ignore */ }
+          void (async () => {
+            try {
+              const learnPrompt = `What technical lesson was learned? Russian, max 1 sentence.`
+              const learnReply = await Promise.race([
+                callLLM({ baseUrl: provider.baseUrl, apiKey: provider.apiKey, model: provider.model, messages: [...convo.slice(-4), { role: 'user', content: learnPrompt }], temperature: 0.1 }),
+                new Promise((_, rej) => setTimeout(() => rej(new Error('lesson-extract timeout')), 30_000)),
+              ])
+              const lesson = String(learnReply?.text || '').trim()
+              if (lesson && lesson.length < 200) await invokeTool('save_lesson', { lesson, _chatId: chatId })
+            } catch { /* best-effort: ignore */ }
+          })()
         }
-        sseDone(res, { steps: step, reason: 'final' }, tokens); res.end(); return
+        return
       }
 
       // v2.19: the text accompanying a native tool call is the model's
