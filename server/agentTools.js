@@ -31,6 +31,8 @@ import { upsertFact, forgetFact, listFacts } from './userMemory.js'
 import { addDocument, deleteDocument, listDocuments, searchKnowledge } from './knowledgeBase.js'
 import { buildRepoMap } from './repoMap.js'
 import { USE_SUBAGENTS_TOOL } from './subAgents.js'
+import { listCronJobs, upsertCronJob, deleteCronJob } from './cron.js'
+import { listCheckpoints, restoreCheckpoint } from './checkpoints.js'
 
 // ── Utility ─────────────────────────────────────────────────────────────────
 function stripAnsi(str) {
@@ -1695,6 +1697,54 @@ Projects found: ${JSON.stringify(projects.slice(0,5))}`
       } catch (e) { return err(e.message) }
     },
   },
+
+  // ── Scheduled Tasks (Cron) ─────────────────────────────────────────────
+  cron_add: {
+    description: 'Schedule a recurring task. The task will execute a command in the background at the specified interval. Format: "*/N minutes", "hourly", "daily HH:MM".',
+    params: {
+      id:      { type: 'string', required: true,  description: 'Unique task identifier.' },
+      command: { type: 'string', required: true,  description: 'Shell command or prompt to execute.' },
+      pattern: { type: 'string', required: true,  description: 'Schedule pattern (e.g. "*/30 minutes").' },
+    },
+    handler: async (args = {}) => {
+      try { return ok(upsertCronJob(args._userId, args)) }
+      catch (e) { return err(e.message) }
+    },
+  },
+  cron_list: {
+    description: 'List all your scheduled tasks.',
+    params: {},
+    handler: async ({ _userId }) => ok({ jobs: listCronJobs(_userId) }),
+  },
+  cron_delete: {
+    description: 'Delete a scheduled task by ID.',
+    params: { id: { type: 'string', required: true } },
+    handler: async ({ id, _userId }) => ok(deleteCronJob(_userId, id)),
+  },
+
+  // ── Undo / Recovery (Checkpoints) ──────────────────────────────────────
+  checkpoint_list: {
+    description: 'List recent chat checkpoints (state snapshots). Use this when you realize you\'ve made a mistake and want to see what recovery points are available.',
+    params: {},
+    handler: async ({ _chatId }) => {
+      if (!_chatId) return err('No chat context')
+      return ok({ checkpoints: listCheckpoints(_chatId) })
+    },
+  },
+  checkpoint_restore: {
+    description: 'Restore the entire chat state (DB and files) to a specific step. Use this as a LAST RESORT if you\'ve broken the project and cannot fix it manually. This will undo all changes made after the selected step.',
+    params: {
+      step: { type: 'number', required: true, description: 'Step number from checkpoint_list to revert to.' },
+    },
+    handler: async (args = {}) => {
+      if (!args._chatId) return err('No chat context')
+      try {
+        const result = await restoreCheckpoint({ chatId: args._chatId, step: args.step })
+        return ok(result)
+      } catch (e) { return err(e.message) }
+    },
+  },
+
   use_subagents: USE_SUBAGENTS_TOOL,
 }
 
