@@ -1574,105 +1574,59 @@ Projects found: ${JSON.stringify(projects.slice(0,5))}`
   //     OR whose api_key starts with 'AIza' (the Google API key shape).
   // If no key is found, returns a clear error pointing the user at
   // https://aistudio.google.com/apikey (free, no billing required).
-  generate_image: {
-    description:
-      'Generate an image from a text prompt and save it to the workspace. The image is saved to the specified file path, which must end in .jpg, .jpeg, or .png. Use when the user requests an image, illustration, icon, or visual asset. The generated image will be visible in the workspace preview.',
+  // ── Sub-agents ────────────────────────────────────────────────────────
+  use_subagents: {
+    description: 'Spawn up to 5 focused, read-only sub-agents in parallel. Each gets its own prompt and returns a short summary. Use when you need to read many files / explore many areas to answer a single question — saves 70-90 % of your own context budget vs reading them inline. Sub-agents cannot write/commit/deploy.',
     params: {
-      file_path: { type: 'string', required: true, description: "Relative path to save the generated image (e.g., 'images/hero.jpg', 'logo.png'). Must end in .jpg, .jpeg, or .png." },
-      prompt:    { type: 'string', required: true, description: 'Text prompt describing the image to generate' },
+      prompt_1: { type: 'string', required: true,  description: 'First sub-agent prompt (what to investigate / summarise).' },
+      prompt_2: { type: 'string', optional: true,  description: 'Optional second sub-agent prompt.' },
+      prompt_3: { type: 'string', optional: true,  description: 'Optional third sub-agent prompt.' },
+      prompt_4: { type: 'string', optional: true,  description: 'Optional fourth sub-agent prompt.' },
+      prompt_5: { type: 'string', optional: true,  description: 'Optional fifth sub-agent prompt.' },
     },
-    handler: async ({ file_path, prompt, _signal } = {}) => {
-      if (!file_path) return err('file_path is required')
-      if (!prompt)    return err('prompt is required')
-      if (!/\.(jpe?g|png)$/i.test(file_path)) {
-        return err('file_path must end in .jpg, .jpeg, or .png')
+    handler: async (args = {}) => {
+      const { runSubagents } = await import('./subAgents.js')
+      const prompts = [args.prompt_1, args.prompt_2, args.prompt_3, args.prompt_4, args.prompt_5].filter(Boolean)
+      const provider = args._provider
+      if (!provider?.baseUrl || !provider?.apiKey) {
+        return err('use_subagents: no provider available')
       }
-
-      // Discover a Google API key.
-      let apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || ''
-      if (!apiKey) {
-        try {
-          const dbModule = await import('./db.js')
-          const rows = dbModule.default.prepare(
-            "SELECT api_key, model FROM keys WHERE base_url LIKE '%googleapis.com%' OR api_key LIKE 'AIza%' LIMIT 1"
-          ).all()
-          if (rows.length) apiKey = rows[0].api_key
-        } catch { /* fall through */ }
-      }
-      if (!apiKey) {
-        return err(
-          'Нет Google API key. Получи бесплатный на https://aistudio.google.com/apikey (без карты, 100 картинок/день) ' +
-          'и добавь его в Settings → API Keys с base_url https://generativelanguage.googleapis.com/v1beta/openai/'
-        )
-      }
-
-      const targetModel = model || 'gemini-2.5-flash-image-preview'
-      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent`
-      try {
-        const r = await fetch(apiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey,
-          },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: String(prompt) }] }],
-            generationConfig: { responseModalities: ['Image'] },
-          }),
-          signal: _signal || AbortSignal.timeout(120_000),
-        })
-        const text = await r.text()
-        if (!r.ok) {
-          return err(`Google API HTTP ${r.status}: ${truncate(text, 400)}`)
-        }
-        let data
-        try { data = JSON.parse(text) } catch { return err(`Google API returned non-JSON: ${truncate(text, 200)}`) }
-
-        // Find image bytes in response — Google returns them under
-        // candidates[0].content.parts[*].inlineData.data (base64).
-        let b64 = ''
-        let mime = 'image/png'
-        const parts = data?.candidates?.[0]?.content?.parts || []
-        for (const p of parts) {
-          if (p?.inlineData?.data) {
-            b64 = p.inlineData.data
-            mime = p.inlineData.mimeType || mime
-            break
-          }
-        }
-        if (!b64) {
-          const finishReason = data?.candidates?.[0]?.finishReason || 'unknown'
-          const promptFeedback = data?.promptFeedback ? JSON.stringify(data.promptFeedback) : ''
-          return err(`Google API returned no image (finish=${finishReason}). ${promptFeedback}`.trim())
-        }
-
-        // Save to workspace.
-        const { writeFile, mkdir } = await import('node:fs/promises')
-        const pathMod = await import('node:path')
-        const ws = await import('./workspace.js')
-        const safe = ws.default?.safePath || ws.safePath
-        const destAbs = typeof safe === 'function'
-          ? safe(file_path)
-          : pathMod.join(process.env.WORKSPACE_ROOT || '/workspace', file_path)
-        await mkdir(pathMod.dirname(destAbs), { recursive: true })
-        const buf = Buffer.from(b64, 'base64')
-        await writeFile(destAbs, buf)
-
-        return ok({
-          file_path,
-          bytes: buf.length,
-          mime,
-          model: targetModel,
-          via: 'google-ai-studio',
-          dataUrl: `data:${mime};base64,${b64}`,    // inline preview in chat
-          note: 'Image saved to workspace and shown inline.',
-        })
-      } catch (e) {
-        return err(`generate_image: ${e?.message || String(e)}`)
-      }
+      const results = await runSubagents({
+        prompts, provider, signal: args._signal, userId: args._userId,
+      })
+      const out = results.map((r, i) => {
+        const head = `## Sub-agent ${i + 1} (${r.ok ? 'ok' : 'failed'})`
+        const body = r.ok ? (r.text || '(empty)') : `ERROR: ${r.error}`
+        return head + '\n\n' + body
+      }).join('\n\n========================================\n\n')
+      return ok(out)
     },
   },
-}
+
+  // ── Project Memory ───────────────────────────────────────────────────
+  save_lesson: {
+    description: 'Save a technical lesson or architectural decision to the project memory (.browserai/lessons.md). Use this when you find a project-specific rule or fix a tricky bug so future agents don\'t repeat mistakes.',
+    params: {
+      lesson: { type: 'string', required: true, description: 'The lesson to remember (e.g., "Always use port 8080 for the server").' },
+    },
+    handler: async ({ lesson, _chatId }) => {
+      if (!lesson) return err('lesson is required')
+      const lessonFile = '.browserai/lessons.md'
+      try {
+        const existing = await readWorkspaceFile(lessonFile).catch(() => null)
+        let content = `# Lessons Learned\n\n- ${lesson}\n`
+        if (existing?.text) {
+          if (!existing.text.includes(lesson)) {
+            content = existing.text.trim() + `\n- ${lesson}\n`
+          } else {
+            content = existing.text
+          }
+        }
+        await writeFileContent(lessonFile, content)
+        return ok(`Lesson saved to ${lessonFile}`)
+      } catch (e) { return err(e.message) }
+    },
+  },
 
 // Register use_subagents lazily on first read of TOOLS — avoids the
 // circular dep with subAgents.js (which imports invokeTool from this

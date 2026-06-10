@@ -947,42 +947,28 @@ async function runAgentInner({
   let pushedBackThisTurn = false
 
   // ── v2.22 Automatic memory integration ─────────────────────────
-  let memoryIntegrationDone = false
-
-  let pMsg = 'Проверяю структуру проекта...'
-  if (useNativeTools) {
-    convo.push({
-      role: 'assistant',
-      content: pMsg,
-      tool_calls: [
-        {
-          id: 'call_initial_map',
-          type: 'function',
-          function: { name: 'build_repo_map', arguments: JSON.stringify({ path: '' }) }
-        }
-      ]
-    })
-  } else {
-    convo.push({ 
-      role: 'assistant', 
-      content: `${pMsg}\n<xai:function_call>\n<xai:tool_name>build_repo_map</xai:tool_name>\n<parameter name="path"></parameter>\n</xai:function_call>` 
-    })
-  }
-
-  try {
-    const r = await invokeTool('build_repo_map', { path: '', _userId: userId }, { signal: abortCtl.signal, userId, chatId, extraTools })
-    if (r.ok) {
-      const obs = clipToolOutput('build_repo_map', r.result)
-      if (useNativeTools) {
-        convo.push({ role: 'tool', tool_call_id: 'call_initial_map', name: 'build_repo_map', content: obs })
-      } else {
-        convo.push({ role: 'user', content: `<arena-system-message>\nInitial Repo Map:\n${obs}\n</arena-system-message>` })
-      }
-    }
-  } catch (e) { /* ignore silent fail */ }
+  let discoveryDone = false
 
   try {
     while (step < maxSteps) {
+      if (aborted) break
+      
+      // #30 FIX: High-Intelligence Scaffolding & Discovery.
+      // We automatically perform discovery steps before even starting the loop
+      // or on step 1 to ensure the model has absolute grounding.
+      if (!discoveryDone && userId) {
+        discoveryDone = true
+        // 1. Check for project lessons
+        try {
+          const lessonFile = '.browserai/lessons.md'
+          const lessons = await withWorkspaceScope(chatId, () => readWorkspaceFile(lessonFile).catch(() => null))
+          if (lessons?.text) {
+             convo.push({ role: 'user', content: `<arena-system-message>\nLessons Learned from previous tasks in this project:\n${lessons.text}\n</arena-system-message>` })
+          }
+        } catch {}
+      }
+
+      if (Date.now() > deadline) {
       if (aborted) break
       if (Date.now() > deadline) {
         sse(res, 'error', { message: `Total deadline of ${DEFAULT_DEADLINE_MS / 1000}s exceeded after ${step} steps` })
@@ -1294,6 +1280,37 @@ async function runAgentInner({
           sse(res, 'assistant', { text: reply.text || '' })
         } else {
           await streamFinalAnswer(res, reply.text || '')
+        }
+
+        // ── v2.30 Auto-Learning Experience (Lessons) ──────────────────
+        // After every successful completion, perform an internal "distill lesson"
+        // step using the strongest available model.
+        if (didRealWork && !aborted && userId) {
+           try {
+              const { lookupModel, suggestStrongSibling } = await import('./modelKnowledge.js')
+              let learnModel = provider.model
+              const tier = lookupModel(provider.model).tier
+              if (tier === 'cheap') {
+                const strong = suggestStrongSibling(provider.model)
+                if (strong) learnModel = strong
+              }
+
+              const learnPrompt = `What is one technical lesson learned about this specific project's architecture or environment that future agents MUST know? (e.g. "React components use .jsx", "API port is 8080"). Return ONLY the lesson in Russian, max 1 sentence.`
+              const learnReply = await callLLM({
+                baseUrl: provider.baseUrl, apiKey: provider.apiKey,
+                authType: provider.authType || 'bearer',
+                authHeader: provider.authHeader || '',
+                extraHeaders: provider.extraHeaders || {},
+                model: learnModel,
+                messages: [...convo.slice(-4), { role: 'user', content: learnPrompt }],
+                temperature: 0.1,
+              })
+              const lesson = String(learnReply?.text || '').trim()
+              if (lesson && lesson.length < 200) {
+                 await invokeTool('save_lesson', { lesson, _chatId: chatId })
+                 sse(res, 'thought', { step, text: `Усвоен урок: ${lesson}` })
+              }
+           } catch {}
         }
 
         // #28 FIX: Hard exit for Project Engine.

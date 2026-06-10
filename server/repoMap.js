@@ -41,23 +41,21 @@ export async function buildRepoMap(rootRel = '') {
   let map = ''
   
   async function walk(dir, depth = 0) {
-    if (depth > 5) return
+    if (depth > 8) return // Scan deeper
     const entries = await fs.readdir(dir, { withFileTypes: true })
     
     for (const entry of entries) {
       if (IGNORE_DIRS.has(entry.name)) continue
-      if (entry.name.startsWith('.')) continue
+      if (entry.name.startsWith('.') && entry.name !== '.env.example') continue
       
       const fullPath = path.join(dir, entry.name)
-      const relPath = path.relative(root, fullPath)
-      
       if (entry.isDirectory()) {
         map += `${'  '.repeat(depth)}📁 ${entry.name}/\n`
         await walk(fullPath, depth + 1)
-      } else if (EXT_REGEX.test(entry.name)) {
+      } else if (EXT_REGEX.test(entry.name) || entry.name === 'package.json' || entry.name === 'Dockerfile') {
         const content = await fs.readFile(fullPath, 'utf8').catch(() => '')
         const symbols = extractSymbols(content)
-        map += `${'  '.repeat(depth)}📄 ${entry.name} ${symbols.length ? '-> (' + symbols.join(', ') + ')' : ''}\n`
+        map += `${'  '.repeat(depth)}📄 ${entry.name}${symbols.length ? ' -> (' + symbols.join(', ') + ')' : ''}\n`
       }
       
       if (map.length > MAX_MAP_SIZE) break
