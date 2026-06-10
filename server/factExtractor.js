@@ -29,14 +29,13 @@ const SYSTEM = [
   'Pick ONLY:',
   '  • stable preferences ("I prefer Tailwind v3")',
   '  • recurring project context ("main repo: /opt/browserai")',
-  '  • important decisions ("we use Postgres, not SQLite, in prod")',
+  '  • important technical decisions ("we use Postgres, not SQLite, in prod", "Server runs on port 8080")',
+  '  • project-specific rules ("Always use JSDoc for functions", "API is at /api/v2")',
   '  • stable identifiers ("Telegram chat id 7441134313 is mine")',
   '',
-  'IGNORE one-off chitchat, error messages, tool output, prompts to you.',
+  'IGNORE one-off chitchat, tool outputs (unless they contain a permanent fact), and error messages.',
   '',
-  'Output strictly as one fact per line. NO numbering, NO bullets, NO',
-  'commentary, NO empty lines. If nothing is worth remembering, output',
-  'a single line: NOMEMORY',
+  'Output strictly as one fact per line, starting with "Fact:" or "Decision:".',
 ].join('\n')
 
 /**
