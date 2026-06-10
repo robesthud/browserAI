@@ -729,13 +729,20 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
       if (!insideXml) {
         const m = scanBuf.match(OPEN_RE)
         if (!m) {
-          // No open in buffer — but to be safe we keep a tail (longest possible
-          // partial opener tag, ~30 chars) and flush everything before.
-          const tail = scanBuf.length > 30 ? scanBuf.slice(-30) : scanBuf
-          const safe = scanBuf.slice(0, scanBuf.length - tail.length)
-          if (safe) { visibleTextBuf += safe; flushVisibleText() }
-          scanBuf = tail
-          return
+          // #26 FIX: Only keep a tail if it looks like a partial tag start ('<').
+          // Otherwise, flush everything to visible text immediately.
+          const lastLt = scanBuf.lastIndexOf('<')
+          if (lastLt !== -1 && scanBuf.length - lastLt < 40) {
+            const safe = scanBuf.slice(0, lastLt)
+            if (safe) { visibleTextBuf += safe; flushVisibleText() }
+            scanBuf = scanBuf.slice(lastLt)
+            return
+          } else {
+            visibleTextBuf += scanBuf
+            flushVisibleText()
+            scanBuf = ''
+            return
+          }
         }
         const before = scanBuf.slice(0, m.index)
         if (before) { visibleTextBuf += before; flushVisibleText() }

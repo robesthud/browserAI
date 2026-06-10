@@ -103,36 +103,38 @@ function normalizeOpenAIMessages(messages = []) {
     if (!m) continue
     const prev = out[out.length - 1]
     
-    // #23 FIX: Robust message sequence normalization for all providers.
-    // 1. Convert any non-assistant/user roles (like 'tool' without native support) to 'user' or 'assistant'.
-    // 2. Merge consecutive messages of the same role.
-    // 3. Ensure assistant messages with tool_calls are followed by tool results.
+    // #27 FIX: Robust message sequence normalization for all providers.
+    // Preserves multimodal content (arrays) instead of flattening to string.
     
     let role = m.role
     if (role === 'system') {
       if (out.length === 0) out.push({ ...m })
       else {
-        // Merge extra system into existing system or first user
+        // Merge extra system into existing system
         const target = out[0]
-        const targetText = typeof target.content === 'string' ? target.content : (Array.isArray(target.content) ? target.content.map(p => p.text || '').join('\n') : '')
-        const mText = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(p => p.text || '').join('\n') : '')
-        target.content = targetText + '\n\n' + mText
+        if (typeof target.content === 'string' && typeof m.content === 'string') {
+          target.content += '\n\n' + m.content
+        } else {
+          // If either is complex, merge as parts
+          const tParts = Array.isArray(target.content) ? target.content : [{ type: 'text', text: String(target.content || '') }]
+          const mParts = Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content || '') }]
+          target.content = [...tParts, { type: 'text', text: '\n\n' }, ...mParts]
+        }
       }
       continue
     }
 
-    // Merge logic
+    // Merge consecutive messages of the same role
     if (prev && prev.role === role) {
-      if (role === 'user') {
-        const prevText = typeof prev.content === 'string' ? prev.content : (Array.isArray(prev.content) ? prev.content.map(p => p.text || '').join('\n') : '')
-        const mText = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(p => p.text || '').join('\n') : '')
-        prev.content = prevText + '\n\n' + mText
-        continue
-      }
-      if (role === 'assistant' && !m.tool_calls && !prev.tool_calls) {
-        const prevText = typeof prev.content === 'string' ? prev.content : (Array.isArray(prev.content) ? prev.content.map(p => p.text || '').join('\n') : '')
-        const mText = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(p => p.text || '').join('\n') : '')
-        prev.content = prevText + '\n\n' + mText
+      const canMerge = (role === 'user') || (role === 'assistant' && !m.tool_calls && !prev.tool_calls)
+      if (canMerge) {
+        if (typeof prev.content === 'string' && typeof m.content === 'string') {
+          prev.content += '\n\n' + m.content
+        } else {
+          const pParts = Array.isArray(prev.content) ? prev.content : [{ type: 'text', text: String(prev.content || '') }]
+          const mParts = Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content || '') }]
+          prev.content = [...pParts, { type: 'text', text: '\n\n' }, ...mParts]
+        }
         continue
       }
     }
