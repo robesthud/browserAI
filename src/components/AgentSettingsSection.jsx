@@ -284,39 +284,38 @@ export default function AgentSettingsSection() {
           </div>
         </div>
 
-          {selfTest && (
-            <div className={`rounded-lg border px-3 py-2 text-[11px] ${
-              selfTest.ok
-                ? 'border-emerald-400/30 bg-emerald-900/15 text-emerald-100'
-                : 'border-red-400/30 bg-red-900/15 text-red-100'
-            }`}>
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <span className="font-medium">
-                  {selfTest.ok ? '✓ Agent self-test passed' : '✗ Agent self-test failed'}
-                </span>
-                <span className="font-mono text-[10px] opacity-80">
-                  {selfTest.passed ?? 0}/{(selfTest.passed ?? 0) + (selfTest.failed ?? 0)} checks
-                </span>
-              </div>
-              {selfTest.error && <div className="mb-1">{selfTest.error}</div>}
-              {Array.isArray(selfTest.checks) && (
-                <details className="mt-1">
-                  <summary className="cursor-pointer select-none opacity-80">Показать checks</summary>
-                  <div className="mt-1 max-h-64 space-y-1 overflow-auto rounded bg-black/20 p-2">
-                    {selfTest.checks.map((c) => (
-                      <div key={c.name} className={c.ok ? 'text-emerald-200' : 'text-red-200'}>
-                        {c.ok ? '✓' : '✗'} <span className="font-mono">{c.name}</span>
-                        <span className="ml-1 opacity-70">{c.durationMs}ms</span>
-                        {c.error && <div className="ml-4 text-red-200/90">{c.error}</div>}
-                      </div>
-                    ))}
-                  </div>
-                </details>
-              )}
+        {selfTest && (
+          <div className={`rounded-lg border px-3 py-2 text-[11px] ${
+            selfTest.ok
+              ? 'border-emerald-400/30 bg-emerald-900/15 text-emerald-100'
+              : 'border-red-400/30 bg-red-900/15 text-red-100'
+          }`}>
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <span className="font-medium">
+                {selfTest.ok ? '✓ Agent self-test passed' : '✗ Agent self-test failed'}
+              </span>
+              <span className="font-mono text-[10px] opacity-80">
+                {selfTest.passed ?? 0}/{(selfTest.passed ?? 0) + (selfTest.failed ?? 0)} checks
+              </span>
             </div>
-          )}
-        </div>
-      )}
+            {selfTest.error && <div className="mb-1">{selfTest.error}</div>}
+            {Array.isArray(selfTest.checks) && (
+              <details className="mt-1">
+                <summary className="cursor-pointer select-none opacity-80">Показать checks</summary>
+                <div className="mt-1 max-h-64 space-y-1 overflow-auto rounded bg-black/20 p-2">
+                  {selfTest.checks.map((c) => (
+                    <div key={c.name} className={c.ok ? 'text-emerald-200' : 'text-red-200'}>
+                      {c.ok ? '✓' : '✗'} <span className="font-mono">{c.name}</span>
+                      <span className="ml-1 opacity-70">{c.durationMs}ms</span>
+                      {c.error && <div className="ml-4 text-red-200/90">{c.error}</div>}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* ── MCP servers ── */}
       <div className="space-y-2">
