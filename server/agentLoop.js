@@ -698,6 +698,13 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
       const m = openAttrs.match(/name="([^"]+)"/i)
       if (m) tool = m[1].trim()
     }
+    
+    // #29 FIX: Fallback for extremely malformed bodies (e.g. missing <xai:tool_name> tags)
+    if (!tool) {
+      const line1 = body.trim().split('\n')[0]
+      if (line1 && /^[a-z_]+$/.test(line1)) tool = line1
+    }
+
     if (!tool) return null
     const params = {}
     const paramRe = /<parameter\s+name="([^"]+)">([\s\S]*?)<\/parameter>/gi
@@ -941,6 +948,38 @@ async function runAgentInner({
 
   // ── v2.22 Automatic memory integration ─────────────────────────
   let memoryIntegrationDone = false
+
+  let pMsg = 'Проверяю структуру проекта...'
+  if (useNativeTools) {
+    convo.push({
+      role: 'assistant',
+      content: pMsg,
+      tool_calls: [
+        {
+          id: 'call_initial_map',
+          type: 'function',
+          function: { name: 'build_repo_map', arguments: JSON.stringify({ path: '' }) }
+        }
+      ]
+    })
+  } else {
+    convo.push({ 
+      role: 'assistant', 
+      content: `${pMsg}\n<xai:function_call>\n<xai:tool_name>build_repo_map</xai:tool_name>\n<parameter name="path"></parameter>\n</xai:function_call>` 
+    })
+  }
+
+  try {
+    const r = await invokeTool('build_repo_map', { path: '', _userId: userId }, { signal: abortCtl.signal, userId, chatId, extraTools })
+    if (r.ok) {
+      const obs = clipToolOutput('build_repo_map', r.result)
+      if (useNativeTools) {
+        convo.push({ role: 'tool', tool_call_id: 'call_initial_map', name: 'build_repo_map', content: obs })
+      } else {
+        convo.push({ role: 'user', content: `<arena-system-message>\nInitial Repo Map:\n${obs}\n</arena-system-message>` })
+      }
+    }
+  } catch (e) { /* ignore silent fail */ }
 
   try {
     while (step < maxSteps) {
