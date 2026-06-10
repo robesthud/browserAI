@@ -258,16 +258,16 @@ export default function AgentSettingsSection() {
         )}
       </div>
 
-      {/* ── Agent self-test (developer-only) ── */}
-      {devtoolsEnabled && (
-        <div className="space-y-2 rounded-xl border border-white/10 bg-graphite-900/35 p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h3 className="text-[13px] font-medium text-cream">Agent Mode self-test</h3>
-              <p className="mt-0.5 text-[11px] text-cream-faint">
-                Developer-only diagnostics. Включается через localStorage browserai.devtools=1.
-              </p>
-            </div>
+      {/* ── Agent self-test ── */}
+      <div className="space-y-2 rounded-xl border border-white/10 bg-graphite-900/35 p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-[13px] font-medium text-cream">Инструменты Агента</h3>
+            <p className="mt-0.5 text-[11px] text-cream-faint">
+              Диагностика и экспорт хода выполнения задач.
+            </p>
+          </div>
+          <div className="flex gap-2">
             <button
               type="button"
               onClick={runSelfTest}
@@ -282,6 +282,7 @@ export default function AgentSettingsSection() {
               Export trace
             </button>
           </div>
+        </div>
 
           {selfTest && (
             <div className={`rounded-lg border px-3 py-2 text-[11px] ${
