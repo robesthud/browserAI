@@ -39,14 +39,6 @@ const PROVIDER_PRESETS = [
     baseUrl: 'https://api.deepseek.com/v1',
   },
   {
-    id: 'gemini',
-    group: 'api',
-    label: 'Gemini API',
-    name: 'Gemini API',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    hint: 'Ключ: console.cloud.google.com → APIs → Gemini API → Credentials',
-  },
-  {
     id: 'mistral-api',
     group: 'api',
     label: 'Mistral API',
@@ -94,17 +86,6 @@ const PROVIDER_PRESETS = [
       'Origin': 'https://chat.deepseek.com',
     },
     hint: 'Бесплатно. Токен и cookies хранятся на сервере и обновляются автоматически. Управление: /admin/deepseek или Telegram-бот.',
-  },
-  {
-    id: 'google-ai-studio',
-    group: 'free',
-    label: '🔑 Google AI Studio',
-    name: 'Google AI Studio',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    model: 'gemini-2.5-flash',
-    apiKey: '',     // user pastes their AIza... key
-    availableModels: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-image-preview'],
-    hint: 'Бесплатный ключ на https://aistudio.google.com/apikey — без карты, 100 запросов/день. Поддерживает vision и генерацию картинок (модель gemini-2.5-flash-image-preview).',
   },
 ]
 

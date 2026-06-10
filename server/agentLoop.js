@@ -146,7 +146,7 @@ function dedupePlanCheck(call, planState) {
   return { ...call, args: { ...call.args, indices: fresh } }
 }
 
-const XML_TOOL_CALL_RE = /<(?:xai:function_call|tool_use|function_call)([^>]*)>([\s\S]*?)<\/(?:xai:function_call|tool_use|function_call)>/gi
+const XML_TOOL_CALL_RE = /<(?:x?ai:function_call|tool_use|function_call)([^>]*)>([\s\S]*?)<\/(?:x?ai:function_call|tool_use|function_call)>/gi
 const XML_PARAM_RE = /<parameter\s+name="([^"]+)"\s*>([\s\S]*?)<\/parameter>/gi
 
 function parseXmlFunctionCalls(text) {
@@ -157,7 +157,7 @@ function parseXmlFunctionCalls(text) {
     const openAttrs = match[1] || ''
     const content = match[2] || ''
     const nameMatch =
-      content.match(/<xai:tool_name>([^<]+)<\/xai:tool_name>/i) ||
+      content.match(/<(?:x?ai:)?tool_name>([^<]+)<\/(?:x?ai:)?tool_name>/i) ||
       content.match(/<tool_name>([^<]+)<\/tool_name>/i) ||
       content.match(/<name>([^<]+)<\/name>/i) ||
       openAttrs.match(/name\s*=\s*["']([^"']+)["']/i)
@@ -252,14 +252,14 @@ async function streamFinalAnswer(res, fullText) {
 
 // ── LLM Streaming call ──────────────────────────────────────────────────────
 async function streamingLLMCall(res, step, opts, hooks = {}) {
-  const OPEN_RE  = /<(?:xai:function_call|tool_use|function_call|thinking|thought)([^>]*)>/i
-  const CLOSE_RE = /<\/(?:xai:function_call|tool_use|function_call|thinking|thought)>/i
+  const OPEN_RE  = /<(?:x?ai:function_call|tool_use|function_call|thinking|thought)([^>]*)>/i
+  const CLOSE_RE = /<\/(?:x?ai:function_call|tool_use|function_call|thinking|thought)>/i
   let scanBuf = '', visibleTextBuf = '', insideXml = false, xmlTagName = '', xmlOpenAttrs = ''
   const preParsedCalls = []
 
   function parseXmlBody(body, tagName, openAttrs) {
     if (tagName === 'thinking' || tagName === 'thought') return { kind: 'thinking', text: body.trim() }
-    const nameMatch = body.match(/<(?:xai:)?tool_name>([^<]+)<\/(?:xai:)?tool_name>/i) || body.match(/<name>([^<]+)<\/name>/i)
+    const nameMatch = body.match(/<(?:x?ai:)?tool_name>([^<]+)<\/(?:x?ai:)?tool_name>/i) || body.match(/<name>([^<]+)<\/name>/i)
     let tool = nameMatch ? nameMatch[1].trim() : ''
     if (!tool) {
       const m = openAttrs.match(/name="([^"]+)"/i)

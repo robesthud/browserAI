@@ -107,6 +107,7 @@ function WorkingSpinner() {
 function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, onCancelAskUser, onJobDone, onBranch }) {
   const isUser = m.role === 'user'
   const isDev = devtoolsEnabled()
+  const [showTechnical, setShowTechnical] = useState(false)
   const hasAgentActivity = !isUser && Boolean(
     (Array.isArray(m.toolCalls) && m.toolCalls.length > 0) ||
     (Array.isArray(m.askUsers) && m.askUsers.length > 0) ||
@@ -295,70 +296,87 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                     items.push(<AgentRuntimePanel key={`runtime-${m.id}`} context={m.agentContext} state={m.agentState} aiWorking={aiWorking} isDev={isDev} />)
                   }
 
-// Legacy fallback for old chats without saved agentState
-                  if (!m.agentState) {
-                    let plan = null
-                    for (const tc of m.toolCalls || []) {
-                      if (tc.status !== 'done' || !tc.ok) continue
-                      if (tc.name === 'plan_set' && Array.isArray(tc.result?.plan)) {
-                        plan = { title: tc.result.title || '', steps: tc.result.plan.map((s) => ({ ...s })) }
-                      } else if (tc.name === 'plan_check' && plan && Array.isArray(tc.result?.checked)) {
-                        for (const i of tc.result.checked) {
-                          const idx = Number(i)
-                          const step = plan.steps.find((s) => s.idx === idx)
-                          if (step) {
-                            step.done = true
-                            if (tc.result.note) step.note = tc.result.note
+                  // Collapsible execution details
+                  const showDetailed = isDev || showTechnical
+                  
+                  if (!showDetailed && ((m.toolCalls?.length > 0 && m.toolCalls.some(tc => tc.name !== 'plan_set' && tc.name !== 'plan_check')) || m.thoughts?.length > 0)) {
+                    items.push(
+                      <button 
+                        key="show-more"
+                        onClick={() => setShowTechnical(true)}
+                        className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-graphite-800/40 px-3 py-1 text-[11px] text-cream-faint hover:bg-graphite-750 hover:text-cream-soft transition-colors"
+                      >
+                        <span>🔍 Показать ход выполнения ({m.toolCalls?.length || 0} действий)</span>
+                      </button>
+                    )
+                  }
+
+                  if (showDetailed) {
+                    // Legacy fallback for old chats without saved agentState
+                    if (!m.agentState) {
+                      let plan = null
+                      for (const tc of m.toolCalls || []) {
+                        if (tc.status !== 'done' || !tc.ok) continue
+                        if (tc.name === 'plan_set' && Array.isArray(tc.result?.plan)) {
+                          plan = { title: tc.result.title || '', steps: tc.result.plan.map((s) => ({ ...s })) }
+                        } else if (tc.name === 'plan_check' && plan && Array.isArray(tc.result?.checked)) {
+                          for (const i of tc.result.checked) {
+                            const idx = Number(i)
+                            const step = plan.steps.find((s) => s.idx === idx)
+                            if (step) {
+                              step.done = true
+                              if (tc.result.note) step.note = tc.result.note
+                            }
                           }
                         }
                       }
+                      if (plan) items.push(<AgentPlanCard key="plan" plan={plan} />)
                     }
-                    if (plan) items.push(<AgentPlanCard key="plan" plan={plan} />)
-                  }
 
-                  for (const tc of m.toolCalls || []) {
-                    const ths = thoughtsByStep.get(tc.step) || []
-                    if (isDev) {
-                      for (const t of ths) {
-                        items.push(
-                          <AgentThought key={`th-${tc.step}-${t.at}`} text={t.text} />,
-                        )
+                    for (const tc of m.toolCalls || []) {
+                      const ths = thoughtsByStep.get(tc.step) || []
+                      if (showDetailed) {
+                        for (const t of ths) {
+                          items.push(
+                            <AgentThought key={`th-${tc.step}-${t.at}`} text={t.text} />,
+                          )
+                        }
                       }
+                      thoughtsByStep.delete(tc.step)
+                      // Hide plan_set / plan_check tool blocks themselves —
+                      // they're already represented by AgentPlanCard above.
+                      if (tc.name === 'plan_set' || tc.name === 'plan_check') continue
+                      items.push(
+                        <AgentToolBlock
+                          key={tc.id}
+                          step={tc.step}
+                          name={tc.name}
+                          args={tc.args}
+                          status={tc.status}
+                          ok={tc.ok}
+                          result={tc.result}
+                          error={tc.error}
+                          startedAt={tc.startedAt}
+                          finishedAt={tc.finishedAt}
+                          stream={tc.stream}
+                          diagnostic={tc.diagnostic}
+                          onRetry={(tool) => {
+                            // Arena-style retry: re-execute the exact same tool call
+                            window.dispatchEvent(new CustomEvent('agent:retry-tool', { 
+                              detail: { name: tool.name, args: tool.args } 
+                            }))
+                          }}
+                        />,
+                      )
                     }
-                    thoughtsByStep.delete(tc.step)
-                    // Hide plan_set / plan_check tool blocks themselves —
-                    // they're already represented by AgentPlanCard above.
-                    if (tc.name === 'plan_set' || tc.name === 'plan_check') continue
-                    items.push(
-                      <AgentToolBlock
-                        key={tc.id}
-                        step={tc.step}
-                        name={tc.name}
-                        args={tc.args}
-                        status={tc.status}
-                        ok={tc.ok}
-                        result={tc.result}
-                        error={tc.error}
-                        startedAt={tc.startedAt}
-                        finishedAt={tc.finishedAt}
-                        stream={tc.stream}
-                        diagnostic={tc.diagnostic}
-                        onRetry={(tool) => {
-                          // Arena-style retry: re-execute the exact same tool call
-                          window.dispatchEvent(new CustomEvent('agent:retry-tool', { 
-                            detail: { name: tool.name, args: tool.args } 
-                          }))
-                        }}
-                      />,
-                    )
-                  }
-                  // any leftover thoughts (no matching tool) — render at the end
-                  for (const [step, ths] of thoughtsByStep) {
-                    if (isDev) {
-                      for (const t of ths) {
-                        items.push(
-                          <AgentThought key={`th-late-${step}-${t.at}`} text={t.text} />,
-                        )
+                    // any leftover thoughts (no matching tool) — render at the end
+                    for (const [step, ths] of thoughtsByStep) {
+                      if (isDev) {
+                        for (const t of ths) {
+                          items.push(
+                            <AgentThought key={`th-late-${step}-${t.at}`} text={t.text} />,
+                          )
+                        }
                       }
                     }
                   }
