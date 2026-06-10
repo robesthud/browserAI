@@ -459,7 +459,10 @@ function dedupePlanCheck(call, planState) {
 // block instead of a tool call? Then it's almost certainly the "modelы
 // прислал коды вместо того чтобы их применить" anti-pattern the user
 // complained about — push back instead of accepting it as a final answer.
-const EDIT_REQUEST_RE = /(исправ|поправ|почини|испрви|переписать|refactor|fix |rewrite|edit |применит|апплай|внеси изменен|сделай так|реализуй|сделай|implement|добав\w* код|улучш|оптимиз|почини баг|удали (?:из|из файла|строк))/i
+// Heuristic: did the user ask for an edit-style change or creation
+// ("исправь", "создай", "напиши", "почини", "implement", "create", etc) 
+// AND the model's reply contains a substantial code block instead of a tool call?
+const EDIT_REQUEST_RE = /(созда|напиши|сделай|реализуй|исправ|поправ|почини|испрви|переписать|refactor|fix |rewrite|edit |применит|апплай|внеси изменен|сделай так|implement|добав\w* код|улучш|оптимиз|почини баг|удали|create|new|make|generate|build)/i
 const CODE_BLOCK_RE = /```[a-z0-9_+-]*\n[\s\S]{120,}?\n```/i
 const TOOLISH_REPLY_RE = /^\s*```(?:json|tool)?\s*\{/im
 function looksLikeUnapplliedCodeReply(text = '', history = []) {
