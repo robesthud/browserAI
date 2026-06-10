@@ -57,40 +57,29 @@ jobs:
                
                export \$(grep -v \"^#\" .env | grep -v \"^$\" | xargs)
                send_tg() {
-                 TOKEN=\"\${TG_BOT_TOKEN:-}\"
-                 CHAT_ID=\"\${TG_ADMIN_CHAT_ID:-}\"
-                 if [ -n \"\$TOKEN\" ] && [ -n \"\$CHAT_ID\" ]; then
-                   MSG=$(echo \"\$1\" | sed 's/\"/\\\\\"/g')
-                   curl -s -X POST \"https://api.telegram.org/bot\${TOKEN}/sendMessage\" \
-                        -d chat_id=\"\${CHAT_ID}\" \
+                 if [ -n \"\${TG_BOT_TOKEN:-}\" ] && [ -n \"\${TG_ADMIN_CHAT_ID:-}\" ]; then
+                   curl -s -X POST \"https://api.telegram.org/bot\${TG_BOT_TOKEN}/sendMessage\" \
+                        -d chat_id=\"\${TG_ADMIN_CHAT_ID}\" \
                         -d parse_mode=\"HTML\" \
                         --data-urlencode \"text=\$1\" > /dev/null || true
                  fi
                }
                
-               LOG_FILE=\"/tmp/browserai_deploy.log\"
-               trap '\''send_tg \"❌ <b>BrowserAI</b>: Ошибка деплоя! (коммит <code>${{ github.sha }}</code>)
-
-Логи (последние 15 строк):
-<pre>\$(tail -n 15 \$LOG_FILE | sed \"s/&/\\&amp;/g; s/</\\&lt;/g; s/>/\\&gt;/g\")</pre>\"'\'' ERR
-               
+               trap '\''send_tg \"❌ <b>BrowserAI</b>: Ошибка деплоя! (коммит <code>${{ github.sha }}</code>)\"'\'' ERR
                send_tg \"🚀 <b>BrowserAI</b>: Начат деплой (коммит <code>${{ github.sha }}</code>)...\"
                
-               echo \"── starting deploy log ──\" > \"\$LOG_FILE\"
-               {
-                 echo \"── git pull ──\"
-                 git fetch --quiet origin main
-                 git reset --hard origin/main
-                 echo \"── docker compose build ──\"
-                 docker compose build
-                 echo \"── docker compose up -d ──\"
-                 docker compose up -d
-                 echo \"── prune dangling images ──\"
-                 docker image prune -f
-                 echo \"── health ──\"
-                 sleep 5
-                 curl -fsS http://localhost/api/health || curl -fsS http://localhost:8080/api/health
-               } >> \"\$LOG_FILE\" 2>&1
+               echo \"── git pull ──\"
+               git fetch --quiet origin main
+               git reset --hard origin/main
+               echo \"── docker compose build ──\"
+               docker compose build
+               echo \"── docker compose up -d ──\"
+               docker compose up -d
+               echo \"── prune dangling images ──\"
+               docker image prune -f
+               echo \"── health ──\"
+               sleep 5
+               curl -fsS http://localhost/api/health || curl -fsS http://localhost:8080/api/health
                
                send_tg \"✅ <b>BrowserAI</b>: Деплой успешно завершен! (коммит <code>${{ github.sha }}</code>)\"
                '"
