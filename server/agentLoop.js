@@ -424,11 +424,9 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   sse(res, 'agent_context', agentContext); sse(res, 'agent_state', agentState)
   if (res.flushHeaders) res.flushHeaders()
 
-  // v2.22: Automatic Memory Integration — for high-complexity tasks preload
-  // the user's saved facts and relevant knowledge-base passages BEFORE the
-  // first LLM call (step 0), so the model starts with full context instead
-  // of having to discover it through extra tool round-trips.
-  if (userId && agentContext?.task?.complexity === 'high' && !aborted) {
+  // v2.22: Automatic Memory Integration — pre-load saved facts and 
+  // relevant knowledge-base passages before the first LLM call.
+  if (userId && ['medium', 'high'].includes(agentContext?.task?.complexity) && !aborted) {
     const lastUserText = String([...history].reverse().find((m) => m.role === 'user')?.content || '').slice(0, 500)
     const memCalls = [
       { tool: 'recall_facts', args: {} },

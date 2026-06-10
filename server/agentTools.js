@@ -30,6 +30,7 @@ import { browserOpen, browserScreenshot, browserClick, browserType, browserClose
 import { upsertFact, forgetFact, listFacts } from './userMemory.js'
 import { addDocument, deleteDocument, listDocuments, searchKnowledge } from './knowledgeBase.js'
 import { buildRepoMap } from './repoMap.js'
+import { USE_SUBAGENTS_TOOL } from './subAgents.js'
 
 // ── Utility ─────────────────────────────────────────────────────────────────
 function stripAnsi(str) {
@@ -1694,25 +1695,8 @@ Projects found: ${JSON.stringify(projects.slice(0,5))}`
       } catch (e) { return err(e.message) }
     },
   },
+  use_subagents: USE_SUBAGENTS_TOOL,
 }
-
-// Register use_subagents lazily on first read of TOOLS — avoids the
-// circular dep with subAgents.js (which imports invokeTool from this
-// file). Done by patching the TOOLS object after a microtask so that
-// our own module finishes loading first.
-//
-// IMPORTANT: do NOT use top-level await here. It deadlocks Node ESM
-// because subAgents.js -> agentTools.js (this file) -> top-level await
-// on subAgents.js again. Production observed:
-//   "Warning: Detected unsettled top-level await at agentTools.js:1083"
-// and the container never reached app.listen().
-import('./subAgents.js')
-  .then(({ USE_SUBAGENTS_TOOL }) => {
-    if (USE_SUBAGENTS_TOOL && !TOOLS.use_subagents) {
-      TOOLS.use_subagents = USE_SUBAGENTS_TOOL
-    }
-  })
-  .catch((e) => console.warn('[agentTools] use_subagents registration failed:', e?.message || e))
 
 // ── Computer Use tools (Claude-style; opt-in) ─────────────────────────────
 //
