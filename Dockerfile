@@ -5,7 +5,7 @@ WORKDIR /app
 
 # Install all deps (incl. devDependencies for vite build)
 COPY package.json package-lock.json* ./
-RUN npm ci
+RUN npm ci --include=dev
 
 # Copy sources and build the Vite frontend into /app/dist
 COPY . .
