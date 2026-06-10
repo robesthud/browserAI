@@ -136,45 +136,56 @@ function SecretField({ label, hint, value, onChange }) {
 function KeyRow({ k, active, onSelect, onEdit, onDelete }) {
   return (
     <div
-      className={`flex items-center gap-2 rounded-lg border px-3 py-2 transition-all duration-200
-        ${active ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-white/10 hover:bg-graphite-750/60'}`}
+      className={`flex items-center gap-2 rounded-xl border p-3 transition-all duration-300
+        ${active 
+          ? 'border-emerald-400/40 bg-emerald-500/10 shadow-[0_0_15px_-5px_rgba(52,211,153,0.3)]' 
+          : 'border-white/10 bg-graphite-900/40 hover:border-white/20 hover:bg-graphite-750'}`}
     >
       <button
         onClick={onSelect}
-        className="flex min-w-0 flex-1 items-center gap-2 text-left group"
+        className="flex min-w-0 flex-1 items-center gap-3 text-left group"
         title={active ? 'Активный ключ' : 'Сделать активным'}
       >
-        <span
-          className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border transition-colors
-            ${active ? 'border-emerald-400 bg-emerald-400' : 'border-cream-faint group-hover:border-cream-soft'}`}
+        <div
+          className={`grid h-5 w-5 shrink-0 place-items-center rounded-full border-2 transition-all duration-300
+            ${active ? 'border-emerald-400 bg-emerald-400 scale-110' : 'border-cream-faint group-hover:border-cream-soft'}`}
         >
-          {active && <span className="h-1.5 w-1.5 rounded-full bg-graphite-900" />}
-        </span>
-        <span className="min-w-0">
-          <span className={`block truncate text-[13px] transition-colors ${active ? 'text-emerald-300 font-medium' : 'text-cream'}`}>
+          {active && (
+            <div className="h-2 w-2 rounded-full bg-graphite-950 shadow-inner" />
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <span className={`block truncate text-[14px] transition-colors ${active ? 'text-emerald-300 font-bold' : 'text-cream'}`}>
             {k.name || 'Без имени'}
           </span>
-          <span className="block truncate text-[11px] text-cream-faint">
-            {getSelectedModel(k) || 'модель не выбрана'}
-            {k.availableModels?.length ? ` · моделей: ${k.availableModels.length}` : ''}
-            {' · '}
-            {k.apiKey ? '••••' + k.apiKey.slice(-4) : 'нет ключа'}
-          </span>
-        </span>
+          <div className="mt-0.5 flex items-center gap-2 overflow-hidden">
+            <span className="truncate text-[11px] text-cream-faint font-mono">
+              {getSelectedModel(k) || 'модель не выбрана'}
+            </span>
+            {k.apiKey && (
+              <span className="shrink-0 rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-cream-faint">
+                {k.apiKey.slice(0, 4)}...{k.apiKey.slice(-4)}
+              </span>
+            )}
+          </div>
+        </div>
       </button>
-      <button
-        onClick={onEdit}
-        className="shrink-0 rounded-md px-2 py-1 text-[11px] text-cream-dim transition-colors hover:bg-graphite-700 hover:text-cream"
-      >
-        Изменить
-      </button>
-      <button
-        onClick={onDelete}
-        className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-cream-faint transition-colors hover:bg-red-900/30 hover:text-red-300"
-        title="Удалить ключ"
-      >
-        <IconTrash />
-      </button>
+      
+      <div className="flex shrink-0 items-center gap-1 border-l border-white/5 pl-2 ml-1">
+        <button
+          onClick={onEdit}
+          className="rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-cream-dim transition-all hover:bg-white/10 hover:text-cream"
+        >
+          Изменить
+        </button>
+        <button
+          onClick={onDelete}
+          className="grid h-8 w-8 place-items-center rounded-lg text-cream-faint transition-all hover:bg-red-500/20 hover:text-red-400"
+          title="Удалить ключ"
+        >
+          <IconTrash />
+        </button>
+      </div>
     </div>
   )
 }
@@ -789,7 +800,7 @@ export default function SettingsModal({
           </button>
         </div>
 
-        <div className="thin-scroll max-h-[72vh] space-y-5 overflow-y-auto px-5 py-4">
+        <div className="thin-scroll max-h-[78vh] space-y-6 overflow-y-auto px-5 py-4">
           {/* ---- Хранилище заблокировано: экран разблокировки ---- */}
           {vault.enabled && vault.locked ? (
             <UnlockScreen onUnlock={onVaultUnlock} />

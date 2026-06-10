@@ -31,9 +31,9 @@ function sameModels(a = [], b = []) {
 
 export function useSettings() {
   const [settings, setSettings] = useState(() => loadSettings())
-  const [online, setOnline] = useState(false)
+  const [online, setOnline] = useState(true) // #41 FIX: Default to true to prevent "local mode" flickering
   const [vault, setVault] = useState({ enabled: false, locked: false })
-  const onlineRef = useRef(false)
+  const onlineRef = useRef(true)
   const autoRefreshRef = useRef('')
   // cloudAuth=true означает что пользователь залогинен через аккаунт
   const cloudAuth = typeof localStorage !== 'undefined' && localStorage.getItem('browserai.auth.enabled') === '1'
