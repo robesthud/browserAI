@@ -232,14 +232,11 @@ async function streamFinalAnswer(res, fullText) {
   if (!text) { sse(res, 'assistant', { text: '' }); return }
   
   // #37 FIX: Clean up thinking leakage in final answer.
-  // Sometimes the model includes the "Transition to summary" prose in the final text block.
+  // Generic fix for any first word: we remove common English meta-preambles
+  // but stop exactly before the first character of real content (Russian letters,
+  // digits, quotes, markdown markers, or emojis) using a non-consuming lookahead.
   const cleaned = text
-    .replace(/^(?:to respond with|according to|the user just said|thus output|i should state)[\s\S]*?(?:"Привет|"Привет!|Привет|Привет!)/i, (match) => {
-       // Keep the greeting itself
-       if (match.toLowerCase().includes('привет!')) return 'Привет!'
-       if (match.toLowerCase().includes('привет')) return 'Привет'
-       return ''
-    })
+    .replace(/^(?:to respond with|according to|the user just said|thus output|i should state|i will now|in summary)[\s\S]*?(?=[\n\p{Script=Cyrillic}"'«#\-\d\*✅❌⚠️]|$)/ui, '')
     .trim()
 
   const parts = cleaned.match(/.{1,32}/g) || [cleaned]
