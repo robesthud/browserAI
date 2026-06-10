@@ -291,15 +291,10 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                   }
                   
 
-                  // Live agent_state streaming
-                  if (m.agentState) {
-                    items.push(<AgentRuntimePanel key={`runtime-${m.id}`} context={m.agentContext} state={m.agentState} aiWorking={aiWorking} isDev={isDev} />)
-                  }
-
                   // Collapsible execution details
                   const showDetailed = isDev || showTechnical
                   
-                  if (!showDetailed && ((m.toolCalls?.length > 0 && m.toolCalls.some(tc => tc.name !== 'plan_set' && tc.name !== 'plan_check')) || m.thoughts?.length > 0)) {
+                  if (!showDetailed && (m.agentState || (m.toolCalls?.length > 0 && m.toolCalls.some(tc => tc.name !== 'plan_set' && tc.name !== 'plan_check')) || m.thoughts?.length > 0)) {
                     items.push(
                       <button 
                         key="show-more"
@@ -312,6 +307,11 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                   }
 
                   if (showDetailed) {
+                    // Live agent_state streaming
+                    if (m.agentState) {
+                      items.push(<AgentRuntimePanel key={`runtime-${m.id}`} context={m.agentContext} state={m.agentState} aiWorking={aiWorking} isDev={isDev} />)
+                    }
+
                     // Legacy fallback for old chats without saved agentState
                     if (!m.agentState) {
                       let plan = null

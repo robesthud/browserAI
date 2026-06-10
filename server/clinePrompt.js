@@ -333,6 +333,9 @@ RULES
       1. One-sentence status: "Project [Name] successfully built in /workspace".
       2. A bullet list of files created.
       3. Command to start the project.
+
+   CRITICAL: DO NOT explain your reasoning in the final answer. DO NOT say "According to instructions" or "The user said". DO NOT narrate your transition to the final summary. Just provide the final 3-point result directly. Any internal logic must stay inside <thinking> tags.
+
    Never end the final reply with a question or offer of further conversation.`
 
 // ── 9. SYSTEM_INFORMATION ───────────────────────────────────────────────────
