@@ -228,90 +228,97 @@ export default function Composer({
     }
   }
 
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
   const submit = async () => {
-    if (isStreaming) return
+    if (isStreaming || isSubmitting) return
     let t = text.trim()
     if (!t && attachments.length === 0) return
 
-    // ── Slash-command interception ──
-    // If the first non-whitespace token is /<cmd>, route to runSlashCommand
-    // which may either consume the input entirely or rewrite it.
-    if (isDev && t.startsWith('/')) {
-      try {
-        const slashRes = await runSlashCommand(t, {
-          newChat: onSlashClear,
-          openSettings: onSlashSettings,
-          openSearch: onSlashSearch,
-          openCheckpoints: onSlashCheckpoints,
-          onExportChat: onSlashExport,
-          onToggleAgent: onSlashToggleAgent,
-          onSetModel: onSlashSetModel,
-          fetchCost: onSlashFetchCost,
-          postFlash: onFlash,
-        })
-        if (slashRes.handled) {
-          if (slashRes.send) {
-            t = slashRes.send
-          } else {
-            // Pure side-effect command — clear input and bail.
-            setText('')
-            setAttachments([])
-            requestAnimationFrame(() => {
-              if (taRef.current) taRef.current.style.height = 'auto'
-            })
-            return
+    setIsSubmitting(true)
+    try {
+      // ── Slash-command interception ──
+      // If the first non-whitespace token is /<cmd>, route to runSlashCommand
+      // which may either consume the input entirely or rewrite it.
+      if (isDev && t.startsWith('/')) {
+        try {
+          const slashRes = await runSlashCommand(t, {
+            newChat: onSlashClear,
+            openSettings: onSlashSettings,
+            openSearch: onSlashSearch,
+            openCheckpoints: onSlashCheckpoints,
+            onExportChat: onSlashExport,
+            onToggleAgent: onSlashToggleAgent,
+            onSetModel: onSlashSetModel,
+            fetchCost: onSlashFetchCost,
+            postFlash: onFlash,
+          })
+          if (slashRes.handled) {
+            if (slashRes.send) {
+              t = slashRes.send
+            } else {
+              // Pure side-effect command — clear input and bail.
+              setText('')
+              setAttachments([])
+              requestAnimationFrame(() => {
+                if (taRef.current) taRef.current.style.height = 'auto'
+              })
+              return
+            }
           }
+        } catch (e) {
+          onFlash?.({ kind: 'err', text: 'Ошибка slash-команды: ' + (e?.message || String(e)) })
         }
-      } catch (e) {
-        onFlash?.({ kind: 'err', text: 'Ошибка slash-команды: ' + (e?.message || String(e)) })
       }
-    }
 
-    // ── File mentions: @path turns into an inline attachment ──
-    const { mentioned } = parseMentions(t)
-    let finalAttachments = attachments
-    if (mentioned.length) {
-      try {
-        const loaded = []
-        for (const p of mentioned) {
-          if (finalAttachments.some((a) => a.path === p)) continue
-          const url = chatId
-            ? `/api/workspace/file?path=${encodeURIComponent(p)}&chatId=${encodeURIComponent(chatId)}`
-            : `/api/workspace/file?path=${encodeURIComponent(p)}`
-          try {
-            const r = await fetch(url, { credentials: 'include' })
-            if (!r.ok) continue
-            const j = await r.json()
-            const content = j?.text || j?.content || ''
-            if (!content) continue
-            loaded.push({
-              id: 'mention-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
-              name: p.split('/').pop(),
-              path: p,
-              type: j?.mime || 'text/plain',
-              size: content.length,
-              text: content.length > 32_000 ? content.slice(0, 32_000) : content,
-              truncated: content.length > 32_000,
-              dataUrl: null,
-            })
-          } catch { /* ignore individual file failures */ }
-        }
-        if (loaded.length) finalAttachments = [...finalAttachments, ...loaded]
-      } catch { /* mentions are best-effort */ }
-    }
+      // ── File mentions: @path turns into an inline attachment ──
+      const { mentioned } = parseMentions(t)
+      let finalAttachments = attachments
+      if (mentioned.length) {
+        try {
+          const loaded = []
+          for (const p of mentioned) {
+            if (finalAttachments.some((a) => a.path === p)) continue
+            const url = chatId
+              ? `/api/workspace/file?path=${encodeURIComponent(p)}&chatId=${encodeURIComponent(chatId)}`
+              : `/api/workspace/file?path=${encodeURIComponent(p)}`
+            try {
+              const r = await fetch(url, { credentials: 'include' })
+              if (!r.ok) continue
+              const j = await r.json()
+              const content = j?.text || j?.content || ''
+              if (!content) continue
+              loaded.push({
+                id: 'mention-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+                name: p.split('/').pop(),
+                path: p,
+                type: j?.mime || 'text/plain',
+                size: content.length,
+                text: content.length > 32_000 ? content.slice(0, 32_000) : content,
+                truncated: content.length > 32_000,
+                dataUrl: null,
+              })
+            } catch { /* ignore individual file failures */ }
+          }
+          if (loaded.length) finalAttachments = [...finalAttachments, ...loaded]
+        } catch { /* mentions are best-effort */ }
+      }
 
-    if (isRecording) {
-      recognitionRef.current?.stop()
-      setIsRecording(false)
-    }
-    baseTextRef.current = ''
+      if (isRecording) {
+        recognitionRef.current?.stop()
+        setIsRecording(false)
+      }
+      baseTextRef.current = ''
 
-    onSend(t, finalAttachments)
-    setText('')
-    setAttachments([])
-    requestAnimationFrame(() => {
-      if (taRef.current) taRef.current.style.height = 'auto'
-    })
+      await onSend(t, finalAttachments)
+      setText('')
+      setAttachments([])
+      requestAnimationFrame(() => {
+        if (taRef.current) taRef.current.style.height = 'auto'
+      })
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
   const onKeyDown = (e) => {

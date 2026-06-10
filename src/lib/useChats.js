@@ -336,14 +336,14 @@ export function useChats(settings) {
 
       // добавляем сообщения и, если это первое — задаём заголовок.
       // историю для API строим из самого свежего состояния.
-      let history = []
+      let capturedHistory = []
       let memorySummary = ''
       let summarizedUntil = 0
       setChats((prev) =>
         prev.map((c) => {
           if (c.id !== chatId) return c
           const isFirst = c.messages.length === 0
-          history = [...c.messages, userMsg]
+          capturedHistory = [...c.messages, userMsg]
           memorySummary = c.summary || ''
           summarizedUntil = c.summarizedUntil || 0
           return {
@@ -359,9 +359,7 @@ export function useChats(settings) {
 
       // React may defer the state updater in concurrent/mobile WebView cases.
       // Do not send an empty provider history: at minimum include the current user turn.
-      if (history.length === 0) {
-        history = [userMsg]
-      }
+      const history = capturedHistory.length > 0 ? capturedHistory : [userMsg]
 
       const controller = new AbortController()
       abortRef.current = controller
@@ -498,13 +496,13 @@ export function useChats(settings) {
         agent: true,
       }
 
-      let history = []
+      let capturedHistory = []
       let chatSummary = ''
       setChats((prev) =>
         prev.map((c) => {
           if (c.id !== chatId) return c
           const isFirst = c.messages.length === 0
-          history = [...c.messages, userMsg]
+          capturedHistory = [...c.messages, userMsg]
           chatSummary = c.summary || ''
           return {
             ...c,
@@ -515,9 +513,7 @@ export function useChats(settings) {
         }),
       )
 
-      if (history.length === 0) {
-        history = [userMsg]
-      }
+      const history = capturedHistory.length > 0 ? capturedHistory : [userMsg]
 
       const controller = new AbortController()
       abortRef.current = controller

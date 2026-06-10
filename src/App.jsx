@@ -244,7 +244,9 @@ function BrowserApp({ user, reloadAuth }) {
   // referenced in App but never declared (the inline expression existed
   // only in the Topbar prop), which produced a runtime ReferenceError
   // ('aiWorking is not defined') the moment a chat had any messages.
-  const aiWorking = isStreaming || workspaceAiBusy || jobBusy
+  // Unified "AI is busy" flag — true while streaming a chat answer OR
+  // while a workspace AI operation is running.
+  const aiWorking = useMemo(() => isStreaming || workspaceAiBusy || jobBusy, [isStreaming, workspaceAiBusy, jobBusy])
 
   const closeSidebarOnMobile = () => {
     if (typeof window !== 'undefined' && window.innerWidth < 768) {
@@ -293,24 +295,6 @@ function BrowserApp({ user, reloadAuth }) {
     }
   }
 
-  const handleRegenerate = (m) => {
-    if (aiWorking || !activeChat) return
-    // Находим индекс этого сообщения
-    const idx = messages.findIndex(x => x.id === m.id)
-    if (idx === -1) return
-    // Удаляем это сообщение И ВСЕ после него
-    const updatedMessages = messages.slice(0, idx)
-    updateChat(activeChat.id, { messages: updatedMessages })
-    
-    // Запускаем перегенерацию на основе предыдущих сообщений (нужно отправить заново)
-    // Последнее сообщение юзера:
-    const lastUserMsg = updatedMessages.reverse().find(x => x.role === 'user')
-    if (lastUserMsg) {
-      // Инициируем запрос повторно
-      sendMessage(lastUserMsg.content, lastUserMsg.attachments, selectedModel)
-    }
-  }
-
   const configured = isConfigured(settings)
   const activeKey = useMemo(() => getActiveKey(settings), [settings])
   const availableModels = useMemo(() => {
@@ -318,30 +302,8 @@ function BrowserApp({ user, reloadAuth }) {
     return all.length ? all : getAvailableModels(activeKey)
   }, [settings, activeKey])
   const selectedModel = getSelectedModel(activeKey)
-  const messages = activeChat?.messages ?? []
-  const hasMessages = messages.length > 0
 
-  // При смене чата — сбрасываем подсказку
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setAutoHint(null)
-  }, [activeId])
-
-  // v2.17: Retry failed tool (Arena parity)
-  useEffect(() => {
-    const handler = (e) => {
-      const { name, args } = e.detail || {}
-      if (!name || !activeChat) return
-
-      // Re-execute the tool by sending a targeted agent message
-      const retryText = `[RETRY_TOOL] Повтори tool "${name}" с аргументами: ${JSON.stringify(args)}`
-      sendAgentMessage(retryText).catch(() => {})
-    }
-    window.addEventListener('agent:retry-tool', handler)
-    return () => window.removeEventListener('agent:retry-tool', handler)
-  }, [activeChat, sendAgentMessage])
-
-  const providerOverrideForModel = (model) => {
+  const providerOverrideForModel = useCallback((model) => {
     const key = findKeyForModel(settings, model)
     if (!key) return null
     return {
@@ -357,21 +319,17 @@ function BrowserApp({ user, reloadAuth }) {
       stream: settings.stream,
       useWebAI: settings.useWebAI,
     }
-  }
+  }, [settings])
 
-  const shouldUseAgentForText = () => {
+  const shouldUseAgentForText = useCallback((text = '', routedTaskType = 'chat') => {
     if (!effectiveAgentMode) return false
     // #32 FIX: Project Engine Mode. 
     // If agent mode is enabled, ALWAYS use the agent loop. 
-    // We want the AI to have access to tools for EVERY request, 
-    // transforming BrowserAI into a pure autonomous engineering terminal.
     return true
-  }
+  }, [effectiveAgentMode])
 
-  // Обёртка sendMessage с авторежимом
-  // БАГ 3 ИСПРАВЛЕН: передаём выбранную модель напрямую в sendMessage (overrideModel),
-  // не ждём пока React обновит settings — это устраняет гонку данных
-  const handleSendMessage = async (text, attachments = []) => {
+  const handleSendMessage = useCallback(async (text, attachments = []) => {
+    if (aiWorking) return
     let overrideModel = null
     let routedTaskType = getTaskType(text || '')
 
@@ -380,7 +338,7 @@ function BrowserApp({ user, reloadAuth }) {
       routedTaskType = result.taskType || routedTaskType
       if (result.changed) {
         overrideModel = providerOverrideForModel(result.model) || result.model
-        // Обновляем настройки в фоне (без await — не блокируем отправку)
+        // Обновляем настройки в фоне
         setActiveModel(result.model).catch(() => {})
         setAutoHint({
           reason: result.reason,
@@ -393,14 +351,25 @@ function BrowserApp({ user, reloadAuth }) {
       }
     }
 
-    // Agent mode is for tool/code/workspace tasks. In Auto mode, simple chat,
-    // greetings and image/media prompts go through the normal chat route.
     if (shouldUseAgentForText(text, routedTaskType)) {
       return sendAgentMessage(text, attachments, overrideModel)
     }
-
     return sendMessage(text, attachments, overrideModel)
-  }
+  }, [aiWorking, autoMode, availableModels, selectedModel, providerOverrideForModel, shouldUseAgentForText, sendAgentMessage, sendMessage, setActiveModel])
+
+  const handleRegenerate = useCallback((m) => {
+    if (aiWorking || !activeChat) return
+    const messages = activeChat.messages || []
+    const idx = messages.findIndex(x => x.id === m.id)
+    if (idx === -1) return
+    const updatedMessages = messages.slice(0, idx)
+    updateChat(activeChat.id, { messages: updatedMessages })
+    
+    const lastUserMsg = updatedMessages.reverse().find(x => x.role === 'user')
+    if (lastUserMsg) {
+      handleSendMessage(lastUserMsg.content, lastUserMsg.attachments)
+    }
+  }, [aiWorking, activeChat, updateChat, handleSendMessage])
 
   const handleToggleAuto = () => {
     setAutoMode((v) => !v)
