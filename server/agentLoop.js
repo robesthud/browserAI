@@ -395,6 +395,30 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   sse(res, 'agent_context', agentContext); sse(res, 'agent_state', agentState)
   if (res.flushHeaders) res.flushHeaders()
 
+  // v2.22: Automatic Memory Integration — for high-complexity tasks preload
+  // the user's saved facts and relevant knowledge-base passages BEFORE the
+  // first LLM call (step 0), so the model starts with full context instead
+  // of having to discover it through extra tool round-trips.
+  if (userId && agentContext?.task?.complexity === 'high' && !aborted) {
+    const lastUserText = String([...history].reverse().find((m) => m.role === 'user')?.content || '').slice(0, 500)
+    const memCalls = [
+      { tool: 'recall_facts', args: {} },
+      { tool: 'kb_search', args: { query: lastUserText } },
+    ]
+    for (let i = 0; i < memCalls.length; i++) {
+      const mc = memCalls[i]
+      try {
+        sse(res, 'tool_start', { step: 0, sub: i, name: mc.tool, args: mc.args })
+        const r = await invokeTool(mc.tool, mc.args, { signal: abortCtl.signal, userId, chatId, extraTools })
+        sse(res, 'tool_result', { step: 0, sub: i, name: mc.tool, ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult(mc.tool, r, { step: 0, sub: i }) })
+        if (r.ok && r.result) {
+          const text = typeof r.result === 'string' ? r.result : JSON.stringify(r.result)
+          if (text && text !== '{}' && text !== '[]') convo.push({ role: 'user', content: `<arena-system-message>\nAuto-memory (${mc.tool}):\n${text.slice(0, 4000)}\n</arena-system-message>` })
+        }
+      } catch {} // memory preload is best-effort — never blocks the run
+    }
+  }
+
   const keepAliveInterval = setInterval(() => sseKeepAlive(res), 15_000)
   res.on('close', () => clearInterval(keepAliveInterval))
 
@@ -499,6 +523,16 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
         sseDone(res, { steps: step, reason: 'final' }, tokens); res.end(); return
       }
 
+      // v2.19: the text accompanying a native tool call is the model's
+      // reasoning ("I need to read a file.") — emit it as a `thought` so the
+      // UI shows why the agent is calling the tool. Native tool-calls don't
+      // pass through the XML parser (which already emits `thought` for
+      // XML-style calls), so without this the text was silently lost.
+      const cameFromNativeToolCalls = useNativeTools && Array.isArray(reply.toolCalls) && reply.toolCalls.length > 0
+      if (reply.text && String(reply.text).trim() && cameFromNativeToolCalls) {
+        sse(res, 'thought', { step, text: String(reply.text).trim() })
+      }
+
       if (calls.some(c => c.nativeId)) convo.push({ role: 'assistant', content: reply.text || '', tool_calls: calls.filter(c => c.nativeId).map(c => c.nativeRaw) })
       else convo.push({ role: 'assistant', content: reply.text || '' })
 
@@ -513,7 +547,15 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
         const validation = validateToolCall(call.tool, call.args || {}, { ...TOOLS, ...extraTools }[call.tool])
         if (!validation.ok) {
-          if (!pushedBackThisTurn && !aborted) { pushedBackThisTurn = true; return { call, r: makeToolErrorResult(`[schema_error] ${validation.error}`), pushedBack: true } }
+          if (!pushedBackThisTurn && !aborted) {
+            pushedBackThisTurn = true
+            // v2.24: surface schema errors as a visible thought + tool_result so
+            // the UI (and tests) see the self-healing push-back explicitly.
+            sse(res, 'thought', { step, sub: idx, text: `ОШИБКА СХЕМЫ: ${call.tool} — ${validation.error}. Исправляю вызов инструмента.` })
+            const rErr = makeToolErrorResult(`[schema_error] ${validation.error}`)
+            sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
+            return { call, r: rErr, pushedBack: true }
+          }
           return { call, r: makeToolErrorResult(validation.error) }
         }
         call.args = validation.args
@@ -533,7 +575,15 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
         } else {
           r = await invokeTool(call.tool, { ...call.args, _provider: provider }, { signal: abortCtl.signal, onStdout: (c) => sse(res, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stdout', chunk: String(c).slice(0, 2000) }), onStderr: (c) => sse(res, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stderr', chunk: String(c).slice(0, 2000) }), userId, chatId, extraTools })
         }
-        if (!r.ok && !pushedBackThisTurn && !aborted && categoryOf(call.tool) !== 'ask') { pushedBackThisTurn = true; return { call, r: makeToolErrorResult(`[exec_error] ${r.error}`), pushedBack: true } }
+        if (!r.ok && !pushedBackThisTurn && !aborted && categoryOf(call.tool) !== 'ask') {
+          pushedBackThisTurn = true
+          // v2.24: surface execution errors as a visible thought + tool_result
+          // (self-healing): the agent acknowledges the failure and retries.
+          sse(res, 'thought', { step, sub: idx, text: `Ошибка выполнения: ${call.tool} — ${r.error}. Пробую восстановиться.` })
+          const rErr = makeToolErrorResult(`[exec_error] ${r.error}`)
+          sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
+          return { call, r: rErr, pushedBack: true }
+        }
         updateAgentStateFromTool(agentState, call.tool, r, call.args); sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult(call.tool, r, { step, sub: idx }) }); sse(res, 'agent_state', agentState)
         return { call, r }
       }))
