@@ -61,6 +61,9 @@ const SITE_PROFILES = {
     origin: '',
     extra: {},
     bodyDefaults: { stream: true, temperature: 0.7 },
+    // ZhipuAI rejects temperature outside [0,1] with HTTP 400 code 1210
+    // («temperature参数非法») — the OpenAI-style 0..2 range is NOT accepted.
+    temperatureMax: 1,
     isBearerSession: false,
     skipModelsProbe: false,
     modelCandidates: ['glm-4-flash', 'glm-4', 'glm-4-plus', 'glm-4-air', 'glm-4-long', 'glm-4-0520'],
@@ -290,7 +293,16 @@ export function sanitizeExtraHeaders(raw = {}) {
  */
 export function applyBodyDefaults(body = {}, baseUrl = '') {
   const profile = getSiteProfile(baseUrl)
-  return { ...profile.bodyDefaults, ...body }
+  const merged = { ...profile.bodyDefaults, ...body }
+  // Per-provider temperature clamp (e.g. ZhipuAI only accepts [0,1] and
+  // responds 400/1210 to the common OpenAI default of up to 2.0).
+  if (profile.temperatureMax != null && typeof merged.temperature === 'number' && merged.temperature > profile.temperatureMax) {
+    merged.temperature = profile.temperatureMax
+  }
+  if (typeof merged.temperature === 'number' && merged.temperature < 0) {
+    merged.temperature = 0
+  }
+  return merged
 }
 
 /**
