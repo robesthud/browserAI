@@ -213,8 +213,17 @@ function messagesToPrompt(messages = []) {
       : Array.isArray(m?.content)
         ? m.content.map((p) => typeof p === 'string' ? p : (p?.text || '')).filter(Boolean).join('\n')
         : ''
-    if (!content.trim()) continue
-    lines.push(`${role}:\n${content.trim()}`)
+    
+    if (!content.trim() && !m?.reasoning_content && !m?.reasoning) continue
+    
+    // #24 FIX: Include previous reasoning content in the prompt for DeepSeek.
+    // This maintains the chain of thought across turns.
+    const reasoning = m?.reasoning_content || m?.reasoning || ''
+    const block = reasoning 
+      ? `<thinking>\n${reasoning}\n</thinking>\n\n${content.trim()}`
+      : content.trim()
+      
+    lines.push(`${role}:\n${block}`)
   }
   return lines.join('\n\n---\n\n').trim() || 'Привет'
 }

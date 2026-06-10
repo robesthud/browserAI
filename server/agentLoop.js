@@ -912,6 +912,7 @@ async function runAgentInner({
   }
   sse(res, 'agent_context', agentContext)
   sse(res, 'agent_state', agentState)
+  if (res.flushHeaders) res.flushHeaders()
 
   const keepAliveInterval = setInterval(() => sseKeepAlive(res), 15_000)
   res.on('close', () => clearInterval(keepAliveInterval))
@@ -929,75 +930,7 @@ async function runAgentInner({
   let pushedBackThisTurn = false
 
   // ── v2.22 Automatic memory integration ─────────────────────────
-  // For medium/high complexity tasks, the agent implicitly runs
-  // recall_facts (and kb_search if high) before even talking to the
-  // provider. This gives it complete context natively, matching Arena.
-  if (['medium', 'high'].includes(agentContext?.task?.complexity) && userId) {
-    const autoQuery = agentState.goal.slice(0, 300) || ''
-    const autoTools = ['recall_facts']
-    if (agentContext.task.complexity === 'high' && autoQuery) {
-      autoTools.push('kb_search')
-    }
-    
-    // Generate valid tool_call_ids for native providers
-    const autoIds = autoTools.map((_, i) => `call_automem${Math.random().toString(36).slice(2)}${i}`)
-
-    // 1. Simulate the assistant asking for these tools
-    if (useNativeTools) {
-      convo.push({
-        role: 'assistant',
-        content: 'Проверяю базу знаний и память перед началом...',
-        tool_calls: autoTools.map((t, i) => ({
-          id: autoIds[i],
-          type: 'function',
-          function: { name: t, arguments: JSON.stringify(t === 'kb_search' ? { query: autoQuery, top_k: 3 } : {}) }
-        }))
-      })
-    } else {
-      let xml = 'Проверяю базу знаний и память перед началом...\n'
-      for (const t of autoTools) {
-        const argsXml = t === 'kb_search' ? `<query>${autoQuery}</query><top_k>3</top_k>` : ''
-        xml += `<xai:function_call>\n  <xai:tool_name>${t}</xai:tool_name>\n${argsXml ? `  <xai:parameters>\n    ${argsXml}\n  </xai:parameters>\n` : ''}</xai:function_call>\n`
-      }
-      convo.push({ role: 'assistant', content: xml })
-    }
-
-    // 2. Execute them and feed the results into context
-    for (let idx = 0; idx < autoTools.length; idx++) {
-      const toolName = autoTools[idx]
-      const args = toolName === 'kb_search' ? { query: autoQuery, top_k: 3 } : {}
-      
-      sse(res, 'tool_start', { step: 0, sub: idx, name: toolName, args })
-      
-      const r = await invokeTool(toolName, { ...args, _userId: userId }, {
-        signal: abortCtl.signal,
-        userId,
-        chatId,
-        extraTools,
-      })
-      
-      const structuredResult = normalizeToolResult(toolName, r, { step: 0, sub: idx, readBack: true })
-      updateAgentStateFromTool(agentState, toolName, r, args)
-      
-      sse(res, 'tool_result', {
-        step: 0, sub: idx, name: toolName, ok: Boolean(r.ok),
-        result: r.ok ? r.result : undefined, error: r.ok ? undefined : r.error,
-        structured: structuredResult
-      })
-      
-      recentToolHistory.push({ tool: toolName, ok: Boolean(r.ok), at: Date.now() })
-      
-      const obsRaw = r.ok ? r.result : { error: r.error }
-      const obsStr = clipToolOutput(toolName, typeof obsRaw === 'string' ? obsRaw : JSON.stringify(obsRaw, null, 2))
-      
-      if (useNativeTools) {
-        convo.push({ role: 'tool', tool_call_id: autoIds[idx], name: toolName, content: obsStr })
-      } else {
-        convo.push({ role: 'user', content: `<arena-system-message>\nTool result for ${toolName}:\nok: ${Boolean(r.ok)}\n</arena-system-message>\n${obsStr}` })
-      }
-    }
-    sse(res, 'agent_state', agentState)
-  }
+  let memoryIntegrationDone = false
 
   try {
     while (step < maxSteps) {
@@ -1008,6 +941,38 @@ async function runAgentInner({
         break
       }
       step += 1
+
+      // #25 FIX: Run memory integration INSIDE the loop at the very start of the first step.
+      // This ensures the role sequence (user -> assistant) is correctly maintained and 
+      // results are properly injected into the context without confusing the model.
+      if (!memoryIntegrationDone && ['medium', 'high'].includes(agentContext?.task?.complexity) && userId) {
+        memoryIntegrationDone = true
+        const autoQuery = agentState.goal.slice(0, 300) || ''
+        const autoTools = ['recall_facts']
+        if (agentContext.task.complexity === 'high' && autoQuery) {
+          autoTools.push('kb_search')
+        }
+        
+        for (let idx = 0; idx < autoTools.length; idx++) {
+          const toolName = autoTools[idx]
+          const args = toolName === 'kb_search' ? { query: autoQuery, top_k: 3 } : {}
+          sse(res, 'tool_start', { step: 0, sub: idx, name: toolName, args })
+          const r = await invokeTool(toolName, { ...args, _userId: userId }, { signal: abortCtl.signal, userId, chatId, extraTools })
+          const structuredResult = normalizeToolResult(toolName, r, { step: 0, sub: idx, readBack: true })
+          updateAgentStateFromTool(agentState, toolName, r, args)
+          sse(res, 'tool_result', {
+            step: 0, sub: idx, name: toolName, ok: Boolean(r.ok),
+            result: r.ok ? r.result : undefined, error: r.ok ? undefined : r.error,
+            structured: structuredResult
+          })
+          recentToolHistory.push({ tool: toolName, ok: Boolean(r.ok), at: Date.now() })
+          const obsRaw = r.ok ? r.result : { error: r.error }
+          const obsStr = clipToolOutput(toolName, typeof obsRaw === 'string' ? obsRaw : JSON.stringify(obsRaw, null, 2))
+          convo.push({ role: 'user', content: `<arena-system-message>\nAutomatic memory result (${toolName}):\n${obsStr}\n</arena-system-message>` })
+        }
+        sse(res, 'agent_state', agentState)
+      }
+
       pushedBackThisTurn = false
       // Keep an authoritative task-level memory message in-context.
       // This protects goal/plan/touchedFiles/errors from being lost when

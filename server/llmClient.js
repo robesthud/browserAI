@@ -103,16 +103,44 @@ function normalizeOpenAIMessages(messages = []) {
     if (!m) continue
     const prev = out[out.length - 1]
     
-    // Strict providers like GLM-4 and some Anthropic proxies reject consecutive messages of the same role.
-    // Merge consecutive 'user' or 'assistant' messages if they don't have tool calls.
-    if (prev && prev.role === m.role && m.role === 'user') {
-      prev.content = String(prev.content || '') + '\n\n' + String(m.content || '')
-    } else if (prev && prev.role === m.role && m.role === 'assistant' && !m.tool_calls && !prev.tool_calls) {
-      prev.content = String(prev.content || '') + '\n\n' + String(m.content || '')
-    } else {
-      out.push({ ...m })
+    // #23 FIX: Robust message sequence normalization for all providers.
+    // 1. Convert any non-assistant/user roles (like 'tool' without native support) to 'user' or 'assistant'.
+    // 2. Merge consecutive messages of the same role.
+    // 3. Ensure assistant messages with tool_calls are followed by tool results.
+    
+    let role = m.role
+    if (role === 'system') {
+      if (out.length === 0) out.push({ ...m })
+      else {
+        // Merge extra system into existing system or first user
+        const target = out[0]
+        target.content = String(target.content || '') + '\n\n' + String(m.content || '')
+      }
+      continue
     }
+
+    // Merge logic
+    if (prev && prev.role === role) {
+      if (role === 'user') {
+        prev.content = String(prev.content || '') + '\n\n' + String(m.content || '')
+        continue
+      }
+      if (role === 'assistant' && !m.tool_calls && !prev.tool_calls) {
+        prev.content = String(prev.content || '') + '\n\n' + String(m.content || '')
+        continue
+      }
+    }
+    
+    out.push({ ...m })
   }
+  
+  // Final pass: ensure assistant(tool_calls) is NOT the last message.
+  // Most providers require a 'user' message or tool results after an assistant tool call.
+  if (out.length > 0 && out[out.length - 1].role === 'assistant' && out[out.length - 1].tool_calls) {
+     // This should rarely happen in a correctly formed history, but let's be safe.
+     out.push({ role: 'user', content: 'Continue.' })
+  }
+  
   return out
 }
 

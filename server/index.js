@@ -2657,6 +2657,8 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
   // and must be passed through verbatim so the vision model sees them.
   function hasContent(m) {
     if (!m) return false
+    if (m.role === 'tool') return true // tool results always have content
+    if (m.tool_calls && m.tool_calls.length > 0) return true // assistant calls
     if (typeof m.content === 'string') return m.content.trim().length > 0
     if (Array.isArray(m.content)) {
       return m.content.some((p) =>
@@ -2667,9 +2669,27 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
     }
     return false
   }
+
+  // #22 FIX: Preserve tool calls and tool roles in history. 
+  // Models like Claude and GPT-4 strictly require the correct sequence:
+  // assistant(tool_calls) -> tool(result) -> assistant(reply).
+  // Stripping these or changing roles to 'user' causes 400 errors or hangs.
   const safeHistory = history
     .filter(hasContent)
-    .map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }))
+    .map((m) => {
+      const out = { 
+        role: m.role, 
+        content: m.content 
+      }
+      if (m.role === 'assistant' && m.tool_calls) {
+        out.tool_calls = m.tool_calls
+      }
+      if (m.role === 'tool') {
+        out.tool_call_id = m.tool_call_id || m.id
+        out.name = m.name
+      }
+      return out
+    })
 
   // Inject a real "what was done recently in this workspace" digest so the
   // agent can produce an HONEST summary when the user asks "что ты сделал?"
