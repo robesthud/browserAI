@@ -79,6 +79,10 @@ function warn(...a) { console.warn('[deepseek-refresh]', ...a) }
 
 // ── Telegram ────────────────────────────────────────────────────────────────
 async function notifyTg(text) {
+  // #42 FIX: User requested to disable DeepSeek notifications in Telegram.
+  // We keep only server/deploy info which comes from GitHub Actions.
+  if (process.env.DEEPSEEK_NOTIFICATIONS !== 'on') return
+  
   if (!TG_TOKEN || !TG_CHAT_ID) return
   try {
     await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {

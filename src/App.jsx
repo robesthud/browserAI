@@ -67,136 +67,6 @@ function CloudSync({ settings, chats }) {
 }
 
 function BrowserApp({ user, reloadAuth }) {
-  // ── LLM cost badge: poll daily total every 30 s ─────────────────────
-  const [costInfo, setCostInfo] = useState({ dailyTotal: 0, cap: 0 })
-  useEffect(() => {
-    let alive = true
-    async function refresh() {
-      try {
-        const r = await fetch('/api/cost/today', { credentials: 'include' })
-        if (!r.ok) return
-        const j = await r.json()
-        if (alive) setCostInfo({ dailyTotal: Number(j.dailyTotal || 0), cap: Number(j.cap || 0) })
-      } catch { /* ignore */ }
-    }
-    refresh()
-    const id = setInterval(refresh, 30_000)
-    return () => { alive = false; clearInterval(id) }
-  }, [])
-
-  const [collapsed, setCollapsed] = useState(() =>
-    typeof window !== 'undefined' ? window.innerWidth < 768 : false,
-  )
-  const [workspaceOpen, setWorkspaceOpen] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [workspaceAiBusy, setWorkspaceAiBusy] = useState(false)
-  const [searchOpen, setSearchOpen] = useState(false)
-  const [checkpointsOpen, setCheckpointsOpen] = useState(false)
-  const [flash, setFlash] = useState(null) // { kind: 'ok'|'info'|'err', text: '...' }
-
-  // Auto-dismiss flash after 6s.
-  useEffect(() => {
-    if (!flash) return
-    const id = setTimeout(() => setFlash(null), 6000)
-    return () => clearTimeout(id)
-  }, [flash])
-
-  // Slash-command hook bundle passed to Composer.
-  const composerSlashHooks = {
-    onSlashClear: () => { newChat() },
-    onSlashSettings: () => setSettingsOpen(true),
-    onSlashSearch: () => setSearchOpen(true),
-    onSlashCheckpoints: () => setCheckpointsOpen(true),
-    onSlashExport: () => { if (activeChat) downloadChatMarkdown(activeChat) },
-    onSlashToggleAgent: (forceOn) => {
-      // Persists per-chat — agentMode lives in chat object.
-      if (!activeChat) return
-      const cur = activeChat.agentMode !== false
-      const next = forceOn == null ? !cur : Boolean(forceOn)
-      updateChat(activeChat.id, { agentMode: next })
-      setFlash({ kind: 'info', text: `Agent Mode: ${next ? 'включён' : 'выключен'}` })
-    },
-    onSlashSetModel: (modelId) => {
-      // Returns true on success — Composer surfaces the verdict via flash.
-      const all = availableModels || []
-      const hit = all.find((m) => m.id === modelId || m.name === modelId || (m.id || '').endsWith(modelId))
-      if (!hit) return false
-      setActiveModel?.(hit.id)
-      return true
-    },
-    onSlashFetchCost: async () => {
-      try {
-        const r = await fetch('/api/cost/today', { credentials: 'include' })
-        return r.ok ? r.json() : null
-      } catch { return null }
-    },
-    onFlash: setFlash,
-  }
-
-  // Авторежим выбора модели
-  const [autoMode, setAutoMode] = useState(() => {
-    try {
-      return localStorage.getItem('browserai.autoMode') === '1'
-    } catch {
-      return false
-    }
-  })
-  // Подсказка об авторежиме { reason, taskType, icon } | null
-  const [autoHint, setAutoHint] = useState(null)
-
-  // Сохраняем autoMode в localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem('browserai.autoMode', autoMode ? '1' : '0')
-    } catch {
-      // localStorage may be unavailable
-    }
-  }, [autoMode])
-
-  // Global Ctrl/Cmd+K hotkey → open chat search modal. Ignored when
-  // a text field is focused so users typing 'K' get no surprise modal.
-  useEffect(() => {
-    const onKey = (e) => {
-      const isCmd = e.metaKey || e.ctrlKey
-      if (!isCmd || e.key.toLowerCase() !== 'k') return
-      const tag = (document.activeElement?.tagName || '').toLowerCase()
-      const isEditable = document.activeElement?.isContentEditable
-      if (tag === 'input' || tag === 'textarea' || isEditable) return
-      e.preventDefault()
-      setSearchOpen(true)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
-
-  const devtoolsEnabled = (() => {
-    try { return localStorage.getItem('browserai.devtools') === '1' }
-    catch { return false }
-  })()
-
-  // Agent mode — model is allowed to call tools (workspace / web / bash /
-  // github / download_url). Default ON: users overwhelmingly expect AI to
-  // be able to download files / clone repos / read attachments etc., and
-  // shouldUseAgentForText() routes only the right prompts through tools.
-  const [agentMode, setAgentMode] = useState(() => {
-    try {
-      const saved = localStorage.getItem('browserai.agentMode')
-      if (saved === '1') return true
-      if (saved === '0') return false
-      return true   // default for first-time users
-    } catch {
-      return true
-    }
-  })
-  useEffect(() => {
-    try {
-      localStorage.setItem('browserai.agentMode', agentMode ? '1' : '0')
-    } catch {
-      // localStorage may be unavailable
-    }
-  }, [agentMode])
-  const effectiveAgentMode = devtoolsEnabled ? agentMode : true
-
   const {
     settings,
     online,
@@ -238,17 +108,119 @@ function BrowserApp({ user, reloadAuth }) {
     stop,
   } = useChats(settings)
 
+  // -- Derived state (defined BEFORE hooks that might use them) --
   const messages = activeChat?.messages ?? []
   const hasMessages = messages.length > 0
+  const aiWorking = isStreaming || jobBusy // workspaceAiBusy removed if not defined elsewhere
 
-  // Unified "AI is busy" flag — true while streaming a chat answer OR
-  // while a workspace AI operation is running.
-  const aiWorking = useMemo(() => isStreaming || workspaceAiBusy || jobBusy, [isStreaming, workspaceAiBusy, jobBusy])
+  // ── LLM cost badge: poll daily total every 30 s ─────────────────────
+  const [costInfo, setCostInfo] = useState({ dailyTotal: 0, cap: 0 })
+  useEffect(() => {
+    let alive = true
+    async function refresh() {
+      try {
+        const r = await fetch('/api/cost/today', { credentials: 'include' })
+        if (!r.ok) return
+        const j = await r.json()
+        if (alive) setCostInfo({ dailyTotal: Number(j.dailyTotal || 0), cap: Number(j.cap || 0) })
+      } catch { /* ignore */ }
+    }
+    refresh()
+    const id = setInterval(refresh, 30_000)
+    return () => { alive = false; clearInterval(id) }
+  }, [])
+
+  const [collapsed, setCollapsed] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 768 : false,
+  )
+  const [workspaceOpen, setWorkspaceOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [workspaceAiBusy, setWorkspaceAiBusy] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [checkpointsOpen, setCheckpointsOpen] = useState(false)
+  const [flash, setFlash] = useState(null) // { kind: 'ok'|'info'|'err', text: '...' }
+
+  // Unified "AI is busy" flag
+  const isBusy = aiWorking || workspaceAiBusy
+
+  // Auto-dismiss flash after 6s.
+  useEffect(() => {
+    if (!flash) return
+    const id = setTimeout(() => setFlash(null), 6000)
+    return () => clearTimeout(id)
+  }, [flash])
+
+  const devtoolsEnabled = (() => {
+    try { return localStorage.getItem('browserai.devtools') === '1' }
+    catch { return false }
+  })()
+
+  const [agentMode, setAgentMode] = useState(() => {
+    try {
+      const saved = localStorage.getItem('browserai.agentMode')
+      if (saved === '1') return true
+      if (saved === '0') return false
+      return true
+    } catch { return true }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('browserai.agentMode', agentMode ? '1' : '0') } catch { }
+  }, [agentMode])
+  const effectiveAgentMode = devtoolsEnabled ? agentMode : true
+
+  // Slash-command hook bundle passed to Composer.
+  const composerSlashHooks = {
+    onSlashClear: () => { newChat() },
+    onSlashSettings: () => setSettingsOpen(true),
+    onSlashSearch: () => setSearchOpen(true),
+    onSlashCheckpoints: () => setCheckpointsOpen(true),
+    onSlashExport: () => { if (activeChat) downloadChatMarkdown(activeChat) },
+    onSlashToggleAgent: (forceOn) => {
+      if (!activeChat) return
+      const cur = activeChat.agentMode !== false
+      const next = forceOn == null ? !cur : Boolean(forceOn)
+      updateChat(activeChat.id, { agentMode: next })
+      setFlash({ kind: 'info', text: `Agent Mode: ${next ? 'включён' : 'выключен'}` })
+    },
+    onSlashSetModel: (modelId) => {
+      const all = getAllAvailableModels(settings)
+      const hit = all.find((m) => m.id === modelId || m.name === modelId || (m.id || '').endsWith(modelId))
+      if (!hit) return false
+      setActiveModel?.(hit.id)
+      return true
+    },
+    onSlashFetchCost: async () => {
+      try {
+        const r = await fetch('/api/cost/today', { credentials: 'include' })
+        return r.ok ? r.json() : null
+      } catch { return null }
+    },
+    onFlash: setFlash,
+  }
+
+  const [autoMode, setAutoMode] = useState(() => {
+    try { return localStorage.getItem('browserai.autoMode') === '1' } catch { return false }
+  })
+  const [autoHint, setAutoHint] = useState(null)
+  useEffect(() => {
+    try { localStorage.setItem('browserai.autoMode', autoMode ? '1' : '0') } catch { }
+  }, [autoMode])
+
+  useEffect(() => {
+    const onKey = (e) => {
+      const isCmd = e.metaKey || e.ctrlKey
+      if (!isCmd || e.key.toLowerCase() !== 'k') return
+      const tag = (document.activeElement?.tagName || '').toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || document.activeElement?.isContentEditable) return
+      e.preventDefault()
+      setSearchOpen(true)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   const closeSidebarOnMobile = () => {
-    if (typeof window !== 'undefined' && window.innerWidth < 768) {
-      setCollapsed(true)
-    }
+    if (typeof window !== 'undefined' && window.innerWidth < 768) setCollapsed(true)
   }
 
   const handleNewChat = () => {
@@ -264,13 +236,12 @@ function BrowserApp({ user, reloadAuth }) {
 
   const toggleSidebar = () => setCollapsed((v) => !v)
 
-  // iOS-style edge swipe: from the left edge opens the sidebar when
-  // collapsed. Only active on touch devices; harmless no-op on desktop.
   useEdgeSwipe({
     side: 'left',
     enabled: collapsed,
     onTrigger: () => { setCollapsed(false); haptics.tap() },
   })
+
   const toggleWorkspace = () => setWorkspaceOpen((v) => !v)
   const logout = async () => {
     await backend.saveCloud({ settings, chats }).catch(() => {})
@@ -280,14 +251,11 @@ function BrowserApp({ user, reloadAuth }) {
   }
 
   const handleEditMessage = (m) => {
-    // Вставляем текст в Composer (сделать это можно через событие или стейт)
-    // Но для простоты: Ищем Composer input
     const ta = document.querySelector('textarea')
     if (ta) {
       ta.value = m.content
       ta.style.height = 'auto'
       ta.style.height = Math.min(ta.scrollHeight, 220) + 'px'
-      // Dispatch event to trigger React state update if needed, but easier is just value change + focus
       ta.focus()
     }
   }
@@ -304,29 +272,21 @@ function BrowserApp({ user, reloadAuth }) {
     const key = findKeyForModel(settings, model)
     if (!key) return null
     return {
-      baseUrl: key.baseUrl,
-      apiKey: key.apiKey,
-      model,
-      authType: key.authType || 'bearer',
-      authHeader: key.authHeader || '',
-      responsePath: key.responsePath || '',
-      extraHeaders: key.extraHeaders || {},
-      systemPrompt: settings.systemPrompt,
-      temperature: settings.temperature,
-      stream: settings.stream,
-      useWebAI: settings.useWebAI,
+      baseUrl: key.baseUrl, apiKey: key.apiKey, model,
+      authType: key.authType || 'bearer', authHeader: key.authHeader || '',
+      responsePath: key.responsePath || '', extraHeaders: key.extraHeaders || {},
+      systemPrompt: settings.systemPrompt, temperature: settings.temperature,
+      stream: settings.stream, useWebAI: settings.useWebAI,
     }
   }, [settings])
 
-  const shouldUseAgentForText = useCallback((text = '', routedTaskType = 'chat') => {
+  const shouldUseAgentForText = useCallback(() => {
     if (!effectiveAgentMode) return false
-    // #32 FIX: Project Engine Mode. 
-    // If agent mode is enabled, ALWAYS use the agent loop. 
     return true
   }, [effectiveAgentMode])
 
   const handleSendMessage = useCallback(async (text, attachments = []) => {
-    if (aiWorking) return
+    if (isBusy) return
     let overrideModel = null
     let routedTaskType = getTaskType(text || '')
 
@@ -335,62 +295,47 @@ function BrowserApp({ user, reloadAuth }) {
       routedTaskType = result.taskType || routedTaskType
       if (result.changed) {
         overrideModel = providerOverrideForModel(result.model) || result.model
-        // Обновляем настройки в фоне
         setActiveModel(result.model).catch(() => {})
-        setAutoHint({
-          reason: result.reason,
-          taskType: result.taskType,
-          icon: result.icon,
-        })
+        setAutoHint({ reason: result.reason, taskType: result.taskType, icon: result.icon })
         setTimeout(() => setAutoHint(null), 5000)
       } else {
         setAutoHint(null)
       }
     }
 
-    if (shouldUseAgentForText(text, routedTaskType)) {
+    if (shouldUseAgentForText()) {
       return sendAgentMessage(text, attachments, overrideModel)
     }
     return sendMessage(text, attachments, overrideModel)
-  }, [aiWorking, autoMode, availableModels, selectedModel, providerOverrideForModel, shouldUseAgentForText, sendAgentMessage, sendMessage, setActiveModel])
+  }, [isBusy, autoMode, availableModels, selectedModel, providerOverrideForModel, shouldUseAgentForText, sendAgentMessage, sendMessage, setActiveModel])
 
   const handleRegenerate = useCallback((m) => {
-    if (aiWorking || !activeChat) return
-    const messages = activeChat.messages || []
-    const idx = messages.findIndex(x => x.id === m.id)
+    if (isBusy || !activeChat) return
+    const currentMessages = activeChat.messages || []
+    const idx = currentMessages.findIndex(x => x.id === m.id)
     if (idx === -1) return
-    const updatedMessages = messages.slice(0, idx)
+    const updatedMessages = currentMessages.slice(0, idx)
     updateChat(activeChat.id, { messages: updatedMessages })
     
     const lastUserMsg = updatedMessages.reverse().find(x => x.role === 'user')
     if (lastUserMsg) {
       handleSendMessage(lastUserMsg.content, lastUserMsg.attachments)
     }
-  }, [aiWorking, activeChat, updateChat, handleSendMessage])
-
-  const handleToggleAuto = () => {
-    setAutoMode((v) => !v)
-    setAutoHint(null)
-  }
+  }, [isBusy, activeChat, updateChat, handleSendMessage])
 
   // v2.17: Retry failed tool (Arena parity)
   useEffect(() => {
     const handler = (e) => {
       const { name, args } = e.detail || {}
-      if (!name || !activeChat || aiWorking) return
-
-      // Re-execute the tool by sending a targeted agent message
+      if (!name || !activeChat || isBusy) return
       const retryText = `[RETRY_TOOL] Повтори tool "${name}" с аргументами: ${JSON.stringify(args)}`
       handleSendMessage(retryText).catch(() => {})
     }
     window.addEventListener('agent:retry-tool', handler)
     return () => window.removeEventListener('agent:retry-tool', handler)
-  }, [activeChat, handleSendMessage, aiWorking])
+  }, [activeChat, handleSendMessage, isBusy])
 
-  // При смене чата — сбрасываем подсказку
-  useEffect(() => {
-    setAutoHint(null)
-  }, [activeId])
+  useEffect(() => { setAutoHint(null) }, [activeId])
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-graphite-900 text-cream">
@@ -433,7 +378,7 @@ function BrowserApp({ user, reloadAuth }) {
         <Topbar
           title={activeChat?.title ?? 'BrowserAI'}
           configured={configured}
-          aiWorking={aiWorking}
+          aiWorking={isBusy}
           autoMode={autoMode}
           autoModelHint={autoHint ? `${autoHint.icon || ''} ${autoHint.reason}` : ''}
           agentMode={agentMode}
@@ -445,7 +390,7 @@ function BrowserApp({ user, reloadAuth }) {
           availableModels={availableModels}
           selectedModel={selectedModel}
           onSelectModel={setActiveModel}
-          onToggleAuto={handleToggleAuto}
+          onToggleAuto={() => { setAutoMode(v => !v); setAutoHint(null) }}
           onOpenSearch={() => setSearchOpen(true)}
           onOpenCheckpoints={activeChat ? () => setCheckpointsOpen(true) : null}
           onExportChat={activeChat ? () => downloadChatMarkdown(activeChat) : null}
@@ -471,7 +416,7 @@ function BrowserApp({ user, reloadAuth }) {
           <>
             <MessageList
               messages={messages}
-              aiWorking={aiWorking}
+              aiWorking={isBusy}
               onEdit={handleEditMessage}
               onRegenerate={handleRegenerate}
               onRefresh={() => location.reload()}
@@ -486,7 +431,7 @@ function BrowserApp({ user, reloadAuth }) {
             />
             <Composer
               hasMessages
-              isStreaming={aiWorking}
+              isStreaming={isBusy}
               onSend={handleSendMessage}
               onStop={stop}
               chatId={activeChat?.id || ''}
@@ -497,7 +442,7 @@ function BrowserApp({ user, reloadAuth }) {
           <>
             <Composer
               hasMessages={false}
-              isStreaming={aiWorking}
+              isStreaming={isBusy}
               onSend={handleSendMessage}
               onStop={stop}
               chatId={activeChat?.id || ''}
@@ -540,7 +485,6 @@ function BrowserApp({ user, reloadAuth }) {
         onClose={() => setSettingsOpen(false)}
       />
 
-      {/* Global flash toast — used by slash commands to give immediate feedback. */}
       {flash && (
         <div
           className={`pointer-events-none fixed inset-x-0 top-3 z-50 mx-auto flex w-fit max-w-[90vw] items-start gap-2 rounded-lg border px-3 py-2 text-[12px] shadow-2xl ${
@@ -558,30 +502,10 @@ function BrowserApp({ user, reloadAuth }) {
 }
 
 export default function App() {
-  // Admin routes use plain pathname matching to avoid pulling react-router
-  // for a single page. AuthGate still guards access via cookie session.
   const pathname = typeof window !== 'undefined' ? window.location.pathname : '/'
-  if (pathname === '/admin/deepseek') {
-    return (
-      <AuthGate>
-        {() => <DeepSeekAdmin />}
-      </AuthGate>
-    )
-  }
-  if (pathname === '/admin/ops') {
-    return (
-      <AuthGate>
-        {() => <OpsAdmin />}
-      </AuthGate>
-    )
-  }
-  if (pathname === '/admin/agent') {
-    return (
-      <AuthGate>
-        {() => <AgentAdmin />}
-      </AuthGate>
-    )
-  }
+  if (pathname === '/admin/deepseek') return <AuthGate>{() => <DeepSeekAdmin />}</AuthGate>
+  if (pathname === '/admin/ops') return <AuthGate>{() => <OpsAdmin />}</AuthGate>
+  if (pathname === '/admin/agent') return <AuthGate>{() => <AgentAdmin />}</AuthGate>
   return (
     <AuthGate>
       {({ user, reloadAuth, renderKey }) => (
