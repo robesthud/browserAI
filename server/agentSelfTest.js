@@ -47,19 +47,22 @@ export async function runAgentSelfTest({ userId, chatId } = {}) {
 
   // 2. Tool Router
   check('tool_router_validation', () => {
+    // В Agent Mode пути нормализуются. Проверяем, что абсолютный путь /workspace/foo.js 
+    // превращается в foo.js
     const v = validateToolCall('read_file', { path: '/workspace/foo.js' })
-    if (v.error) throw new Error(`Should accept absolute workspace paths: ${v.error}`)
-    if (v.args.path !== 'foo.js') throw new Error('Path prefix should be stripped')
+    if (v.error) throw new Error(`Validator failed: ${v.error}`)
+    if (v.args.path !== 'foo.js') throw new Error(`Prefix cleanup failed. Got: ${v.args.path}`)
     
+    // Проверка на выход за пределы папки
     const v2 = validateToolCall('read_file', { path: '../../etc/passwd' })
-    if (v2.ok) throw new Error('Should reject path traversal')
+    if (v2.ok) throw new Error('Should have rejected path traversal')
   })
 
   // 3. Sandbox Policy
   check('secret_redaction', () => {
     const sensitive = 'My key is ghp_1234567890abcdefGHJK'
     const redacted = redactSecrets(sensitive)
-    if (redacted.includes('ghp_')) throw new Error('GitHub token was not redacted')
+    if (redacted.includes('ghp_')) throw new Error('Redaction failed: sensitive pattern still present')
   })
 
   // 4. Context & Memory
