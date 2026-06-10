@@ -927,7 +927,7 @@ async function getFileHistory(relPath) {
  * Picks up (in this order, first match per filename wins, recursive
  * scan limited to depth 4 to support extracted ZIPs like
  * workspace/some-repo-main/README.md):
- *   AGENTS.md, AGENT.md, CLAUDE.md, .cursorrules, .ai-rules,
+ *   AGENTS.md, AGENT.md, CLAUDE.md, .cursorrules, .ai-rules, .browserai/rules.md,
  *   README.md, package.json (truncated to {name,version,scripts}).
  *
  * Per-file caps + total cap keep us well under 8 KB so we never blow
@@ -936,7 +936,7 @@ async function getFileHistory(relPath) {
 async function readProjectRules() {
   const RULES_PRIORITY = [
     'AGENTS.md', 'AGENT.md', 'CLAUDE.md',
-    '.cursorrules', '.ai-rules',
+    '.cursorrules', '.ai-rules', '.browserai/rules.md',
     'README.md', 'package.json',
   ]
   const PER_FILE_CAP = 1600
