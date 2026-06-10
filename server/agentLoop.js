@@ -16,7 +16,7 @@
  *            legacy JSON-in-fenced-block format.
  */
 import { TOOLS, renderToolsForPrompt, invokeTool } from './agentTools.js'
-import { withWorkspaceScope } from './workspace.js'
+import { withWorkspaceScope, readWorkspaceFile } from './workspace.js'
 import {
   callLLM, callLLMStream, supportsNativeTools, supportsStreaming, normalizeProviderError,
 } from './llmClient.js'

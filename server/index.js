@@ -198,10 +198,14 @@ app.use(limiter)
 const _corsOrigin = process.env.CORS_ORIGIN
   || (process.env.APP_URL ? process.env.APP_URL : null)
 
-// #40 FIX: More robust CORS origin matching. 
+// #40 FIX: More robust CORS origin matching.
+// NOTE: this function MUST be passed as the `origin` option of cors(),
+// i.e. cors({ origin: corsOptions }). If passed directly to cors(...),
+// the package calls it with the request object instead of the Origin
+// string and every request fails with "Not allowed by CORS".
 const corsOptions = (origin, callback) => {
   const allowed = [_corsOrigin, process.env.APP_URL].filter(Boolean).map(a => String(a).replace(/\/$/, ''));
-  
+
   const isAllowed = !origin || allowed.some(a => {
     try {
       return typeof origin === 'string' && origin.startsWith(a);
@@ -211,13 +215,13 @@ const corsOptions = (origin, callback) => {
   });
 
   if (isAllowed || process.env.NODE_ENV !== 'production') {
-    callback(null, { origin: true, credentials: true });
+    callback(null, true);
   } else {
     callback(new Error('Not allowed by CORS'));
   }
 };
 
-app.use(cors(corsOptions))
+app.use(cors({ origin: corsOptions, credentials: true }))
 app.use(express.json({ limit: '50mb' }))
 
 // ---- Auth + encrypted cloud sync ----
@@ -1878,12 +1882,9 @@ app.post('/api/jobs/:id/cancel', requireAuth, (req, res) => {
 // Retry a failed/timed-out video job. Creates a NEW job with the same input
 // and starts it. The UI links the new job from the failed card's button.
 app.post('/api/jobs/:id/retry-video', requireAuth, async (req, res) => {
-  try {
-    const newJob = await retryVideoJob(req.params.id)
-    res.json({ ok: true, job: newJob })
-  } catch (e) {
-    res.status(400).json({ ok: false, error: e?.message || 'retry failed' })
-  }
+  // retryVideoJob удалён вместе с gemini_video runner — эндпоинт оставлен
+  // как заглушка, чтобы старые клиенты получали понятную ошибку, а не краш.
+  res.status(410).json({ ok: false, error: 'video retry is no longer supported' })
 })
 
 app.get('/api/web/fetch', requireAuth, async (req, res) => {
