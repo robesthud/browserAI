@@ -238,6 +238,9 @@ function BrowserApp({ user, reloadAuth }) {
     stop,
   } = useChats(settings)
 
+  const messages = activeChat?.messages ?? []
+  const hasMessages = messages.length > 0
+
   // Unified "AI is busy" flag — true while streaming a chat answer OR
   // while a workspace AI operation is running.
   const aiWorking = useMemo(() => isStreaming || workspaceAiBusy || jobBusy, [isStreaming, workspaceAiBusy, jobBusy])
@@ -369,9 +372,6 @@ function BrowserApp({ user, reloadAuth }) {
     setAutoMode((v) => !v)
     setAutoHint(null)
   }
-
-  const messages = activeChat?.messages ?? []
-  const hasMessages = messages.length > 0
 
   // v2.17: Retry failed tool (Arena parity)
   useEffect(() => {

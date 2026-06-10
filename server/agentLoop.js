@@ -416,7 +416,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   // v2.26: High-Intelligence Directive for High Complexity tasks.
   // Encourages deeper reasoning and more robust verification.
   if (agentContext?.task?.complexity === 'high') {
-    convo.push({ role: 'user', content: `[high_complexity_directive]\nThis is a COMPLEX task. Do not rush. \n1. Explore the codebase thoroughly using build_repo_map and search_files.\n2. Create a detailed plan with plan_set.\n3. Verify every change with verify_code.\n4. If you hit an error, analyze the logs before retrying.\n[/high_complexity_directive]` })
+    convo.push({ role: 'user', content: `[high_complexity_directive]\nThis is a COMPLEX task. Do not rush. \n1. Explore the codebase thoroughly using build_repo_map, search_files and list_files.\n2. Read all relevant files before making a plan.\n3. Create a detailed plan with plan_set.\n4. Apply changes using edit_file (preferred) or write_file.\n5. MANDATORY: Verify every change with verify_code or run_tests.\n6. If you hit an error, read the file again to check for drift before retrying.\n[/high_complexity_directive]` })
   }
 
   if (planningDirective) convo.push({ role: 'user', content: planningDirective })
@@ -636,7 +636,10 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
           if (hint) {
             pushedBackThisTurn = true
             sse(res, 'thought', { step, sub: idx, text: `Авто-коррекция: ${call.tool} — ${r.error}. Исправляю…` })
-            const rErr = makeToolErrorResult(`[exec_error] ${r.error}. HINT: ${hint}`)
+            // 1:1 Arena Parity: Self-Correction push-back.
+            // We tell the model EXACTLY what it did wrong and how to fix it,
+            // effectively forcing a reasoning correction turn.
+            const rErr = makeToolErrorResult(`[exec_error] ${r.error}.\n\nREQUIRED ACTION TO RECOVER:\n${hint}\n\nDo not apologize. Call the suggested tool immediately.`)
             sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
             return { call, r: rErr, pushedBack: true }
           }
