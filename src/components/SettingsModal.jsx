@@ -136,22 +136,22 @@ function SecretField({ label, hint, value, onChange }) {
 function KeyRow({ k, active, onSelect, onEdit, onDelete }) {
   return (
     <div
-      className={`flex items-center gap-2 rounded-lg border px-3 py-2 transition-colors
-        ${active ? 'border-cream/40 bg-graphite-750' : 'border-white/10 hover:bg-graphite-750/60'}`}
+      className={`flex items-center gap-2 rounded-lg border px-3 py-2 transition-all duration-200
+        ${active ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-white/10 hover:bg-graphite-750/60'}`}
     >
       <button
         onClick={onSelect}
-        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        className="flex min-w-0 flex-1 items-center gap-2 text-left group"
         title={active ? 'Активный ключ' : 'Сделать активным'}
       >
         <span
-          className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border
-            ${active ? 'border-cream bg-cream' : 'border-cream-faint'}`}
+          className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border transition-colors
+            ${active ? 'border-emerald-400 bg-emerald-400' : 'border-cream-faint group-hover:border-cream-soft'}`}
         >
           {active && <span className="h-1.5 w-1.5 rounded-full bg-graphite-900" />}
         </span>
         <span className="min-w-0">
-          <span className="block truncate text-[13px] text-cream">
+          <span className={`block truncate text-[13px] transition-colors ${active ? 'text-emerald-300 font-medium' : 'text-cream'}`}>
             {k.name || 'Без имени'}
           </span>
           <span className="block truncate text-[11px] text-cream-faint">
@@ -170,7 +170,7 @@ function KeyRow({ k, active, onSelect, onEdit, onDelete }) {
       </button>
       <button
         onClick={onDelete}
-        className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-cream-faint transition-colors hover:bg-graphite-700 hover:text-cream"
+        className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-cream-faint transition-colors hover:bg-red-900/30 hover:text-red-300"
         title="Удалить ключ"
       >
         <IconTrash />
@@ -894,13 +894,13 @@ export default function SettingsModal({
                 onClick={() => onSetParams({ useWebAI: !settings.useWebAI })}
                 role="switch"
                 aria-checked={settings.useWebAI}
-                className={`relative shrink-0 h-6 w-11 rounded-full transition-colors ${
-                  settings.useWebAI ? 'bg-cream' : 'bg-graphite-600'
+                className={`relative shrink-0 h-6 w-11 rounded-full transition-all duration-200 ${
+                  settings.useWebAI ? 'bg-emerald-500' : 'bg-graphite-600 border border-white/10'
                 }`}
               >
                 <span
-                  className={`absolute top-[3px] h-[18px] w-[18px] rounded-full bg-graphite-900 shadow transition-transform ${
-                    settings.useWebAI ? 'translate-x-[22px]' : 'translate-x-[3px]'
+                  className={`absolute top-[2px] h-[18px] w-[18px] rounded-full bg-white shadow-lg transition-transform duration-200 ${
+                    settings.useWebAI ? 'translate-x-[24px]' : 'translate-x-[2px]'
                   }`}
                 />
               </button>
@@ -923,7 +923,7 @@ export default function SettingsModal({
                 onChange={(e) =>
                   onSetParams({ temperature: parseFloat(e.target.value) })
                 }
-                className="w-full accent-cream"
+                className="w-full h-1.5 bg-graphite-700 rounded-lg appearance-none cursor-pointer accent-emerald-400"
               />
             </Field>
             <label className="flex items-center justify-between gap-3">
@@ -935,13 +935,13 @@ export default function SettingsModal({
                 role="switch"
                 aria-checked={settings.stream}
                 onClick={() => onSetParams({ stream: !settings.stream })}
-                className={`relative shrink-0 h-6 w-11 rounded-full transition-colors ${
-                  settings.stream ? 'bg-cream' : 'bg-graphite-600'
+                className={`relative shrink-0 h-6 w-11 rounded-full transition-all duration-200 ${
+                  settings.stream ? 'bg-emerald-500' : 'bg-graphite-600 border border-white/10'
                 }`}
               >
                 <span
-                  className={`absolute top-[3px] h-[18px] w-[18px] rounded-full bg-graphite-900 shadow transition-transform ${
-                    settings.stream ? 'translate-x-[22px]' : 'translate-x-[3px]'
+                  className={`absolute top-[2px] h-[18px] w-[18px] rounded-full bg-white shadow-lg transition-transform duration-200 ${
+                    settings.stream ? 'translate-x-[24px]' : 'translate-x-[2px]'
                   }`}
                 />
               </button>
@@ -951,7 +951,7 @@ export default function SettingsModal({
           )}
 
           {/* ---- Agent Mode: подтверждения + MCP ---- */}
-          {online && <AgentSettingsSection />}
+          <AgentSettingsSection />
 
           {/* ---- Шифрование (только при доступном сервере) ---- */}
           {online && (
@@ -971,7 +971,7 @@ export default function SettingsModal({
         <div className="flex justify-end border-t border-white/5 px-5 py-3.5">
           <button
             onClick={onClose}
-            className="rounded-lg bg-cream px-4 py-2 text-[13px] font-medium text-graphite-900 transition-transform hover:scale-[1.02] active:scale-95"
+            className="rounded-lg bg-emerald-500 px-6 py-2 text-[13px] font-semibold text-white shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-400 hover:scale-[1.02] active:scale-95"
           >
             Готово
           </button>

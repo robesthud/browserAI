@@ -114,52 +114,52 @@ export default function Sidebar({
           {/* Agent mode toggle — Always visible now for Project Engine */}
           <button
             onClick={() => onToggleAgentMode?.(!agentMode)}
-            className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors ${
+            className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2.5 text-left text-[13px] transition-all duration-200 shadow-sm ${
               agentMode
-                ? 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/20'
-                : 'text-cream-soft hover:bg-graphite-750 hover:text-cream'
+                ? 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-300'
+                : 'bg-graphite-750/50 border border-white/5 text-cream-soft hover:bg-graphite-750 hover:text-cream'
             }`}
             title="Агентский режим: модель может читать/писать файлы, искать в вебе и запускать shell-команды"
           >
             <span className="flex items-center gap-3">
-              <span className="text-base leading-none">🤖</span>
-              <span>Агент</span>
+              <span className="text-lg leading-none">{agentMode ? '🤖' : '💬'}</span>
+              <span className="font-medium">Агентский режим</span>
             </span>
-            <span className={`text-[11px] font-medium ${agentMode ? 'text-emerald-300' : 'text-cream-faint'}`}>
-              {agentMode ? 'Вкл' : 'Выкл'}
-            </span>
+            <div className={`relative h-5 w-9 rounded-full transition-colors ${agentMode ? 'bg-emerald-500' : 'bg-graphite-600'}`}>
+              <div className={`absolute top-[2.5px] h-3.5 w-3.5 rounded-full bg-white transition-transform ${agentMode ? 'translate-x-[18px]' : 'translate-x-[2.5px]'}`} />
+            </div>
           </button>
 
           {/* Web AI toggle — devtools only. */}
           {devtoolsEnabled && (
             <button
               onClick={() => onToggleWebAI?.(!useWebAI)}
-              className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors ${
+              className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2.5 text-left text-[13px] transition-all duration-200 ${
                 useWebAI
-                  ? 'bg-cream/10 text-cream hover:bg-cream/15'
-                  : 'text-cream-soft hover:bg-graphite-750 hover:text-cream'
+                  ? 'bg-blue-500/20 border border-blue-500/30 text-blue-300'
+                  : 'bg-graphite-750/50 border border-white/5 text-cream-soft hover:bg-graphite-750 hover:text-cream'
               }`}
               title="Подмешивать результаты веб-поиска к ответам модели"
             >
               <span className="flex items-center gap-3">
-                <span className="text-base leading-none">🌐</span>
-                <span>Web AI</span>
+                <span className="text-lg leading-none">{useWebAI ? '🌐' : '📵'}</span>
+                <span className="font-medium">Web AI</span>
               </span>
-              <span className={`text-[11px] font-medium ${useWebAI ? 'text-cream' : 'text-cream-faint'}`}>
-                {useWebAI ? 'Вкл' : 'Выкл'}
-              </span>
+              <div className={`relative h-5 w-9 rounded-full transition-colors ${useWebAI ? 'bg-blue-500' : 'bg-graphite-600'}`}>
+                <div className={`absolute top-[2.5px] h-3.5 w-3.5 rounded-full bg-white transition-transform ${useWebAI ? 'translate-x-[18px]' : 'translate-x-[2.5px]'}`} />
+              </div>
             </button>
           )}
 
           {/* Agent Lab — Always visible now */}
           <button
             onClick={() => { window.location.href = '/admin/agent' }}
-            className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left text-[13px]
-                       text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream"
+            className="flex w-full items-center gap-3 rounded-lg border border-white/5 bg-graphite-750/30 px-2.5 py-2 text-left text-[13px]
+                       text-cream-soft transition-all hover:bg-graphite-750 hover:text-cream hover:border-white/15"
             title="Agent Lab: self-test, runtime diagnostics, workspace metadata"
           >
-            <span className="text-base leading-none">🧪</span>
-            <span>Agent Lab</span>
+            <span className="text-lg leading-none">🧪</span>
+            <span className="font-medium">Лаборатория Агента</span>
           </button>
 
           {/* Settings */}
