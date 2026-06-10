@@ -29,6 +29,7 @@ import { listOpsServices, runOpsAction } from './ops.js'
 import { browserOpen, browserScreenshot, browserClick, browserType, browserClose } from './browserTools.js'
 import { upsertFact, forgetFact, listFacts } from './userMemory.js'
 import { addDocument, deleteDocument, listDocuments, searchKnowledge } from './knowledgeBase.js'
+import { buildRepoMap } from './repoMap.js'
 
 // ── Utility ─────────────────────────────────────────────────────────────────
 function stripAnsi(str) {
@@ -283,6 +284,19 @@ export const TOOLS = {
           return ok(node)
         }
         return ok(tree)
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  build_repo_map: {
+    description: 'Generate a high-level map of the codebase including folder structure and exported symbols (functions, classes). Use this instead of list_files for large projects to understand the architecture without reading all files.',
+    params: {
+      path: { type: 'string', optional: true, description: 'Root folder for the map. Empty = workspace root.' },
+    },
+    handler: async ({ path = '' } = {}) => {
+      try {
+        const map = await buildRepoMap(path)
+        return ok(map)
       } catch (e) { return err(e.message) }
     },
   },
