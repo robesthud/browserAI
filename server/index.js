@@ -2627,8 +2627,9 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
     const managedBearer = getDeepSeekBearer()
     const managedCookies = getDeepSeekCookieHeader()
     if (!managedBearer) {
+      // #35 FIX: Better error message for missing DeepSeek session
       return res.status(503).json({
-        error: 'DeepSeek session is not configured on the server. Provide a token via /admin/deepseek.',
+        error: 'DeepSeek managed session is not configured on the server. Please visit /admin/deepseek or use the Telegram bot to provide a userToken.',
       })
     }
     apiKey = managedBearer
@@ -3013,7 +3014,12 @@ try {
 // optional Telegram control bot.
 try {
   bootstrapDeepSeekSession()
-  startDeepSeekBot()
+  // #36 FIX: Avoid Telegram polling conflict if same token is used for both bots.
+  if (process.env.TG_BOT_TOKEN && process.env.TG_BOT_TOKEN !== process.env.TG_USER_BOT_TOKEN) {
+    startDeepSeekBot()
+  } else if (process.env.TG_BOT_TOKEN) {
+    console.log('[deepseek-bot] Skipping admin bot start due to token conflict with user bot.')
+  }
 } catch (e) {
   console.warn('[deepseek-refresh] bootstrap failed:', e.message)
 }
@@ -3025,6 +3031,7 @@ try {
 // but in that case the admin bot is also using it and conflicts will
 // appear in logs ("terminated by other getUpdates request").
 try {
+  // If tokens are same, user bot takes priority as it provides the chat interface.
   startUserTelegramBot({ db })
 } catch (e) {
   console.warn('[user-tg] bootstrap failed:', e.message)

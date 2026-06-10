@@ -242,12 +242,19 @@ async function runReflectionCheck({ provider, ask, draft, toolHistory }) {
 async function streamFinalAnswer(res, fullText) {
   const text = String(fullText || '')
   if (!text) { sse(res, 'assistant', { text: '' }); return }
-  const parts = text.match(/.{1,32}/g) || [text]
+  
+  // #37 FIX: Clean up thinking leakage in final answer.
+  // Sometimes the model includes the "Transition to summary" prose in the final text block.
+  const cleaned = text.replace(/^(?:to respond with|according to|the user just said|thus output|i should state)[\s\S]*?(?:"Привет|"Привет!)/i, '"Привет')
+                      .replace(/^(?:to respond with|according to|the user just said|thus output|i should state)[\s\S]*?(?:Привет|Привет!)/i, 'Привет')
+                      .trim()
+
+  const parts = cleaned.match(/.{1,32}/g) || [cleaned]
   for (const chunk of parts) {
     sse(res, 'assistant_delta', { chunk })
     await new Promise((r) => setTimeout(r, 10))
   }
-  sse(res, 'assistant', { text })
+  sse(res, 'assistant', { text: cleaned })
 }
 
 // ── LLM Streaming call ──────────────────────────────────────────────────────

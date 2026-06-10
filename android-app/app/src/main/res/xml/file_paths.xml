@@ -1,8 +1,0 @@
-<paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- APK обновления из кэша -->
-    <cache-path name="updates" path="updates/" />
-    <!-- Файлы из Downloads для FileChooser -->
-    <external-path name="external_downloads" path="Download/" />
-    <!-- Внутреннее хранилище -->
-    <files-path name="internal_files" path="." />
-</paths>
