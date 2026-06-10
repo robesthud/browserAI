@@ -2100,31 +2100,41 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   try {
     let upstream
 
-    if (useProxy) {
-      // Через Cloudflare Workers прокси
-      console.log(`[chat proxy] via CF Workers → ${targetUrl} model=${model}`)
-      upstream = await fetch(cfProxyUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(cfProxySecret ? { 'X-Proxy-Key': cfProxySecret } : {}),
-        },
-        body: JSON.stringify({
-          targetUrl,
+    // Connect-only timeout (60s to first byte of response headers). A flat
+    // AbortSignal.timeout(120000) also counted STREAMING time and aborted
+    // long SSE answers (GLM-5/DeepSeek-R1 reasoning runs for minutes) —
+    // surfacing in the UI as «Сетевая ошибка или временный сбой».
+    const connectCtl = new AbortController()
+    const connectTimer = setTimeout(() => connectCtl.abort(new Error('Провайдер не ответил за 60 секунд')), 60_000)
+    try {
+      if (useProxy) {
+        // Через Cloudflare Workers прокси
+        console.log(`[chat proxy] via CF Workers → ${targetUrl} model=${model}`)
+        upstream = await fetch(cfProxyUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(cfProxySecret ? { 'X-Proxy-Key': cfProxySecret } : {}),
+          },
+          body: JSON.stringify({
+            targetUrl,
+            headers: stealthH,
+            body,
+          }),
+          signal: connectCtl.signal,
+        })
+      } else {
+        // Прямой запрос к провайдеру
+        console.log(`[chat proxy] direct → ${targetUrl} model=${model}`)
+        upstream = await fetch(targetUrl, {
+          method: 'POST',
           headers: stealthH,
-          body,
-        }),
-        signal: AbortSignal.timeout(120000),
-      })
-    } else {
-      // Прямой запрос к провайдеру
-      console.log(`[chat proxy] direct → ${targetUrl} model=${model}`)
-      upstream = await fetch(targetUrl, {
-        method: 'POST',
-        headers: stealthH,
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(120000),
-      })
+          body: JSON.stringify(body),
+          signal: connectCtl.signal,
+        })
+      }
+    } finally {
+      clearTimeout(connectTimer)
     }
 
     if (!upstream.ok) {
@@ -2166,18 +2176,32 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         reader.cancel().catch(() => {})
       })
 
+      // Keep-alive comments: mobile networks and VPNs silently drop HTTP
+      // connections that stay quiet for ~30-60s (reasoning models think
+      // silently for minutes). SSE comments keep the pipe warm. Plus an
+      // idle watchdog so a dead provider can't hang the request forever.
+      let lastData = Date.now()
+      const ka = setInterval(() => {
+        try { res.write(': keep-alive\n\n') } catch { /* client gone */ }
+        if (Date.now() - lastData > 300_000) { try { reader.cancel() } catch { /* ignore */ } }
+      }, 15_000)
+
       try {
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
+          lastData = Date.now()
           res.write(value)
         }
       } catch (e) {
         // Если клиент отключился — не считаем это ошибкой
         if (!res.destroyed) {
           console.warn('Chat proxy stream error:', e.message)
+          try { res.write(`data: ${JSON.stringify({ error: 'Поток провайдера оборвался: ' + (e?.message || 'connection lost') })}\n\n`) } catch { /* ignore */ }
         }
       } finally {
+        clearInterval(ka)
+        try { res.write('data: [DONE]\n\n') } catch { /* ignore */ }
         res.end()
       }
     } else {

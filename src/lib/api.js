@@ -309,6 +309,12 @@ export async function streamChat({
           continue
         }
 
+        // Server-injected mid-stream error (upstream provider cut the
+        // connection). Surface it instead of silently truncating the answer.
+        if (parsed && typeof parsed.error === 'string' && parsed.error) {
+          throw new Error(parsed.error)
+        }
+
         const chunk = extractAssistantText(parsed) || extractTextFromResponse(parsed, responsePath)
         if (!chunk) continue
         acc += chunk

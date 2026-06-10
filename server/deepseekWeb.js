@@ -111,7 +111,11 @@ async function solvePowChallenge(challengeConfig) {
   }
 }
 
-async function postViaOptionalProxy({ url, headers, body, proxyUrl = '', proxySecret = '', timeoutMs = 30000 }) {
+async function postViaOptionalProxy({ url, headers, body, proxyUrl = '', proxySecret = '', timeoutMs = 30000, signal = null }) {
+  // `signal` (if given) replaces the flat AbortSignal.timeout. IMPORTANT for
+  // streaming: AbortSignal.timeout counts TOTAL time — it keeps ticking while
+  // the body is being consumed and kills long SSE streams mid-flight.
+  const effSignal = signal || AbortSignal.timeout(timeoutMs)
   const cleanHeaders = normalizeHeaders(headers)
   if (proxyUrl) {
     return fetch(proxyUrl, {
@@ -121,7 +125,7 @@ async function postViaOptionalProxy({ url, headers, body, proxyUrl = '', proxySe
         ...(proxySecret ? { 'X-Proxy-Key': proxySecret } : {}),
       },
       body: JSON.stringify({ targetUrl: url, headers: cleanHeaders, body }),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: effSignal,
     })
   }
 
@@ -129,7 +133,7 @@ async function postViaOptionalProxy({ url, headers, body, proxyUrl = '', proxySe
     method: 'POST',
     headers: cleanHeaders,
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: effSignal,
   })
 }
 
@@ -298,6 +302,15 @@ async function streamDeepSeekToOpenAI(upstream, res) {
     return
   }
 
+  // Keep-alive comments every 15s so mobile networks / VPNs don't drop the
+  // connection during silent thinking phases, plus an idle watchdog: if the
+  // PROVIDER sends nothing for 5 minutes we cancel instead of hanging forever.
+  let lastData = Date.now()
+  const ka = setInterval(() => {
+    try { res.write(': keep-alive\n\n') } catch { /* client gone */ }
+    if (Date.now() - lastData > 300_000) { try { reader.cancel() } catch { /* ignore */ } }
+  }, 15_000)
+
   const decoder = new TextDecoder()
   let buffer = ''
   let sentAny = false
@@ -310,34 +323,42 @@ async function streamDeepSeekToOpenAI(upstream, res) {
     res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`)
   }
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split(/\r?\n/)
-    buffer = lines.pop() || ''
-    for (const line of lines) {
-      if (!line.startsWith('data:')) continue
-      const raw = line.slice(5).trim()
-      if (!raw || raw === '[DONE]') continue
-      try {
-        const payload = JSON.parse(raw)
-        emit(extractDelta(payload))
-        if (payload?.choices?.[0]?.finish_reason === 'stop') {
-          res.write('data: [DONE]\n\n')
-          res.end()
-          return
-        }
-      } catch { /* ignore malformed chunks */ }
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      lastData = Date.now()
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split(/\r?\n/)
+      buffer = lines.pop() || ''
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue
+        const raw = line.slice(5).trim()
+        if (!raw || raw === '[DONE]') continue
+        try {
+          const payload = JSON.parse(raw)
+          emit(extractDelta(payload))
+          if (payload?.choices?.[0]?.finish_reason === 'stop') {
+            res.write('data: [DONE]\n\n')
+            res.end()
+            return
+          }
+        } catch { /* ignore malformed chunks */ }
+      }
     }
-  }
 
-  // Иногда CF/DeepSeek возвращает весь ответ одним JSON, без SSE.
-  if (!sentAny && buffer.trim()) {
-    try { emit(parseDeepSeekText(buffer)) } catch { /* ignore */ }
+    // Иногда CF/DeepSeek возвращает весь ответ одним JSON, без SSE.
+    if (!sentAny && buffer.trim()) {
+      try { emit(parseDeepSeekText(buffer)) } catch { /* ignore */ }
+    }
+  } catch (e) {
+    // Upstream cut mid-stream: tell the client instead of silently ending.
+    try { res.write(`data: ${JSON.stringify({ error: 'Поток DeepSeek оборвался: ' + (e?.message || 'connection lost') })}\n\n`) } catch { /* ignore */ }
+  } finally {
+    clearInterval(ka)
+    try { res.write('data: [DONE]\n\n') } catch { /* ignore */ }
+    res.end()
   }
-  res.write('data: [DONE]\n\n')
-  res.end()
 }
 
 export async function handleDeepSeekWebChat({ reqBody, res }) {
@@ -406,14 +427,25 @@ export async function handleDeepSeekWebChat({ reqBody, res }) {
     ...(powResponse ? { 'x-ds-pow-response': powResponse } : {}),
   }
 
-  const upstream = await postViaOptionalProxy({
-    url: `${rootUrl(baseUrl)}/chat/completion`,
-    headers: completionHeaders,
-    body,
-    proxyUrl,
-    proxySecret,
-    timeoutMs: 120000,
-  })
+  // Connect-only timeout: abort if DeepSeek doesn't ANSWER in 45s, but once
+  // the SSE stream starts it may run for many minutes (reasoner thinking).
+  // The old flat 120s AbortSignal.timeout killed long streams mid-flight,
+  // which the UI showed as «Сетевая ошибка или временный сбой».
+  const connectCtl = new AbortController()
+  const connectTimer = setTimeout(() => connectCtl.abort(new Error('DeepSeek connect timeout (45s)')), 45_000)
+  let upstream
+  try {
+    upstream = await postViaOptionalProxy({
+      url: `${rootUrl(baseUrl)}/chat/completion`,
+      headers: completionHeaders,
+      body,
+      proxyUrl,
+      proxySecret,
+      signal: connectCtl.signal,
+    })
+  } finally {
+    clearTimeout(connectTimer)
+  }
 
   if (!upstream.ok) {
     const errText = await upstream.text().catch(() => '')

@@ -397,7 +397,7 @@ async function callAnthropicOfficialStream({
       'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
     },
     body: JSON.stringify(body),
-    signal: signal || AbortSignal.timeout(180_000),
+    signal: signal || AbortSignal.timeout(1_800_000), // 30 min hard cap: stream duration counts toward fetch timeout
   })
   if (!r.ok) {
     const raw = await r.text().catch(() => '')
@@ -640,7 +640,7 @@ async function callGeminiOfficialStream({
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
     body: JSON.stringify(body),
-    signal: signal || AbortSignal.timeout(180_000),
+    signal: signal || AbortSignal.timeout(1_800_000), // 30 min hard cap: stream duration counts toward fetch timeout
   })
   if (!r.ok) {
     const raw = await r.text().catch(() => '')
@@ -747,7 +747,7 @@ async function callOpenAICompatibleStream({
   const r = await fetch(url, {
     method: 'POST', headers,
     body: JSON.stringify(body),
-    signal: signal || AbortSignal.timeout(180_000),
+    signal: signal || AbortSignal.timeout(1_800_000), // 30 min hard cap: stream duration counts toward fetch timeout
   })
   if (!r.ok) {
     const raw = await r.text().catch(() => '')
