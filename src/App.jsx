@@ -239,12 +239,6 @@ function BrowserApp({ user, reloadAuth }) {
   } = useChats(settings)
 
   // Unified "AI is busy" flag — true while streaming a chat answer OR
-  // while a workspace AI operation is running. Used to gate Regenerate /
-  // MessageList spinner / Topbar status. Previously this variable was
-  // referenced in App but never declared (the inline expression existed
-  // only in the Topbar prop), which produced a runtime ReferenceError
-  // ('aiWorking is not defined') the moment a chat had any messages.
-  // Unified "AI is busy" flag — true while streaming a chat answer OR
   // while a workspace AI operation is running.
   const aiWorking = useMemo(() => isStreaming || workspaceAiBusy || jobBusy, [isStreaming, workspaceAiBusy, jobBusy])
 
@@ -375,6 +369,28 @@ function BrowserApp({ user, reloadAuth }) {
     setAutoMode((v) => !v)
     setAutoHint(null)
   }
+
+  const messages = activeChat?.messages ?? []
+  const hasMessages = messages.length > 0
+
+  // v2.17: Retry failed tool (Arena parity)
+  useEffect(() => {
+    const handler = (e) => {
+      const { name, args } = e.detail || {}
+      if (!name || !activeChat || aiWorking) return
+
+      // Re-execute the tool by sending a targeted agent message
+      const retryText = `[RETRY_TOOL] Повтори tool "${name}" с аргументами: ${JSON.stringify(args)}`
+      handleSendMessage(retryText).catch(() => {})
+    }
+    window.addEventListener('agent:retry-tool', handler)
+    return () => window.removeEventListener('agent:retry-tool', handler)
+  }, [activeChat, handleSendMessage, aiWorking])
+
+  // При смене чата — сбрасываем подсказку
+  useEffect(() => {
+    setAutoHint(null)
+  }, [activeId])
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-graphite-900 text-cream">

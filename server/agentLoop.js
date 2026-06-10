@@ -210,20 +210,23 @@ function sseKeepAlive(res) {
 async function runReflectionCheck({ provider, ask, draft, toolHistory }) {
   const toolSummary = (toolHistory || []).slice(-12).map((h) => `${h.ok ? '✓' : '✗'} ${h.tool}`).join(', ')
   const prompt = `Review if the task is done.\nGoal: ${ask}\nTools: ${toolSummary}\nDraft: ${draft}\nReply DONE or TODO: reason.`
-  let reviewModel = provider.model
-  try {
-    const { lookupModel, suggestStrongSibling } = await import('./modelKnowledge.js')
-    if (lookupModel(provider.model).tier === 'cheap') {
-      const strong = suggestStrongSibling(provider.model)
-      if (strong) reviewModel = strong
-    }
-  } catch { /* best-effort: ignore */ }
+  
+  // Use a slightly lower temperature for consistent critique
   const reply = await callLLM({
-    baseUrl: provider.baseUrl, apiKey: provider.apiKey, model: reviewModel,
-    messages: [{ role: 'system', content: 'Terse reviewer.' }, { role: 'user', content: prompt }],
+    baseUrl: provider.baseUrl, apiKey: provider.apiKey,
+    authType: provider.authType || 'bearer',
+    authHeader: provider.authHeader || '',
+    extraHeaders: provider.extraHeaders || {},
+    model: provider.model,
+    messages: [
+      { role: 'system', content: 'You are a critical reviewer. Reply DONE if the goal is fully met and verified. Otherwise reply TODO: <reason>.' },
+      { role: 'user', content: prompt }
+    ],
     temperature: 0.1,
   })
-  const todo = String(reply?.text || '').match(/^\s*todo\s*[:\-—]?\s*(.+)$/i)
+  
+  const text = String(reply?.text || '').trim()
+  const todo = text.match(/^\s*todo\s*[:\-—]?\s*(.+)$/i)
   return { needsMoreWork: !!todo, reason: todo ? todo[1].trim() : '', usage: reply.usage }
 }
 
