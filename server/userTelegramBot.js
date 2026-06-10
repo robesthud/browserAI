@@ -188,7 +188,8 @@ async function tg(method, body) {
 const MAIN_KEYBOARD = {
   keyboard: [
     [{ text: '💬 Чат' }, { text: '🤖 Агент' }],
-    [{ text: '📁 Файлы' }, { text: '⚙️ Настройки' }, { text: '🆕 Новый чат' }],
+    [{ text: '📁 Файлы' }, { text: '⚙️ Настройки' }],
+    [{ text: '🆕 Новый чат' }, { text: 'ℹ️ Помощь' }],
   ],
   resize_keyboard: true,
   is_persistent: true,
@@ -445,45 +446,46 @@ async function handleAgentChat(user, userText) {
     if (aborted) return
     switch (kind) {
       case 'thinking':
-        schedulePlaceholderEdit(`🤖 Шаг ${data.step}: думаю...`)
+        schedulePlaceholderEdit(`🤔 *Шаг ${data.step}:* анализирую...`)
         break
       case 'thought':
         if (data.text && data.text.trim()) {
-          try { await reply(user.chat_id, `💭 ${data.text.trim().slice(0, 1500)}`, { reply_markup: undefined }) } catch { /* ignore Telegram send error */ }
+          const thinkingText = data.text.trim().slice(0, 1500)
+          try { await reply(user.chat_id, `💭 ${thinkingText}`, { reply_markup: undefined }) } catch { /* ignore */ }
         }
         break
       case 'tool_start': {
         const args = data.args || {}
         let summary = ''
-        if (args.path) summary = ` \`${args.path}\``
-        else if (args.command) summary = ` \`${String(args.command).slice(0, 80)}\``
-        else if (args.query) summary = ` "${args.query}"`
-        const r = await reply(user.chat_id, `🔧 *${data.name}*${summary}\n_выполняется..._`, { reply_markup: undefined })
+        if (args.path) summary = ` 📁 \`${args.path}\``
+        else if (args.command) summary = ` 💻 \`${String(args.command).slice(0, 60)}\``
+        else if (args.query) summary = ` 🔍 "${args.query}"`
+        const r = await reply(user.chat_id, `⚙️ *Инструмент:* \`${data.name}\`${summary}\n_выполняется..._`, { reply_markup: undefined })
         toolMsgIds.set(data.step, r?.result?.message_id)
         break
       }
       case 'tool_result': {
         const id = toolMsgIds.get(data.step)
         if (!id) break
-        const icon = data.ok ? '✓' : '✗'
-        let summary = ''
+        const icon = data.ok ? '✅' : '❌'
         let resultSnippet = ''
-        if (data.result?.stdout) resultSnippet = String(data.result.stdout).slice(0, 500)
-        else if (data.result?.content) resultSnippet = String(data.result.content).slice(0, 500)
+        if (data.result?.stdout) resultSnippet = String(data.result.stdout).slice(0, 800)
+        else if (data.result?.content) resultSnippet = String(data.result.content).slice(0, 800)
         else if (data.error) resultSnippet = data.error
-        const text = `${icon} *${data.name}*${summary}${resultSnippet ? '\n```\n' + resultSnippet + '\n```' : ''}`
-        try { await editMessage(user.chat_id, id, text) } catch { /* ignore Telegram edit error */ }
+        
+        const text = `${icon} *Завершено:* \`${data.name}\`\n${resultSnippet ? '\n\`\`\`\n' + resultSnippet + '\n\`\`\`' : ''}`
+        try { await editMessage(user.chat_id, id, text) } catch { /* ignore */ }
         break
       }
       case 'assistant':
         finalAccumulator = data.text || ''
         break
       case 'done':
-        schedulePlaceholderEdit(finalAccumulator || '_(агент завершил работу)_')
+        schedulePlaceholderEdit(finalAccumulator || '🏁 *Готово!*')
         addMessage(tgChatId, 'assistant', finalAccumulator)
         break
       case 'error':
-        await reply(user.chat_id, `❌ ${data.message || 'Ошибка агента'}`)
+        await reply(user.chat_id, `⚠️ *Ошибка агента:*\n${data.message || 'Неизвестная ошибка'}`)
         break
     }
   }
@@ -522,18 +524,18 @@ async function handleMessage(msg) {
   }
 
   // Commands
-  if (text === '/start' || text === '/help') {
+  if (text === '/start' || text === '/help' || text === 'ℹ️ Помощь') {
     await reply(chatId,
-      `👋 Привет, ${user.tg_first_name || 'друг'}!\n\n` +
-      `Я ваш AI-помощник BrowserAI. Просто пишите что хотите.\n\n` +
-      `*Меню снизу:*\n` +
-      `💬 *Чат* — обычный разговор с моделью\n` +
-      `🤖 *Агент* — модель может читать/писать файлы, искать в вебе, выполнять команды\n` +
-      `📁 *Файлы* — ваше хранилище\n` +
-      `⚙️ *Настройки* — выбор модели и режима\n` +
-      `🆕 *Новый чат* — очистить контекст\n\n` +
-      `Текущий режим: *${user.mode === 'agent' ? '🤖 Агент' : '💬 Чат'}*\n` +
-      `Модель: \`${user.model}\``,
+      `✨ *Добро пожаловать в BrowserAI!* ✨\n\n` +
+      `Я — ваш персональный AI-помощник, который умеет не только общаться, но и работать с файлами, вебом и кодом.\n\n` +
+      `📌 *Режимы работы:*\n` +
+      `• 💬 *Чат* — быстрые ответы и обсуждение задач.\n` +
+      `• 🤖 *Агент* — автономное выполнение сложных задач (программирование, поиск в интернете, работа в консоли).\n\n` +
+      `📁 *Файлы:* управляйте своими проектами прямо здесь (в разработке).\n` +
+      `⚙️ *Настройки:* выберите модель (DeepSeek Chat / Reasoner).\n\n` +
+      `--- \n` +
+      `📍 Текущий режим: *${user.mode === 'agent' ? '🤖 Агент' : '💬 Чат'}*\n` +
+      `🧠 Модель: \`${user.model}\``,
     )
     return
   }
