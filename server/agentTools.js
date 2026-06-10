@@ -1627,6 +1627,7 @@ Projects found: ${JSON.stringify(projects.slice(0,5))}`
       } catch (e) { return err(e.message) }
     },
   },
+}
 
 // Register use_subagents lazily on first read of TOOLS — avoids the
 // circular dep with subAgents.js (which imports invokeTool from this
