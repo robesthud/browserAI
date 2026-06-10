@@ -160,6 +160,14 @@ async function callOpenAICompatible({
   const choice = data?.choices?.[0]
   const msg = choice?.message || {}
 
+  // #13 FIX: Extract reasoning/thinking if present (DeepSeek R1 / OpenAI o1)
+  let text = typeof msg.content === 'string' ? msg.content : ''
+  if (msg.reasoning_content) {
+    // We prepending reasoning to the text if it's not already there,
+    // though the agent loop prefers a separate field.
+    // For simplicity, we just return the text but could store reasoning separately.
+  }
+
   // OpenAI native tool calls: [{id, type:"function", function:{name, arguments}}]
   const nativeToolCalls = Array.isArray(msg.tool_calls)
     ? msg.tool_calls
@@ -173,7 +181,8 @@ async function callOpenAICompatible({
     : []
 
   return {
-    text: typeof msg.content === 'string' ? msg.content : '',
+    text,
+    reasoning: msg.reasoning_content || msg.reasoning || '',
     toolCalls: nativeToolCalls,
     // Pass through provider-side token accounting so the agent loop can
     // surface running cost in the UI ('1.2k → 800 tok ≈ $0.003').

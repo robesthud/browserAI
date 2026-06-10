@@ -219,50 +219,33 @@ function messagesToPrompt(messages = []) {
   return lines.join('\n\n---\n\n').trim() || 'Привет'
 }
 
-function extractDeltaText(payload) {
-  // DeepSeek Web minified streaming format (2024+) — the production
-  // format we hit from chat.deepseek.com today:
-  //
-  //   data: {"v":{"response":{...,"content":""}}}                       — bootstrap frame (object, ignore)
-  //   data: {"p":"response/content","o":"APPEND","v":"Hello"}           — first chunk for content path
-  //   data: {"v":" world"}                                              — subsequent chunks (implicit path)
-  //   data: {"p":"response/status","v":"FINISHED"}                      — status update for status path
-  //   data: {"p":"response/accumulated_token_usage","o":"SET","v":52}   — metric for usage path
-  //
-  // The "v" field is *the* delta value; "p" tells us which path it
-  // targets. Without "p" the delta implicitly continues the most
-  // recent path the model wrote to (typically response/content).
-  // Earlier we also accepted root-level "content"/"text" as a fallback,
-  // but that mis-fired on the trailing `event: title  data: {"content":
-  // "Greeting response"}` named-event frame DeepSeek emits to set the
-  // chat title — the SSE line-based parser fed the title's data line
-  // here and we treated 'Greeting response' as the entire model output.
-  //
-  // So: only forward "v" when it is a string AND the path (if any) is
-  // the actual content channel. We let unknown paths through too, but
-  // strictly never touch root .content/.text/.choices anymore.
+function extractDelta(payload) {
+  // DeepSeek Web minified streaming format (2024+)
   const path = typeof payload?.p === 'string' ? payload.p : ''
   if (typeof payload?.v === 'string') {
     if (!path || path === 'response/content' || path.endsWith('/content')) {
-      return payload.v
+      return { content: payload.v }
     }
-    // Other paths (status, accumulated_token_usage, ...) — ignore.
-    return ''
+    if (path === 'response/reasoning_content' || path.endsWith('/reasoning_content')) {
+      return { reasoning: payload.v }
+    }
+    return {}
   }
 
-  // OpenAI-style fallback for proxies that wrap DeepSeek's stream in
-  // a classic {choices:[{delta:{content}}]} envelope.
+  // OpenAI-style fallback
   const choice = payload?.choices?.[0]
-  const delta = choice?.delta
-  if (typeof delta?.content === 'string') return delta.content
-  if (typeof choice?.message?.content === 'string') return choice.message.content
-
-  return ''
+  const delta = choice?.delta || {}
+  const content = delta.content || choice?.message?.content || ''
+  const reasoning = delta.reasoning_content || delta.reasoning || ''
+  
+  if (content || reasoning) return { content, reasoning }
+  return {}
 }
 
 function parseDeepSeekText(rawText = '') {
   const text = String(rawText || '')
   let acc = ''
+  let accReasoning = ''
   let sawSse = false
   for (const line of text.split(/\r?\n/)) {
     if (!line.startsWith('data:')) continue
@@ -271,18 +254,20 @@ function parseDeepSeekText(rawText = '') {
     if (!raw || raw === '[DONE]') continue
     try {
       const payload = JSON.parse(raw)
-      acc += extractDeltaText(payload)
+      const d = extractDelta(payload)
+      if (d.content) acc += d.content
+      if (d.reasoning) accReasoning += d.reasoning
     } catch { /* ignore malformed stream line */ }
   }
-  if (acc) return acc
+  if (acc || accReasoning) return { content: acc, reasoning: accReasoning }
 
   try {
     const payload = JSON.parse(text)
-    const direct = extractDeltaText(payload)
-    if (direct) return direct
+    const d = extractDelta(payload)
+    if (d.content || d.reasoning) return d
     const msg = payload?.message || payload?.msg || payload?.error?.message || payload?.error
     if (msg) throw new Error(String(msg))
-    if (sawSse) return ''
+    if (sawSse) return { content: '', reasoning: '' }
     throw new Error(safeSnippet(JSON.stringify(payload)))
   } catch (e) {
     if (e?.message && e.message !== text) throw e
@@ -307,10 +292,13 @@ async function streamDeepSeekToOpenAI(upstream, res) {
   const decoder = new TextDecoder()
   let buffer = ''
   let sentAny = false
-  const emit = (content) => {
-    if (!content) return
+  const emit = (d) => {
+    if (!d.content && !d.reasoning) return
     sentAny = true
-    res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n`)
+    const delta = {}
+    if (d.content) delta.content = d.content
+    if (d.reasoning) delta.reasoning_content = d.reasoning
+    res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`)
   }
 
   while (true) {
@@ -325,7 +313,7 @@ async function streamDeepSeekToOpenAI(upstream, res) {
       if (!raw || raw === '[DONE]') continue
       try {
         const payload = JSON.parse(raw)
-        emit(extractDeltaText(payload))
+        emit(extractDelta(payload))
         if (payload?.choices?.[0]?.finish_reason === 'stop') {
           res.write('data: [DONE]\n\n')
           res.end()
@@ -433,13 +421,13 @@ export async function handleDeepSeekWebChat({ reqBody, res }) {
 
   const rawText = await upstream.text().catch(() => '')
   try {
-    const content = parseDeepSeekText(rawText)
+    const { content, reasoning } = parseDeepSeekText(rawText)
     return res.json({
       id: `deepseek-web-${Date.now()}`,
       object: 'chat.completion',
       created: Math.floor(Date.now() / 1000),
       model,
-      choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+      choices: [{ index: 0, message: { role: 'assistant', content, reasoning_content: reasoning }, finish_reason: 'stop' }],
     })
   } catch (e) {
     return res.status(502).json({

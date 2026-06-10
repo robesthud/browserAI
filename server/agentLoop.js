@@ -528,6 +528,12 @@ function sse(res, event, data) {
   } catch { /* closed */ }
 }
 
+function sseKeepAlive(res) {
+  try {
+    res.write(': keep-alive\n\n')
+  } catch { /* closed */ }
+}
+
 /**
  * Emit the final assistant text as a sequence of small 'assistant_delta'
  * events plus a final 'assistant' event with the complete text. The
@@ -663,19 +669,23 @@ async function streamFinalAnswer(res, fullText) {
  */
 async function streamingLLMCall(res, step, opts, hooks = {}) {
   // Inline incremental XML parser. Watches for both `<xai:function_call>`,
-  // `<tool_use>`, and `<function_call>` openers/closers. As soon as a
-  // closer is seen, the buffer between is extracted, parsed for tool name
-  // + parameters, and reported via onParsedCall.
-  const OPEN_RE  = /<(?:xai:function_call|tool_use|function_call)([^>]*)>/i
-  const CLOSE_RE = /<\/(?:xai:function_call|tool_use|function_call)>/i
+  // `<tool_use>`, `<function_call>`, and also `<thinking>` / `<thought>` blocks.
+  // Closers trigger either tool execution or a 'thinking' SSE event.
+  const OPEN_RE  = /<(?:xai:function_call|tool_use|function_call|thinking|thought)([^>]*)>/i
+  const CLOSE_RE = /<\/(?:xai:function_call|tool_use|function_call|thinking|thought)>/i
 
   let scanBuf = ''                  // running buffer of everything not yet matched
   let visibleTextBuf = ''           // running buffer of "outside any XML block" (the human-visible final answer)
-  let insideXml = false             // are we currently inside an open <xai:function_call>?
+  let insideXml = false             // are we currently inside an open <xai:function_call> or <thinking>?
+  let xmlTagName = ''               // e.g. 'xai:function_call' or 'thinking'
   let xmlOpenAttrs = ''             // attrs of the open tag (for legacy name="..." parsing)
   const preParsedCalls = []         // [{tool,args}] reported live
 
-  function parseXmlBody(body, openAttrs) {
+  function parseXmlBody(body, tagName, openAttrs) {
+    // If it's a thinking block, just return it as a special pseudo-tool
+    if (tagName === 'thinking' || tagName === 'thought') {
+      return { kind: 'thinking', text: body.trim() }
+    }
     const nameMatch =
       body.match(/<xai:tool_name>([^<]+)<\/xai:tool_name>/i) ||
       body.match(/<tool_name>([^<]+)<\/tool_name>/i) ||
@@ -697,7 +707,7 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
         if (j && typeof j === 'object') Object.assign(params, j)
       } catch { /* ignore */ }
     }
-    return { tool, args: params }
+    return { kind: 'tool', tool, args: params }
   }
 
   function flushVisibleText() {
@@ -723,6 +733,7 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
         }
         const before = scanBuf.slice(0, m.index)
         if (before) { visibleTextBuf += before; flushVisibleText() }
+        xmlTagName = m[0].replace(/[<>]/g, '').split(' ')[0]
         xmlOpenAttrs = m[1] || ''
         insideXml = true
         scanBuf = scanBuf.slice(m.index + m[0].length)
@@ -732,12 +743,18 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
         const body = scanBuf.slice(0, m.index)
         scanBuf = scanBuf.slice(m.index + m[0].length)
         insideXml = false
-        const parsed = parseXmlBody(body, xmlOpenAttrs)
+        const parsed = parseXmlBody(body, xmlTagName, xmlOpenAttrs)
+        const tagName = xmlTagName
+        xmlTagName = ''
         xmlOpenAttrs = ''
         if (parsed) {
-          preParsedCalls.push(parsed)
-          sse(res, 'tool_preview', { step, name: parsed.tool, args: parsed.args })
-          try { hooks.onParsedCall?.(parsed) } catch { /* hook errors must not break stream */ }
+          if (parsed.kind === 'thinking') {
+             sse(res, 'thinking_delta', { step, chunk: parsed.text })
+          } else {
+            preParsedCalls.push(parsed)
+            sse(res, 'tool_preview', { step, name: parsed.tool, args: parsed.args })
+            try { hooks.onParsedCall?.(parsed) } catch { /* hook errors must not break stream */ }
+          }
         }
       }
     }
@@ -889,6 +906,9 @@ async function runAgentInner({
   }
   sse(res, 'agent_context', agentContext)
   sse(res, 'agent_state', agentState)
+
+  const keepAliveInterval = setInterval(() => sseKeepAlive(res), 15_000)
+  res.on('close', () => clearInterval(keepAliveInterval))
 
   // ── Tracked state for safety nets (Agent IQ +20)
   // recentCallFingerprints: rolling list of [tool::args] strings — used by

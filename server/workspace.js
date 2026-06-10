@@ -144,13 +144,25 @@ function isInsideRoot(fullPath, rootPath) {
 }
 
 function normalizeRelativePath(relativePath = '') {
-  const raw = String(relativePath || '').replace(/\\/g, '/')
-  // Отбрасываем null bytes — они вызывают information disclosure через сообщение Node.js
+  let raw = String(relativePath || '').replace(/\\/g, '/')
+  // Отбрасываем null bytes
   if (raw.includes('\0')) throw new Error('Invalid path: null bytes not allowed')
   if (raw.length > 1024) throw new Error('Invalid path: too long')
   if (/%2e/i.test(raw) || /%2f/i.test(raw) || /%5c/i.test(raw)) {
     throw new Error('Path traversal detected: encoded path segments are not allowed')
   }
+
+  // #13 FIX: Если агент передал абсолютный путь, который ссылается на корень контейнера /workspace
+  // или на текущий scoped root (например, /workspace/chats/ID/...), отрезаем этот префикс.
+  const containerRoot = getContainerWorkspaceRoot() // e.g. /workspace/chats/mq75yz6nac13wk1q
+  if (raw.startsWith(containerRoot + '/')) {
+    raw = raw.slice(containerRoot.length + 1)
+  } else if (raw.startsWith('/workspace/')) {
+    raw = raw.slice(11) // strip "/workspace/"
+  } else if (raw === containerRoot || raw === '/workspace') {
+    raw = ''
+  }
+
   const normalized = path.posix.normalize(raw).replace(/^\/+/, '')
   if (normalized === '.' || normalized === '') return ''
   if (normalized === '..' || normalized.startsWith('../') || normalized.includes('/../')) {
