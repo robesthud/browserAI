@@ -144,7 +144,8 @@ function isInsideRoot(fullPath, rootPath) {
 }
 
 function normalizeRelativePath(relativePath = '') {
-  let raw = String(relativePath || '').replace(/\\/g, '/')
+  // #20 FIX: Aggressive trim. AI models often include spaces inside XML parameters.
+  let raw = String(relativePath || '').trim().replace(/\\/g, '/')
   // Отбрасываем null bytes
   if (raw.includes('\0')) throw new Error('Invalid path: null bytes not allowed')
   if (raw.length > 1024) throw new Error('Invalid path: too long')

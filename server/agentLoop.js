@@ -712,7 +712,13 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
 
   function flushVisibleText() {
     if (!visibleTextBuf) return
-    sse(res, 'assistant_delta', { step, chunk: visibleTextBuf })
+    // #21 FIX: If we are inside an XML tag or have already seen one this turn, 
+    // treat prose as a thought to keep the main chat clean.
+    if (preParsedCalls.length > 0 || insideXml) {
+       sse(res, 'thought', { step, text: visibleTextBuf })
+    } else {
+       sse(res, 'assistant_delta', { step, chunk: visibleTextBuf })
+    }
     visibleTextBuf = ''
   }
 
@@ -995,12 +1001,11 @@ async function runAgentInner({
 
   try {
     while (step < maxSteps) {
-      if (aborted) return
+      if (aborted) break
       if (Date.now() > deadline) {
         sse(res, 'error', { message: `Total deadline of ${DEFAULT_DEADLINE_MS / 1000}s exceeded after ${step} steps` })
         sseDone(res, { steps: step, reason: 'deadline' }, tokens)
-        res.end()
-        return
+        break
       }
       step += 1
       pushedBackThisTurn = false
@@ -1620,12 +1625,14 @@ ok: ${r.ok}
       }
     }
 
-    sse(res, 'error', { message: `Agent stopped after ${maxSteps} steps without a final answer` })
-    sseDone(res, { steps: step, reason: 'max-steps' }, tokens)
-    res.end()
+    if (step >= maxSteps) {
+      sse(res, 'error', { message: `Agent stopped after ${maxSteps} steps without a final answer` })
+      sseDone(res, { steps: step, reason: 'max-steps' }, tokens)
+    }
   } catch (e) {
     sse(res, 'error', { message: e?.message || String(e) })
     sseDone(res, { steps: step, reason: 'crash' }, tokens)
-    try { res.end() } catch { /* response already closed */ }
+  } finally {
+    try { res.end() } catch { /* ignore */ }
   }
 }
