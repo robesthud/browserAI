@@ -8,10 +8,10 @@
  * Replaces vibes-based testing with a strict schema-check suite.
  */
 import { getProviderCapabilities } from './llmClient.js'
-import { validateToolCall, normalizeToolResult, createAgentState } from './agentCore.js'
+import { validateToolCall, createAgentState } from './agentCore.js'
 import { redactSecrets } from './sandboxPolicy.js'
 import { upsertAgentStateDigest } from './contextManager.js'
-import { registerQuestion, answerQuestion, cancelQuestion } from './askUserRegistry.js'
+import { registerQuestion, answerQuestion } from './askUserRegistry.js'
 import { writeFileContent, readWorkspaceFile, deleteItem } from './workspace.js'
 
 export async function runAgentSelfTest({ userId, chatId } = {}) {
