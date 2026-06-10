@@ -52,32 +52,34 @@ export function inferProviderKind(baseUrl = '') {
 
 export function classifyAgentTask(text = '') {
   const t = String(text || '').toLowerCase()
-
   const has = (...words) => words.some((w) => t.includes(w))
 
-  if (has('деплой', 'разверни', 'сервер', 'timeweb', 'docker', 'nginx', 'ssl', 'github actions', 'ci/cd')) {
+  // 1:1 Arena Parity: Aggressive Task Classification.
+  // We want to trigger Agent Mode for ANYTHING that looks like work,
+  // not just high-complexity requests.
+  
+  if (has('деплой', 'разверни', 'сервер', 'timeweb', 'docker', 'nginx', 'ssl', 'github', 'ci/cd', 'логи', 'logs')) {
     return { type: 'deploy_ops', complexity: 'high', suggestedMaxSteps: 60 }
   }
-  if (has('исправ', 'почини', 'реализуй', 'добавь', 'перепиши', 'refactor', 'fix ', 'implement', 'bug', 'ошибк')) {
+  if (has('исправ', 'почини', 'реализуй', 'добавь', 'перепиши', 'refactor', 'fix ', 'implement', 'bug', 'ошибк', 'код', 'скрипт', 'script', 'function', 'тест', 'test')) {
     return { type: 'coding_change', complexity: 'high', suggestedMaxSteps: 50 }
   }
-  if (has('изучи', 'проанализируй', 'сравни', 'аудит', 'проверь репозиторий', 'архитектур')) {
+  if (has('изучи', 'проанализируй', 'сравни', 'аудит', 'проверь', 'архитектур', 'структур', 'файл', 'папк')) {
     return { type: 'repo_analysis', complexity: 'high', suggestedMaxSteps: 40 }
   }
-  if (has('найди в интернете', 'актуальн', 'новост', 'документац', 'research', 'web search')) {
+  if (has('найди в интернете', 'актуальн', 'новост', 'документац', 'research', 'web search', 'поиск')) {
     return { type: 'research', complexity: 'medium', suggestedMaxSteps: 25 }
   }
-  if (has('браузер', 'открой сайт', 'скриншот', 'кликни', 'browser')) {
+  if (has('браузер', 'открой сайт', 'скриншот', 'кликни', 'browser', 'url')) {
     return { type: 'browser_task', complexity: 'medium', suggestedMaxSteps: 35 }
   }
-  if (has('картинк', 'изображен', 'сгенерируй изображ', 'лого', 'иконк')) {
-    return { type: 'image_task', complexity: 'medium', suggestedMaxSteps: 20 }
+
+  // Any non-empty message longer than a greeting should probably be handled by an agent
+  if (t.length > 20) {
+    return { type: 'general_agent_task', complexity: 'medium', suggestedMaxSteps: 20 }
   }
 
-  if (t.length < 140 && !/[?؟]?$/.test(t.trim())) {
-    return { type: 'simple_answer', complexity: 'low', suggestedMaxSteps: 6 }
-  }
-  return { type: 'general_agent_task', complexity: 'medium', suggestedMaxSteps: 15 }
+  return { type: 'simple_answer', complexity: 'low', suggestedMaxSteps: 6 }
 }
 
 export function buildAgentContext({ provider = {}, history = [], extraSystem = '', userId = '', workspaceScope = '', maxSteps = 15 } = {}) {
