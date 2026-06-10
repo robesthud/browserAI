@@ -1257,51 +1257,9 @@ async function runAgentInner({
           await streamFinalAnswer(res, reply.text || '')
         }
 
-        // ── v2.28 Experience Persistence (Lessons Learned) ───────────
-        // If the task was successful (no errors, not aborted), ask the 
-        // model to distill a single important lesson learned for this repo.
-        if (didRealWork && !aborted && userId) {
-          try {
-            const { lookupModel, suggestStrongSibling } = await import('./modelKnowledge.js')
-            let lessonModel = provider.model
-            const tier = lookupModel(provider.model).tier
-            if (tier === 'cheap') {
-              const strong = suggestStrongSibling(provider.model)
-              if (strong) lessonModel = strong
-            }
-
-            const lessonPrompt = `Based on our conversation, what is one CRITICAL lesson learned about this specific codebase or environment that future agents should know? (e.g. "always use port 8080", "Nginx config is in /data/config", "React components use .jsx, not .js"). Return ONLY the lesson in one short sentence.`
-            const lessonReply = await callLLM({
-              baseUrl: provider.baseUrl, apiKey: provider.apiKey,
-              authType: provider.authType || 'bearer',
-              authHeader: provider.authHeader || '',
-              extraHeaders: provider.extraHeaders || {},
-              model: lessonModel,
-              messages: [
-                ...convo.slice(-4),
-                { role: 'user', content: lessonPrompt }
-              ],
-              temperature: 0.1,
-            })
-            const lessonText = String(lessonReply?.text || '').trim().replace(/^lesson:\s*/i, '')
-            if (lessonText && lessonText.length > 5 && lessonText.length < 300) {
-              const lessonFile = '.browserai/lessons.md'
-              const existing = await withWorkspaceScope(chatId, () => readWorkspaceFile(lessonFile).catch(() => null))
-              let content = `# Lessons Learned\n\n- ${lessonText}\n`
-              if (existing?.text) {
-                if (!existing.text.includes(lessonText)) {
-                  content = existing.text.trim() + `\n- ${lessonText}\n`
-                } else {
-                  content = existing.text
-                }
-              }
-              await withWorkspaceScope(chatId, () => writeFileContent(lessonFile, content))
-              sse(res, 'thought', { step, text: `Запомнил опыт: ${lessonText}` })
-            }
-          } catch (e) { console.warn('[agent] lesson record failed:', e.message) }
-        }
-
-        sseDone(res, { steps: step, reason: 'final' }, tokens)
+        // #28 FIX: Hard exit for Project Engine.
+        // Prevent models from asking "Anything else?" and keep the UI clean.
+        sseDone(res, { steps: step, reason: 'project-built' }, tokens)
         res.end()
         return
       }
