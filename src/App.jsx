@@ -361,24 +361,11 @@ function BrowserApp({ user, reloadAuth }) {
 
   const shouldUseAgentForText = (text, taskType) => {
     if (!effectiveAgentMode) return false
-    const lower = String(text || '').toLowerCase()
-    // Phrases that *unambiguously* need tools (download files, manage workspace,
-    // run shell, hit GitHub, etc.). When any of these are present we ALWAYS
-    // run the agent loop — even if the auto-router decided the task is a
-    // 'chat' or 'image' (so the model wouldn't otherwise see its toolbox).
-    // Without this, "Скачай файлы с гитхаб robesthud/browserai" would print
-    // a Markdown instruction instead of actually downloading the repo.
-    const NEEDS_TOOLS_RE = /(скачай|скачать|загруз|клонир|оживи фай|workspace|воркспейс|папк|файл|github|gitlab|gitea|bitbucket|git[\s_-]?clone|\.git\b|гитхаб|гитлаб|репозитор|repo\s|запусти|выполни\s+команд|исправь|измени файл|create file|создай файл|удали файл|delete file|переименуй)/i
-    if (NEEDS_TOOLS_RE.test(lower)) return true
-    // For "soft" non-tool tasks (just chat / image-gen / fast Q&A), keep
-    // the conversation in plain chat mode so the user doesn't see the
-    // tool-call UI noise.
-    if (autoMode && ['image', 'chat', 'fast', 'creative', 'translation'].includes(taskType || '')) return false
-    return (
-      taskType === 'code' ||
-      lower.includes('исправь') ||
-      lower.includes('измени')
-    )
+    // #32 FIX: Project Engine Mode. 
+    // If agent mode is enabled, ALWAYS use the agent loop. 
+    // We want the AI to have access to tools for EVERY request, 
+    // transforming BrowserAI into a pure autonomous engineering terminal.
+    return true
   }
 
   // Обёртка sendMessage с авторежимом
