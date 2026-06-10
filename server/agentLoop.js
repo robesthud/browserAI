@@ -52,6 +52,25 @@ async function buildSystemPrompt({ extraSystem = '', native = false, extraTools 
     activityText = recentActivity.map(a => `- ${new Date(a.ts).toLocaleTimeString()}: ${a.reason} ${a.path}`).join('\n')
   }
 
+  // 1:1 Arena Parity: Connect MCP Server Discovery.
+  // We fetch currently active MCP tools and pass them to the system prompt
+  // so the agent knows about connected external services (Slack, Jira, etc).
+  let mcpServersBlock = ''
+  try {
+    const { getMcpServerStatus } = await import('./mcpClient.js')
+    const servers = getMcpServerStatus() || []
+    if (servers.length > 0) {
+      mcpServersBlock = `# Connected MCP Services\n\nYou have access to external tools via Model Context Protocol:\n`
+      for (const s of servers) {
+        if (!s.tools?.length) continue
+        mcpServersBlock += `\n## Service: ${s.name} (${s.status})\n`
+        for (const t of s.tools) {
+          mcpServersBlock += `- \`mcp__${s.name}__${t.name}\`: ${t.description || ''}\n`
+        }
+      }
+    }
+  } catch { /* optional */ }
+
   return buildClineSystemPrompt({
     extraSystem,
     native,
@@ -59,6 +78,7 @@ async function buildSystemPrompt({ extraSystem = '', native = false, extraTools 
     cwd: '/workspace',
     projectRules,
     recentActivity: activityText,
+    mcpServersBlock,
   })
 }
 
@@ -627,7 +647,17 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
           const answers = await Promise.all(rawList.slice(0, 6).map(q => { const { id, promise, expiresAt } = registerQuestion({ kind: 'ask_user', userId, chatId, step, sub: idx, question: q.question, options: q.options, multi: q.multi, allowCustom: q.allowCustomResponse }); sse(res, 'ask_user', { step, sub: idx, question_id: id, expiresAt, question: q.question, options: q.options }); return promise.then(a => ({ ok: true, answer: a }), e => ({ ok: false, error: e.message })) }))
           r = { ok: true, result: answers.length === 1 ? answers[0].answer : { answers } }
         } else {
-          r = await invokeTool(call.tool, { ...call.args, _provider: provider }, { signal: abortCtl.signal, onStdout: (c) => sse(res, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stdout', chunk: String(c).slice(0, 2000) }), onStderr: (c) => sse(res, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stderr', chunk: String(c).slice(0, 2000) }), userId, chatId, extraTools })
+          r = await invokeTool(call.tool, { 
+            ...call.args, 
+            _provider: provider,
+            _projectRules: (await withWorkspaceScope(chatId, () => readProjectRules().catch(() => ''))),
+            _recentActivity: (await withWorkspaceScope(chatId, () => listRecentWorkspaceActivity({ sinceMs: 24 * 60 * 60 * 1000 }).catch(() => []))).map(a => `${a.reason} ${a.path}`).join(', ')
+          }, { 
+            signal: abortCtl.signal, 
+            onStdout: (c) => sse(res, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stdout', chunk: String(c).slice(0, 2000) }), 
+            onStderr: (c) => sse(res, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stderr', chunk: String(c).slice(0, 2000) }), 
+            userId, chatId, extraTools 
+          })
         }
         if (!r.ok && !pushedBackThisTurn && !aborted && categoryOf(call.tool) !== 'ask') {
           const hint = getRecoveryHint(call.tool, r.error, call.args)

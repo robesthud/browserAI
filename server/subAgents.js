@@ -75,10 +75,15 @@ function parseXmlCallsSimple(text) {
   return calls
 }
 
-async function runOneSubagent({ prompt, provider, signal, userId }) {
+async function runOneSubagent({ prompt, provider, signal, userId, parentContext = {} }) {
+  // 1:1 Arena Parity: Sub-agents now inherit project rules and recent activity
+  // from the parent so they aren't "blind" to the codebase architecture.
+  const contextHeader = parentContext.projectRules ? `Project Rules:\n${parentContext.projectRules}\n\n` : ''
+  const activityHeader = parentContext.recentActivity ? `Recent Activity:\n${parentContext.recentActivity}\n\n` : ''
+
   const convo = [
     { role: 'system', content: SUBAGENT_SYSTEM },
-    { role: 'user',   content: String(prompt || '').slice(0, 4000) },
+    { role: 'user',   content: `${contextHeader}${activityHeader}TASK: ${String(prompt || '').slice(0, 4000)}` },
   ]
   const deadline = Date.now() + 60_000
   const stats = { tools: 0, llm: 0, promptTokens: 0, completionTokens: 0 }
@@ -149,12 +154,12 @@ async function runOneSubagent({ prompt, provider, signal, userId }) {
  * @param {string}   [opts.userId]
  * @returns {Promise<Array<{ ok, text?, error?, stats }>>}
  */
-export async function runSubagents({ prompts, provider, signal, userId }) {
+export async function runSubagents({ prompts, provider, signal, userId, parentContext = {} }) {
   const arr = (Array.isArray(prompts) ? prompts : [prompts])
     .filter((p) => p && String(p).trim())
     .slice(0, 5)
   if (!arr.length) return []
-  return Promise.all(arr.map((p) => runOneSubagent({ prompt: p, provider, signal, userId })))
+  return Promise.all(arr.map((p) => runOneSubagent({ prompt: p, provider, signal, userId, parentContext })))
 }
 
 /**
@@ -179,6 +184,7 @@ export const USE_SUBAGENTS_TOOL = {
     }
     const results = await runSubagents({
       prompts, provider, signal: args._signal, userId: args._userId,
+      parentContext: { projectRules: args._projectRules, recentActivity: args._recentActivity },
     })
     const out = results.map((r, i) => {
       const head = `## Sub-agent ${i + 1} (${r.ok ? 'ok' : 'failed'}) — ${r.stats?.llm || 0} LLM, ${r.stats?.tools || 0} tools`
