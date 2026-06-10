@@ -129,37 +129,31 @@ function fuzzyFindMatch(haystack, needle) {
   if (!haystack || !needle) return null
   // 1. Exact match (cheap fast path).
   const ex = haystack.indexOf(needle)
-  if (ex !== -1) return { start: ex, end: ex + needle.length, kind: 'exact' }
+  if (ex !== -1) return { start: ex, end: ex + needle.length, kind: "exact" }
 
-  // 2. Whitespace-normalised match — collapse any run of \s+ in the needle
-  //    to a single \s+ regex, escape everything else.
-  try {
-    const pattern = needle
-      .split(/\s+/)
-      .map((tok) => tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-      .filter(Boolean)
-      .join('\\s+')
-    if (pattern) {
-      const re = new RegExp(pattern, 'm')
-      const m = re.exec(haystack)
-      if (m) return { start: m.index, end: m.index + m[0].length, kind: 'whitespace' }
-    }
-  } catch { /* ignore regex build failure */ }
+  // 2. Normalize line endings and trailing whitespace (common model drift)
+  const normHaystack = haystack.replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, "")
+  const normNeedle = needle.replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, "")
+  const nx = normHaystack.indexOf(normNeedle)
+  if (nx !== -1) {
+    const pattern = normNeedle.split("\n").map(l => l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[ \t\r]*").join("\\n[ \t\r]*")
+    const re = new RegExp(pattern, "m")
+    const m = re.exec(haystack)
+    if (m) return { start: m.index, end: m.index + m[0].length, kind: "normalized" }
+  }
 
-  // 3. Per-line indentation-tolerant match — match the needle ignoring
-  //    leading whitespace on every line independently. Useful when the
-  //    LLM forgot 2 spaces of indent but otherwise wrote a perfect block.
+  // 3. Indentation-agnostic match (Aider/Arena style)
   try {
-    const needleLines = String(needle).split('\n').map((l) => l.replace(/^\s+/, ''))
+    const needleLines = String(needle).split("\n").map(l => l.trim()).filter(Boolean)
     if (needleLines.length >= 2) {
-      const escaped = needleLines.map((l) =>
-        l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-      const pattern = escaped.join('\\n[ \\t]*')
-      const re = new RegExp('[ \\t]*' + pattern, 'm')
+      const pattern = needleLines.map(l => l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[ \t]*\\n[ \t]*")
+      const re = new RegExp("[ \t]*" + pattern + "[ \t]*", "m")
       const m = re.exec(haystack)
-      if (m) return { start: m.index, end: m.index + m[0].length, kind: 'trim-lines' }
+      if (m) return { start: m.index, end: m.index + m[0].length, kind: "indent-agnostic" }
     }
   } catch { /* ignore */ }
+  return null
+}
 
   return null
 }
@@ -175,50 +169,29 @@ function fuzzyFindMatch(haystack, needle) {
 // as `diagnostics: { available: false }`.
 async function quickSyntaxCheck(relPath, content) {
   try {
-    const ext = String(relPath || '').toLowerCase().split('.').pop()
-    // JSON
-    if (ext === 'json' || ext === 'webmanifest' || relPath.endsWith('package-lock.json')) {
-      try {
-        JSON.parse(String(content))
-        return { available: true, ok: true, kind: 'json', lang: 'json' }
-      } catch (e) {
-        return { available: true, ok: false, kind: 'json', lang: 'json', error: e.message }
-      }
+    const ext = String(relPath || "").toLowerCase().split(".").pop()
+    if (ext === "json" || ext === "webmanifest" || relPath.endsWith("package-lock.json")) {
+      try { JSON.parse(String(content)); return { available: true, ok: true, kind: "json" } }
+      catch (e) { return { available: true, ok: false, kind: "json", error: e.message } }
     }
-    // JavaScript / TypeScript / JSX
-    if (['js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx'].includes(ext)) {
-      // Use Node's --check via a subprocess? Risky and slow.
-      // Instead: a tiny, fast parser pass with Function() for plain .js,
-      // and a brace/paren balance check for everything else.
-      if (ext === 'js' || ext === 'mjs' || ext === 'cjs') {
-        try {
-          new Function(String(content))
-          return { available: true, ok: true, kind: 'syntax', lang: ext }
-        } catch (e) {
-          // Function() can't parse ESM `import` statements — fall through
-          // to brace balance check in that case.
-          if (!/import\s|export\s/.test(content)) {
-            return { available: true, ok: false, kind: 'syntax', lang: ext, error: e.message }
-          }
-        }
-      }
-      // Brace / paren / bracket balance — catches the most common copy-paste
-      // mistakes without needing a real parser.
+    if (["js", "jsx", "mjs", "cjs", "ts", "tsx"].includes(ext)) {
       const balance = checkBalance(String(content))
-      if (!balance.ok) {
-        return { available: true, ok: false, kind: 'balance', lang: ext, error: balance.error }
+      if (!balance.ok) return { available: true, ok: false, kind: "balance", error: balance.error }
+      if (content.length < 100000) {
+        try { 
+          const { runSandboxCommand } = await import("./agentSandbox.js")
+          const checkCmd = ext === "ts" || ext === "tsx" ? "echo ok" : `node --check - <<EOF\n${content}\nEOF`
+          if (checkCmd !== "echo ok") {
+            const r = await runSandboxCommand({ command: checkCmd, timeoutMs: 3000 })
+            if (r.exitCode !== 0) return { available: true, ok: false, kind: "syntax", error: r.stderr.split("\n")[0] }
+          }
+        } catch { /* ignore runner errors */ }
       }
-      return { available: true, ok: true, kind: 'balance', lang: ext }
+      return { available: true, ok: true, kind: "syntax" }
     }
-    // YAML — extremely lightweight indentation check
-    if (ext === 'yml' || ext === 'yaml') {
-      // Not implementing a YAML parser here; just report skip.
-      return { available: false, kind: 'yaml-skip' }
-    }
-    return { available: false, kind: 'unknown-ext' }
-  } catch (e) {
-    return { available: false, error: e?.message || String(e) }
-  }
+    return { available: false }
+  } catch (e) { return { available: false, error: e.message } }
+}
 }
 
 function checkBalance(src) {
