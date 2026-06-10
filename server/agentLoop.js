@@ -233,9 +233,14 @@ async function streamFinalAnswer(res, fullText) {
   
   // #37 FIX: Clean up thinking leakage in final answer.
   // Sometimes the model includes the "Transition to summary" prose in the final text block.
-  const cleaned = text.replace(/^(?:to respond with|according to|the user just said|thus output|i should state)[\s\S]*?(?:"Привет|"Привет!)/i, '"Привет')
-                      .replace(/^(?:to respond with|according to|the user just said|thus output|i should state)[\s\S]*?(?:Привет|Привет!)/i, 'Привет')
-                      .trim()
+  const cleaned = text
+    .replace(/^(?:to respond with|according to|the user just said|thus output|i should state)[\s\S]*?(?:"Привет|"Привет!|Привет|Привет!)/i, (match) => {
+       // Keep the greeting itself
+       if (match.toLowerCase().includes('привет!')) return 'Привет!'
+       if (match.toLowerCase().includes('привет')) return 'Привет'
+       return ''
+    })
+    .trim()
 
   const parts = cleaned.match(/.{1,32}/g) || [cleaned]
   for (const chunk of parts) {
