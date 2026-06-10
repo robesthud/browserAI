@@ -445,48 +445,54 @@ async function handleAgentChat(user, userText) {
 
   async function handleAgentEvent(kind, data) {
     if (aborted) return
+    const payload = data.payload || data
     switch (kind) {
       case 'thinking':
-        schedulePlaceholderEdit(`🤔 *Шаг ${data.step}:* анализирую...`)
+        schedulePlaceholderEdit(`🤔 *Размышляю...* [Шаг ${payload.step || '?'}]`)
+        break
+      case 'agent_state':
+        if (payload.currentStep) {
+          schedulePlaceholderEdit(`🛠 *Действие:* ${payload.currentStep}`)
+        }
         break
       case 'thought':
-        if (data.text && data.text.trim()) {
-          const thinkingText = data.text.trim().slice(0, 1500)
+        if (payload.text && payload.text.trim()) {
+          const thinkingText = payload.text.trim().slice(0, 1500)
           try { await reply(user.chat_id, `💭 ${thinkingText}`, { reply_markup: undefined }) } catch { /* ignore */ }
         }
         break
       case 'tool_start': {
-        const args = data.args || {}
+        const args = payload.args || {}
         let summary = ''
         if (args.path) summary = ` 📁 \`${args.path}\``
         else if (args.command) summary = ` 💻 \`${String(args.command).slice(0, 60)}\``
         else if (args.query) summary = ` 🔍 "${args.query}"`
-        const r = await reply(user.chat_id, `⚙️ *Инструмент:* \`${data.name}\`${summary}\n_выполняется..._`, { reply_markup: undefined })
-        toolMsgIds.set(data.step, r?.result?.message_id)
+        const r = await reply(user.chat_id, `⚙️ *Выполняю:* \`${payload.name}\`${summary}`, { reply_markup: undefined })
+        toolMsgIds.set(`${payload.step}-${payload.sub || 0}`, r?.result?.message_id)
         break
       }
       case 'tool_result': {
-        const id = toolMsgIds.get(data.step)
+        const id = toolMsgIds.get(`${payload.step}-${payload.sub || 0}`)
         if (!id) break
-        const icon = data.ok ? '✅' : '❌'
+        const icon = payload.ok ? '✅' : '❌'
         let resultSnippet = ''
-        if (data.result?.stdout) resultSnippet = String(data.result.stdout).slice(0, 800)
-        else if (data.result?.content) resultSnippet = String(data.result.content).slice(0, 800)
-        else if (data.error) resultSnippet = data.error
+        if (payload.result?.stdout) resultSnippet = String(payload.result.stdout).slice(0, 800)
+        else if (payload.result?.content) resultSnippet = String(payload.result.content).slice(0, 800)
+        else if (payload.error) resultSnippet = payload.error
         
-        const text = `${icon} *Завершено:* \`${data.name}\`\n${resultSnippet ? '\n```\n' + resultSnippet + '\n```' : ''}`
+        const text = `${icon} *Завершено:* \`${payload.name}\`\n${resultSnippet ? '\n```\n' + resultSnippet + '\n```' : ''}`
         try { await editMessage(user.chat_id, id, text) } catch { /* ignore */ }
         break
       }
       case 'assistant':
-        finalAccumulator = data.text || ''
+        finalAccumulator = payload.text || ''
         break
       case 'done':
-        schedulePlaceholderEdit(finalAccumulator || '🏁 *Готово!*')
+        schedulePlaceholderEdit(finalAccumulator || '🏁 *Готово*')
         addMessage(tgChatId, 'assistant', finalAccumulator)
         break
       case 'error':
-        await reply(user.chat_id, `⚠️ *Ошибка агента:*\n${data.message || 'Неизвестная ошибка'}`)
+        await reply(user.chat_id, `⚠️ *Ошибка:*\n${payload.message || 'Неизвестная ошибка'}`)
         break
     }
   }
@@ -528,16 +534,11 @@ async function handleMessage(msg) {
   // Commands
   if (text === '/start' || text === '/help' || text === 'ℹ️ Помощь') {
     await reply(chatId,
-      `✨ *Добро пожаловать в BrowserAI!* ✨\n\n` +
-      `Я — ваш персональный AI-помощник, который умеет не только общаться, но и работать с файлами, вебом и кодом.\n\n` +
-      `📌 *Режимы работы:*\n` +
-      `• 💬 *Чат* — быстрые ответы и обсуждение задач.\n` +
-      `• 🤖 *Агент* — автономное выполнение сложных задач (программирование, поиск в интернете, работа в консоли).\n\n` +
-      `📁 *Файлы:* управляйте своими проектами прямо здесь (в разработке).\n` +
-      `⚙️ *Настройки:* выберите модель (DeepSeek Chat / Reasoner).\n\n` +
-      `--- \n` +
-      `📍 Текущий режим: *${user.mode === 'agent' ? '🤖 Агент' : '💬 Чат'}*\n` +
-      `🧠 Модель: \`${user.model}\``,
+      `🏗️ *BrowserAI Project Engine* — [Arena.ai Edition]\n\n` +
+      `Автономная инженерная система. Я работаю напрямую с твоим workspace, выполняю код и решаю задачи в консоли.\n\n` +
+      `📍 Текущий режим: *${user.mode === 'agent' ? '🤖 Агент (Autonomous)' : '💬 Чат (Discussion)'}*\n` +
+      `🧠 Модель: \`${user.model}\`\n\n` +
+      `_Используй кнопки меню ниже для управления или просто отправь задачу._`,
     )
     return
   }
