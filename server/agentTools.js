@@ -1345,8 +1345,12 @@ Projects found: ${JSON.stringify(projects.slice(0,5))}`
         // its working directory directly.
         if (persist && _chatId) {
           const { runInSession } = await import('./shellSession.js')
+          // 1:1 Arena Parity: Persistent CWD.
+          // If a specific cwd is requested, we cd into it BEFORE running the command.
+          // In a persistent session, this change SHOULD persist to the next turn,
+          // matching how a real terminal works. No parentheses = no subshell trap.
           const wrappedCommand = (cwd && cwd !== getContainerWorkspaceRoot())
-            ? `( cd ${JSON.stringify(cwd)} && ${command} )`
+            ? `cd ${JSON.stringify(cwd)} && ${command}`
             : String(command)
           const r = await runInSession({
             chatId: _chatId,

@@ -61,10 +61,15 @@ function execShell(command, opts = {}) {
 }
 
 async function ensureDisplay() {
+  const enabled = String(process.env.BROWSERAI_COMPUTER_USE || '').toLowerCase() === 'on'
+  if (!enabled) {
+    throw new Error('Computer Use is DISABLED. Please set BROWSERAI_COMPUTER_USE=on in the .env file and restart the server.')
+  }
+  
   const r = await execShell('DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && echo ok || echo MISSING', { timeoutMs: 5_000 })
   const ok = r.stdout.toString().trim() === 'ok'
   if (!ok) {
-    throw new Error('computer-sandbox display :99 is not ready (or container not running). Start it: `docker compose --profile computer up -d computer-sandbox` and ensure BROWSERAI_COMPUTER_USE=on.')
+    throw new Error('computer-sandbox display :99 is not ready. Ensure the computer-sandbox container is running: `docker compose --profile computer up -d computer-sandbox`.')
   }
 }
 

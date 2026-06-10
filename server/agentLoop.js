@@ -16,7 +16,9 @@
  *            legacy JSON-in-fenced-block format.
  */
 import { TOOLS, invokeTool } from './agentTools.js'
-import { withWorkspaceScope, readWorkspaceFile } from './workspace.js'
+import {
+  withWorkspaceScope, readWorkspaceFile, readProjectRules, listRecentWorkspaceActivity,
+} from './workspace.js'
 import {
   callLLM, callLLMStream, supportsNativeTools, supportsStreaming, normalizeProviderError,
 } from './llmClient.js'
@@ -39,13 +41,24 @@ const DEFAULT_MAX_STEPS = 15
 const DEFAULT_DEADLINE_MS = 5 * 60 * 1000
 
 // ── System prompt builder ───────────────────────────────────────────────────
-function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null } = {}) {
-  // NOTE: the 'legacy' prompt style was removed — cline style is always used.
+async function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null, chatId = '' } = {}) {
+  const [projectRules, recentActivity] = await Promise.all([
+    withWorkspaceScope(chatId, () => readProjectRules().catch(() => '')),
+    withWorkspaceScope(chatId, () => listRecentWorkspaceActivity({ sinceMs: 24 * 60 * 60 * 1000 }).catch(() => [])),
+  ])
+
+  let activityText = ''
+  if (Array.isArray(recentActivity) && recentActivity.length > 0) {
+    activityText = recentActivity.map(a => `- ${new Date(a.ts).toLocaleTimeString()}: ${a.reason} ${a.path}`).join('\n')
+  }
+
   return buildClineSystemPrompt({
     extraSystem,
     native,
     extraTools,
     cwd: '/workspace',
+    projectRules,
+    recentActivity: activityText,
   })
 }
 
@@ -319,6 +332,35 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
   return { ...result, preParsedCalls }
 }
 
+// ── Error recovery helpers ──────────────────────────────────────────────────
+function getRecoveryHint(tool, error, args = {}) {
+  const err = String(error || '').toLowerCase()
+  const path = args.path || args.file || args.file_path
+  
+  if (err.includes('not found') || err.includes('enoent') || err.includes('no such file')) {
+    if (path) {
+      const parts = path.split('/').filter(Boolean)
+      const parent = parts.length > 1 ? parts.slice(0, -1).join('/') : '/'
+      return `File "${path}" not found. Try calling list_files(path="${parent}") to check the exact filename and casing (Linux is case-sensitive).`
+    }
+    return 'Resource not found. Verify the path using list_files.'
+  }
+  
+  if (err.includes('path traversal') || err.includes('policy')) {
+    return 'Security policy blocked this path. Stay inside /workspace and do not use ../ or absolute paths outside the root.'
+  }
+  
+  if (tool === 'edit_file' && (err.includes('old_text not found') || err.includes('not found in'))) {
+    return `Could not find the exact old_text block in the file. Re-read the file with read_file to see its current state (it might have changed since you last saw it) and then try edit_file again with an exact match.`
+  }
+  
+  if (tool === 'bash' && (err.includes('command not found') || err.includes('127'))) {
+    return `Shell command failed. Check if the tool is installed in the sandbox. Use \`apt-get update && apt-get install -y <package>\` if needed.`
+  }
+  
+  return null
+}
+
 // ── Agent Loop ──────────────────────────────────────────────────────────────
 export async function runAgent(opts) {
   return withWorkspaceScope(opts?.workspaceScope || '', () => runAgentInner({ ...(opts || {}), workspaceScope: opts?.workspaceScope || '' }))
@@ -352,7 +394,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   } catch { /* best-effort: ignore */ }
 
   let useNativeTools = supportsNativeTools(provider.baseUrl)
-  let systemPrompt = buildSystemPrompt({ extraSystem, native: useNativeTools, extraTools })
+  let systemPrompt = await buildSystemPrompt({ extraSystem, native: useNativeTools, extraTools, chatId })
   let toolsSpec = useNativeTools ? buildNativeToolsSpec(extraTools) : undefined
 
   const convo = [{ role: 'system', content: systemPrompt }, ...history]
@@ -365,6 +407,13 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   if (agentContext.runtime.effectiveMaxSteps > maxSteps) maxSteps = agentContext.runtime.effectiveMaxSteps
   const agentState = createAgentState({ agentContext, history })
   const planningDirective = buildPlanningDirective(agentContext)
+  
+  // v2.26: High-Intelligence Directive for High Complexity tasks.
+  // Encourages deeper reasoning and more robust verification.
+  if (agentContext?.task?.complexity === 'high') {
+    convo.push({ role: 'user', content: `[high_complexity_directive]\nThis is a COMPLEX task. Do not rush. \n1. Explore the codebase thoroughly using build_repo_map and search_files.\n2. Create a detailed plan with plan_set.\n3. Verify every change with verify_code.\n4. If you hit an error, analyze the logs before retrying.\n[/high_complexity_directive]` })
+  }
+
   if (planningDirective) convo.push({ role: 'user', content: planningDirective })
   
   sse(res, 'agent_context', agentContext); sse(res, 'agent_state', agentState)
@@ -394,26 +443,27 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
     }
   }
 
+  // 1:1 Arena Parity: Proactive Discovery.
+  // Pre-read lessons learned and repo map BEFORE the first step.
+  if (userId && !aborted) {
+    try {
+      const lessons = await withWorkspaceScope(chatId, () => readWorkspaceFile('.browserai/lessons.md').catch(() => null))
+      if (lessons?.text) convo.push({ role: 'user', content: `<arena-system-message>\nLessons Learned (from .browserai/lessons.md):\n${lessons.text}\n</arena-system-message>` })
+    } catch { /* ignore */ }
+    try {
+      const r = await invokeTool('build_repo_map', { path: '', _userId: userId }, { signal: abortCtl.signal, userId, chatId, extraTools })
+      if (r.ok) convo.push({ role: 'user', content: `<arena-system-message>\nInitial Repo Map (ground truth):\n${r.result}\n</arena-system-message>` })
+    } catch { /* ignore */ }
+  }
+
   const keepAliveInterval = setInterval(() => sseKeepAlive(res), 15_000)
   res.on('close', () => clearInterval(keepAliveInterval))
 
   const recentCallFingerprints = [], recentToolHistory = [], planState = { done: new Set() }
-  let pushedBackThisTurn = false, discoveryDone = false
+  let pushedBackThisTurn = false
 
   try {
     while (step < maxSteps) {
-      if (aborted) break
-      if (!discoveryDone && userId) {
-        discoveryDone = true
-        try {
-          const lessons = await withWorkspaceScope(chatId, () => readWorkspaceFile('.browserai/lessons.md').catch(() => null))
-          if (lessons?.text) convo.push({ role: 'user', content: `<arena-system-message>\nLessons Learned:\n${lessons.text}\n</arena-system-message>` })
-        } catch { /* best-effort: ignore */ }
-        try {
-          const r = await invokeTool('build_repo_map', { path: '', _userId: userId }, { signal: abortCtl.signal, userId, chatId, extraTools })
-          if (r.ok) convo.push({ role: 'user', content: `<arena-system-message>\nInitial Repo Map:\n${r.result}\n</arena-system-message>` })
-        } catch { /* best-effort: ignore */ }
-      }
 
       if (Date.now() > deadline) {
         sse(res, 'error', { message: 'Deadline exceeded' }); sseDone(res, { steps: step, reason: 'deadline' }, tokens); break
@@ -577,6 +627,15 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
           r = await invokeTool(call.tool, { ...call.args, _provider: provider }, { signal: abortCtl.signal, onStdout: (c) => sse(res, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stdout', chunk: String(c).slice(0, 2000) }), onStderr: (c) => sse(res, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stderr', chunk: String(c).slice(0, 2000) }), userId, chatId, extraTools })
         }
         if (!r.ok && !pushedBackThisTurn && !aborted && categoryOf(call.tool) !== 'ask') {
+          const hint = getRecoveryHint(call.tool, r.error, call.args)
+          if (hint) {
+            pushedBackThisTurn = true
+            sse(res, 'thought', { step, sub: idx, text: `Авто-коррекция: ${call.tool} — ${r.error}. Исправляю…` })
+            const rErr = makeToolErrorResult(`[exec_error] ${r.error}. HINT: ${hint}`)
+            sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
+            return { call, r: rErr, pushedBack: true }
+          }
+          
           pushedBackThisTurn = true
           // v2.24: surface execution errors as a visible thought + tool_result
           // (self-healing): the agent acknowledges the failure and retries.
