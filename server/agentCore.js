@@ -201,6 +201,8 @@ export function buildPlanningDirective(agentContext = {}) {
   return [
     '[agent_runtime_directive]',
     `Task classification: ${taskType} / ${complexity}.`,
+    'Your workspace root is /workspace. DO NOT include /workspace/chats/ID/ prefixes in your paths.',
+    'Always use exact casing from list_files (e.g. browserAI not browserai).',
     'Before doing substantial work, call plan_set with a short checklist unless the task is truly one-step.',
     'After completing a meaningful step, call plan_check for the completed index.',
     'Always explore the workspace (list_files, read_file, bash) FIRST to gather context before writing code or asking questions.',
@@ -323,9 +325,16 @@ function coerceToolValue(value, schema = {}, pName = '') {
 
   if (expected === 'string' && typeof cleanValue === 'string') {
     if (PATH_PARAM_RE.test(pName)) {
-      if (cleanValue === '/workspace' || cleanValue === '/home/user') cleanValue = ''
-      else if (cleanValue.startsWith('/workspace/')) cleanValue = cleanValue.replace('/workspace/', '')
-      else if (cleanValue.startsWith('/home/user/')) cleanValue = cleanValue.replace('/home/user/', '')
+      if (cleanValue === '/workspace' || cleanValue === '/home/user' || cleanValue === '/') {
+        cleanValue = ''
+      } else {
+        // #18 FIX: Aggressive prefix cleanup for AI models. 
+        // Covers /workspace/..., /home/user/..., and Arena-style scoped paths.
+        const prefixRe = /^(?:\/workspace\/chats\/[a-zA-Z0-9_-]+|\/home\/user\/chats\/[a-zA-Z0-9_-]+|\/workspace|\/home\/user)\//
+        if (prefixRe.test(cleanValue)) {
+          cleanValue = cleanValue.replace(prefixRe, '')
+        }
+      }
     }
   }
 
@@ -378,12 +387,19 @@ function validatePathLike(name, value) {
   if (s.includes('\0')) return `${name}: NUL byte is not allowed`
   
   let check = s
-  if (check === '/workspace' || check === '/home/user') return null
-  if (check.startsWith('/workspace/')) check = check.replace('/workspace/', '')
-  else if (check.startsWith('/home/user/')) check = check.replace('/home/user/', '')
   
-  // Allow absolute sandbox paths only for cwd-like params.
-  if (check.startsWith('/') && name !== 'cwd') return `${name}: absolute paths are not allowed; use workspace-relative paths`
+  // #17 FIX: Robust cleanup of absolute paths and Arena/Cline-style scoped prefixes
+  if (check === '/workspace' || check === '/home/user' || check === '/') return null
+  
+  // Strip any absolute prefixes like /workspace/, /home/user/, /workspace/chats/ID/, etc.
+  const prefixRe = /^(?:\/workspace\/chats\/[a-zA-Z0-9_-]+|\/home\/user\/chats\/[a-zA-Z0-9_-]+|\/workspace|\/home\/user)\//
+  if (prefixRe.test(check)) {
+    check = check.replace(prefixRe, '')
+  } else if (check.startsWith('/')) {
+    // Other absolute path — strip the leading slash but only if it's not a cwd-like param.
+    if (name !== 'cwd') check = check.slice(1)
+  }
+
   const normalised = check.replace(/\\/g, '/')
   if (normalised === '..' || normalised.startsWith('../') || normalised.includes('/../')) {
     return `${name}: path traversal is not allowed`

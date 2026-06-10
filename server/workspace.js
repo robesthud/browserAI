@@ -173,7 +173,47 @@ function normalizeRelativePath(relativePath = '') {
 
 function safePath(relativePath) {
   const normalized = normalizeRelativePath(relativePath)
-  const full = path.resolve(getScopedWorkspaceRoot(), normalized)
+  let full = path.resolve(getScopedWorkspaceRoot(), normalized)
+  
+  // #19 FIX: Automatic Case-Insensitive Path Resolution (Intelligence IQ+20)
+  // AI models often mess up casing (browserai vs browserAI). 
+  // If the path doesn't exist, we try to resolve it case-insensitively segment by segment.
+  if (!fsSync.existsSync(full)) {
+    const segments = normalized.split('/').filter(Boolean)
+    let current = getScopedWorkspaceRoot()
+    let resolvedSegments = []
+    let failed = false
+
+    for (const segment of segments) {
+      const target = path.join(current, segment)
+      if (fsSync.existsSync(target)) {
+        current = target
+        resolvedSegments.push(segment)
+      } else {
+        // Try case-insensitive match in current directory
+        try {
+          const entries = fsSync.readdirSync(current)
+          const lower = segment.toLowerCase()
+          const match = entries.find(e => e.toLowerCase() === lower)
+          if (match) {
+            current = path.join(current, match)
+            resolvedSegments.push(match)
+          } else {
+            failed = true
+            break
+          }
+        } catch {
+          failed = true
+          break
+        }
+      }
+    }
+
+    if (!failed) {
+      full = current
+    }
+  }
+
   if (!isInsideRoot(full, getScopedWorkspaceRoot())) {
     throw new Error('Path traversal detected')
   }

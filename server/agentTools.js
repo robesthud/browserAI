@@ -791,7 +791,9 @@ export const TOOLS = {
         const tree = await getWorkspaceTree(false)
         const node = drillTree(tree, parentPath) || tree
         const projects = collectProjectsFromTree(tree)
-        const groundingNote = `POST-FETCH GROUNDING (CRITICAL FOR ALL MODELS): download_url succeeded. Files are NOW LOCAL in /workspace/${parentPath || ''}. 
+        const groundingNote = `POST-FETCH GROUNDING (CRITICAL): download_url succeeded. Files are NOW LOCAL in /workspace/${parentPath || ''}. 
+Your root is /workspace. DO NOT use /workspace/chats/ID/ prefixes.
+Linux is CASE-SENSITIVE. Use exact names from list_files.
 State: local copy exists. 
 You MUST immediately use ONLY workspace tools for analysis: list_files, find_projects (detected ${projects.length} projects), read_file, search_files, bash on local paths.
 NEVER call download_url, git_clone, web_search or any remote tool on the original URL again unless user says "обнови" or "pull latest".
@@ -870,7 +872,9 @@ Projects: ${JSON.stringify(projects.slice(0,5))}`
       if (gitResult.ok) {
         const tree = await getWorkspaceTree(false)
         const projects = collectProjectsFromTree(tree)
-        const groundingNote = `POST-FETCH GROUNDING (CRITICAL FOR ALL MODELS): git_clone succeeded for ${url}. Files are NOW LOCAL in /workspace. 
+        const groundingNote = `POST-FETCH GROUNDING (CRITICAL): git_clone succeeded for ${url}. Files are NOW LOCAL in /workspace. 
+Your root is /workspace. DO NOT use /workspace/chats/ID/ prefixes.
+Linux is CASE-SENSITIVE. Use exact names from list_files.
 State: local copy exists (git history present). 
 You MUST immediately use ONLY workspace tools: list_files, find_projects (detected ${projects.length} projects), read_file on local paths (package.json, README etc), search_files, bash (local).
 NEVER re-call git_clone, download_url or remote tools on ${url} for "analyze", "проанализируй", "what is in the project".

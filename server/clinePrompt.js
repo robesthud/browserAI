@@ -426,6 +426,20 @@ If you ever feel the urge to re-call a remote tool after a successful download/c
 
 
 
+// ── 15. PATH_AND_CWD_GROUNDING (CRITICAL FOR ARENA PARITY) ──────────────────
+const PATH_AND_CWD_GROUNDING = `====
+
+**PATH AND WORKING DIRECTORY RULES — NON-NEGOTIABLE**
+
+1. Your root directory is **/workspace**. All files are located here or in subdirectories.
+2. **Current Working Directory (CWD):** Your tools always start in \`/workspace\` unless specified otherwise.
+3. **Path Hallucinations:** You might sometimes see or imagine paths like \`/workspace/chats/ID/...\`. DO NOT USE THEM. 
+   - WRONG: \`/workspace/chats/mq75yz6nac13wk1q/browserAI/server/index.js\`
+   - CORRECT: \`browserAI/server/index.js\` (relative) or \`/workspace/browserAI/server/index.js\` (absolute).
+4. **Case Sensitivity:** The environment is Linux, which is **case-sensitive**. \`browserai\` is NOT the same as \`browserAI\`. ALWAYS use the exact casing you see in \`list_files\` or \`find_projects\` results.
+5. If a tool fails with "ENOENT" (File not found), re-run \`list_files\` on the parent directory to verify the exact name and casing.
+`
+
 // ── 12. USER_INSTRUCTIONS ───────────────────────────────────────────────────
 function buildUserInstructionsSection(extraSystem, modelHint, recall, projectRules, recentActivity) {
   const parts = []
@@ -561,6 +575,7 @@ they're cheaper.
     '# Final Answer Formatting\nWhen you have finished the task and are ready to provide the final answer, YOU MUST follow this exact format:\n1. Provide a very brief, high-level summary of what you did (1-2 sentences).\n2. Follow with the actual result or answer to the user\'s query.\n3. NEVER dump a wall of "I ran this tool, then I saw this, then I ran that". The user already sees the tool cards in the UI. Focus ONLY on the final outcome.\n4. Your final answer should be clean, direct, and formatted in Markdown.',
     OBJECTIVE,
     LOCAL_WORKSPACE_GROUNDING,
+    PATH_AND_CWD_GROUNDING,
     buildUserInstructionsSection(extraSystem, modelHint, recall, projectRules, recentActivity),
   ]
   return sections.filter(Boolean).join('\n\n')
