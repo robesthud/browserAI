@@ -382,14 +382,14 @@ function coerceToolValue(value, schema = {}, pName = '') {
 }
 
 function validatePathLike(name, value) {
-  if (value === undefined || value === null || value === '') return null
+  if (value === undefined || value === null || value === '') return { ok: true, value }
   const s = String(value)
-  if (s.includes('\0')) return `${name}: NUL byte is not allowed`
+  if (s.includes('\0')) return { ok: false, error: `${name}: NUL byte is not allowed` }
   
   let check = s
   
   // #17 FIX: Robust cleanup of absolute paths and Arena/Cline-style scoped prefixes
-  if (check === '/workspace' || check === '/home/user' || check === '/') return null
+  if (check === '/workspace' || check === '/home/user' || check === '/') return { ok: true, value: '' }
   
   // Strip any absolute prefixes like /workspace/, /home/user/, /workspace/chats/ID/, etc.
   const prefixRe = /^(?:\/workspace\/chats\/[a-zA-Z0-9_-]+|\/home\/user\/chats\/[a-zA-Z0-9_-]+|\/workspace|\/home\/user)\//
@@ -402,10 +402,11 @@ function validatePathLike(name, value) {
 
   const normalised = check.replace(/\\/g, '/')
   if (normalised === '..' || normalised.startsWith('../') || normalised.includes('/../')) {
-    return `${name}: path traversal is not allowed`
+    return { ok: false, error: `${name}: path traversal is not allowed` }
   }
-  if (normalised.includes('%2e') || normalised.includes('%2E')) return `${name}: encoded traversal is not allowed`
-  return null
+  if (normalised.includes('%2e') || normalised.includes('%2E')) return { ok: false, error: `${name}: encoded traversal is not allowed` }
+  
+  return { ok: true, value: check }
 }
 
 export function validateToolCall(toolName, args = {}, toolDef = null) {
@@ -433,8 +434,9 @@ export function validateToolCall(toolName, args = {}, toolDef = null) {
 
   for (const [k, v] of Object.entries(clean)) {
     if (PATH_PARAM_RE.test(k)) {
-      const e = validatePathLike(k, v)
-      if (e) return { ok: false, args: clean, error: e, warnings }
+      const res = validatePathLike(k, v)
+      if (!res.ok) return { ok: false, args: clean, error: res.error, warnings }
+      clean[k] = res.value // Apply the cleaned path
     }
     if (typeof v === 'string' && v.length > 1_000_000) {
       return { ok: false, args: clean, error: `${k}: string argument is too large`, warnings }

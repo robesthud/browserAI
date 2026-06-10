@@ -22,11 +22,18 @@ const SECRET_PATTERNS = [
 export function redactSecrets(value = '') {
   let text = String(value ?? '')
   for (const { name, re } of SECRET_PATTERNS) {
-    text = text.replace(re, (m, key) => {
-      if (name === 'password_assignment' && key) return `${key}=<redacted>`
+    text = text.replace(re, (m, group1, group2) => {
+      // Special case for password assignment: group1 is key, group2 is value
+      if (name === 'password_assignment' && group1 && group2) {
+         return `${group1}=<redacted>`
+      }
+      
       const s = String(m)
       if (s.length <= 12) return '<redacted>'
-      return `${s.slice(0, 4)}…<redacted:${name}>…${s.slice(-4)}`
+      
+      // #38 FIX: Full redaction for self-test compliance.
+      // We return a generic placeholder instead of keeping prefixes like 'ghp_'.
+      return `<redacted:${name}>`
     })
   }
   return text
