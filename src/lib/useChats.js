@@ -397,8 +397,6 @@ export function useChats(settings) {
           return
         }
 
-        // БАГ 3 ИСПРАВЛЕН: если авторежим передал overrideModel — используем его,
-        // не дожидаясь пока React обновит settings через setState
         const baseResolved = resolveActive(settings)
         const resolved = overrideModel
           ? (typeof overrideModel === 'object'
@@ -449,14 +447,12 @@ export function useChats(settings) {
             patchAssistant({ content: acc, pending: false })
           },
         })
-        // #10 FIX: обновляем только если acc непустой, чтобы не затирать
-        // контент, уже отрисованный через onToken при стриминге
         if (acc) {
           patchAssistant({ content: acc, pending: false })
           saveGeneratedMediaToWorkspace(chatId, acc).catch(() => {})
         } else patchAssistant({ pending: false })
         haptics.success()
-} catch (err) {
+      } catch (err) {
         if (err.name === 'AbortError') {
           patchAssistant({ pending: false, stopped: true })
           haptics.tap()
@@ -470,7 +466,9 @@ export function useChats(settings) {
           haptics.error()
         }
       } finally {
-        abortRef.current = null
+        if (abortRef.current === controller) {
+          abortRef.current = null
+        }
         setIsStreaming(false)
       }
     },
@@ -583,8 +581,8 @@ export function useChats(settings) {
       }
 
       try {
-        await new Promise((resolve) => {
-          streamAgent({
+        await new Promise((resolve, reject) => {
+          const stop = streamAgent({
             chatId,
             history: llmHistory,
             extraSystem: extraSystemParts.join('\n\n'),
@@ -854,12 +852,20 @@ export function useChats(settings) {
               }
             },
           })
+          controller.signal.addEventListener('abort', () => {
+            stop()
+            reject(new Error('aborted'))
+          })
         })
       } catch (e) {
-        patchAssistant({ pending: false, error: e?.message || 'agent crashed' })
-        haptics.error()
+        if (e.message !== 'aborted') {
+          patchAssistant({ pending: false, error: e?.message || 'agent crashed' })
+          haptics.error()
+        }
       } finally {
-        abortRef.current = null
+        if (abortRef.current === controller) {
+          abortRef.current = null
+        }
         setIsStreaming(false)
       }
     },

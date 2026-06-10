@@ -297,7 +297,10 @@ export async function streamChat({
         if (!line.startsWith('data:')) continue
         const raw = line.slice(5).trim()
         if (!raw) continue
-        if (raw === '[DONE]') return acc
+        if (raw === '[DONE]') {
+          try { reader.cancel() } catch {}
+          return acc
+        }
 
         let parsed
         try {
