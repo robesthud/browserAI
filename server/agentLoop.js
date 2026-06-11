@@ -15,7 +15,7 @@
  *   Fallbacks: Native OpenAI tool_calls (when supported) and
  *            legacy JSON-in-fenced-block format.
  */
-import { TOOLS, invokeTool } from './agentTools.js'
+import { TOOLS, LITE_TOOL_NAMES, invokeTool } from './agentTools.js'
 import {
   withWorkspaceScope, readWorkspaceFile, readProjectRules, listRecentWorkspaceActivity,
 } from './workspace.js'
@@ -90,8 +90,11 @@ async function buildSystemPrompt({ extraSystem = '', native = false, extraTools 
 
 
 // ── Native tools spec ───────────────────────────────────────────────────────
-function buildNativeToolsSpec(extraTools = null) {
-  const combined = extraTools && typeof extraTools === 'object' ? { ...TOOLS, ...extraTools } : TOOLS
+function buildNativeToolsSpec(extraTools = null, { lite = false } = {}) {
+  let combined = extraTools && typeof extraTools === 'object' ? { ...TOOLS, ...extraTools } : TOOLS
+  // Lite runs advertise only the essential tool subset (same list the lite
+  // prompt documents) — the full 58-tool JSON spec alone is ~7.7k tokens.
+  if (lite) combined = Object.fromEntries(Object.entries(combined).filter(([n]) => LITE_TOOL_NAMES.includes(n)))
   return Object.entries(combined).map(([name, def]) => {
     const properties = {}
     const required = []
@@ -432,7 +435,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
   let useNativeTools = supportsNativeTools(provider.baseUrl)
   let systemPrompt = await buildSystemPrompt({ extraSystem, native: useNativeTools, extraTools, chatId, lite: liteRun })
-  let toolsSpec = useNativeTools ? buildNativeToolsSpec(extraTools) : undefined
+  let toolsSpec = useNativeTools ? buildNativeToolsSpec(extraTools, { lite: liteRun }) : undefined
 
   const convo = [{ role: 'system', content: systemPrompt }, ...history]
   const deadline = Date.now() + DEFAULT_DEADLINE_MS
