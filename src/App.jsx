@@ -25,6 +25,7 @@ import { useSettings } from './lib/useSettings.js'
 import { useChats } from './lib/useChats.js'
 import { backend } from './lib/backend.js'
 import { pickBestModel } from './lib/autoModel.js'
+import { routeUserMessage } from './lib/smartRouter.js'
 
 function CloudSync({ settings, chats }) {
   const firstRun = useRef(true)
@@ -77,7 +78,11 @@ function BrowserApp({ user, reloadAuth }) {
   const [checkpointsOpen, setCheckpointsOpen] = useState(false)
   const [flash, setFlash] = useState(null)
   const [autoMode, setAutoMode] = useState(() => {
-    try { return localStorage.getItem('browserai.autoMode') === '1' } catch { return false }
+    try {
+      const saved = localStorage.getItem('browserai.autoMode')
+      // Default ON: Auto is now the cost-saving smart router, not just model-pick.
+      return saved == null ? true : saved === '1'
+    } catch { return true }
   })
   const [autoHint, setAutoHint] = useState(null)
   const [agentMode, setAgentMode] = useState(() => {
@@ -94,7 +99,9 @@ function BrowserApp({ user, reloadAuth }) {
   const devtoolsEnabled = useMemo(() => {
     try { return localStorage.getItem('browserai.devtools') === '1' } catch { return false }
   }, [])
-  const effectiveAgentMode = devtoolsEnabled ? agentMode : true
+  // Agent is no longer forced for normal users. In Auto mode, handleSendMessage
+  // routes each turn to chat/web/agent. Manual Agent mode still exists.
+  const effectiveAgentMode = agentMode
 
   // 3. Memoized values for settings
   const configured = isConfigured(settings)
@@ -163,19 +170,39 @@ function BrowserApp({ user, reloadAuth }) {
   const handleSendMessage = useCallback(async (text, attachments = []) => {
     if (aiWorking) return
     let overrideModel = null
+    let modelHint = null
 
     if (autoMode && availableModels.length > 1 && text?.trim()) {
       const result = pickBestModel(text, availableModels, selectedModel)
       if (result.changed) {
-        overrideModel = providerOverrideForModel(result.model) || result.model
+        overrideModel = providerOverrideForModel(result.model) || { model: result.model }
         setActiveModel(result.model).catch(() => {})
-        setAutoHint({ reason: result.reason, taskType: result.taskType, icon: result.icon })
-        setTimeout(() => setAutoHint(null), 5000)
-      } else { setAutoHint(null) }
+        modelHint = { reason: result.reason, taskType: result.taskType, icon: result.icon }
+      }
     }
 
-    if (effectiveAgentMode) return sendAgentMessage(text, attachments, overrideModel)
-    return sendMessage(text, attachments, overrideModel)
+    const route = autoMode
+      ? routeUserMessage(text, attachments)
+      : {
+          mode: effectiveAgentMode ? 'agent' : 'chat',
+          reason: effectiveAgentMode ? 'Агент включён вручную' : 'Обычный чат',
+          icon: effectiveAgentMode ? '🤖' : '💬',
+        }
+
+    const mergeOverride = (extra = {}) => {
+      if (overrideModel && typeof overrideModel === 'object') return { ...overrideModel, ...extra }
+      if (typeof overrideModel === 'string') return { model: overrideModel, ...extra }
+      return extra
+    }
+
+    setAutoHint(autoMode
+      ? { reason: `${route.reason}${modelHint?.reason ? ' · ' + modelHint.reason : ''}`, taskType: route.mode, icon: route.icon }
+      : modelHint)
+    if (autoMode || modelHint) setTimeout(() => setAutoHint(null), 5000)
+
+    if (route.mode === 'agent') return sendAgentMessage(text, attachments, mergeOverride({ useWebAI: false }))
+    if (route.mode === 'web') return sendMessage(text, attachments, mergeOverride({ useWebAI: true }))
+    return sendMessage(text, attachments, mergeOverride({ useWebAI: false }))
   }, [aiWorking, autoMode, availableModels, selectedModel, providerOverrideForModel, effectiveAgentMode, sendAgentMessage, sendMessage, setActiveModel])
 
   const handleRegenerate = useCallback((m) => {
