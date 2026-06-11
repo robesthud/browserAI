@@ -99,9 +99,10 @@ function BrowserApp({ user, reloadAuth }) {
   const devtoolsEnabled = useMemo(() => {
     try { return localStorage.getItem('browserai.devtools') === '1' } catch { return false }
   }, [])
-  // Agent is no longer forced for normal users. In Auto mode, handleSendMessage
-  // routes each turn to chat/web/agent. Manual Agent mode still exists.
-  const effectiveAgentMode = agentMode
+  // Manual Agent mode is a developer override only. Normal users use Auto,
+  // which routes each turn to chat/web/agent automatically. If Auto is off
+  // for a normal user, we use plain chat rather than a hidden forced agent.
+  const effectiveAgentMode = devtoolsEnabled ? agentMode : false
 
   // 3. Memoized values for settings
   const configured = isConfigured(settings)

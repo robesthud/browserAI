@@ -46,25 +46,31 @@ export default function AgentSettingsSection() {
       .catch(() => { /* ignore */ })
   }, [])
 
-  const applyPreset = (name) => {
-    const p = PRESETS[name]
-    if (p) setPolicy({ ...p.values })
-  }
-
-  const savePolicy = async () => {
-    if (!policy) return
+  const savePolicy = async (nextPolicy = policy) => {
+    if (!nextPolicy) return
     setSavingPolicy(true)
     try {
+      setPolicy(nextPolicy)
       const r = await fetch('/api/approval/policy', {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ policy }),
+        body: JSON.stringify({ policy: nextPolicy }),
       })
       if (r.ok) {
         const j = await r.json()
         if (j?.policy) setPolicy(j.policy)
       }
     } finally { setSavingPolicy(false) }
+  }
+
+  const applyPreset = (name) => {
+    const p = PRESETS[name]
+    if (p) savePolicy({ ...p.values })
+  }
+
+  const updatePolicyCategory = (cat, value) => {
+    if (!policy) return
+    savePolicy({ ...policy, [cat]: value })
   }
 
   const runSelfTest = async () => {
@@ -231,7 +237,7 @@ export default function AgentSettingsSection() {
                     <button
                       key={v}
                       type="button"
-                      onClick={() => setPolicy({ ...policy, [cat]: v })}
+                      onClick={() => updatePolicyCategory(cat, v)}
                       className={`rounded-md border px-2 py-0.5 text-[11px] font-medium transition ${
                         policy[cat] === v
                           ? (v === 'auto' ? 'border-emerald-400/50 bg-emerald-500/20 text-emerald-200' : 'border-amber-400/50 bg-amber-500/20 text-amber-200')
@@ -242,13 +248,14 @@ export default function AgentSettingsSection() {
                 </div>
               </div>
             ))}
-            <div className="flex justify-end pt-1">
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <span className="text-[10px] text-cream-faint">Изменения применяются сразу.</span>
               <button
                 type="button"
-                onClick={savePolicy}
+                onClick={() => savePolicy()}
                 disabled={savingPolicy}
                 className="rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-graphite-900 transition hover:scale-[1.02] disabled:opacity-50"
-              >{savingPolicy ? 'Сохраняю…' : 'Сохранить политику'}</button>
+              >{savingPolicy ? 'Сохраняю…' : 'Сохранено'}</button>
             </div>
           </div>
         )}

@@ -111,24 +111,26 @@ export default function Sidebar({
 
         {/* низ: режимы + настройки */}
         <div className="space-y-1 border-t border-white/5 px-2.5 py-2.5">
-          {/* Agent mode toggle — Always visible now for Project Engine */}
-          <button
-            onClick={() => onToggleAgentMode?.(!agentMode)}
-            className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2.5 text-left text-[13px] transition-all duration-200 shadow-sm ${
-              agentMode
-                ? 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-300'
-                : 'bg-graphite-750/50 border border-white/5 text-cream-soft hover:bg-graphite-750 hover:text-cream'
-            }`}
-            title="Агентский режим: модель может читать/писать файлы, искать в вебе и запускать shell-команды"
-          >
-            <span className="flex items-center gap-3">
-              <span className="text-lg leading-none">{agentMode ? '🤖' : '💬'}</span>
-              <span className="font-medium">Агентский режим</span>
-            </span>
-            <div className={`relative h-5 w-9 rounded-full transition-colors ${agentMode ? 'bg-emerald-500' : 'bg-graphite-600'}`}>
-              <div className={`absolute top-[2.5px] h-3.5 w-3.5 rounded-full bg-white transition-transform ${agentMode ? 'translate-x-[18px]' : 'translate-x-[2.5px]'}`} />
-            </div>
-          </button>
+          {/* Manual Agent toggle — devtools only. Normal users use Auto routing. */}
+          {devtoolsEnabled && (
+            <button
+              onClick={() => onToggleAgentMode?.(!agentMode)}
+              className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2.5 text-left text-[13px] transition-all duration-200 shadow-sm ${
+                agentMode
+                  ? 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-300'
+                  : 'bg-graphite-750/50 border border-white/5 text-cream-soft hover:bg-graphite-750 hover:text-cream'
+              }`}
+              title="Dev override: принудительно отправлять все запросы в полный агент. В обычном режиме работает Auto router."
+            >
+              <span className="flex items-center gap-3">
+                <span className="text-lg leading-none">{agentMode ? '🤖' : '💬'}</span>
+                <span className="font-medium">Ручной агент</span>
+              </span>
+              <div className={`relative h-5 w-9 rounded-full transition-colors ${agentMode ? 'bg-emerald-500' : 'bg-graphite-600'}`}>
+                <div className={`absolute top-[2.5px] h-3.5 w-3.5 rounded-full bg-white transition-transform ${agentMode ? 'translate-x-[18px]' : 'translate-x-[2.5px]'}`} />
+              </div>
+            </button>
+          )}
 
           {/* Web AI toggle — devtools only. */}
           {devtoolsEnabled && (
