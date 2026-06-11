@@ -204,11 +204,17 @@ const _corsOrigin = process.env.CORS_ORIGIN
 // the package calls it with the request object instead of the Origin
 // string and every request fails with "Not allowed by CORS".
 const corsOptions = (origin, callback) => {
-  const allowed = [_corsOrigin, process.env.APP_URL].filter(Boolean).map(a => String(a).replace(/\/$/, ''));
+  const allowed = [_corsOrigin, process.env.APP_URL]
+    .filter(Boolean)
+    .map(a => String(a).replace(/\/$/, ''));
 
-  const isAllowed = !origin || allowed.some(a => {
+  // If APP_URL/CORS_ORIGIN is not configured in production, do NOT reject
+  // requests with an Origin header. Vite emits <script crossorigin>, so
+  // browsers may send Origin even for same-site static assets like
+  // /assets/*.js. Rejecting here breaks the whole UI on bare-IP deploys.
+  const isAllowed = !origin || allowed.length === 0 || allowed.some(a => {
     try {
-      return typeof origin === 'string' && origin.startsWith(a);
+      return typeof origin === 'string' && origin.replace(/\/$/, '').startsWith(a);
     } catch {
       return false;
     }
@@ -217,7 +223,9 @@ const corsOptions = (origin, callback) => {
   if (isAllowed || process.env.NODE_ENV !== 'production') {
     callback(null, true);
   } else {
-    callback(new Error('Not allowed by CORS'));
+    // Do not throw for disallowed origins: throwing turns simple static asset
+    // requests into 500s. Return false CORS instead.
+    callback(null, false);
   }
 };
 
