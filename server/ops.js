@@ -189,15 +189,22 @@ async function listGithubRuns(repo, params = {}) {
   if (params.status) qs.set('status', String(params.status))
   if (params.event) qs.set('event', String(params.event))
   if (params.sha || params.head_sha) qs.set('head_sha', String(params.sha || params.head_sha))
-  const path = workflow
-    ? `/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?${qs}`
+
+  // GitHub's /actions/workflows/{workflow_id}/runs accepts numeric id or
+  // workflow filename (ci.yml), NOT the display name ("Deploy to Timeweb").
+  // Agents/users naturally pass display names, so detect those and fall back
+  // to the generic runs endpoint + name filter.
+  const wf = String(workflow || '').trim()
+  const workflowLooksLikeIdOrFile = /^\d+$/.test(wf) || /\.ya?ml$/i.test(wf)
+  const effectiveName = String(params.name || (!workflowLooksLikeIdOrFile ? wf : '') || '').trim().toLowerCase()
+  const path = wf && workflowLooksLikeIdOrFile
+    ? `/repos/${repo}/actions/workflows/${encodeURIComponent(wf)}/runs?${qs}`
     : `/repos/${repo}/actions/runs?${qs}`
   const j = await (await githubApi(path)).json()
   let runs = j.workflow_runs || []
   const sha = String(params.sha || params.head_sha || '').trim()
   if (sha) runs = runs.filter((r) => String(r.head_sha || '').startsWith(sha))
-  const name = String(params.name || '').trim().toLowerCase()
-  if (name) runs = runs.filter((r) => String(r.name || '').toLowerCase().includes(name))
+  if (effectiveName) runs = runs.filter((r) => String(r.name || '').toLowerCase().includes(effectiveName))
   return runs.map((r) => ({
     id: r.id,
     name: r.name,
