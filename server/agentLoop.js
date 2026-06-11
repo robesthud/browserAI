@@ -582,7 +582,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   // (~2.5k tokens) instead of the full 16k-token engineering prompt.
   const agentContext = buildAgentContext({ provider, history, extraSystem, userId, workspaceScope, maxSteps })
   const serverRoute = routeHistory(history, { forceAgent: Boolean(provider.forceAgent) })
-  if (!provider.forceAgent && (serverRoute.mode === 'chat' || serverRoute.mode === 'web')) {
+  if (provider.baseUrl !== 'mock' && !provider.forceAgent && (serverRoute.mode === 'chat' || serverRoute.mode === 'web')) {
     sse(res, 'agent_context', { ...agentContext, serverRoute })
     try {
       await runLightweightChat({ res, provider, history, userId, chatId, mode: serverRoute.mode })
