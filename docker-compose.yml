@@ -73,13 +73,13 @@ services:
     user: "0:0"  # boot as root only long enough to install packages; commands run as 1000 via -u
     read_only: false
     tmpfs:
-      - /tmp:size=64m
-      - /home/agent:size=64m,uid=1000,gid=1000,mode=1777,exec
+      - /tmp:size=256m
+      - /home/agent:size=256m,uid=1000,gid=1000,mode=1777,exec
     working_dir: /workspace
     volumes:
       - ${WORKSPACE_DIR:-./workspace}:/workspace
     # Hard resource caps prevent runaway commands from impacting the API.
-    mem_limit: 256m
+    mem_limit: 1536m
     cpus: 0.5
     pids_limit: 128
 
