@@ -1,0 +1,92 @@
+name: Diagnose Timeweb
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    name: Network/container diagnostics on Timeweb VPS
+    runs-on: ubuntu-latest
+    env:
+      HAS_TIMEWEB_SECRETS: ${{ secrets.TIMEWEB_SSH_KEY != '' && secrets.TIMEWEB_HOST != '' && secrets.TIMEWEB_USER != '' && secrets.TIMEWEB_APP_DIR != '' }}
+    steps:
+      - name: Configure SSH
+        if: env.HAS_TIMEWEB_SECRETS == 'true'
+        env:
+          DEPLOY_KEY: ${{ secrets.TIMEWEB_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.TIMEWEB_HOST }}
+        run: |
+          set +x
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: External check from GitHub runner
+        if: env.HAS_TIMEWEB_SECRETS == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.TIMEWEB_HOST }}
+        run: |
+          set +e
+          echo "== External from runner =="
+          for url in "http://${DEPLOY_HOST}/api/health" "http://${DEPLOY_HOST}:8080/api/health" "https://${DEPLOY_HOST}/api/health"; do
+            echo "-- $url"
+            curl -k -sS -D - --max-time 8 "$url" -o /tmp/diag_body || echo "curl_exit=$?"
+            sed -n '1,10p' /tmp/diag_body 2>/dev/null || true
+            echo
+          done
+
+      - name: SSH diagnostics
+        if: env.HAS_TIMEWEB_SECRETS == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.TIMEWEB_HOST }}
+          DEPLOY_USER: ${{ secrets.TIMEWEB_USER }}
+          APP_DIR: ${{ secrets.TIMEWEB_APP_DIR }}
+        run: |
+          set +x
+          ssh -o StrictHostKeyChecking=accept-new "${DEPLOY_USER}@${DEPLOY_HOST}" "APP_DIR='${APP_DIR}' bash -s" <<'REMOTE'
+          set +e
+          echo "== Host/time =="
+          hostname; date -Is; uptime
+          echo
+          echo "== App dir/git =="
+          cd "$APP_DIR" || { echo "cannot cd APP_DIR"; exit 0; }
+          pwd
+          git rev-parse --short HEAD 2>/dev/null
+          git log -1 --pretty='%h %ci %s' 2>/dev/null
+          echo
+          echo "== Public-ish env (redacted) =="
+          grep -E '^(APP_URL|CORS_ORIGIN|PORT|NODE_ENV|DATA_DIR|WORKSPACE_DIR)=' .env 2>/dev/null | sed -E 's/(TOKEN|SECRET|KEY|PASS)=.*/\1=***REDACTED***/g' || true
+          echo
+          echo "== Listening sockets =="
+          ss -ltnp | grep -E '(:80|:443|:8080)\b' || true
+          echo
+          echo "== Firewall =="
+          (ufw status verbose 2>/dev/null || true)
+          (iptables -S INPUT 2>/dev/null | sed -n '1,80p' || true)
+          (nft list ruleset 2>/dev/null | grep -Ei 'dport (80|443|8080)|reject|drop' | sed -n '1,120p' || true)
+          echo
+          echo "== Docker compose ps =="
+          docker compose ps 2>/dev/null || true
+          echo
+          echo "== Docker ps =="
+          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' || true
+          echo
+          echo "== BrowserAI inspect =="
+          docker inspect browserai --format 'status={{.State.Status}} running={{.State.Running}} restarting={{.State.Restarting}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} started={{.State.StartedAt}} finished={{.State.FinishedAt}} ports={{json .NetworkSettings.Ports}}' 2>/dev/null || true
+          docker port browserai 2>/dev/null || true
+          echo
+          echo "== Local curl checks =="
+          for url in http://127.0.0.1/api/health http://localhost/api/health http://127.0.0.1:8080/api/health; do
+            echo "-- $url"
+            curl -v -sS --max-time 5 "$url" 2>&1 | sed -n '1,40p'
+            echo
+          done
+          echo "== Recent browserai errors/warnings =="
+          docker logs --tail 160 browserai 2>&1 | grep -Ei 'error|warn|exception|listen|BrowserAI|EADDR|crash|fatal' | tail -80 || true
+          REMOTE
+
+      - name: Missing secrets notice
+        if: env.HAS_TIMEWEB_SECRETS != 'true'
+        run: echo "Timeweb SSH secrets are not configured"
