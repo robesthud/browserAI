@@ -377,9 +377,20 @@ async function readWorkspaceFile(relPath) {
   const normalizedRel = normalizeRelativePath(relPath)
   if (!normalizedRel) throw new Error('path required')
 
-  const full = safePath(normalizedRel)
-  const stat = await fs.stat(full)
-  if (!stat.isFile()) throw new Error('Not a file')
+  let full = safePath(normalizedRel)
+  try {
+    const stat = await fs.stat(full)
+    if (!stat.isFile()) throw new Error("Not a file")
+  } catch (e) {
+    if (e.code === "ENOENT") {
+      const fresh = normalizeRelativePath(relPath)
+      full = safePath(fresh)
+      const stat2 = await fs.stat(full)
+      if (!stat2.isFile()) throw new Error("Not a file")
+    } else {
+      throw e
+    }
+  }
 
   const name = path.basename(normalizedRel)
   const mime = fileNameToMime(name)
