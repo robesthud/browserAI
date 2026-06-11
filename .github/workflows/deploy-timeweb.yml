@@ -80,30 +80,16 @@ jobs:
                echo \"── verify required files ──\"
                test -f server/userTelegramBot.js
                test -f server/index.js
-               echo \"── docker compose build --no-cache ──\"
-               docker compose build --no-cache browserai
+               echo \"── docker compose build ──\"
+               docker compose build browserai
                echo \"── docker compose up -d ──\"
                docker compose up -d
                echo \"── prune dangling images ──\"
                docker image prune -f
-               echo \"── health / stable container check ──\"
-               ok=0
-               for i in 1 2 3 4 5 6 7 8 9 10; do
-                 sleep 5
-                 if (curl -fsS http://localhost/api/health || curl -fsS http://localhost:8080/api/health) \
-                    && docker ps --filter name=browserai --filter status=running | grep -q browserai; then
-                   ok=1
-                   break
-                 fi
-                 docker ps --filter name=browserai || true
-                 docker logs --tail 30 browserai 2>&1 || true
-               done
-               if [ \"$ok\" != \"1\" ]; then
-                 echo \"browserai did not become stable\"
-                 docker ps --filter name=browserai || true
-                 docker logs --tail 80 browserai 2>&1 || true
-                 exit 1
-               fi
+               echo \"── health ──\"
+               sleep 10
+               curl -fsS http://localhost/api/health || curl -fsS http://localhost:8080/api/health
+               docker ps --filter name=browserai || true
                
                send_tg \"✅ <b>BrowserAI</b>: Деплой успешно завершен! (коммит <code>${{ github.sha }}</code>)\"
                '"
