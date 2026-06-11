@@ -38,7 +38,12 @@ const DEFAULT_API_KEY  = '__managed__'
 const KNOWN_MODELS = ['deepseek_chat', 'deepseek_reasoner']
 function getKnownModels() { return [...KNOWN_MODELS] }
 
-const TG_TOKEN = process.env.TG_USER_BOT_TOKEN || process.env.TG_BOT_TOKEN || ''
+// User-facing bot must use its own token. Do NOT fall back to TG_BOT_TOKEN:
+// TG_BOT_TOKEN is reserved for the admin/DeepSeek bot, and Telegram long
+// polling is exclusive per bot token. Falling back here made both bots call
+// getUpdates with the same token, spamming:
+//   Conflict: terminated by other getUpdates request
+const TG_TOKEN = process.env.TG_USER_BOT_TOKEN || ''
 const POLL_TIMEOUT_SEC = 25
 const POLL_INTERVAL_MS = 2000
 const STREAM_EDIT_MS = 800            // throttle for edit-message during streaming
@@ -648,7 +653,11 @@ async function poll() {
 // ── Public ─────────────────────────────────────────────────────────────────
 export function startUserTelegramBot({ db }) {
   if (!TG_TOKEN) {
-    log('TG_USER_BOT_TOKEN not set — user bot disabled')
+    log('TG_USER_BOT_TOKEN not set — user bot disabled (TG_BOT_TOKEN is reserved for admin bot)')
+    return
+  }
+  if (process.env.TG_BOT_TOKEN && TG_TOKEN === process.env.TG_BOT_TOKEN) {
+    log('TG_USER_BOT_TOKEN equals TG_BOT_TOKEN — user bot disabled to avoid getUpdates conflict')
     return
   }
   if ((process.env.USER_TG_BOT || '').toLowerCase() === 'off') {

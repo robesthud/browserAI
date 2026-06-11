@@ -122,6 +122,7 @@ function fmtDeepSeek(s) {
     `• Models: ${s.models?.length || 0}`,
     `• Last seen: ${s.lastSeenAt ? new Date(s.lastSeenAt).toLocaleTimeString() : 'never'}`,
     `• Updated by: \`${s.updatedBy || '—'}\``,
+    ...(s.lastError ? [`• Last error: \`${String(s.lastError).slice(0, 120)}\``] : []),
   ].join('\n')
 }
 
@@ -225,6 +226,22 @@ async function handleCommand(msg) {
     const s = await setSession({ userToken: arg, source: 'tg-admin-bot' })
     try { await tg('deleteMessage', { chat_id: chatId, message_id: msg.message_id }) } catch { /* ignore */ }
     return reply(chatId, '🔐 Token updated.\n\n' + fmtDeepSeek(s))
+  }
+
+  if ((cmd === '/setcookie' || cmd === '/setcookies') && arg) {
+    const s = await setSession({ cookies: arg, source: 'tg-admin-bot' })
+    try { await tg('deleteMessage', { chat_id: chatId, message_id: msg.message_id }) } catch { /* ignore */ }
+    return reply(chatId, '🍪 Cookies updated.\n\n' + fmtDeepSeek(s))
+  }
+
+  if (cmd === '/help') {
+    return reply(chatId,
+      '*BrowserAI Admin commands*\n' +
+      '• /status — DeepSeek status\n' +
+      '• /settoken <userToken> — update Bearer token\n' +
+      '• /setcookie <name=value; ...> — update DeepSeek cookies\n' +
+      '• /menu — admin menu'
+    )
   }
 }
 
