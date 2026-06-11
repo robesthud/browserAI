@@ -1350,7 +1350,13 @@ Projects found: ${JSON.stringify(projects.slice(0,5))}`
           // If a specific cwd is requested, we cd into it BEFORE running the command.
           // In a persistent session, this change SHOULD persist to the next turn,
           // matching how a real terminal works. No parentheses = no subshell trap.
-          const wrappedCommand = (cwd && cwd !== getContainerWorkspaceRoot())
+          // Always cd into the resolved cwd for persistent sessions too.
+          // The shell session itself starts in /workspace, while scoped chat
+          // workspaces live under /workspace/chats/<chatId>. The previous
+          // condition skipped cd when cwd equalled getContainerWorkspaceRoot(),
+          // so bash commands in agent chats accidentally ran in the global
+          // /workspace instead of the chat-scoped workspace.
+          const wrappedCommand = cwd
             ? `cd ${JSON.stringify(cwd)} && ${command}`
             : String(command)
           const r = await runInSession({
