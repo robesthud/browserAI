@@ -1,0 +1,118 @@
+name: Update DeepSeek Session
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: update-deepseek-session
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Write DeepSeek managed session to Timeweb
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      HAS_TIMEWEB_SECRETS: ${{ secrets.TIMEWEB_SSH_KEY != '' && secrets.TIMEWEB_HOST != '' && secrets.TIMEWEB_USER != '' && secrets.TIMEWEB_APP_DIR != '' }}
+      HAS_DEEPSEEK_UPDATE_SECRETS: ${{ secrets.DEEPSEEK_USER_TOKEN_UPDATE != '' && secrets.DEEPSEEK_COOKIES_UPDATE != '' }}
+
+    steps:
+      - name: Check required secrets
+        run: |
+          set +x
+          if [ "${HAS_TIMEWEB_SECRETS}" != "true" ]; then
+            echo "::error::Timeweb deploy SSH secrets are not configured."
+            exit 1
+          fi
+          if [ "${HAS_DEEPSEEK_UPDATE_SECRETS}" != "true" ]; then
+            echo "::error::Temporary DeepSeek update secrets are not configured."
+            exit 1
+          fi
+
+      - name: Configure SSH
+        env:
+          DEPLOY_KEY:  ${{ secrets.TIMEWEB_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.TIMEWEB_HOST }}
+        run: |
+          set +x
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Update session file and restart BrowserAI
+        env:
+          DEPLOY_HOST: ${{ secrets.TIMEWEB_HOST }}
+          DEPLOY_USER: ${{ secrets.TIMEWEB_USER }}
+          APP_DIR:     ${{ secrets.TIMEWEB_APP_DIR }}
+          DS_USER_TOKEN: ${{ secrets.DEEPSEEK_USER_TOKEN_UPDATE }}
+          DS_COOKIES:    ${{ secrets.DEEPSEEK_COOKIES_UPDATE }}
+        run: |
+          set +x
+          TOKEN_B64="$(printf '%s' "$DS_USER_TOKEN" | base64 -w0)"
+          COOKIES_B64="$(printf '%s' "$DS_COOKIES" | base64 -w0)"
+
+          ssh -o StrictHostKeyChecking=accept-new "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "APP_DIR='${APP_DIR}' TOKEN_B64='${TOKEN_B64}' COOKIES_B64='${COOKIES_B64}' bash -s" <<'REMOTE'
+          set -euo pipefail
+          set +x
+          cd "$APP_DIR"
+
+          DATA_MOUNT="$(docker inspect browserai --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true)"
+          if [ -z "$DATA_MOUNT" ]; then
+            DATA_MOUNT="$(pwd)/data"
+          fi
+          mkdir -p "$DATA_MOUNT"
+
+          python3 - <<'PY'
+          import base64, json, os, time
+          token = base64.b64decode(os.environ['TOKEN_B64']).decode('utf-8')
+          cookie_str = base64.b64decode(os.environ['COOKIES_B64']).decode('utf-8')
+          data_mount = os.environ.get('DATA_MOUNT') or ''
+          # DATA_MOUNT is exported below for shells that don't export assignment-only vars.
+          if not data_mount:
+              data_mount = os.popen("docker inspect browserai --format '{{range .Mounts}}{{if eq .Destination \"/data\"}}{{.Source}}{{end}}{{end}}' 2>/dev/null").read().strip() or os.path.join(os.getcwd(), 'data')
+
+          def parse_cookie_header(raw):
+              out = {}
+              for part in (raw or '').split(';'):
+                  part = part.strip()
+                  if not part or '=' not in part:
+                      continue
+                  k, v = part.split('=', 1)
+                  k = k.strip()
+                  v = v.strip()
+                  if k:
+                      out[k] = v
+              return out
+
+          state = {
+              'userToken': token.strip(),
+              'cookies': parse_cookie_header(cookie_str),
+              'expiresAt': 0,
+              'lastRefreshAt': int(time.time() * 1000),
+              'lastSeenAt': 0,
+              'lastError': '',
+              'alive': False,
+              'user': None,
+              'updatedBy': 'github-actions:update-deepseek-session',
+          }
+          path = os.path.join(data_mount, 'deepseek_session.json')
+          tmp = path + '.tmp'
+          with open(tmp, 'w', encoding='utf-8') as f:
+              json.dump(state, f, ensure_ascii=False, indent=2)
+          os.chmod(tmp, 0o600)
+          os.replace(tmp, path)
+          print('DeepSeek session file written:', path)
+          print('Cookie names:', ','.join(sorted(state['cookies'].keys())))
+          PY
+
+          docker restart browserai >/dev/null
+          sleep 12
+          echo "== Managed endpoint =="
+          curl -fsS http://localhost/api/deepseek/managed || true
+          echo
+          echo "== DeepSeek startup log =="
+          docker logs --tail 120 browserai 2>&1 | grep -E '\[deepseek-refresh\]|\[admin-bot\]|\[user-tg\]' | tail -40 || true
+          REMOTE
