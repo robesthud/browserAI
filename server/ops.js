@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import AdmZip from 'adm-zip'
 
 const DEFAULT_TIMEOUT_MS = 180_000
-const SSH_HOST = process.env.OPS_SSH_HOST || '72.56.116.15'
+const SSH_HOST = process.env.OPS_SSH_HOST || '186.246.31.78'
 const SSH_USER = process.env.OPS_SSH_USER || 'root'
 const SSH_KEY = process.env.OPS_SSH_KEY || '/data/ops/timeweb_ed25519'
 const APP_DIR = process.env.OPS_APP_DIR || '/opt/browserai'

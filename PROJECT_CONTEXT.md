@@ -211,8 +211,8 @@ The Android app checks GitHub Releases on startup:
 3. Verify production HTML:
 
 ```bash
-curl -fsS http://72.56.116.15/ | grep -E 'legacy|nomodule|assets/'
-curl -sS -D - http://72.56.116.15/ -o /dev/null | grep -i content-security-policy
+curl -fsS http://186.246.31.78/ | grep -E 'legacy|nomodule|assets/'
+curl -sS -D - http://186.246.31.78/ -o /dev/null | grep -i content-security-policy
 ```
 
 Expected:
@@ -320,14 +320,14 @@ npm run build                     # outputs dist/
 
 # Deploy on the Timeweb VPS (managed by .github/workflows/deploy-timeweb.yml,
 # or run manually):
-ssh root@72.56.116.15 \
+ssh root@186.246.31.78 \
   'cd /opt/browserai && git pull && docker compose up -d --build'
 
 # Quick smoke tests
-curl -s http://72.56.116.15/api/health
-curl -s http://72.56.116.15/api/deepseek/managed | jq
+curl -s http://186.246.31.78/api/health
+curl -s http://186.246.31.78/api/deepseek/managed | jq
 # Sandbox liveness (requires auth cookie):
-curl -s -H "Cookie: browserai_session=…" http://72.56.116.15/api/agent/health | jq
+curl -s -H "Cookie: browserai_session=…" http://186.246.31.78/api/agent/health | jq
 ```
 
 

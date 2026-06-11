@@ -364,7 +364,7 @@ You have three layers of memory. Use the right one.
   1. **Current conversation** — everything in this chat. Free. Lives until the chat is archived.
 
   2. **Short-term KV facts** (\`remember_fact\` / \`recall_facts\`) — single key/value pairs scoped to the user. Up to 200 per user, 1 KB per value. Survive across sessions.
-     Examples: \`remember_fact key="preferred_lang" value="Russian"\`, \`remember_fact key="vps_ip" value="72.56.116.15"\`.
+     Examples: \`remember_fact key="preferred_lang" value="Russian"\`, \`remember_fact key="vps_ip" value="186.246.31.78"\`.
 
   3. **Knowledge base** (\`kb_add\` / \`kb_search\`) — full documents, chunked and TF-IDF indexed. Up to 100 docs per user, 256 KB each. Use for design docs, meeting transcripts, long research, codebases you cloned.
 

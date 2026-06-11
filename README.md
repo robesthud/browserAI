@@ -405,7 +405,7 @@ Bind-mount-каталоги при этом не трогаются.
 | Secret | Значение |
 |---|---|
 | `TIMEWEB_SSH_KEY` | приватный ed25519-ключ для деплоя (без passphrase) |
-| `TIMEWEB_HOST` | `72.56.116.15` |
+| `TIMEWEB_HOST` | `186.246.31.78` |
 | `TIMEWEB_USER` | `root` |
 | `TIMEWEB_APP_DIR` | `/opt/browserai` |
 

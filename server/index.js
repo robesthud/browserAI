@@ -143,7 +143,7 @@ app.set('trust proxy', 1)
 // which then fails with `NetworkError when attempting to fetch resource`
 // (Firefox) or `ERR_CONNECTION_REFUSED` (Chrome) — even for /api/chat,
 // /api/cloud, image uploads, etc. We saw exactly this symptom in prod when
-// users hit http://72.56.116.15.
+// users hit http://186.246.31.78.
 //
 // Rule: only enable HSTS when APP_URL is https://… AND the host is a DNS
 // name (not a raw IP). Otherwise turn it off so browsers never enter the
