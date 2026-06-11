@@ -652,7 +652,16 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       const readBacks = makeReadBackForEdits(calls)
       for (const rb of readBacks) calls.push(rb)
 
-      const results = await Promise.all(calls.map(async (call, idx) => {
+      // Execute tool calls sequentially, not in parallel. Some models emit
+      // write_file + read_file in the same assistant turn; running them with
+      // Promise.all lets read_file race ahead of write_file and produces a
+      // false "File not found" even though the file is created milliseconds
+      // later. Sequential execution also preserves the observation order that
+      // OpenAI-compatible providers expect after assistant.tool_calls.
+      const results = []
+      for (let idx = 0; idx < calls.length; idx++) {
+        const call = calls[idx]
+        results.push(await (async () => {
         recentCallFingerprints.push(callFingerprint(call)); if (recentCallFingerprints.length > 20) recentCallFingerprints.shift()
         if (violatesPreDeployVerify(call, recentToolHistory)) return { call, r: makeToolErrorResult('Blocked: verify_code required.'), pushedBack: true }
         if (isStuckLoop(recentCallFingerprints, callFingerprint(call))) return { call, r: makeToolErrorResult('Stuck in loop.'), pushedBack: true }
@@ -720,7 +729,8 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
         }
         updateAgentStateFromTool(agentState, call.tool, r, call.args); sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult(call.tool, r, { step, sub: idx }) }); sse(res, 'agent_state', agentState)
         return { call, r }
-      }))
+        })())
+      }
 
       let sawPushBack = false
       for (const res of results) { if (res?.pushedBack) sawPushBack = true; if (res?.call && res?.r) { recentToolHistory.push({ tool: res.call.tool, ok: !!res.r.ok, at: Date.now() }); if (res.call.tool === 'read_file' && res.call.args?.path) { (res.r.ok ? okReadPaths : failedReadPaths).add(String(res.call.args.path)) } if (res.call.tool === 'plan_set' && res.r.ok) planState.done = new Set(); else if (res.call.tool === 'plan_check' && res.r.ok) (res.r.result?.checked || []).forEach(idx => planState.done.add(Number(idx))) } }

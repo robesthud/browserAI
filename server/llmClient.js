@@ -139,7 +139,24 @@ function normalizeOpenAIMessages(messages = []) {
       }
     }
     
-    out.push({ ...m })
+    const next = { ...m }
+    if (next.role === 'assistant' && Array.isArray(next.tool_calls)) {
+      // Some OpenAI-compatible providers (notably BigModel/GLM) reject
+      // assistant.tool_calls history if any call misses `type: "function"`
+      // or if `function.arguments` is an object instead of a JSON string.
+      // Normalise persisted provider-native calls before replaying history.
+      next.tool_calls = next.tool_calls.map((tc) => ({
+        ...tc,
+        type: tc?.type || 'function',
+        function: {
+          ...(tc?.function || {}),
+          arguments: typeof tc?.function?.arguments === 'string'
+            ? tc.function.arguments
+            : JSON.stringify(tc?.function?.arguments || {}),
+        },
+      }))
+    }
+    out.push(next)
   }
   
   // Final pass: ensure assistant(tool_calls) is NOT the last message.
