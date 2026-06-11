@@ -621,6 +621,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   res.__agentPhase = 'starting'
   res.__agentActiveTool = ''
   let watchdogAborted = false
+  let lastWatchdogNoticeAt = 0
   const idleWatchdog = setInterval(() => {
     const lastReal = Number(res.__browseraiLastRealEventAt || Date.now())
     const idleMs = Date.now() - lastReal
@@ -628,6 +629,10 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
     const activeTool = String(res.__agentActiveTool || '')
     const phase = String(res.__agentPhase || 'working')
+    const hardLlmTimeout = phase === 'llm' && idleMs > LLM_HARD_IDLE_MS
+    if (!hardLlmTimeout && Date.now() - lastWatchdogNoticeAt < IDLE_NOTICE_MS) return
+    lastWatchdogNoticeAt = Date.now()
+
     const currentStep = activeTool
       ? `Всё ещё выполняю инструмент ${activeTool} (${Math.round(idleMs / 1000)}с без вывода)…`
       : `Всё ещё жду ${phase === 'llm' ? 'ответ модели' : 'следующий шаг'} (${Math.round(idleMs / 1000)}с без событий)…`
