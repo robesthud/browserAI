@@ -14,6 +14,10 @@ const DB_PATH = process.env.BROWSERAI_DB
   || (existsSync(DEFAULT_DATA_DIR) ? join(DEFAULT_DATA_DIR, 'browserai.db') : join(__dirname, 'browserai.db'))
 
 const db = new Database(DB_PATH)
+// busy_timeout BEFORE journal_mode: parallel vitest workers (CI) open this
+// same file simultaneously; without a timeout the second connection fails
+// instantly with SQLITE_BUSY during the WAL switch / migrations below.
+db.pragma('busy_timeout = 5000')
 db.pragma('journal_mode = WAL')
 
 // Таблица ключей (enc = 1 → api_key хранится в зашифрованном виде)
