@@ -23,6 +23,8 @@ import {
   callLLM, callLLMStream, supportsNativeTools, supportsStreaming, normalizeProviderError,
 } from './llmClient.js'
 import { registerQuestion } from './askUserRegistry.js'
+import { searchWeb, fetchWebPage } from './web.js'
+import { routeHistory } from './smartRouter.js'
 import {
   clipToolOutput, manageContext, applyAnthropicCacheHints,
   upsertAgentStateDigest,
@@ -39,13 +41,69 @@ import {
 
 const DEFAULT_MAX_STEPS = 15
 const DEFAULT_DEADLINE_MS = 5 * 60 * 1000
+const activeRunsByChat = new Map()
+
+const COMMON_AGENT_TOOLS = [
+  'plan_set', 'plan_check', 'ask_user',
+  'recall_facts', 'remember_fact', 'kb_search', 'kb_list',
+]
+const TOOL_PROFILES = {
+  general: [
+    ...COMMON_AGENT_TOOLS,
+    'web_search', 'web_fetch', 'fetch_page', 'download_url',
+    'list_files', 'read_file', 'search_files',
+    'write_file', 'edit_file', 'delete_file', 'file_history',
+    'bash', 'bash_list', 'bash_logs',
+    'git_status', 'git_diff', 'git_clone', 'generate_image',
+  ],
+  code: [
+    ...COMMON_AGENT_TOOLS,
+    'list_files', 'find_projects', 'build_repo_map', 'read_file', 'search_files',
+    'write_file', 'edit_file', 'delete_file', 'replace_across_files', 'file_history', 'restore_file',
+    'bash', 'bash_reset', 'bash_bg', 'bash_logs', 'bash_stop', 'bash_list',
+    'verify_code', 'run_tests', 'git_status', 'git_diff',
+  ],
+  ops: [
+    ...COMMON_AGENT_TOOLS,
+    'ops_list_services', 'ops_run_action',
+    'bash', 'bash_reset', 'bash_bg', 'bash_logs', 'bash_stop', 'bash_list',
+    'web_search', 'web_fetch', 'fetch_page',
+    'git_status', 'git_diff', 'git_pull', 'git_commit', 'git_push',
+    'list_files', 'read_file', 'search_files', 'edit_file', 'write_file',
+  ],
+  research: [
+    ...COMMON_AGENT_TOOLS,
+    'web_search', 'web_fetch', 'fetch_page', 'scrape_url',
+    'list_files', 'read_file', 'search_files',
+  ],
+  browser: [
+    ...COMMON_AGENT_TOOLS,
+    'browser_open', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_close',
+    'web_search', 'web_fetch', 'fetch_page',
+  ],
+}
+
+function toolProfileForTask(task = {}) {
+  switch (task?.type) {
+    case 'deploy_ops': return 'ops'
+    case 'coding_change': return 'code'
+    case 'repo_analysis': return 'code'
+    case 'research': return 'research'
+    case 'browser_task': return 'browser'
+    default: return 'general'
+  }
+}
+
+function profileToolNames(profile = 'general') {
+  return [...new Set(TOOL_PROFILES[profile] || TOOL_PROFILES.general)]
+}
 
 // ── System prompt builder ───────────────────────────────────────────────────
-async function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null, chatId = '', lite = false } = {}) {
+async function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null, chatId = '', lite = false, toolNames = null } = {}) {
   // Lite profile: skip workspace scans and MCP discovery entirely —
   // a greeting doesn't need project rules or the repo activity feed.
   if (lite) {
-    return buildClineSystemPrompt({ extraSystem, native, extraTools, cwd: '/workspace', lite: true })
+    return buildClineSystemPrompt({ extraSystem, native, extraTools, cwd: '/workspace', lite: true, toolNames })
   }
 
   const [projectRules, recentActivity] = await Promise.all([
@@ -85,16 +143,22 @@ async function buildSystemPrompt({ extraSystem = '', native = false, extraTools 
     projectRules,
     recentActivity: activityText,
     mcpServersBlock,
+    toolNames,
   })
 }
 
 
 // ── Native tools spec ───────────────────────────────────────────────────────
-function buildNativeToolsSpec(extraTools = null, { lite = false } = {}) {
+function buildNativeToolsSpec(extraTools = null, { lite = false, toolNames = null } = {}) {
   let combined = extraTools && typeof extraTools === 'object' ? { ...TOOLS, ...extraTools } : TOOLS
-  // Lite runs advertise only the essential tool subset (same list the lite
-  // prompt documents) — the full 58-tool JSON spec alone is ~7.7k tokens.
-  if (lite) combined = Object.fromEntries(Object.entries(combined).filter(([n]) => LITE_TOOL_NAMES.includes(n)))
+  if (Array.isArray(toolNames) && toolNames.length > 0) {
+    const allowed = new Set(toolNames)
+    combined = Object.fromEntries(Object.entries(combined).filter(([n]) => allowed.has(n)))
+  } else if (lite) {
+    // Lite runs advertise only the essential tool subset (same list the lite
+    // prompt documents) — the full 58-tool JSON spec alone is ~7.7k tokens.
+    combined = Object.fromEntries(Object.entries(combined).filter(([n]) => LITE_TOOL_NAMES.includes(n)))
+  }
   return Object.entries(combined).map(([name, def]) => {
     const properties = {}
     const required = []
@@ -133,12 +197,16 @@ function callFingerprint(call) {
 const STUCK_THRESHOLD = 3
 function isStuckLoop(recentCalls, currentFingerprint) {
   if (!currentFingerprint) return false
-  let count = 0
+  let consecutive = 0
   for (let i = recentCalls.length - 1; i >= 0; i -= 1) {
-    if (recentCalls[i] === currentFingerprint) count += 1
+    if (recentCalls[i] === currentFingerprint) consecutive += 1
     else break
   }
-  return count + 1 >= STUCK_THRESHOLD
+  if (consecutive + 1 >= STUCK_THRESHOLD) return true
+
+  const recentWindow = recentCalls.slice(-10)
+  const totalInWindow = recentWindow.filter((x) => x === currentFingerprint).length
+  return totalInWindow + 1 >= STUCK_THRESHOLD
 }
 
 function makeReadBackForEdits(calls) {
@@ -366,6 +434,77 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
   return { ...result, preParsedCalls }
 }
 
+// ── Lightweight server-side router paths ────────────────────────────────────
+async function runLightweightChat({ res, provider, history, userId, chatId, mode = 'chat' }) {
+  const tokens = { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: 0 }
+  const lastUser = String([...history].reverse().find((m) => m.role === 'user')?.content || '')
+  let webContext = ''
+
+  if (mode === 'web' && lastUser) {
+    sse(res, 'tool_start', { step: 0, sub: 0, name: 'web_search', args: { query: lastUser, depth: '1' } })
+    const results = await searchWeb(lastUser, 5).catch(() => [])
+    sse(res, 'tool_result', { step: 0, sub: 0, name: 'web_search', ok: true, result: { results: results.slice(0, 5) } })
+
+    const pages = []
+    for (const r of results.slice(0, 2)) {
+      if (!r?.url) continue
+      try {
+        const page = await Promise.race([
+          fetchWebPage(r.url),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('fetch timeout')), 6000)),
+        ])
+        pages.push({ title: r.title, url: r.url, snippet: r.snippet || '', content: String(page?.content || '').slice(0, 1800) })
+      } catch {
+        pages.push({ title: r.title, url: r.url, snippet: r.snippet || '', content: '' })
+      }
+    }
+
+    webContext = pages.map((p, i) => [
+      `[${i + 1}] ${p.title || p.url}`,
+      p.url,
+      p.snippet ? `Snippet: ${p.snippet}` : '',
+      p.content ? `Content: ${p.content}` : '',
+    ].filter(Boolean).join('\n')).join('\n\n---\n\n')
+  }
+
+  const messages = [
+    {
+      role: 'system',
+      content: [
+        'Ты BrowserAI. Отвечай по-русски, кратко и полезно.',
+        mode === 'web' ? 'Используй приложенный web-контекст для актуальных фактов. Если используешь web-факт, укажи источник ссылкой.' : '',
+        webContext ? `WEB_CONTEXT:\n${webContext}` : '',
+      ].filter(Boolean).join('\n\n'),
+    },
+    ...history.slice(-8),
+  ]
+
+  const reply = await callLLM({
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    authType: provider.authType || 'bearer',
+    authHeader: provider.authHeader || '',
+    extraHeaders: provider.extraHeaders || {},
+    model: provider.model,
+    messages,
+    temperature: Number(provider.temperature ?? 0.5),
+  })
+
+  if (reply?.usage) {
+    tokens.prompt += Number(reply.usage.prompt || 0)
+    tokens.completion += Number(reply.usage.completion || 0)
+    tokens.total += Number(reply.usage.total || (tokens.prompt + tokens.completion) || 0)
+    tokens.reasoningTokens += Number(reply.usage.reasoningTokens || 0)
+    tokens.llmCalls += 1
+    try { recordSpend({ userId, chatId, model: provider.model, usage: reply.usage }) } catch { /* ignore */ }
+    sse(res, 'usage', { step: 0, ...reply.usage, totals: { ...tokens } })
+  }
+
+  await streamFinalAnswer(res, reply?.text || '')
+  sseDone(res, { steps: 0, reason: mode === 'web' ? 'server-web-route' : 'server-chat-route' }, tokens)
+  res.end()
+}
+
 // ── Error recovery helpers ──────────────────────────────────────────────────
 function getRecoveryHint(tool, error, args = {}) {
   const err = String(error || '').toLowerCase()
@@ -410,6 +549,17 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
   sse(res, 'stream_protocol', { version: 1, events: ['stream_protocol', 'agent_context', 'agent_state', 'thinking', 'thinking_delta', 'assistant_delta', 'assistant', 'thought', 'tool_preview', 'tool_router', 'tool_start', 'tool_progress', 'tool_result', 'tool_diagnostic', 'ask_user', 'tool_approval', 'usage', 'done', 'error'] })
 
+  if (chatId) {
+    const existing = activeRunsByChat.get(chatId)
+    if (existing && Date.now() - existing.startedAt < DEFAULT_DEADLINE_MS + 60_000) {
+      sse(res, 'error', { message: 'В этом чате уже выполняется запрос. Дождитесь завершения или нажмите Stop.' })
+      sseDone(res, { steps: 0, reason: 'duplicate-run-blocked' }, { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: 0 })
+      res.end()
+      return
+    }
+    activeRunsByChat.set(chatId, { startedAt: Date.now() })
+  }
+
   const tokens = { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: 0 }
   function accumulateUsage(u) {
     if (!u) return
@@ -418,7 +568,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   }
 
   if (!provider?.baseUrl || !provider?.apiKey) {
-    sse(res, 'error', { message: 'Provider not configured' }); sseDone(res, { steps: 0, reason: 'no-provider' }, tokens); res.end(); return
+    sse(res, 'error', { message: 'Provider not configured' }); sseDone(res, { steps: 0, reason: 'no-provider' }, tokens); res.end(); if (chatId) activeRunsByChat.delete(chatId); return
   }
 
   let extraTools = null
@@ -431,11 +581,25 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   // low-complexity (greeting / single question) gets the lite prompt
   // (~2.5k tokens) instead of the full 16k-token engineering prompt.
   const agentContext = buildAgentContext({ provider, history, extraSystem, userId, workspaceScope, maxSteps })
+  const serverRoute = routeHistory(history, { forceAgent: Boolean(provider.forceAgent) })
+  if (!provider.forceAgent && (serverRoute.mode === 'chat' || serverRoute.mode === 'web')) {
+    sse(res, 'agent_context', { ...agentContext, serverRoute })
+    try {
+      await runLightweightChat({ res, provider, history, userId, chatId, mode: serverRoute.mode })
+    } finally {
+      if (chatId) activeRunsByChat.delete(chatId)
+    }
+    return
+  }
+
   const liteRun = agentContext?.task?.complexity === 'low'
+  const toolProfile = toolProfileForTask(agentContext?.task)
+  const activeToolNames = liteRun ? null : profileToolNames(toolProfile)
+  const allowedToolSet = activeToolNames ? new Set(activeToolNames) : null
 
   let useNativeTools = supportsNativeTools(provider.baseUrl)
-  let systemPrompt = await buildSystemPrompt({ extraSystem, native: useNativeTools, extraTools, chatId, lite: liteRun })
-  let toolsSpec = useNativeTools ? buildNativeToolsSpec(extraTools, { lite: liteRun }) : undefined
+  let systemPrompt = await buildSystemPrompt({ extraSystem, native: useNativeTools, extraTools, chatId, lite: liteRun, toolNames: activeToolNames })
+  let toolsSpec = useNativeTools ? buildNativeToolsSpec(extraTools, { lite: liteRun, toolNames: activeToolNames }) : undefined
 
   const convo = [{ role: 'system', content: systemPrompt }, ...history]
   const deadline = Date.now() + DEFAULT_DEADLINE_MS
@@ -455,7 +619,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
   if (planningDirective) convo.push({ role: 'user', content: planningDirective })
   
-  sse(res, 'agent_context', agentContext); sse(res, 'agent_state', agentState)
+  sse(res, 'agent_context', { ...agentContext, toolProfile, toolNames: activeToolNames }); sse(res, 'agent_state', agentState)
   if (res.flushHeaders) res.flushHeaders()
 
   // v2.22: Automatic Memory Integration — pre-load saved facts and 
@@ -666,6 +830,13 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
         if (violatesPreDeployVerify(call, recentToolHistory)) return { call, r: makeToolErrorResult('Blocked: verify_code required.'), pushedBack: true }
         if (isStuckLoop(recentCallFingerprints, callFingerprint(call))) return { call, r: makeToolErrorResult('Stuck in loop.'), pushedBack: true }
 
+        if (allowedToolSet && !allowedToolSet.has(call.tool) && !(extraTools && extraTools[call.tool])) {
+          const rErr = makeToolErrorResult(`Tool ${call.tool} is not available in the current ${toolProfile} tool profile. Use one of: ${[...allowedToolSet].join(', ')}`)
+          sse(res, 'tool_router', { step, sub: idx, name: call.tool, warnings: [rErr.error] })
+          sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
+          return { call, r: rErr, pushedBack: true }
+        }
+
         const validation = validateToolCall(call.tool, call.args || {}, { ...TOOLS, ...extraTools }[call.tool])
         if (!validation.ok) {
           if (!pushedBackThisTurn && !aborted) {
@@ -745,7 +916,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       }
     }
     if (step >= maxSteps) { sse(res, 'error', { message: `Stopped after ${maxSteps} steps` }); sseDone(res, { steps: step, reason: 'max-steps' }, tokens) }
-  } catch (e) { sse(res, 'error', { message: e.message }); sseDone(res, { steps: step, reason: 'crash' }, tokens) } finally { try { res.end() } catch { /* best-effort: ignore */ } }
+  } catch (e) { sse(res, 'error', { message: e.message }); sseDone(res, { steps: step, reason: 'crash' }, tokens) } finally { if (chatId) activeRunsByChat.delete(chatId); try { res.end() } catch { /* best-effort: ignore */ } }
 }
 
 function sseDone(res, payload, tokens) { sse(res, 'done', { ...payload, tokens }) }

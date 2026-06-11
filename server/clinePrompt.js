@@ -622,6 +622,7 @@ export function buildClineSystemPrompt({
   recentActivity = '',
   mcpServersBlock = '',
   lite = false,
+  toolNames = null,
 } = {}) {
   // Lite profile for low-complexity tasks (greetings, single questions):
   // short role + tool formatting + a trimmed tool catalog. ~2.5k tokens
@@ -633,7 +634,7 @@ export function buildClineSystemPrompt({
       TOOL_USE_INTRO,
       native ? NATIVE_TOOLING_NOTE : TOOL_USE_FORMATTING,
       '# Available Tools',
-      renderToolsForPrompt(extraTools, { lite: true }),
+      renderToolsForPrompt(extraTools, { lite: true, toolNames }),
       SYSTEM_INFORMATION(cwd),
       buildUserInstructionsSection(extraSystem, modelHint, recall, projectRules, recentActivity),
     ]
@@ -709,7 +710,7 @@ they're cheaper.
   browser. xterm is the only other allowed app right now.
 `
       : ''),
-    renderToolsForPrompt(extraTools),
+    renderToolsForPrompt(extraTools, { toolNames }),
     mcpServersBlock || '',
     EDITING_FILES,
     TASK_PROGRESS,

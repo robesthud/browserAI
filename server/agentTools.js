@@ -1875,11 +1875,14 @@ export const LITE_TOOL_NAMES = [
  * user-defined custom tools) as plain text the LLM can read.
  * Pass { lite: true } to emit only LITE_TOOL_NAMES (cheap runs).
  */
-export function renderToolsForPrompt(extraTools = null, { lite = false } = {}) {
+export function renderToolsForPrompt(extraTools = null, { lite = false, toolNames = null } = {}) {
   let combined = extraTools && typeof extraTools === 'object'
     ? { ...TOOLS, ...extraTools }
     : TOOLS
-  if (lite) {
+  if (Array.isArray(toolNames) && toolNames.length > 0) {
+    const allowed = new Set(toolNames)
+    combined = Object.fromEntries(Object.entries(combined).filter(([n]) => allowed.has(n)))
+  } else if (lite) {
     combined = Object.fromEntries(Object.entries(combined).filter(([n]) => LITE_TOOL_NAMES.includes(n)))
   }
   const lines = []
