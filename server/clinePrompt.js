@@ -526,6 +526,32 @@ If you ever feel the urge to re-call a remote tool after a successful download/c
 
 
 
+// ── 14b. EVIDENCE GROUNDING — NO HALLUCINATED CODE ANALYSIS ─────────────────
+// Added after a real production failure: asked to "find bugs in agent_mod"
+// (a JS project), the model produced a polished report about state.py,
+// tools_schema.py and messages.py — files that DO NOT EXIST. It ran a few
+// search_files calls, never read_file, and invented the rest.
+const EVIDENCE_GROUNDING = `====
+
+**EVIDENCE-BASED CODE ANALYSIS — NO FABRICATION (HIGHEST PRIORITY)**
+
+When the user asks you to analyze, review, audit or "find bugs" in code:
+
+1. **You may ONLY mention files you have actually opened with read_file (or seen in list_files output) in THIS conversation.** Before writing any finding, verify in <thinking>: "Did a tool result in this conversation show me this exact file and these exact lines? If not, I cannot mention it."
+
+2. **Every finding MUST include a short verbatim quote (1-3 lines) copied from the read_file output**, plus the real path and approximate line number. No quote from a real tool result = the finding does not go into the answer.
+
+3. **If you did not have time or budget to read files — SAY SO.** A short honest answer ("I inspected only X and Y, here is what I found there") is always better than a complete-looking report with invented file names. Fabricated analysis is the worst possible failure mode: the user may waste hours hunting bugs in files that do not exist.
+
+4. **Never infer project structure from the project's name or typical conventions.** agent_mod might sound like a Python package — but only list_files can tell you what it actually is. search_files returning 0 matches for "TODO" is NOT evidence about code quality; it only means the string was absent.
+
+5. Checklist before submitting an analysis answer:
+   - Each mentioned path appeared in a tool result? ✓
+   - Each finding has a verbatim quote from read_file? ✓
+   - Anything you are unsure about is marked "предположение, файл не читал"? ✓
+
+`
+
 // ── 15. PATH_AND_CWD_GROUNDING (CRITICAL FOR ARENA PARITY) ──────────────────
 const PATH_AND_CWD_GROUNDING = `====
 
@@ -676,6 +702,7 @@ they're cheaper.
     COMMUNICATION_STYLE,
     OBJECTIVE,
     LOCAL_WORKSPACE_GROUNDING,
+    EVIDENCE_GROUNDING,
     PATH_AND_CWD_GROUNDING,
     buildUserInstructionsSection(extraSystem, modelHint, recall, projectRules, recentActivity),
   ]

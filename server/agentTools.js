@@ -1648,33 +1648,10 @@ Projects found: ${JSON.stringify(projects.slice(0,5))}`
   },
 
   // ── Sub-agents ────────────────────────────────────────────────────────
-  use_subagents: {
-    description: 'Spawn up to 5 focused, read-only sub-agents in parallel. Each gets its own prompt and returns a short summary. Use when you need to read many files / explore many areas to answer a single question — saves 70-90 % of your own context budget vs reading them inline. Sub-agents cannot write/commit/deploy.',
-    params: {
-      prompt_1: { type: 'string', required: true,  description: 'First sub-agent prompt (what to investigate / summarise).' },
-      prompt_2: { type: 'string', optional: true,  description: 'Optional second sub-agent prompt.' },
-      prompt_3: { type: 'string', optional: true,  description: 'Optional third sub-agent prompt.' },
-      prompt_4: { type: 'string', optional: true,  description: 'Optional fourth sub-agent prompt.' },
-      prompt_5: { type: 'string', optional: true,  description: 'Optional fifth sub-agent prompt.' },
-    },
-    handler: async (args = {}) => {
-      const { runSubagents } = await import('./subAgents.js')
-      const prompts = [args.prompt_1, args.prompt_2, args.prompt_3, args.prompt_4, args.prompt_5].filter(Boolean)
-      const provider = args._provider
-      if (!provider?.baseUrl || !provider?.apiKey) {
-        return err('use_subagents: no provider available')
-      }
-      const results = await runSubagents({
-        prompts, provider, signal: args._signal, userId: args._userId,
-      })
-      const out = results.map((r, i) => {
-        const head = `## Sub-agent ${i + 1} (${r.ok ? 'ok' : 'failed'})`
-        const body = r.ok ? (r.text || '(empty)') : `ERROR: ${r.error}`
-        return head + '\n\n' + body
-      }).join('\n\n========================================\n\n')
-      return ok(out)
-    },
-  },
+  // NOTE: registered once at the bottom of TOOLS as
+  //   use_subagents: USE_SUBAGENTS_TOOL (imported from subAgents.js).
+  // An inline duplicate used to live here and silently shadowed the
+  // imported version (no-dupe-keys) — keep only the imported one.
 
   // ── Project Memory ───────────────────────────────────────────────────
   save_lesson: {

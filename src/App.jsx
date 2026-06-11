@@ -24,9 +24,7 @@ import {
 import { useSettings } from './lib/useSettings.js'
 import { useChats } from './lib/useChats.js'
 import { backend } from './lib/backend.js'
-import { getTaskType, pickBestModel } from './lib/autoModel.js'
-import useEdgeSwipe from './lib/useEdgeSwipe.js'
-import haptics from './lib/haptics.js'
+import { pickBestModel } from './lib/autoModel.js'
 
 function CloudSync({ settings, chats }) {
   const firstRun = useRef(true)
@@ -117,7 +115,7 @@ function BrowserApp({ user, reloadAuth }) {
           const j = await r.json()
           setCostInfo({ dailyTotal: Number(j.dailyTotal || 0), cap: Number(j.cap || 0) })
         }
-      } catch { }
+      } catch { /* ignore */ }
     }
     refresh(); const id = setInterval(refresh, 30000)
     return () => { alive = false; clearInterval(id) }
@@ -130,11 +128,11 @@ function BrowserApp({ user, reloadAuth }) {
   }, [flash])
 
   useEffect(() => {
-    try { localStorage.setItem('browserai.autoMode', autoMode ? '1' : '0') } catch { }
+    try { localStorage.setItem('browserai.autoMode', autoMode ? '1' : '0') } catch { /* ignore */ }
   }, [autoMode])
 
   useEffect(() => {
-    try { localStorage.setItem('browserai.agentMode', agentMode ? '1' : '0') } catch { }
+    try { localStorage.setItem('browserai.agentMode', agentMode ? '1' : '0') } catch { /* ignore */ }
   }, [agentMode])
 
   useEffect(() => {
@@ -165,11 +163,9 @@ function BrowserApp({ user, reloadAuth }) {
   const handleSendMessage = useCallback(async (text, attachments = []) => {
     if (aiWorking) return
     let overrideModel = null
-    let routedTaskType = getTaskType(text || '')
 
     if (autoMode && availableModels.length > 1 && text?.trim()) {
       const result = pickBestModel(text, availableModels, selectedModel)
-      routedTaskType = result.taskType || routedTaskType
       if (result.changed) {
         overrideModel = providerOverrideForModel(result.model) || result.model
         setActiveModel(result.model).catch(() => {})
@@ -189,7 +185,9 @@ function BrowserApp({ user, reloadAuth }) {
     if (idx === -1) return
     const updatedMessages = curMsgs.slice(0, idx)
     updateChat(activeChat.id, { messages: updatedMessages })
-    const lastUserMsg = updatedMessages.reverse().find(x => x.role === 'user')
+    // NB: [...spread] — .reverse() in place would mutate the same array we just
+    // stored in state, leaving the restored chat history in reversed order.
+    const lastUserMsg = [...updatedMessages].reverse().find(x => x.role === 'user')
     if (lastUserMsg) handleSendMessage(lastUserMsg.content, lastUserMsg.attachments)
   }, [aiWorking, activeChat, updateChat, handleSendMessage])
 

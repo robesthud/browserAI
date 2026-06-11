@@ -259,7 +259,7 @@ async function streamFinalAnswer(res, fullText) {
   // but stop exactly before the first character of real content (Russian letters,
   // digits, quotes, markdown markers, or emojis) using a non-consuming lookahead.
   const cleaned = text
-    .replace(/^(?:to respond with|according to|the user just said|thus output|i should state|i will now|in summary)[\s\S]*?(?=[\n\p{Script=Cyrillic}"'«#\-\d\*✅❌⚠️]|$)/ui, '')
+    .replace(/^(?:to respond with|according to|the user just said|thus output|i should state|i will now|in summary)[\s\S]*?(?=[\n\p{Script=Cyrillic}"'«#\-\d*]|✅|❌|⚠️|$)/ui, '')
     .trim()
 
   const parts = cleaned.match(/.{1,32}/g) || [cleaned]

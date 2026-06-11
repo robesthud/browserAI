@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { loadSettings, resolveActive } from '../lib/settings.js'
 import AgentRuntimePanel from './AgentRuntimePanel.jsx'
 import AgentToolBlock from './AgentToolBlock.jsx'
 import Markdown from '../lib/markdown.jsx'
@@ -55,30 +56,15 @@ export default function AgentAdmin() {
     setLoadingDiag(true)
     setProviderDiag(null)
     try {
-      const rawSettings = localStorage.getItem('browserai.settings')
-      if (!rawSettings) throw new Error('No settings found in localStorage')
-      const settings = JSON.parse(rawSettings)
-      const providerId = settings.activeProvider || 'openrouter'
-      const pData = settings.providers?.[providerId] || {}
-      
-      let baseUrl = pData.baseUrl
-      let apiKey = pData.apiKey
-      let model = pData.model
-      
-      // Fallbacks based on defaults
-      if (providerId === 'openrouter') {
-         baseUrl = baseUrl || 'https://openrouter.ai/api/v1'
-         model = model || 'anthropic/claude-3.5-sonnet'
-      } else if (providerId === 'anthropic') {
-         baseUrl = baseUrl || 'https://api.anthropic.com/v1'
-         model = model || 'claude-3-5-sonnet-latest'
-      } else if (providerId === 'gemini') {
-         baseUrl = baseUrl || 'https://generativelanguage.googleapis.com/v1beta'
-         model = model || 'gemini-2.5-flash'
-      } else if (providerId === 'deepseek') {
-         baseUrl = baseUrl || 'https://api.deepseek.com/v1'
-         model = model || 'deepseek-chat'
-      }
+      // Use the real settings store (browserai.settings.v2, keys[] schema).
+      // The previous version read a non-existent 'browserai.settings' key with
+      // a providers{} schema that never existed -> permanent ERROR panel.
+      const settings = loadSettings()
+      const active = resolveActive(settings)
+      const baseUrl = active.baseUrl
+      const apiKey = active.apiKey
+      const model = active.model
+      if (!baseUrl || !model) throw new Error('Нет активного API-ключа: добавь ключ в Настройках')
 
       const r = await fetch('/api/agent/provider/diagnose', {
         method: 'POST',

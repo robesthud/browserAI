@@ -107,7 +107,6 @@ function WorkingSpinner() {
 function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, onCancelAskUser, onJobDone, onBranch }) {
   const isUser = m.role === 'user'
   const isDev = devtoolsEnabled()
-  const [showTechnical, setShowTechnical] = useState(false)
   const hasAgentActivity = !isUser && Boolean(
     (Array.isArray(m.toolCalls) && m.toolCalls.length > 0) ||
     (Array.isArray(m.askUsers) && m.askUsers.length > 0) ||
