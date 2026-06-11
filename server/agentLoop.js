@@ -483,6 +483,11 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   res.on('close', () => clearInterval(keepAliveInterval))
 
   const recentCallFingerprints = [], recentToolHistory = [], planState = { done: new Set() }
+  // Anti-fabrication bookkeeping: which paths were actually read vs failed.
+  // Used before the final answer to catch reports citing files that were
+  // never successfully opened (observed: invented *.py files in a JS repo).
+  const okReadPaths = new Set(), failedReadPaths = new Set()
+  let fabricationPushback = false
   let pushedBackThisTurn = false
 
   try {
@@ -555,6 +560,22 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
           pushedBackThisTurn = true
           sse(res, 'thought', { step, text: 'No tools called. Forcing action.' })
           convo.push({ role: 'user', content: 'ACT now by calling a tool.' }); continue
+        }
+
+        // Fabrication gate: the draft cites concrete file paths — verify each
+        // was actually read OK in this run. A path that only ever FAILED in
+        // read_file (ENOENT) appearing in the final answer = invented report.
+        if (!fabricationPushback && !aborted && failedReadPaths.size > 0 && (reply.text || '').length > 100) {
+          const cited = [...failedReadPaths].filter((p) => {
+            const base = p.split('/').pop()
+            return base && base.length > 3 && (reply.text || '').includes(base) && !okReadPaths.has(p)
+          })
+          if (cited.length > 0) {
+            fabricationPushback = true
+            sse(res, 'thought', { step, text: `Самопроверка: ответ ссылается на файлы, которые НЕ удалось прочитать (${cited.slice(0, 5).join(', ')}). Требую переработку по реальным файлам.` })
+            convo.push({ role: 'user', content: `[fabrication_check] Your draft cites files that DO NOT EXIST — every read_file on them failed: ${cited.join(', ')}. You invented their content. Start over: call list_files to see the REAL tree, read_file the REAL files, and rewrite the answer using only verbatim quotes from successful read_file results. Do not mention non-existent files.` })
+            continue
+          }
         }
 
         const lastUserAsk = [...history].reverse().find((m) => m.role === 'user')?.content || ''
@@ -685,7 +706,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       }))
 
       let sawPushBack = false
-      for (const res of results) { if (res?.pushedBack) sawPushBack = true; if (res?.call && res?.r) { recentToolHistory.push({ tool: res.call.tool, ok: !!res.r.ok, at: Date.now() }); if (res.call.tool === 'plan_set' && res.r.ok) planState.done = new Set(); else if (res.call.tool === 'plan_check' && res.r.ok) (res.r.result?.checked || []).forEach(idx => planState.done.add(Number(idx))) } }
+      for (const res of results) { if (res?.pushedBack) sawPushBack = true; if (res?.call && res?.r) { recentToolHistory.push({ tool: res.call.tool, ok: !!res.r.ok, at: Date.now() }); if (res.call.tool === 'read_file' && res.call.args?.path) { (res.r.ok ? okReadPaths : failedReadPaths).add(String(res.call.args.path)) } if (res.call.tool === 'plan_set' && res.r.ok) planState.done = new Set(); else if (res.call.tool === 'plan_check' && res.r.ok) (res.r.result?.checked || []).forEach(idx => planState.done.add(Number(idx))) } }
       if (sawPushBack) continue
 
       for (const { call, r } of results) {
