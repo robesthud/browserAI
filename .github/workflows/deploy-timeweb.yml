@@ -90,15 +90,22 @@ jobs:
                ok=0
                for i in 1 2 3 4 5 6 7 8 9 10; do
                  sleep 5
-                 if (curl -fsS http://localhost/api/health || curl -fsS http://localhost:8080/api/health) \
-                    && docker inspect browserai --format \"{{.State.Running}} {{.State.Restarting}} {{.State.ExitCode}}\" | grep -q \"true false 0\"; then
-                   ok=1
-                   break
+                 if curl -fsS http://localhost/api/health || curl -fsS http://localhost:8080/api/health; then
+                   state=\"$(docker inspect browserai --format '{{.State.Status}} {{.State.Restarting}}' 2>/dev/null || true)\"
+                   echo \"browserai state: $state\"
+                   if [ \"$state\" = \"running false\" ]; then
+                     ok=1
+                     break
+                   fi
                  fi
                  docker ps --filter name=browserai --format \"{{.Names}} {{.Status}}\" || true
                  docker logs --tail 30 browserai 2>&1 || true
                done
-               test \"$ok\" = \"1\"
+               if [ \"$ok\" != \"1\" ]; then
+                 echo \"browserai did not become stable\"
+                 docker inspect browserai --format '{{json .State}}' || true
+                 exit 1
+               fi
                
                send_tg \"✅ <b>BrowserAI</b>: Деплой успешно завершен! (коммит <code>${{ github.sha }}</code>)\"
                '"
