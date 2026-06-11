@@ -54,7 +54,7 @@ Native `chat.deepseek.com` session manager:
 | File | Purpose |
 |------|---------|
 | `server/deepseekTokenRefresher.js` | Session state + heartbeat + models cache |
-| `server/deepseekBot.js`            | Telegram control surface (long polling) |
+| `server/telegramBot.js`              | Unified Telegram v2 bot: AI agent + admin/ops menu |
 | `server/deepseekWeb.js`            | Lower-level DeepSeek HTTP client + WASM POW |
 | `src/components/DeepSeekAdmin.jsx` | `/admin/deepseek` dashboard |
 | `server/DEEPSEEK_SESSION.md`       | Full operator guide (env, endpoints, bot) |
@@ -82,7 +82,7 @@ DEEPSEEK_USER_TOKEN     # optional bootstrap Bearer (otherwise UI/bot supplies i
 DEEPSEEK_COOKIES        # optional bootstrap cookies "name=value; name2=value2"
 DEEPSEEK_HEARTBEAT_MS   # default 600000 (10 min)
 DEEPSEEK_MODELS_REFRESH_MS  # default 3600000 (1 h)
-DEEPSEEK_BOT            # "off" disables the Telegram bot
+TELEGRAM_BOT            # "off" disables the unified Telegram v2 bot
 TG_BOT_TOKEN            # bot token from @BotFather
 TG_ADMIN_CHAT_ID        # numeric chat_id allowed to issue commands
 ```

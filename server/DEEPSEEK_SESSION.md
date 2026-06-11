@@ -14,7 +14,7 @@
 ## Файлы
 
 - `server/deepseekTokenRefresher.js` — менеджер сессии
-- `server/deepseekBot.js`            — Telegram-бот (опционально)
+- `server/telegramBot.js`              — единый Telegram v2 bot (опционально)
 - `server/index.js`                  — bootstrap + админ-эндпоинты
 - `src/components/DeepSeekAdmin.jsx` — страница `/admin/deepseek`
 
@@ -37,7 +37,7 @@
 | `DEEPSEEK_MODELS_REFRESH_MS` | `3600000` (1 ч)          | Интервал обновления списка моделей        |
 | `DEEPSEEK_USER_TOKEN`     | —                           | Bootstrap-токен при первом старте         |
 | `DEEPSEEK_COOKIES`        | —                           | Bootstrap-cookies (`name=value; ...`)    |
-| `DEEPSEEK_BOT`            | (вкл)                       | `off` отключает Telegram-бота             |
+| `TELEGRAM_BOT`           | (вкл)                       | `off` отключает Telegram v2 bot          |
 | `TG_BOT_TOKEN`            | —                           | Токен Telegram-бота (`123:ABC...`)        |
 | `TG_ADMIN_CHAT_ID`        | —                           | chat_id админа (числовой)                 |
 

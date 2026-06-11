@@ -78,7 +78,7 @@ jobs:
                git reset --hard origin/main
                git clean -fd
                echo \"── verify required files ──\"
-               test -f server/userTelegramBot.js
+               test -f server/telegramBot.js
                test -f server/index.js
                echo \"── docker compose build ──\"
                docker compose build browserai

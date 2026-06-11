@@ -14,12 +14,9 @@ services:
       - CHAT_DEBUG_LOG=/data/chat-debug.log
       # - DEEPSEEK_USER_TOKEN=
       # - DEEPSEEK_COOKIES=
-      # Telegram bots (optional)
-      # TG_BOT_TOKEN — admin bot for managed-DeepSeek control
-      # TG_USER_BOT_TOKEN — end-user bot (recommended: separate token)
+      # Telegram bot v2 (optional): single-token admin + AI agent interface
       - TG_BOT_TOKEN=${TG_BOT_TOKEN:-}
       - TG_ADMIN_CHAT_ID=${TG_ADMIN_CHAT_ID:-}
-      - TG_USER_BOT_TOKEN=${TG_USER_BOT_TOKEN:-}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - GITHUB_REPO=${GITHUB_REPO:-robesthud/browserAI}
       # App-level secrets

@@ -87,7 +87,7 @@ import {
   refreshNow as refreshDeepSeekNow,
   setSession as setDeepSeekSession,
 } from './deepseekTokenRefresher.js'
-import { startDeepSeekBot } from './deepseekBot.js'
+import { startTelegramBot } from './telegramBot.js'
 import { runAgent } from './agentLoop.js'
 import {
   callLLM, callLLMStream, isAnthropicOfficialUrl, isGoogleGenerativeNativeUrl,
@@ -96,7 +96,6 @@ import {
 import { sandboxHealth } from './agentSandbox.js'
 import { browserHealth } from './browserTools.js'
 import { answerQuestion, cancelQuestion, listPendingQuestions, getPendingQuestion } from './askUserRegistry.js'
-import { startUserTelegramBot } from './userTelegramBot.js'
 
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -3059,31 +3058,20 @@ try {
 
 // ── DeepSeek session auto-refresh bootstrap ────────────────────────────────
 // Loads persisted token from /data/deepseek_session.json (or env vars on
-// first boot), starts the 10-min heartbeat, hourly models refresh, and the
-// optional Telegram control bot.
+// first boot), starts the 10-min heartbeat and hourly models refresh.
 try {
   bootstrapDeepSeekSession()
-  // #36 FIX: Avoid Telegram polling conflict if same token is used for both bots.
-  if (process.env.TG_BOT_TOKEN && process.env.TG_BOT_TOKEN !== process.env.TG_USER_BOT_TOKEN) {
-    startDeepSeekBot()
-  } else if (process.env.TG_BOT_TOKEN) {
-    console.log('[deepseek-bot] Skipping admin bot start due to token conflict with user bot.')
-  }
 } catch (e) {
   console.warn('[deepseek-refresh] bootstrap failed:', e.message)
 }
 
-// ── End-user Telegram bot ─────────────────────────────────────────────────
-// Friendly chat interface for everyone, backed by the same agent loop.
-// Uses TG_USER_BOT_TOKEN (separate token recommended — long polling is
-// exclusive). Falls back to TG_BOT_TOKEN if the user-only var is missing,
-// but in that case the admin bot is also using it and conflicts will
-// appear in logs ("terminated by other getUpdates request").
+// ── Telegram v2 single-bot interface ───────────────────────────────────────
+// One token only (TG_BOT_TOKEN): admin menu + server ops + the same AI/agent
+// pipeline as the web app. Replaces legacy deepseekBot/userTelegramBot.
 try {
-  // If tokens are same, user bot takes priority as it provides the chat interface.
-  startUserTelegramBot({ db })
+  startTelegramBot()
 } catch (e) {
-  console.warn('[user-tg] bootstrap failed:', e.message)
+  console.warn('[tg-v2] bootstrap failed:', e.message)
 }
 
 // Cron worker — polls every 60 s for due scheduled jobs.

@@ -43,6 +43,7 @@ jobs:
           node --check server/index.js
           node --check server/llmClient.js
           node --check server/sandboxPolicy.js
+          node --check server/telegramBot.js
           node --check server/workspace.js
 
       - name: ESLint critical agent modules

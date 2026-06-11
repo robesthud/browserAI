@@ -502,7 +502,7 @@ Bind-mount-каталоги при этом не трогаются.
 - **`server/deepseekTokenRefresher.js`** — хранит `userToken` и
   cookies `chat.deepseek.com` в `/data/deepseek_session.json`, делает heartbeat
   каждые 10 мин, перехватывает `Set-Cookie`, обновляет список моделей раз в час
-- **Telegram-бот** (`server/deepseekBot.js`): `/status`, `/refresh`, `/settoken`,
+- **Telegram v2 bot** (`server/telegramBot.js`): `/status`, `/health`, `/logs`, `/ci`, `/deploy`, `/deepseek`, `/settoken`,
   `/setcookie`, `/models` — только из admin chat; сообщение с токеном удаляется
 - **Админ-страница** `/admin/deepseek` — статус, force-refresh, форма ввода
   токена и cookies
@@ -584,6 +584,6 @@ Bind-mount-каталоги при этом не трогаются.
 | `DEEPSEEK_COOKIES` | — | Bootstrap cookies `name=value; ...` (опционально) |
 | `DEEPSEEK_HEARTBEAT_MS` | `600000` | Интервал heartbeat в мс (10 мин по умолчанию) |
 | `DEEPSEEK_MODELS_REFRESH_MS` | `3600000` | Интервал обновления списка моделей (1 ч) |
-| `DEEPSEEK_BOT` | — | `off` отключает Telegram-бота |
+| `TELEGRAM_BOT` | — | `off` отключает единый Telegram v2 bot |
 | `TG_BOT_TOKEN` | — | Токен Telegram-бота (`123:ABC…`) для уведомлений + управления |
 | `TG_ADMIN_CHAT_ID` | — | `chat_id` админа, кто может слать боту команды |

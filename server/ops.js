@@ -7,7 +7,7 @@ const SSH_HOST = process.env.OPS_SSH_HOST || '72.56.116.15'
 const SSH_USER = process.env.OPS_SSH_USER || 'root'
 const SSH_KEY = process.env.OPS_SSH_KEY || '/data/ops/timeweb_ed25519'
 const APP_DIR = process.env.OPS_APP_DIR || '/opt/browserai'
-const TG_TOKEN = process.env.TG_USER_BOT_TOKEN || process.env.TG_BOT_TOKEN || ''
+const TG_TOKEN = process.env.TG_BOT_TOKEN || ''
 const TG_ADMIN_CHAT_ID = process.env.TG_ADMIN_CHAT_ID || process.env.TG_CHAT_ID || ''
 const OPS_SERVICES_FILE = process.env.OPS_SERVICES_FILE || '/data/ops/services.json'
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || ''
@@ -18,7 +18,7 @@ const OPS_AUDIT_LOG = process.env.OPS_AUDIT_LOG || '/data/ops-audit.log'
 // audit log. The model never needs raw tokens, and ops output (docker logs,
 // git diff, GitHub file content, deploy output) can incidentally contain them.
 const SECRET_ENV_NAMES = [
-  'GITHUB_TOKEN', 'TG_BOT_TOKEN', 'TG_USER_BOT_TOKEN', 'AUTH_SECRET',
+  'GITHUB_TOKEN', 'TG_BOT_TOKEN', 'AUTH_SECRET',
   'SESSION_SECRET', 'CF_PROXY_SECRET', 'DEEPSEEK_USER_TOKEN', 'SMTP_PASS',
   'TWILIO_AUTH_TOKEN',
 ]

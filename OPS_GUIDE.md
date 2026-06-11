@@ -59,7 +59,7 @@ Action:
 Required env:
 
 ```env
-TG_USER_BOT_TOKEN=...
+TG_BOT_TOKEN=...              # единый Telegram v2 bot
 TG_ADMIN_CHAT_ID=...
 ```
 
