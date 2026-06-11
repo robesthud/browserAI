@@ -70,16 +70,35 @@ jobs:
                
                echo \"── git pull ──\"
                git fetch --quiet origin main
+               # If the server repo was ever left in sparse-checkout mode, tracked
+               # files can be absent from the Docker build context while GitHub
+               # still reports a successful checkout. Disable sparse mode before
+               # reset so files imported by Node really exist in the image.
+               git sparse-checkout disable 2>/dev/null || true
                git reset --hard origin/main
-               echo \"── docker compose build ──\"
-               docker compose build
+               git clean -fd
+               echo \"── verify required files ──\"
+               test -f server/userTelegramBot.js
+               test -f server/index.js
+               echo \"── docker compose build --no-cache ──\"
+               docker compose build --no-cache browserai
                echo \"── docker compose up -d ──\"
                docker compose up -d
                echo \"── prune dangling images ──\"
                docker image prune -f
-               echo \"── health ──\"
-               sleep 5
-               curl -fsS http://localhost/api/health || curl -fsS http://localhost:8080/api/health
+               echo \"── health / stable container check ──\"
+               ok=0
+               for i in 1 2 3 4 5 6 7 8 9 10; do
+                 sleep 5
+                 if (curl -fsS http://localhost/api/health || curl -fsS http://localhost:8080/api/health) \
+                    && docker inspect browserai --format \"{{.State.Running}} {{.State.Restarting}} {{.State.ExitCode}}\" | grep -q \"true false 0\"; then
+                   ok=1
+                   break
+                 fi
+                 docker ps --filter name=browserai --format \"{{.Names}} {{.Status}}\" || true
+                 docker logs --tail 30 browserai 2>&1 || true
+               done
+               test \"$ok\" = \"1\"
                
                send_tg \"✅ <b>BrowserAI</b>: Деплой успешно завершен! (коммит <code>${{ github.sha }}</code>)\"
                '"
