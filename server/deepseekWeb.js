@@ -245,7 +245,20 @@ function extractDelta(payload) {
     return {}
   }
 
+  // Snapshot object: {"v":{"response":{...,"content":"391","thinking_content":null}}}
+  // DeepSeek often ships the FIRST chunk of the answer inside this full
+  // response snapshot (short answers may arrive here entirely). Dropping it
+  // truncated replies («Тест» → «ст») and 502'd when nothing else followed.
+  if (payload?.v && typeof payload.v === 'object' && !Array.isArray(payload.v)) {
+    const r = payload.v.response || payload.v
+    const content = typeof r?.content === 'string' ? r.content : ''
+    const reasoning = typeof r?.thinking_content === 'string' ? r.thinking_content : ''
+    if (content || reasoning) return { content, reasoning }
+    return {}
+  }
+
   // OpenAI-style fallback
+
   const choice = payload?.choices?.[0]
   const delta = choice?.delta || {}
   const content = delta.content || choice?.message?.content || ''
