@@ -380,6 +380,7 @@ export function useChats(settings) {
         )
       }
 
+      let tokenFlushTimer = null
       try {
         const longJobType = detectLongJobType(trimmed, attachments)
         if (longJobType) {
@@ -436,6 +437,19 @@ export function useChats(settings) {
         )
 
         let acc = ''
+        const scheduleTokenFlush = () => {
+          if (tokenFlushTimer) return
+          tokenFlushTimer = setTimeout(() => {
+            tokenFlushTimer = null
+            patchAssistant({ content: acc, pending: false })
+          }, 60)
+        }
+        const flushTokenBuffer = () => {
+          if (tokenFlushTimer) clearTimeout(tokenFlushTimer)
+          tokenFlushTimer = null
+          if (acc) patchAssistant({ content: acc, pending: false })
+        }
+
         await sendChat({
           settings: resolved,
           messages: recent,
@@ -443,11 +457,11 @@ export function useChats(settings) {
           signal: controller.signal,
           onToken: (chunk) => {
             acc += chunk
-            patchAssistant({ content: acc, pending: false })
+            scheduleTokenFlush()
           },
         })
+        flushTokenBuffer()
         if (acc) {
-          patchAssistant({ content: acc, pending: false })
           saveGeneratedMediaToWorkspace(chatId, acc).catch(() => {})
         } else patchAssistant({ pending: false })
         haptics.success()
@@ -465,6 +479,8 @@ export function useChats(settings) {
           haptics.error()
         }
       } finally {
+        if (tokenFlushTimer) clearTimeout(tokenFlushTimer)
+        tokenFlushTimer = null
         if (abortRef.current === controller) {
           abortRef.current = null
         }
@@ -533,6 +549,92 @@ export function useChats(settings) {
                 },
           ),
         )
+      }
+
+      // Buffer high-frequency stream events so mobile UI doesn't re-render on
+      // every tiny token/stdout chunk. Flushed at ~60ms cadence and immediately
+      // before final/done/error.
+      let assistantDeltaBuffer = ''
+      let assistantFlushTimer = null
+      let thinkingDeltaBuffer = ''
+      let thinkingFlushTimer = null
+      const toolProgressBuffers = new Map()
+      let toolProgressFlushTimer = null
+
+      const scheduleAssistantFlush = () => {
+        if (assistantFlushTimer) return
+        assistantFlushTimer = setTimeout(() => {
+          assistantFlushTimer = null
+          flushAssistantBuffer()
+        }, 60)
+      }
+      const flushAssistantBuffer = () => {
+        if (assistantFlushTimer) clearTimeout(assistantFlushTimer)
+        assistantFlushTimer = null
+        const chunk = assistantDeltaBuffer
+        assistantDeltaBuffer = ''
+        if (!chunk) return
+        patchAssistant((m) => ({ ...m, content: (m.content || '') + chunk }))
+      }
+
+      const scheduleThinkingFlush = () => {
+        if (thinkingFlushTimer) return
+        thinkingFlushTimer = setTimeout(() => {
+          thinkingFlushTimer = null
+          flushThinkingBuffer()
+        }, 80)
+      }
+      const flushThinkingBuffer = () => {
+        if (thinkingFlushTimer) clearTimeout(thinkingFlushTimer)
+        thinkingFlushTimer = null
+        const chunk = thinkingDeltaBuffer
+        thinkingDeltaBuffer = ''
+        if (!chunk) return
+        patchAssistant((m) => ({ ...m, thinking: ((m.thinking || '') + chunk).slice(-32000) }))
+      }
+
+      const toolKey = (data) => `${data.step ?? ''}:${data.sub ?? ''}:${data.name || ''}`
+      const scheduleToolProgressFlush = () => {
+        if (toolProgressFlushTimer) return
+        toolProgressFlushTimer = setTimeout(() => {
+          toolProgressFlushTimer = null
+          flushToolProgressBuffers()
+        }, 100)
+      }
+      const flushToolProgressBuffers = () => {
+        if (toolProgressFlushTimer) clearTimeout(toolProgressFlushTimer)
+        toolProgressFlushTimer = null
+        if (toolProgressBuffers.size === 0) return
+        const batch = new Map(toolProgressBuffers)
+        toolProgressBuffers.clear()
+        patchAssistant((m) => ({
+          ...m,
+          toolCalls: (m.toolCalls || []).map((tc) => {
+            const keys = [
+              `${tc.step ?? ''}:${tc.sub ?? ''}:${tc.name || ''}`,
+              `${tc.step ?? ''}::${tc.name || ''}`,
+            ]
+            const chunk = keys.map((k) => batch.get(k) || '').join('')
+            return chunk ? { ...tc, stream: ((tc.stream || '') + chunk).slice(-8000) } : tc
+          }),
+        }))
+      }
+
+      const flushAllStreamBuffers = () => {
+        flushAssistantBuffer()
+        flushThinkingBuffer()
+        flushToolProgressBuffers()
+      }
+      const cancelAllStreamBuffers = () => {
+        if (assistantFlushTimer) clearTimeout(assistantFlushTimer)
+        if (thinkingFlushTimer) clearTimeout(thinkingFlushTimer)
+        if (toolProgressFlushTimer) clearTimeout(toolProgressFlushTimer)
+        assistantFlushTimer = null
+        thinkingFlushTimer = null
+        toolProgressFlushTimer = null
+        assistantDeltaBuffer = ''
+        thinkingDeltaBuffer = ''
+        toolProgressBuffers.clear()
       }
 
       let streamAgent;
@@ -703,23 +805,15 @@ export function useChats(settings) {
                     ),
                   }))
                   break
-                case 'tool_progress':
+                case 'tool_progress': {
                   // Live stdout/stderr chunks from long bash / verify_code
-                  // calls — appended to the matching toolCall so the
-                  // AgentToolBlock can render a streaming tail instead of
-                  // staying empty until the command finishes.
-                  patchAssistant((m) => ({
-                    ...m,
-                    toolCalls: (m.toolCalls || []).map((tc) =>
-                      tc.step === data.step && tc.name === data.name
-                        ? {
-                            ...tc,
-                            stream: ((tc.stream || '') + String(data.chunk || '')).slice(-8000),
-                          }
-                        : tc,
-                    ),
-                  }))
+                  // calls — buffered so the UI doesn't re-render on every
+                  // tiny chunk from the process.
+                  const key = toolKey(data)
+                  toolProgressBuffers.set(key, (toolProgressBuffers.get(key) || '') + String(data.chunk || ''))
+                  scheduleToolProgressFlush()
                   break
+                }
                 case 'thought':
                   // Streaming reasoning between tool calls — the model's
                   // intermediate "I'll do X next" / "Now I'll Y" text.
@@ -734,17 +828,10 @@ export function useChats(settings) {
                   }))
                   break
                 case 'thinking_delta':
-                  // Provider-side "extended thinking" stream — Anthropic
-                  // delta.reasoning, OpenAI o1/o3 reasoning, DeepSeek-R1
-                  // reasoning_content. Chunks arrive char-by-char and we
-                  // append them into a single thinking buffer that the
-                  // UI renders as a collapsed "💭 Размышления" block
-                  // distinct from the regular thoughts (which are
-                  // narrative one-liners written into the system stream).
-                  patchAssistant((m) => ({
-                    ...m,
-                    thinking: ((m.thinking || '') + String(data.chunk || '')).slice(-32000),
-                  }))
+                  // Provider-side "extended thinking" stream. Buffered to
+                  // avoid a React state update for every tiny reasoning token.
+                  thinkingDeltaBuffer += String(data.chunk || '')
+                  scheduleThinkingFlush()
                   break
                 case 'ask_user':
                   // Open question card inline in the assistant message.
@@ -802,22 +889,21 @@ export function useChats(settings) {
                   haptics.warning()
                   break
                 case 'assistant_delta':
-                  // Streaming chunk of the final answer — appended to
-                  // the bubble live to give a typing-animation feel even
-                  // when the upstream provider didn't expose true SSE.
-                  patchAssistant((m) => ({
-                    ...m,
-                    content: (m.content || '') + String(data.chunk || ''),
-                  }))
+                  // Streaming chunk of the final answer — buffered so long
+                  // answers remain smooth on mobile.
+                  assistantDeltaBuffer += String(data.chunk || '')
+                  scheduleAssistantFlush()
                   break
                 case 'assistant':
                   // Snap to the canonical final string (may differ from
                   // the concatenated deltas by 1-2 chars due to chunk-split).
+                  flushAllStreamBuffers()
                   patchAssistant({ content: data.text || '', pending: false })
                   saveGeneratedMediaToWorkspace(chatId, data.text || '').catch(() => {})
                   haptics.success()
                   break
                 case 'error':
+                  flushAllStreamBuffers()
                   patchAssistant((m) => ({ ...m, error: data.message || 'agent error', providerError: data.providerError || null, pending: false }))
                   haptics.error()
                   break
@@ -847,6 +933,7 @@ export function useChats(settings) {
                   })
                   break
                 case 'done':
+                  flushAllStreamBuffers()
                   patchAssistant((m) => ({
                     ...m,
                     pending: false,
@@ -865,10 +952,14 @@ export function useChats(settings) {
         })
       } catch (e) {
         if (e.message !== 'aborted') {
+          flushAllStreamBuffers()
           patchAssistant({ pending: false, error: e?.message || 'agent crashed' })
           haptics.error()
+        } else {
+          cancelAllStreamBuffers()
         }
       } finally {
+        cancelAllStreamBuffers()
         if (abortRef.current === controller) {
           abortRef.current = null
         }
