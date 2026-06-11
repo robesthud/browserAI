@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { IconBot, IconUser, IconFile, IconCopy, IconEdit, IconRefresh, IconCheck } from '../icons.jsx'
 import { formatSize } from '../lib/files.js'
 import Markdown from '../lib/markdown.jsx'
@@ -126,7 +126,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
   }
 
   return (
-    <div className="group relative overflow-hidden">
+    <div className="group relative overflow-hidden" data-message-id={m.id} data-role={m.role}>
       {/* Action panel revealed behind the message on swipe-left */}
       {(swipe.open || swipe.offset < -2) && (
         <div className="pointer-events-auto absolute inset-y-0 right-0 z-0 flex items-center gap-1 bg-graphite-900 px-2">
@@ -445,6 +445,22 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
   )
 }
 
+function cssEscapeValue(value = '') {
+  try {
+    if (window.CSS?.escape) return window.CSS.escape(String(value))
+  } catch { /* ignore */ }
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, (ch) => `\\${ch}`)
+}
+
+const MemoMessage = memo(Message, (prev, next) => {
+  // Old messages should not re-render on every streamed token of the latest
+  // assistant reply. Ignore callback identity churn; message objects are
+  // immutable in useChats, so reference equality is enough for content.
+  return prev.m === next.m
+    && prev.isLast === next.isLast
+    && (!prev.isLast || prev.aiWorking === next.aiWorking)
+})
+
 function CheckpointBadge({ toolCalls }) {
   const hasWrite = (toolCalls || []).some(tc => 
     tc.ok && tc.status === 'done' && 
@@ -463,68 +479,121 @@ export default function MessageList({ messages, aiWorking, onEdit, onRegenerate,
   const bottomRef = useRef(null)
   const scrollRef = useRef(null)
   const prevLenRef = useRef(messages.length)
-  // True if the user has scrolled up (>200px from bottom). While true we
-  // STOP auto-scrolling on every streamed token, so the user can quietly
-  // read older messages while the model is still writing.
-  // Cleared as soon as the user scrolls back down to within 60px of the
-  // bottom (or sends a new message).
+  const prevLastUserIdRef = useRef([...messages].reverse().find((m) => m.role === 'user')?.id || '')
+  const rafScrollRef = useRef(0)
+  const manualScrollRef = useRef(false)
+  // True if the user intentionally scrolled away from the live answer.
+  // While true, streamed tokens/tool updates MUST NOT pull the viewport down.
   const userScrolledUpRef = useRef(false)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
   const { pullDistance, refreshing, threshold } = usePullToRefresh(scrollRef, onRefresh)
 
-  // Track manual scroll position so we can stop fighting the user.
+  const scheduleScrollToBottom = (behavior = 'auto') => {
+    cancelAnimationFrame(rafScrollRef.current)
+    rafScrollRef.current = requestAnimationFrame(() => {
+      const el = scrollRef.current
+      if (!el) return
+      el.scrollTo({ top: el.scrollHeight, behavior })
+    })
+  }
+
+  const scrollToMessage = (messageId, behavior = 'smooth') => {
+    cancelAnimationFrame(rafScrollRef.current)
+    rafScrollRef.current = requestAnimationFrame(() => {
+      const root = scrollRef.current
+      if (!root || !messageId) return
+      const node = root.querySelector(`[data-message-id="${cssEscapeValue(messageId)}"]`)
+      if (!node) return
+      // Put the freshly sent user message near the top third, ChatGPT-style,
+      // so the user sees their request and the answer starts below it.
+      const rootBox = root.getBoundingClientRect()
+      const nodeBox = node.getBoundingClientRect()
+      const offset = nodeBox.top - rootBox.top + root.scrollTop - 24
+      root.scrollTo({ top: Math.max(0, offset), behavior })
+    })
+  }
+
+  useEffect(() => () => cancelAnimationFrame(rafScrollRef.current), [])
+
+  const disableAutoFollow = () => {
+    const el = scrollRef.current
+    if (!el) return
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (distance > 40) {
+      userScrolledUpRef.current = true
+      if (aiWorking) setShowJumpToLatest(true)
+    }
+  }
+
+  // Manual interaction lock: as soon as the user touches/wheels/drags the
+  // message list during streaming, stop fighting them. Auto-follow resumes
+  // only when they scroll back to the bottom or press the jump button.
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return undefined
+    const markManual = () => { manualScrollRef.current = true; disableAutoFollow() }
     const onScroll = () => {
       const distance = el.scrollHeight - el.scrollTop - el.clientHeight
-      // 60px hysteresis: if you scroll back almost to the bottom, we
-      // consider you "caught up" and resume auto-scroll on the next chunk.
       if (distance < 60) {
         userScrolledUpRef.current = false
+        manualScrollRef.current = false
         setShowJumpToLatest(false)
-      } else if (distance > 200) {
+      } else if (manualScrollRef.current && distance > 80) {
         userScrolledUpRef.current = true
         if (aiWorking) setShowJumpToLatest(true)
       }
     }
+    el.addEventListener('wheel', markManual, { passive: true })
+    el.addEventListener('touchstart', markManual, { passive: true })
+    el.addEventListener('pointerdown', markManual, { passive: true })
     el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
+    return () => {
+      el.removeEventListener('wheel', markManual)
+      el.removeEventListener('touchstart', markManual)
+      el.removeEventListener('pointerdown', markManual)
+      el.removeEventListener('scroll', onScroll)
+    }
   }, [aiWorking])
 
-  // When AI is no longer working, hide the "jump to latest" button.
+  // When AI is no longer working, keep the user's reading position, but hide
+  // the jump button. If they are already at the bottom, auto-follow is ready
+  // for the next turn.
   useEffect(() => {
     if (!aiWorking) setShowJumpToLatest(false)
   }, [aiWorking])
 
-  // Scroll to bottom only when a NEW message appears (not on chunk updates).
-  // User just hit "send" → assume they want to see the assistant reply.
+  // New user turn: if the user sends while reading the middle of a long chat,
+  // smoothly move to the freshly sent message, not blindly to the bottom.
   useEffect(() => {
     const prevLen = prevLenRef.current
     prevLenRef.current = messages.length
-    if (messages.length > prevLen) {
-      userScrolledUpRef.current = false   // reset on new turn
-      setShowJumpToLatest(false)
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [messages.length])
+    const lastUserId = [...messages].reverse().find((m) => m.role === 'user')?.id || ''
+    const hasNewUserTurn = lastUserId && lastUserId !== prevLastUserIdRef.current
+    prevLastUserIdRef.current = lastUserId
 
-  // Auto-scroll on streamed content/tool growth — but ONLY if the user
-  // hasn't deliberately scrolled up. Uses behavior:'auto' (instant) so
-  // we don't stack dozens of in-flight smooth animations that would
-  // otherwise lock the scroll position.
+    if (messages.length > prevLen && hasNewUserTurn) {
+      userScrolledUpRef.current = false
+      manualScrollRef.current = false
+      setShowJumpToLatest(false)
+      scrollToMessage(lastUserId, 'smooth')
+    } else if (messages.length > prevLen && !userScrolledUpRef.current) {
+      scheduleScrollToBottom('auto')
+    }
+  }, [messages])
+
+  // Auto-follow streamed content/tool growth only if the user has not taken
+  // control. Use requestAnimationFrame + instant scroll to avoid stacking
+  // smooth animations on every token.
   const lastMsg = messages[messages.length - 1]
   const lastToolCount = (lastMsg?.toolCalls?.length || 0) + (lastMsg?.thoughts?.length || 0)
   useEffect(() => {
     if (userScrolledUpRef.current) return
     const el = scrollRef.current
     if (!el) return
-    // Only follow the stream if we were ALREADY near the bottom; a sudden
-    // jump down while the user is mid-read is the bug we fixed.
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (distance > 200) return
-    bottomRef.current?.scrollIntoView({ behavior: 'auto' })
-  }, [lastToolCount, lastMsg?.content])
+    if (distance > 260) return
+    scheduleScrollToBottom('auto')
+  }, [lastToolCount, lastMsg?.content, lastMsg?.thinking])
 
   const armed = pullDistance >= threshold
 
@@ -550,7 +619,7 @@ export default function MessageList({ messages, aiWorking, onEdit, onRegenerate,
 
       <div className="mx-auto w-full max-w-2xl divide-y divide-white/[0.04]">
         {messages.map((m, i) => (
-          <Message
+          <MemoMessage
             key={m.id}
             m={m}
             isLast={i === messages.length - 1}
