@@ -998,9 +998,14 @@ Projects found: ${JSON.stringify(projects.slice(0,5))}`
           ? Number(limit)
           : depthToLimit[String(depth)] || 6
         const data = await searchWeb(String(query), Math.min(10, Math.max(1, cap)))
+        // searchWeb historically returns a plain array, while some newer
+        // adapters return { results }. Accept both shapes. The old code only
+        // read data.results, so successful DuckDuckGo searches were silently
+        // shown to the agent as an empty list.
+        const rawResults = Array.isArray(data) ? data : (data?.results || [])
         // Tag every result with a stable numeric id so the model can
         // cite as [id](url) following my convention.
-        const results = (data?.results || []).map((r, i) => ({ id: i + 1, ...r }))
+        const results = rawResults.map((r, i) => ({ id: i + 1, ...r }))
         return ok({ query, depth: String(depth || '2'), results })
       } catch (e) { return err(e.message) }
     },
