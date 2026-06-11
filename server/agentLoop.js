@@ -41,7 +41,13 @@ const DEFAULT_MAX_STEPS = 15
 const DEFAULT_DEADLINE_MS = 5 * 60 * 1000
 
 // ── System prompt builder ───────────────────────────────────────────────────
-async function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null, chatId = '' } = {}) {
+async function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null, chatId = '', lite = false } = {}) {
+  // Lite profile: skip workspace scans and MCP discovery entirely —
+  // a greeting doesn't need project rules or the repo activity feed.
+  if (lite) {
+    return buildClineSystemPrompt({ extraSystem, native, extraTools, cwd: '/workspace', lite: true })
+  }
+
   const [projectRules, recentActivity] = await Promise.all([
     withWorkspaceScope(chatId, () => readProjectRules().catch(() => '')),
     withWorkspaceScope(chatId, () => listRecentWorkspaceActivity({ sinceMs: 24 * 60 * 60 * 1000 }).catch(() => [])),
@@ -418,8 +424,14 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
     const map = loadCustomToolsFor(userId); if (Object.keys(map).length) extraTools = map
   } catch { /* best-effort: ignore */ }
 
+  // Classify FIRST so the system prompt can match the task weight:
+  // low-complexity (greeting / single question) gets the lite prompt
+  // (~2.5k tokens) instead of the full 16k-token engineering prompt.
+  const agentContext = buildAgentContext({ provider, history, extraSystem, userId, workspaceScope, maxSteps })
+  const liteRun = agentContext?.task?.complexity === 'low'
+
   let useNativeTools = supportsNativeTools(provider.baseUrl)
-  let systemPrompt = await buildSystemPrompt({ extraSystem, native: useNativeTools, extraTools, chatId })
+  let systemPrompt = await buildSystemPrompt({ extraSystem, native: useNativeTools, extraTools, chatId, lite: liteRun })
   let toolsSpec = useNativeTools ? buildNativeToolsSpec(extraTools) : undefined
 
   const convo = [{ role: 'system', content: systemPrompt }, ...history]
@@ -428,7 +440,6 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   const abortCtl = new AbortController()
   res.on('close', () => { aborted = true; abortCtl.abort('client closed') })
 
-  const agentContext = buildAgentContext({ provider, history, extraSystem, userId, workspaceScope, maxSteps })
   if (agentContext.runtime.effectiveMaxSteps > maxSteps) maxSteps = agentContext.runtime.effectiveMaxSteps
   const agentState = createAgentState({ agentContext, history })
   const planningDirective = buildPlanningDirective(agentContext)
@@ -468,7 +479,10 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
   // 1:1 Arena Parity: Proactive Discovery.
   // Pre-read lessons learned and repo map BEFORE the first step.
-  if (userId && !aborted) {
+  // Skipped for lite runs: a greeting doesn't need the repo map (~30k
+  // tokens of context on big workspaces — the main cost of the old
+  // "47k tokens for «привет»" problem).
+  if (userId && !aborted && !liteRun) {
     try {
       const lessons = await withWorkspaceScope(chatId, () => readWorkspaceFile('.browserai/lessons.md').catch(() => null))
       if (lessons?.text) convo.push({ role: 'user', content: `<arena-system-message>\nLessons Learned (from .browserai/lessons.md):\n${lessons.text}\n</arena-system-message>` })

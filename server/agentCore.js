@@ -54,6 +54,24 @@ export function classifyAgentTask(text = '') {
   const t = String(text || '').toLowerCase()
   const has = (...words) => words.some((w) => t.includes(w))
 
+  // Action verbs anywhere in the text = the user wants real work done.
+  // Checked before the small-talk shortcut so that e.g. «создай файл
+  // hello.txt с текстом привет мир» is NOT misread as a greeting.
+  const hasActionVerb = has(
+    'скачай', 'клонируй', 'склонируй', 'clone', 'установи', 'запусти', 'выполни',
+    'создай', 'сделай', 'напиши', 'сгенерируй', 'нарисуй', 'переименуй', 'удали',
+    'исправ', 'почини', 'реализуй', 'добавь', 'перепиши', 'измени', 'обнови',
+    'задеплой', 'разверни', 'собери', 'протестируй', 'проверь', 'изучи',
+    'проанализируй', 'найди', 'построй', 'настрой', 'открой',
+  )
+
+  // Small talk / meta questions about the assistant: NEVER need repo map,
+  // memory preload or the full tool catalog. The old behaviour burned ~47k
+  // tokens of context on a literal "привет".
+  if (!hasActionVerb && t.length <= 160 && /привет|здравствуй|добр(ое|ый)|hello|^hi[ !,.?]|спасибо|благодар|как дела|кто ты|что ты умеешь|какая модель|какая ты модель|как тебя зовут|are you|который час|сколько времени|сколько будет|посчитай/.test(t)) {
+    return { type: 'simple_answer', complexity: 'low', suggestedMaxSteps: 6 }
+  }
+
   // 1:1 Arena Parity: Aggressive Task Classification.
   // We want to trigger Agent Mode for ANYTHING that looks like work,
   // not just high-complexity requests.
@@ -64,7 +82,9 @@ export function classifyAgentTask(text = '') {
   if (has('исправ', 'почини', 'реализуй', 'добавь', 'перепиши', 'refactor', 'fix ', 'implement', 'bug', 'ошибк', 'код', 'скрипт', 'script', 'function', 'тест', 'test')) {
     return { type: 'coding_change', complexity: 'high', suggestedMaxSteps: 50 }
   }
-  if (has('изучи', 'проанализируй', 'сравни', 'аудит', 'проверь', 'архитектур', 'структур', 'файл', 'папк')) {
+  // NB: plain «файл»/«папка» removed — «создай файл hello.txt» is a simple
+  // file op (general_agent_task below), not a 40-step repo audit.
+  if (has('изучи', 'проанализируй', 'сравни', 'аудит', 'архитектур', 'структур', 'ревью', 'review')) {
     return { type: 'repo_analysis', complexity: 'high', suggestedMaxSteps: 40 }
   }
   if (has('найди в интернете', 'актуальн', 'новост', 'документац', 'research', 'web search', 'поиск')) {
@@ -73,9 +93,15 @@ export function classifyAgentTask(text = '') {
   if (has('браузер', 'открой сайт', 'скриншот', 'кликни', 'browser', 'url')) {
     return { type: 'browser_task', complexity: 'medium', suggestedMaxSteps: 35 }
   }
+  // Action verbs that did not match a more specific bucket above
+  // (including гитхаб/repo fetches without deploy context).
+  if (hasActionVerb || has('гитхаб', 'репозиторий', 'репо ')) {
+    return { type: 'general_agent_task', complexity: 'medium', suggestedMaxSteps: 20 }
+  }
 
-  // Any non-empty message longer than a greeting should probably be handled by an agent
-  if (t.length > 20) {
+  // Long free-form text probably describes real work; short text without a
+  // single action verb is a plain question — answer it cheaply.
+  if (t.length > 100) {
     return { type: 'general_agent_task', complexity: 'medium', suggestedMaxSteps: 20 }
   }
 

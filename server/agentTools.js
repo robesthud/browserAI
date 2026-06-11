@@ -1848,14 +1848,29 @@ if (String(process.env.BROWSERAI_COMPUTER_USE || '').toLowerCase() === 'on') {
 }
 
 // ── Schema for the system prompt ────────────────────────────────────────────
+
+// Minimal tool set for low-complexity (small-talk / single-question) runs.
+// The full 58-tool catalog costs ~6.5k tokens of system prompt; a greeting
+// needs none of git/deploy/browser/computer-use. The agent can still answer
+// questions, look something up and touch a file if the user follows up.
+export const LITE_TOOL_NAMES = [
+  'list_files', 'read_file', 'write_file', 'edit_file', 'search_files',
+  'bash', 'web_search', 'web_fetch', 'ask_user',
+  'recall_facts', 'remember_fact', 'plan_set', 'plan_check',
+]
+
 /**
  * Render a tool catalogue (built-in TOOLS plus any extra map of
  * user-defined custom tools) as plain text the LLM can read.
+ * Pass { lite: true } to emit only LITE_TOOL_NAMES (cheap runs).
  */
-export function renderToolsForPrompt(extraTools = null) {
-  const combined = extraTools && typeof extraTools === 'object'
+export function renderToolsForPrompt(extraTools = null, { lite = false } = {}) {
+  let combined = extraTools && typeof extraTools === 'object'
     ? { ...TOOLS, ...extraTools }
     : TOOLS
+  if (lite) {
+    combined = Object.fromEntries(Object.entries(combined).filter(([n]) => LITE_TOOL_NAMES.includes(n)))
+  }
   const lines = []
   for (const [name, def] of Object.entries(combined)) {
     lines.push(`### ${name}`)

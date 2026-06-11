@@ -621,7 +621,25 @@ export function buildClineSystemPrompt({
   projectRules = '',
   recentActivity = '',
   mcpServersBlock = '',
+  lite = false,
 } = {}) {
+  // Lite profile for low-complexity tasks (greetings, single questions):
+  // short role + tool formatting + a trimmed tool catalog. ~2.5k tokens
+  // instead of ~16k. The model can still call tools; if the conversation
+  // escalates, the next run is re-classified and gets the full prompt.
+  if (lite) {
+    const liteSections = [
+      `You are BrowserAI — a helpful autonomous assistant with real tool access (workspace /workspace, sandboxed bash, web search). The user is your "Chief" (Шеф). Answer in Russian, concise and direct. For a simple question or greeting just answer — do not call tools you don't need. If the request actually requires real work (files, commands, research), use the tools.`,
+      TOOL_USE_INTRO,
+      native ? NATIVE_TOOLING_NOTE : TOOL_USE_FORMATTING,
+      '# Available Tools',
+      renderToolsForPrompt(extraTools, { lite: true }),
+      SYSTEM_INFORMATION(cwd),
+      buildUserInstructionsSection(extraSystem, modelHint, recall, projectRules, recentActivity),
+    ]
+    return liteSections.filter(Boolean).join('\n\n')
+  }
+
   const sections = [
     AGENT_ROLE,
     OPERATIONAL_PHASES,
