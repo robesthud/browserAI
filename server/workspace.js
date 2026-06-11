@@ -378,15 +378,16 @@ async function readWorkspaceFile(relPath) {
   if (!normalizedRel) throw new Error('path required')
 
   let full = safePath(normalizedRel)
+  let stat
   try {
-    const stat = await fs.stat(full)
+    stat = await fs.stat(full)
     if (!stat.isFile()) throw new Error("Not a file")
   } catch (e) {
     if (e.code === "ENOENT") {
       const fresh = normalizeRelativePath(relPath)
       full = safePath(fresh)
-      const stat2 = await fs.stat(full)
-      if (!stat2.isFile()) throw new Error("Not a file")
+      stat = await fs.stat(full)
+      if (!stat.isFile()) throw new Error("Not a file")
     } else {
       throw e
     }
