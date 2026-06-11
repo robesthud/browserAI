@@ -310,12 +310,35 @@ export default function Composer({
       }
       baseTextRef.current = ''
 
-      await onSend(t, finalAttachments)
+      // Clear the composer immediately after the message is accepted for send.
+      // onSend waits until the assistant/agent response finishes streaming, so
+      // clearing after await made the user's text stay in the input during the
+      // whole answer. Keep a snapshot so an immediate send failure can restore it.
+      const sentText = t
+      const sentAttachments = finalAttachments
       setText('')
       setAttachments([])
       requestAnimationFrame(() => {
-        if (taRef.current) taRef.current.style.height = 'auto'
+        if (taRef.current) {
+          taRef.current.value = ''
+          taRef.current.style.height = 'auto'
+        }
       })
+
+      try {
+        await onSend(sentText, sentAttachments)
+      } catch (e) {
+        setText(sentText)
+        setAttachments(sentAttachments)
+        requestAnimationFrame(() => {
+          if (taRef.current) {
+            taRef.current.value = sentText
+            taRef.current.style.height = 'auto'
+            taRef.current.style.height = Math.min(taRef.current.scrollHeight, 220) + 'px'
+          }
+        })
+        throw e
+      }
     } finally {
       setIsSubmitting(false)
     }
