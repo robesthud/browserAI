@@ -682,6 +682,19 @@ export function buildClineSystemPrompt({
       — file_path must end in .jpg/.jpeg/.png; the image is saved to the
         workspace and previewed in the chat.
 
+  CI/deploy follow-up helpers:
+      github_actions_status(repo?, workflow?, workflows?, sha?, branch?)
+      github_actions_wait(repo?, workflow?, workflows?, sha?, timeout_sec=900)
+      deploy_timeweb_wait(url='http://localhost/api/health', timeout_sec=600)
+      app_health_check(url='http://localhost/api/health')
+      docker_logs_recent(service='browserai', tail=120)
+
+      After any git_push, GitHub file update, ops deploy/restart, or deploy_safe:
+      ALWAYS wait for CI/deploy with github_actions_wait when GitHub Actions are involved,
+      then call app_health_check or deploy_timeweb_wait, and if health fails call
+      docker_logs_recent before the final answer. Do not claim deployment success
+      until the wait/check tools confirm it.
+
   ask_user({questions:[{id, question, options:[{id,label}], allowCustomResponse}]})
       — surfaces a multi-question UI card and waits for the answer.
         Legacy single-question form {question, options} also accepted.

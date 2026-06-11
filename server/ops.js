@@ -181,17 +181,106 @@ function repoPath(params = {}) {
   return String(params.repo || GITHUB_REPO).replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '')
 }
 
+async function listGithubRuns(repo, params = {}) {
+  const limit = Math.min(100, Math.max(1, Number(params.limit) || 20))
+  const workflow = params.workflow || params.workflow_id || params.workflowId || ''
+  const qs = new URLSearchParams({ per_page: String(limit) })
+  if (params.branch) qs.set('branch', String(params.branch))
+  if (params.status) qs.set('status', String(params.status))
+  if (params.event) qs.set('event', String(params.event))
+  if (params.sha || params.head_sha) qs.set('head_sha', String(params.sha || params.head_sha))
+  const path = workflow
+    ? `/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?${qs}`
+    : `/repos/${repo}/actions/runs?${qs}`
+  const j = await (await githubApi(path)).json()
+  let runs = j.workflow_runs || []
+  const sha = String(params.sha || params.head_sha || '').trim()
+  if (sha) runs = runs.filter((r) => String(r.head_sha || '').startsWith(sha))
+  const name = String(params.name || '').trim().toLowerCase()
+  if (name) runs = runs.filter((r) => String(r.name || '').toLowerCase().includes(name))
+  return runs.map((r) => ({
+    id: r.id,
+    name: r.name,
+    workflow_id: r.workflow_id,
+    status: r.status,
+    conclusion: r.conclusion,
+    branch: r.head_branch,
+    sha: r.head_sha,
+    short_sha: r.head_sha?.slice(0, 7),
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+    run_started_at: r.run_started_at,
+    url: r.html_url,
+  }))
+}
+
+function parseWorkflowList(value) {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean)
+  if (!value) return []
+  return String(value).split(',').map((x) => x.trim()).filter(Boolean)
+}
+
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }
+
 async function githubAction(action, params = {}) {
   const repo = repoPath(params)
   if (action === 'repo_status') {
     const j = await (await githubApi(`/repos/${repo}`)).json()
     return { stdout: JSON.stringify({ full_name: j.full_name, private: j.private, default_branch: j.default_branch, pushed_at: j.pushed_at, updated_at: j.updated_at, permissions: j.permissions }, null, 2), stderr: '', exitCode: 0 }
   }
-  if (action === 'actions_runs') {
-    const workflow = params.workflow ? `&workflow_id=${encodeURIComponent(params.workflow)}` : ''
-    const j = await (await githubApi(`/repos/${repo}/actions/runs?per_page=${Number(params.limit) || 10}${workflow}`)).json()
-    const runs = (j.workflow_runs || []).map((r) => ({ id: r.id, name: r.name, status: r.status, conclusion: r.conclusion, branch: r.head_branch, sha: r.head_sha?.slice(0, 7), created_at: r.created_at, url: r.html_url }))
-    return { stdout: JSON.stringify(runs, null, 2), stderr: '', exitCode: 0 }
+  if (action === 'actions_runs' || action === 'actions_status') {
+    const runs = await listGithubRuns(repo, params)
+    return { stdout: JSON.stringify(runs.map((r) => ({ ...r, sha: r.short_sha })), null, 2), stderr: '', exitCode: 0, runs }
+  }
+  if (action === 'actions_wait') {
+    const timeoutSec = Math.min(3600, Math.max(10, Number(params.timeout_sec || params.timeoutSec) || 900))
+    const intervalSec = Math.min(60, Math.max(3, Number(params.interval_sec || params.intervalSec) || 10))
+    const workflows = parseWorkflowList(params.workflows || params.workflow)
+    const requireSuccess = params.require_success !== false && params.requireSuccess !== false
+    const deadline = Date.now() + timeoutSec * 1000
+    let lastRuns = []
+    let iterations = 0
+
+    while (Date.now() < deadline) {
+      iterations += 1
+      if (workflows.length) {
+        const perWorkflow = []
+        for (const workflow of workflows) {
+          const runs = await listGithubRuns(repo, { ...params, workflow, limit: 10 })
+          if (runs[0]) perWorkflow.push({ workflow, run: runs[0] })
+        }
+        lastRuns = perWorkflow.map((x) => ({ ...x.run, workflow: x.workflow }))
+        if (lastRuns.length === workflows.length && lastRuns.every((r) => r.status === 'completed')) {
+          const allOk = lastRuns.every((r) => r.conclusion === 'success')
+          return {
+            stdout: JSON.stringify({ ok: allOk, iterations, runs: lastRuns.map((r) => ({ ...r, sha: r.short_sha })) }, null, 2),
+            stderr: allOk || !requireSuccess ? '' : 'One or more workflow runs failed',
+            exitCode: allOk || !requireSuccess ? 0 : 1,
+            runs: lastRuns,
+          }
+        }
+      } else {
+        lastRuns = await listGithubRuns(repo, { ...params, limit: Number(params.limit) || 20 })
+        const relevant = params.sha || params.head_sha || params.branch || params.name ? lastRuns : lastRuns.slice(0, 1)
+        if (relevant.length && relevant.every((r) => r.status === 'completed')) {
+          const allOk = relevant.every((r) => r.conclusion === 'success')
+          return {
+            stdout: JSON.stringify({ ok: allOk, iterations, runs: relevant.map((r) => ({ ...r, sha: r.short_sha })) }, null, 2),
+            stderr: allOk || !requireSuccess ? '' : 'One or more workflow runs failed',
+            exitCode: allOk || !requireSuccess ? 0 : 1,
+            runs: relevant,
+          }
+        }
+      }
+      await sleep(intervalSec * 1000)
+    }
+
+    return {
+      stdout: JSON.stringify({ ok: false, timeoutSec, iterations, lastRuns: lastRuns.map((r) => ({ ...r, sha: r.short_sha })) }, null, 2),
+      stderr: `Timed out after ${timeoutSec}s waiting for GitHub Actions`,
+      exitCode: 124,
+      runs: lastRuns,
+    }
   }
   if (action === 'workflow_logs') {
     const runId = params.run_id || params.runId
@@ -277,6 +366,8 @@ export const OPS_SERVICES = {
     actions: {
       repo_status: { safe: true, description: 'Show repository metadata. params: repo?' },
       actions_runs: { safe: true, description: 'List recent GitHub Actions runs. params: repo?, limit?, workflow?' },
+      actions_status: { safe: true, description: 'List/filter workflow status. params: repo?, workflow?, workflows?, sha?, branch?, name?, limit?' },
+      actions_wait: { safe: true, description: 'Wait until matching GitHub Actions runs complete. params: repo?, workflow/workflows?, sha?, branch?, timeout_sec?, interval_sec?, require_success?' },
       workflow_logs: { safe: true, description: 'Download and summarize workflow logs. params: run_id, repo?' },
       get_file: { safe: true, description: 'Read a file from GitHub repo. params: path, ref?, repo?' },
       put_file: { safe: false, description: 'Create/update a file in GitHub repo. params: path, content, message?, branch?, repo?' },
@@ -290,6 +381,9 @@ export const OPS_SERVICES = {
       health: { safe: true, description: 'Check BrowserAI and Gemini health' },
       docker_ps: { safe: true, description: 'Show docker compose ps' },
       docker_logs: { safe: true, description: 'Show container logs. params: service, tail' },
+      docker_logs_recent: { safe: true, description: 'Show recent container logs. params: service?, tail?' },
+      app_health_check: { safe: true, description: 'Check an app health URL from the VPS. params: url?, timeout_sec?' },
+      deploy_wait: { safe: true, description: 'Wait until app health endpoint is OK. params: url?, timeout_sec?, interval_sec?' },
       git_status: { safe: true, description: 'Show git status in app dir' },
       sync_check: { safe: true, description: 'Check that the deployed checkout matches origin/main and the app is healthy. Reports local commit, origin/main commit, in-sync yes/no, dirty files, and /api/health.' },
       deploy: { safe: false, description: 'git reset to origin/main, rebuild and restart BrowserAI' },
@@ -354,11 +448,36 @@ export async function runOpsAction({ service, action, params = {}, confirm = fal
 
   const tail = Math.min(500, Math.max(20, Number(params.tail) || 120))
   const serviceName = String(params.service || 'browserai').replace(/[^a-zA-Z0-9_-]/g, '') || 'browserai'
+  const healthUrl = String(params.url || 'http://localhost/api/health').replace(/'/g, '')
+  const healthTimeout = Math.min(60, Math.max(2, Number(params.timeout_sec || params.timeoutSec) || 10))
+  const waitTimeout = Math.min(3600, Math.max(10, Number(params.timeout_sec || params.timeoutSec) || 600))
+  const waitInterval = Math.min(60, Math.max(3, Number(params.interval_sec || params.intervalSec) || 10))
 
   const commands = {
     health: `set -e; echo 'BrowserAI:'; curl -fsS http://localhost/api/health; echo; echo 'Gemini:'; curl -fsS http://172.17.0.1:8080/health || true; echo`,
     docker_ps: `cd ${shQuote(APP_DIR)} && docker compose ps`,
     docker_logs: `cd ${shQuote(APP_DIR)} && docker compose logs --tail=${tail} ${shQuote(serviceName)}`,
+    docker_logs_recent: `cd ${shQuote(APP_DIR)} && docker compose logs --tail=${tail} ${shQuote(serviceName)}`,
+    app_health_check: `set -e; curl -fsS --max-time ${healthTimeout} ${shQuote(healthUrl)}; echo`,
+    deploy_wait: `set +e
+DEADLINE=$(( $(date +%s) + ${waitTimeout} ))
+ITER=0
+while [ $(date +%s) -lt $DEADLINE ]; do
+  ITER=$((ITER+1))
+  OUT=$(curl -fsS --max-time ${healthTimeout} ${shQuote(healthUrl)} 2>&1)
+  RC=$?
+  if [ $RC -eq 0 ]; then
+    echo "health_ok: yes"
+    echo "iterations: $ITER"
+    echo "$OUT"
+    exit 0
+  fi
+  echo "[$(date -Is)] health not ready rc=$RC: $OUT"
+  sleep ${waitInterval}
+done
+echo "health_ok: no"
+echo "timeout_sec: ${waitTimeout}"
+exit 124`,
     git_status: `cd ${shQuote(APP_DIR)} && git log -1 --oneline && git status --short`,
     sync_check: `cd ${shQuote(APP_DIR)}
 set +e
@@ -415,7 +534,7 @@ exit 0`,
   }
   const command = commands[action]
   if (!command) throw new Error(`Action not implemented: ${service}.${action}`)
-  const result = await runSsh(command, { timeoutMs: ['deploy', 'repair_deploy', 'deploy_safe'].includes(action) ? 20 * 60_000 : DEFAULT_TIMEOUT_MS })
+  const result = await runSsh(command, { timeoutMs: ['deploy', 'repair_deploy', 'deploy_safe'].includes(action) ? 20 * 60_000 : (action === 'deploy_wait' ? (waitTimeout + 30) * 1000 : DEFAULT_TIMEOUT_MS) })
   auditOps({ service, action, status: result.exitCode === 0 ? 'ok' : 'error', exitCode: result.exitCode, ms: Date.now() - started })
   return result
 }

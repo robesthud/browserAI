@@ -68,6 +68,7 @@ const TOOL_PROFILES = {
   ops: [
     ...COMMON_AGENT_TOOLS,
     'ops_list_services', 'ops_run_action',
+    'github_actions_status', 'github_actions_wait', 'deploy_timeweb_wait', 'app_health_check', 'docker_logs_recent',
     'bash', 'bash_reset', 'bash_bg', 'bash_logs', 'bash_stop', 'bash_list',
     'web_search', 'web_fetch', 'fetch_page',
     'git_status', 'git_diff', 'git_pull', 'git_commit', 'git_push',

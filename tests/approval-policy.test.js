@@ -9,6 +9,8 @@ describe('approval policy', () => {
     expect(categoryOf('web_search')).toBe('net')
     expect(categoryOf('edit_file')).toBe('write')
     expect(categoryOf('mcp__github__search')).toBe('mcp')
+    expect(categoryOf('github_actions_wait')).toBe('read')
+    expect(categoryOf('app_health_check')).toBe('read')
   })
 
   it('normalizes v2 policy values', () => {

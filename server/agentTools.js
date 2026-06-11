@@ -1283,6 +1283,79 @@ Projects found: ${JSON.stringify(projects.slice(0,5))}`
     },
   },
 
+  // ── CI / Deploy waiting helpers ────────────────────────────────────────
+  github_actions_status: {
+    description: 'Check GitHub Actions workflow status without exposing tokens. Use after pushing code to see CI/deploy runs. Params: repo?, workflow?, workflows?, sha?, branch?, name?, limit?.',
+    params: {
+      repo: { type: 'string', optional: true, description: 'owner/repo. Defaults to server GITHUB_REPO.' },
+      workflow: { type: 'string', optional: true, description: 'Workflow file/name/id, e.g. deploy-timeweb.yml or ci.yml.' },
+      workflows: { type: 'string', optional: true, description: 'Comma-separated workflow files/names to check.' },
+      sha: { type: 'string', optional: true, description: 'Commit SHA prefix to filter.' },
+      branch: { type: 'string', optional: true, description: 'Branch name to filter.' },
+      name: { type: 'string', optional: true, description: 'Workflow display-name substring to filter.' },
+      limit: { type: 'number', optional: true, description: 'Max runs to return. Default 20.' },
+    },
+    handler: async (params = {}) => {
+      try { return ok(await runOpsAction({ service: 'github', action: 'actions_status', params, confirm: true })) }
+      catch (e) { return err(e.message) }
+    },
+  },
+
+  github_actions_wait: {
+    description: 'Wait for matching GitHub Actions runs to complete. Use after git_push or GitHub edits. Params: repo?, workflow/workflows?, sha?, branch?, timeout_sec?, interval_sec?, require_success?.',
+    params: {
+      repo: { type: 'string', optional: true, description: 'owner/repo. Defaults to server GITHUB_REPO.' },
+      workflow: { type: 'string', optional: true, description: 'Single workflow file/name/id.' },
+      workflows: { type: 'string', optional: true, description: 'Comma-separated workflow files/names, e.g. ci.yml,deploy-timeweb.yml.' },
+      sha: { type: 'string', optional: true, description: 'Commit SHA prefix to wait for.' },
+      branch: { type: 'string', optional: true, description: 'Branch name to filter.' },
+      timeout_sec: { type: 'number', optional: true, description: 'Max wait seconds. Default 900.' },
+      interval_sec: { type: 'number', optional: true, description: 'Polling interval. Default 10.' },
+      require_success: { type: 'boolean', optional: true, description: 'Fail if conclusion is not success. Default true.' },
+    },
+    handler: async (params = {}) => {
+      try { return ok(await runOpsAction({ service: 'github', action: 'actions_wait', params, confirm: true })) }
+      catch (e) { return err(e.message) }
+    },
+  },
+
+  deploy_timeweb_wait: {
+    description: 'Wait until the deployed app health endpoint is OK from the VPS. Generic for Timeweb/VPS deployments. Params: url?, timeout_sec?, interval_sec?.',
+    params: {
+      url: { type: 'string', optional: true, description: 'Health URL from the VPS. Default http://localhost/api/health.' },
+      timeout_sec: { type: 'number', optional: true, description: 'Max wait seconds. Default 600.' },
+      interval_sec: { type: 'number', optional: true, description: 'Polling interval. Default 10.' },
+    },
+    handler: async (params = {}) => {
+      try { return ok(await runOpsAction({ service: 'browserai', action: 'deploy_wait', params, confirm: true })) }
+      catch (e) { return err(e.message) }
+    },
+  },
+
+  app_health_check: {
+    description: 'Check app health endpoint from the VPS. Use after deploy/restart. Params: url?, timeout_sec?.',
+    params: {
+      url: { type: 'string', optional: true, description: 'Health URL. Default http://localhost/api/health.' },
+      timeout_sec: { type: 'number', optional: true, description: 'Curl max-time seconds. Default 10.' },
+    },
+    handler: async (params = {}) => {
+      try { return ok(await runOpsAction({ service: 'browserai', action: 'app_health_check', params, confirm: true })) }
+      catch (e) { return err(e.message) }
+    },
+  },
+
+  docker_logs_recent: {
+    description: 'Read recent docker compose logs from the VPS. Use after failed deploy/health check. Params: service?, tail?.',
+    params: {
+      service: { type: 'string', optional: true, description: 'Compose service/container. Default browserai.' },
+      tail: { type: 'number', optional: true, description: 'How many lines. Default 120, max 500.' },
+    },
+    handler: async (params = {}) => {
+      try { return ok(await runOpsAction({ service: 'browserai', action: 'docker_logs_recent', params, confirm: true })) }
+      catch (e) { return err(e.message) }
+    },
+  },
+
   // ── Ops / service connectors ──────────────────────────────────────────
   ops_list_services: {
     description: 'List configured external/service connectors and their allowed actions (GitHub/Timeweb/Docker/Telegram/etc. as configured on the server). Use this before ops_run_action.',

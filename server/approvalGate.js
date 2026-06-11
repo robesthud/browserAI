@@ -33,6 +33,11 @@ const TOOL_CATEGORY = {
   recall_facts: 'read',
   checkpoint_list: 'read',
   ops_list_services: 'read',
+  github_actions_status: 'read',
+  github_actions_wait: 'read',
+  deploy_timeweb_wait: 'read',
+  app_health_check: 'read',
+  docker_logs_recent: 'read',
 
   // writes / workspace mutation / memory mutation
   write_file: 'write',
