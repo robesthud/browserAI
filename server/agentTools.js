@@ -552,9 +552,12 @@ export const TOOLS = {
     handler: async ({ indices, note = '' } = {}) => {
       let list = []
       if (Array.isArray(indices)) list = indices
+      else if (typeof indices === 'number') list = [indices]
       else if (typeof indices === 'string') {
-        try { list = JSON.parse(indices) } catch { return err('indices must be a JSON array') }
+        // Models pass "[3]", "3", "3,4" — accept all instead of crashing.
+        try { list = JSON.parse(indices) } catch { list = indices.split(',') }
       }
+      if (!Array.isArray(list)) list = [list]
       const clean = list.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0 && n < 100)
       if (!clean.length) return err('no valid indices')
       return ok({ checked: clean, note: String(note || '').slice(0, 200) })
