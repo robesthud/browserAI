@@ -41,6 +41,8 @@ import {
 
 const DEFAULT_MAX_STEPS = 15
 const DEFAULT_DEADLINE_MS = 5 * 60 * 1000
+const IDLE_NOTICE_MS = 75 * 1000
+const LLM_HARD_IDLE_MS = 10 * 60 * 1000
 const activeRunsByChat = new Map()
 
 const COMMON_AGENT_TOOLS = [
@@ -296,7 +298,12 @@ function normaliseSsePayload(res, event, data) {
 }
 
 function sse(res, event, data) {
-  try { res.write(`event: ${event}\ndata: ${JSON.stringify(normaliseSsePayload(res, event, data))}\n\n`) } catch { /* best-effort: ignore */ }
+  try {
+    const now = Date.now()
+    res.__browseraiLastEventAt = now
+    if (!data?.watchdog) res.__browseraiLastRealEventAt = now
+    res.write(`event: ${event}\ndata: ${JSON.stringify(normaliseSsePayload(res, event, data))}\n\n`)
+  } catch { /* best-effort: ignore */ }
 }
 
 function sseKeepAlive(res) {
@@ -609,6 +616,39 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
   if (agentContext.runtime.effectiveMaxSteps > maxSteps) maxSteps = agentContext.runtime.effectiveMaxSteps
   const agentState = createAgentState({ agentContext, history })
+  res.__browseraiLastRealEventAt = Date.now()
+  res.__browseraiLastEventAt = Date.now()
+  res.__agentPhase = 'starting'
+  res.__agentActiveTool = ''
+  let watchdogAborted = false
+  const idleWatchdog = setInterval(() => {
+    const lastReal = Number(res.__browseraiLastRealEventAt || Date.now())
+    const idleMs = Date.now() - lastReal
+    if (idleMs < IDLE_NOTICE_MS) return
+
+    const activeTool = String(res.__agentActiveTool || '')
+    const phase = String(res.__agentPhase || 'working')
+    const currentStep = activeTool
+      ? `Всё ещё выполняю инструмент ${activeTool} (${Math.round(idleMs / 1000)}с без вывода)…`
+      : `Всё ещё жду ${phase === 'llm' ? 'ответ модели' : 'следующий шаг'} (${Math.round(idleMs / 1000)}с без событий)…`
+
+    sse(res, 'agent_state', {
+      ...agentState,
+      status: phase === 'tool' ? 'running' : 'thinking',
+      currentStep,
+      watchdog: true,
+    })
+
+    // Hard-stop only a silent LLM call. Do NOT abort tool/bash/deploy work here:
+    // long builds can be quiet but still healthy; tool-level timeouts handle them.
+    if (phase === 'llm' && idleMs > LLM_HARD_IDLE_MS && !watchdogAborted) {
+      watchdogAborted = true
+      try { abortCtl.abort(new Error('LLM idle watchdog timeout')) } catch { /* ignore */ }
+    }
+  }, 15_000)
+  idleWatchdog.unref?.()
+  res.on('close', () => clearInterval(idleWatchdog))
+
   const planningDirective = buildPlanningDirective(agentContext)
   
   // v2.26: High-Intelligence Directive for High Complexity tasks.
@@ -690,6 +730,8 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       // before the LLM call so the UI shows the agent is "processing"
       // instead of just "running" (which implies tool execution).
       agentState.status = 'thinking'
+      res.__agentPhase = 'llm'
+      res.__agentActiveTool = ''
       agentState.currentStep = `Step ${step}: Thinking...`
       agentState.updatedAt = new Date().toISOString()
       sse(res, 'thinking', { step })
@@ -717,6 +759,9 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
         const providerError = normalizeProviderError(e, { baseUrl: provider.baseUrl, model: provider.model, phase: 'agent-llm-call' })
         sse(res, 'error', { message: 'LLM failed: ' + providerError.message, providerError }); sseDone(res, { steps: step, reason: 'llm-error' }, tokens); res.end(); return
       }
+
+      res.__agentPhase = 'agent'
+      res.__agentActiveTool = ''
 
       let spendNote = null
       try { spendNote = recordSpend({ userId, chatId, model: activeProvider.model, usage: reply?.usage || {} }) } catch { /* best-effort: ignore */ }
@@ -858,6 +903,8 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
           if (!approved) return { call, r: { ok: false, error: 'User denied.' } }
         }
 
+        res.__agentPhase = 'tool'
+        res.__agentActiveTool = call.tool
         sse(res, 'tool_start', { step, sub: idx, name: call.tool, args: call.args })
         let r
         if (call.tool === 'ask_user') {
@@ -899,6 +946,8 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
           return { call, r: rErr, pushedBack: true }
         }
         updateAgentStateFromTool(agentState, call.tool, r, call.args); sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult(call.tool, r, { step, sub: idx }) }); sse(res, 'agent_state', agentState)
+        res.__agentPhase = 'agent'
+        res.__agentActiveTool = ''
         return { call, r }
         })())
       }
@@ -916,7 +965,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       }
     }
     if (step >= maxSteps) { sse(res, 'error', { message: `Stopped after ${maxSteps} steps` }); sseDone(res, { steps: step, reason: 'max-steps' }, tokens) }
-  } catch (e) { sse(res, 'error', { message: e.message }); sseDone(res, { steps: step, reason: 'crash' }, tokens) } finally { if (chatId) activeRunsByChat.delete(chatId); try { res.end() } catch { /* best-effort: ignore */ } }
+  } catch (e) { sse(res, 'error', { message: e.message }); sseDone(res, { steps: step, reason: 'crash' }, tokens) } finally { clearInterval(idleWatchdog); if (chatId) activeRunsByChat.delete(chatId); try { res.end() } catch { /* best-effort: ignore */ } }
 }
 
 function sseDone(res, payload, tokens) { sse(res, 'done', { ...payload, tokens }) }
