@@ -338,7 +338,33 @@ export const TOOLS = {
           })
         }
         return ok({ path, content: truncate(file.text ?? file.content, 20000), mime, kind: 'text' })
-      } catch (e) { return err(e.message) }
+      } catch (e) {
+        // Self-correction aid: when the model guesses a path that doesn't
+        // exist (observed in prod: it invented agent_loop.py etc. in a JS
+        // repo and kept guessing), answer with the REAL directory listing
+        // so the very next call can use a correct name instead of another
+        // hallucinated one.
+        if (/ENOENT|not found|no such file/i.test(String(e?.message))) {
+          try {
+            const path_ = await import('node:path')
+            const dir = path_.dirname(path) === '.' ? '' : path_.dirname(path)
+            let node = await getWorkspaceTree(false)
+            for (const part of String(dir).split('/').filter(Boolean)) {
+              node = (node?.children || []).find((c) => c.name === part && c.type === 'folder')
+              if (!node) break
+            }
+            const names = (node?.children || [])
+              .map((c) => c.name + (c.type === 'folder' ? '/' : ''))
+              .slice(0, 80)
+            return err(
+              `File not found: ${path}. DO NOT GUESS another name. ` +
+              `Directory "${dir || '/'}" actually contains: ${names.join(', ') || '(empty or missing)'}. ` +
+              'Pick one of these real paths or call list_files for a deeper level.'
+            )
+          } catch { /* fall through to the plain error */ }
+        }
+        return err(e.message)
+      }
     },
   },
 
