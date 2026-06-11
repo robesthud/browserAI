@@ -135,6 +135,36 @@ function deepSeekKeyboard() {
   }
 }
 
+async function localHealthCheck() {
+  const port = process.env.PORT || 8080
+  const urls = [
+    `http://127.0.0.1:${port}/api/health`,
+    'http://127.0.0.1:8080/api/health',
+    'http://localhost:8080/api/health',
+  ]
+  for (const url of urls) {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(5000) })
+      const text = await r.text().catch(() => '')
+      if (r.ok) return { ok: true, url, text }
+    } catch { /* try next */ }
+  }
+  return { ok: false, url: urls[0], text: 'local health failed' }
+}
+
+async function removeLegacyReplyKeyboard(chatId) {
+  // Old userTelegramBot used a persistent reply keyboard. Telegram clients keep
+  // that keyboard until the bot explicitly removes it, even after the code is
+  // deleted. Send a tiny cleanup message and try to delete it afterwards.
+  const r = await tg('sendMessage', {
+    chat_id: chatId,
+    text: '⌨️ Убираю старую клавиатуру…',
+    reply_markup: { remove_keyboard: true },
+  })
+  const mid = r?.result?.message_id
+  if (mid) setTimeout(() => tg('deleteMessage', { chat_id: chatId, message_id: mid }).catch(() => {}), 1200).unref?.()
+}
+
 function fmtDeepSeek(s = getDeepSeekState()) {
   return [
     '🧠 DeepSeek',
@@ -161,11 +191,8 @@ function fmtOpsResult(title, r) {
 
 async function menu(chatId, messageId = null) {
   const ds = getDeepSeekState()
-  let health = 'unknown'
-  try {
-    const r = await runOpsAction({ service: 'browserai', action: 'app_health_check', params: {}, confirm: true })
-    health = r.exitCode === 0 ? 'OK' : 'FAIL'
-  } catch { health = 'ERR' }
+  const h = await localHealthCheck()
+  const health = h.ok ? 'OK' : 'FAIL'
   const text = [
     '🏗 BrowserAI Telegram v2',
     '',
@@ -393,8 +420,13 @@ async function handleCommand(msg) {
   const arg = rest.join(' ').trim()
   switch ((cmd || '').replace(/@.*$/, '').toLowerCase()) {
     case '/start':
+      await removeLegacyReplyKeyboard(chatId)
+      return menu(chatId)
     case '/menu':
       return menu(chatId)
+    case '/hidekeyboard':
+      await removeLegacyReplyKeyboard(chatId)
+      return sendMessage(chatId, '✅ Старая Telegram-клавиатура убрана. Используйте inline-меню в сообщении /menu.')
     case '/help':
       return sendMessage(chatId, [
         'BrowserAI Telegram v2 commands:',
@@ -408,6 +440,7 @@ async function handleCommand(msg) {
         '/ci — GitHub Actions status',
         '/deploy — меню деплоя',
         '/deepseek — DeepSeek status',
+        '/hidekeyboard — убрать старую нижнюю Telegram-клавиатуру',
         '',
         'Любой обычный текст → тот же AI/Agent pipeline, что на сайте.',
       ].join('\n'))
@@ -422,8 +455,10 @@ async function handleCommand(msg) {
     }
     case '/status':
       return menu(chatId)
-    case '/health':
-      return runOpsAndReply(chatId, (await sendMessage(chatId, '⏳ Health…'))?.result?.message_id, 'Health', 'browserai', 'app_health_check')
+    case '/health': {
+      const h = await localHealthCheck()
+      return sendMessage(chatId, `🩺 BrowserAI health\nstatus: ${h.ok ? 'OK ✅' : 'FAIL ❌'}\nurl: ${h.url}\n${h.text || ''}`)
+    }
     case '/docker':
       return runOpsAndReply(chatId, (await sendMessage(chatId, '⏳ Docker…'))?.result?.message_id, 'Docker', 'browserai', 'docker_ps')
     case '/logs': {
@@ -493,7 +528,10 @@ async function handleCallback(cb) {
     return editMessage(chatId, messageId, fmtDeepSeek(), { reply_markup: deepSeekKeyboard() })
   }
 
-  if (data === 'ops:health') return runOpsAndReply(chatId, messageId, 'Health', 'browserai', 'app_health_check', {}, true, mainKeyboard())
+  if (data === 'ops:health') {
+    const h = await localHealthCheck()
+    return editMessage(chatId, messageId, `🩺 BrowserAI health\nstatus: ${h.ok ? 'OK ✅' : 'FAIL ❌'}\nurl: ${h.url}\n${h.text || ''}`, { reply_markup: mainKeyboard() })
+  }
   if (data === 'ops:docker') return runOpsAndReply(chatId, messageId, 'Docker', 'browserai', 'docker_ps', {}, true, mainKeyboard())
   if (data === 'ops:logs') return runOpsAndReply(chatId, messageId, 'Logs', 'browserai', 'docker_logs_recent', { service: 'browserai', tail: 160 }, true, mainKeyboard())
   if (data === 'ops:ci') return runOpsAndReply(chatId, messageId, 'GitHub Actions', 'github', 'actions_status', { limit: 5 }, true, deployKeyboard())
@@ -550,6 +588,7 @@ export async function startTelegramBot() {
     { command: 'ci', description: 'GitHub Actions' },
     { command: 'deploy', description: 'Deploy menu' },
     { command: 'deepseek', description: 'DeepSeek status' },
+    { command: 'hidekeyboard', description: 'Убрать старую нижнюю клавиатуру' },
     { command: 'id', description: 'Показать chat_id' },
   ] }).catch(() => {})
   log('Telegram v2 polling started (single token)')
