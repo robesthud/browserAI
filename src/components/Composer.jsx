@@ -19,6 +19,18 @@ function devtoolsEnabled() {
   catch { return false }
 }
 
+function isMobileLike() {
+  try {
+    return Boolean(
+      window.matchMedia?.('(pointer: coarse)').matches ||
+      window.innerWidth < 768 ||
+      navigator.maxTouchPoints > 0,
+    )
+  } catch {
+    return false
+  }
+}
+
 function WorkspacePickerModal({ open, onClose, onPick }) {
   const [tree, setTree] = useState(null)
   const [search, setSearch] = useState('')
@@ -229,12 +241,16 @@ export default function Composer({
   }
 
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const submittingRef = useRef(false)
 
   const submit = async () => {
-    if (isStreaming || isSubmitting) return
+    // State updates are async; the ref prevents a rapid double tap / double
+    // key event from launching two agent runs before React re-renders.
+    if (isStreaming || isSubmitting || submittingRef.current) return
     let t = text.trim()
     if (!t && attachments.length === 0) return
 
+    submittingRef.current = true
     setIsSubmitting(true)
     try {
       // ── Slash-command interception ──
@@ -340,12 +356,16 @@ export default function Composer({
         throw e
       }
     } finally {
+      submittingRef.current = false
       setIsSubmitting(false)
     }
   }
 
   const onKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // Desktop: Enter sends, Shift+Enter inserts a newline.
+    // Mobile/touch: Enter should insert a newline (same as ChatGPT mobile);
+    // sending is done by the round arrow button.
+    if (e.key === 'Enter' && !e.shiftKey && !isMobileLike()) {
       e.preventDefault()
       submit()
     }

@@ -114,6 +114,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
     m.thinking ||
     m.job,
   )
+  const showsThinkingPill = !isUser && Boolean(m.thinking && !isDev && m.pending)
 
   // Mobile swipe-left -> reveal action buttons (regenerate / copy).
   // The hook is a no-op on desktop because there are no touch events.
@@ -405,7 +406,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
               </div>
             ) : null}
 
-            {m.pending && !m.content && !(m.job && ['succeeded', 'failed', 'cancelled'].includes(m.job.status)) && (
+            {m.pending && !m.content && !showsThinkingPill && !(m.job && ['succeeded', 'failed', 'cancelled'].includes(m.job.status)) && (
               <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-graphite-800/60 px-2.5 py-1 text-[12px] text-cream-faint">
                 <span className={`inline-block h-2 w-2 animate-pulse rounded-full ${m.agentState?.status === 'thinking' || (!m.agentState && !hasAgentActivity) ? 'bg-amber-300' : 'bg-emerald-300'}`} />
                 <span>{m.agentState?.status === 'thinking' || (!m.agentState && !hasAgentActivity) ? 'Агент размышляет…' : 'Агент выполняет действия…'}</span>
