@@ -19,6 +19,8 @@ services:
       - TG_ADMIN_CHAT_ID=${TG_ADMIN_CHAT_ID:-}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - GITHUB_REPO=${GITHUB_REPO:-robesthud/browserAI}
+      - CF_PROXY_URL=${CF_PROXY_URL:-}
+      - CF_PROXY_SECRET=${CF_PROXY_SECRET:-}
       # App-level secrets
       - SESSION_SECRET=${SESSION_SECRET:-change-me}
       # AUTH_SECRET signs/encrypts sessions and the encrypted cloud-sync
