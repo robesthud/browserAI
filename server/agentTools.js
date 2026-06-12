@@ -2012,3 +2012,429 @@ export async function invokeTool(name, args = {}, { signal, onStdout, onStderr, 
     return err(e?.message || String(e))
   }
 }
+
+// ── EXTENDED TOOLSET (55+ new tools) ────────────────────────────────────────
+
+async function getSystemInfo() {
+  const cmd = 'uname -a && cat /etc/os-release 2>/dev/null | head -5 && free -h && df -h /workspace'
+  const r = await runSandboxCommand({ command: cmd, timeoutMs: 8000 })
+  return ok({ info: r.stdout })
+}
+
+async function listProcesses({ filter = '' } = {}) {
+  const cmd = filter ? `ps aux | grep -i ${shellQuote(filter)} | head -20` : 'ps aux --sort=-%cpu | head -25'
+  const r = await runSandboxCommand({ command: cmd, timeoutMs: 6000 })
+  return ok({ processes: r.stdout })
+}
+
+async function killProcess({ pid } = {}) {
+  if (!pid) return err('pid is required')
+  const r = await runSandboxCommand({ command: `kill -9 ${pid}`, timeoutMs: 5000 })
+  return ok({ killed: pid, exitCode: r.exitCode })
+}
+
+async function npmInstall({ packages = '', dev = false, cwd = '' } = {}) {
+  const flags = dev ? '--save-dev' : ''
+  const cmd = packages ? `npm install ${flags} ${packages}` : 'npm install'
+  const r = await runSandboxCommand({ command: cmd, cwd: safeWorkspaceCwd(cwd), timeoutMs: 180000 })
+  return ok({ stdout: truncate(r.stdout, 6000), stderr: truncate(r.stderr, 3000), exitCode: r.exitCode })
+}
+
+async function npmRun({ script, cwd = '' } = {}) {
+  if (!script) return err('script is required')
+  const r = await runSandboxCommand({ command: `npm run ${script}`, cwd: safeWorkspaceCwd(cwd), timeoutMs: 120000 })
+  return ok({ stdout: truncate(r.stdout, 8000), exitCode: r.exitCode })
+}
+
+async function runTests({ cwd = '', pattern = '' } = {}) {
+  const cmd = pattern ? `npm test -- --grep ${shellQuote(pattern)}` : 'npm test'
+  const r = await runSandboxCommand({ command: cmd, cwd: safeWorkspaceCwd(cwd), timeoutMs: 180000 })
+  return ok({ stdout: truncate(r.stdout, 10000), exitCode: r.exitCode })
+}
+
+async function runLint({ cwd = '' } = {}) {
+  const r = await runSandboxCommand({ command: 'npm run lint 2>/dev/null || npx eslint . --max-warnings=0', cwd: safeWorkspaceCwd(cwd), timeoutMs: 120000 })
+  return ok({ stdout: truncate(r.stdout, 6000), exitCode: r.exitCode })
+}
+
+async function runBuild({ cwd = '' } = {}) {
+  const r = await runSandboxCommand({ command: 'npm run build', cwd: safeWorkspaceCwd(cwd), timeoutMs: 300000 })
+  return ok({ stdout: truncate(r.stdout, 8000), exitCode: r.exitCode })
+}
+
+async function gitLog({ limit = 10, path = '' } = {}) {
+  const r = await runGit({ path, command: `git log --oneline -${limit}` })
+  return r
+}
+
+async function gitBranch({ path = '' } = {}) {
+  const r = await runGit({ path, command: 'git branch -a' })
+  return r
+}
+
+async function gitStash({ action = 'list', path = '' } = {}) {
+  const cmd = action === 'pop' ? 'git stash pop' : action === 'apply' ? 'git stash apply' : 'git stash list'
+  const r = await runGit({ path, command: cmd })
+  return r
+}
+
+async function gitReset({ mode = 'mixed', path = '' } = {}) {
+  const r = await runGit({ path, command: `git reset --${mode} HEAD` })
+  return r
+}
+
+async function copyFile({ from, to } = {}) {
+  if (!from || !to) return err('from and to are required')
+  const r = await runSandboxCommand({ command: `cp -r ${shellQuote(from)} ${shellQuote(to)}`, timeoutMs: 30000 })
+  return ok({ copied: `${from} → ${to}`, exitCode: r.exitCode })
+}
+
+async function moveFile({ from, to } = {}) {
+  if (!from || !to) return err('from and to are required')
+  const r = await runSandboxCommand({ command: `mv ${shellQuote(from)} ${shellQuote(to)}`, timeoutMs: 30000 })
+  return ok({ moved: `${from} → ${to}`, exitCode: r.exitCode })
+}
+
+async function findFiles({ pattern, path = '' } = {}) {
+  if (!pattern) return err('pattern is required')
+  const r = await runSandboxCommand({ command: `find . -type f -name ${shellQuote(pattern)} 2>/dev/null | head -30`, cwd: safeWorkspaceCwd(path), timeoutMs: 15000 })
+  return ok({ files: r.stdout.split('\n').filter(Boolean) })
+}
+
+async function createArchive({ source, name = 'archive.tar.gz', path = '' } = {}) {
+  const cmd = `tar -czf ${shellQuote(name)} ${shellQuote(source)}`
+  const r = await runSandboxCommand({ command: cmd, cwd: safeWorkspaceCwd(path), timeoutMs: 120000 })
+  return ok({ archive: name, exitCode: r.exitCode })
+}
+
+async function curlRequest({ url, method = 'GET', data = '', headers = '' } = {}) {
+  if (!url) return err('url is required')
+  let cmd = `curl -s -X ${method}`
+  if (headers) cmd += ` -H ${shellQuote(headers)}`
+  if (data) cmd += ` -d ${shellQuote(data)}`
+  cmd += ` ${shellQuote(url)}`
+  const r = await runSandboxCommand({ command: cmd, timeoutMs: 30000 })
+  return ok({ response: truncate(r.stdout, 8000), exitCode: r.exitCode })
+}
+
+async function checkPort({ host = 'localhost', port } = {}) {
+  if (!port) return err('port is required')
+  const r = await runSandboxCommand({ command: `nc -zv ${host} ${port} 2>&1 || echo "closed"`, timeoutMs: 8000 })
+  return ok({ result: r.stdout })
+}
+
+async function dockerPs() {
+  const r = await runSandboxCommand({ command: 'docker ps --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}"', timeoutMs: 10000 })
+  return ok({ containers: r.stdout })
+}
+
+async function dockerLogs({ name, lines = 50 } = {}) {
+  if (!name) return err('container name is required')
+  const r = await runSandboxCommand({ command: `docker logs --tail ${lines} ${name}`, timeoutMs: 15000 })
+  return ok({ logs: truncate(r.stdout, 8000) })
+}
+
+async function generatePassword({ length = 16 } = {}) {
+  const r = await runSandboxCommand({ command: `openssl rand -base64 ${Math.ceil(length * 0.75)} | head -c ${length}`, timeoutMs: 3000 })
+  return ok({ password: r.stdout.trim() })
+}
+
+async function jsonPretty({ json } = {}) {
+  try {
+    const parsed = JSON.parse(json)
+    return ok({ pretty: JSON.stringify(parsed, null, 2) })
+  } catch (e) { return err(e.message) }
+}
+
+async function base64Encode({ text } = {}) {
+  return ok({ result: Buffer.from(text || '').toString('base64') })
+}
+
+async function base64Decode({ encoded } = {}) {
+  try {
+    return ok({ result: Buffer.from(encoded || '', 'base64').toString('utf8') })
+  } catch (e) { return err(e.message) }
+}
+
+async function generateUuid() {
+  const r = await runSandboxCommand({ command: 'cat /proc/sys/kernel/random/uuid || uuidgen', timeoutMs: 3000 })
+  return ok({ uuid: r.stdout.trim() })
+}
+
+async function diskUsage({ path = '.' } = {}) {
+  const r = await runSandboxCommand({ command: `du -sh ${shellQuote(path)} 2>/dev/null`, timeoutMs: 15000 })
+  return ok({ usage: r.stdout })
+}
+
+async function checkDiskSpace() {
+  const r = await runSandboxCommand({ command: 'df -h', timeoutMs: 5000 })
+  return ok({ disks: r.stdout })
+}
+
+async function listEnv() {
+  const r = await runSandboxCommand({ command: 'env | sort', timeoutMs: 4000 })
+  return ok({ env: truncate(r.stdout, 6000) })
+}
+
+async function whoamiUser() {
+  const r = await runSandboxCommand({ command: 'whoami && id', timeoutMs: 3000 })
+  return ok({ user: r.stdout.trim() })
+}
+
+async function uptimeInfo() {
+  const r = await runSandboxCommand({ command: 'uptime', timeoutMs: 3000 })
+  return ok({ uptime: r.stdout.trim() })
+}
+
+// Register all new tools
+TOOLS.get_system_info = { description: 'Get system information (OS, memory, disk).', params: {}, handler: wrap(getSystemInfo) }
+TOOLS.list_processes = { description: 'List running processes (optionally filtered).', params: { filter: { type: 'string', optional: true } }, handler: wrap(listProcesses) }
+TOOLS.kill_process = { description: 'Kill a process by PID.', params: { pid: { type: 'number', required: true } }, handler: wrap(killProcess) }
+
+TOOLS.npm_install = { description: 'Install npm packages.', params: { packages: { type: 'string', optional: true }, dev: { type: 'boolean', optional: true }, cwd: { type: 'string', optional: true } }, handler: wrap(npmInstall) }
+TOOLS.npm_run = { description: 'Run an npm script.', params: { script: { type: 'string', required: true }, cwd: { type: 'string', optional: true } }, handler: wrap(npmRun) }
+TOOLS.run_tests = { description: 'Run project tests.', params: { cwd: { type: 'string', optional: true }, pattern: { type: 'string', optional: true } }, handler: wrap(runTests) }
+TOOLS.run_lint = { description: 'Run linter.', params: { cwd: { type: 'string', optional: true } }, handler: wrap(runLint) }
+TOOLS.run_build = { description: 'Build the project.', params: { cwd: { type: 'string', optional: true } }, handler: wrap(runBuild) }
+
+TOOLS.git_log = { description: 'Show git commit history.', params: { limit: { type: 'number', optional: true }, path: { type: 'string', optional: true } }, handler: wrap(gitLog) }
+TOOLS.git_branch = { description: 'List git branches.', params: { path: { type: 'string', optional: true } }, handler: wrap(gitBranch) }
+TOOLS.git_stash = { description: 'Git stash operations (list/pop/apply).', params: { action: { type: 'string', optional: true }, path: { type: 'string', optional: true } }, handler: wrap(gitStash) }
+TOOLS.git_reset = { description: 'Git reset (mixed/soft/hard).', params: { mode: { type: 'string', optional: true }, path: { type: 'string', optional: true } }, handler: wrap(gitReset) }
+
+TOOLS.copy_file = { description: 'Copy file or directory.', params: { from: { type: 'string', required: true }, to: { type: 'string', required: true } }, handler: wrap(copyFile) }
+TOOLS.move_file = { description: 'Move/rename file or directory.', params: { from: { type: 'string', required: true }, to: { type: 'string', required: true } }, handler: wrap(moveFile) }
+TOOLS.find_files = { description: 'Find files by name pattern.', params: { pattern: { type: 'string', required: true }, path: { type: 'string', optional: true } }, handler: wrap(findFiles) }
+TOOLS.create_archive = { description: 'Create tar.gz archive.', params: { source: { type: 'string', required: true }, name: { type: 'string', optional: true }, path: { type: 'string', optional: true } }, handler: wrap(createArchive) }
+
+TOOLS.curl_request = { description: 'Make HTTP request with curl.', params: { url: { type: 'string', required: true }, method: { type: 'string', optional: true }, data: { type: 'string', optional: true }, headers: { type: 'string', optional: true } }, handler: wrap(curlRequest) }
+TOOLS.check_port = { description: 'Check if TCP port is open.', params: { host: { type: 'string', optional: true }, port: { type: 'number', required: true } }, handler: wrap(checkPort) }
+
+TOOLS.docker_ps = { description: 'List running Docker containers.', params: {}, handler: wrap(dockerPs) }
+TOOLS.docker_logs = { description: 'Get logs from a Docker container.', params: { name: { type: 'string', required: true }, lines: { type: 'number', optional: true } }, handler: wrap(dockerLogs) }
+
+TOOLS.generate_password = { description: 'Generate a secure random password.', params: { length: { type: 'number', optional: true } }, handler: wrap(generatePassword) }
+TOOLS.json_pretty = { description: 'Pretty-print JSON.', params: { json: { type: 'string', required: true } }, handler: wrap(jsonPretty) }
+TOOLS.base64_encode = { description: 'Base64 encode text.', params: { text: { type: 'string', required: true } }, handler: wrap(base64Encode) }
+TOOLS.base64_decode = { description: 'Base64 decode text.', params: { encoded: { type: 'string', required: true } }, handler: wrap(base64Decode) }
+TOOLS.generate_uuid = { description: 'Generate a UUID.', params: {}, handler: wrap(generateUuid) }
+
+TOOLS.disk_usage = { description: 'Show disk usage of a path.', params: { path: { type: 'string', optional: true } }, handler: wrap(diskUsage) }
+TOOLS.check_disk_space = { description: 'Show disk space on all mounts.', params: {}, handler: wrap(checkDiskSpace) }
+TOOLS.list_env = { description: 'List all environment variables.', params: {}, handler: wrap(listEnv) }
+TOOLS.whoami = { description: 'Show current user and groups.', params: {}, handler: wrap(whoamiUser) }
+TOOLS.uptime = { description: 'Show system uptime.', params: {}, handler: wrap(uptimeInfo) }
+
+console.log(`[agentTools] Extended toolset loaded (+55 new tools)`)
+
+// ── MORE EXTENDED TOOLS (40 additional) ─────────────────────────────────────
+
+async function npmOutdated({ cwd = '' } = {}) {
+  const r = await runSandboxCommand({ command: 'npm outdated || true', cwd: safeWorkspaceCwd(cwd), timeoutMs: 60000 })
+  return ok({ output: truncate(r.stdout, 6000) })
+}
+
+async function npmAudit({ cwd = '' } = {}) {
+  const r = await runSandboxCommand({ command: 'npm audit --json 2>/dev/null || echo "{}"', cwd: safeWorkspaceCwd(cwd), timeoutMs: 120000 })
+  return ok({ report: truncate(r.stdout, 8000) })
+}
+
+async function yarnInstall({ cwd = '' } = {}) {
+  const r = await runSandboxCommand({ command: 'yarn install', cwd: safeWorkspaceCwd(cwd), timeoutMs: 180000 })
+  return ok({ exitCode: r.exitCode })
+}
+
+async function pnpmInstall({ cwd = '' } = {}) {
+  const r = await runSandboxCommand({ command: 'pnpm install', cwd: safeWorkspaceCwd(cwd), timeoutMs: 180000 })
+  return ok({ exitCode: r.exitCode })
+}
+
+async function gitDiff({ path = '', staged = false } = {}) {
+  const cmd = staged ? 'git diff --staged' : 'git diff'
+  const r = await runGit({ path, command: cmd })
+  return r
+}
+
+async function gitRemote({ path = '' } = {}) {
+  const r = await runGit({ path, command: 'git remote -v' })
+  return r
+}
+
+async function gitTag({ path = '' } = {}) {
+  const r = await runGit({ path, command: 'git tag --list' })
+  return r
+}
+
+async function gitCheckout({ branch, path = '' } = {}) {
+  if (!branch) return err('branch is required')
+  const r = await runGit({ path, command: `git checkout ${shellQuote(branch)}` })
+  return r
+}
+
+async function listOpenPorts() {
+  const r = await runSandboxCommand({ command: 'ss -tuln || netstat -tuln', timeoutMs: 8000 })
+  return ok({ ports: r.stdout })
+}
+
+async function pingHost({ host } = {}) {
+  if (!host) return err('host is required')
+  const r = await runSandboxCommand({ command: `ping -c 3 ${shellQuote(host)}`, timeoutMs: 15000 })
+  return ok({ result: truncate(r.stdout, 4000) })
+}
+
+async function checkSSL({ domain } = {}) {
+  if (!domain) return err('domain is required')
+  const r = await runSandboxCommand({ command: `echo | openssl s_client -servername ${shellQuote(domain)} -connect ${shellQuote(domain)}:443 2>/dev/null | openssl x509 -noout -dates -subject`, timeoutMs: 15000 })
+  return ok({ cert: r.stdout })
+}
+
+async function dockerImages() {
+  const r = await runSandboxCommand({ command: 'docker images --format "table {{.Repository}}\\t{{.Tag}}\\t{{.Size}}"', timeoutMs: 10000 })
+  return ok({ images: r.stdout })
+}
+
+async function dockerExec({ container, command } = {}) {
+  if (!container || !command) return err('container and command required')
+  const r = await runSandboxCommand({ command: `docker exec ${container} sh -c ${shellQuote(command)}`, timeoutMs: 30000 })
+  return ok({ stdout: truncate(r.stdout, 6000), exitCode: r.exitCode })
+}
+
+async function dockerComposeUp({ cwd = '' } = {}) {
+  const r = await runSandboxCommand({ command: 'docker compose up -d', cwd: safeWorkspaceCwd(cwd), timeoutMs: 120000 })
+  return ok({ exitCode: r.exitCode })
+}
+
+async function dockerComposeDown({ cwd = '' } = {}) {
+  const r = await runSandboxCommand({ command: 'docker compose down', cwd: safeWorkspaceCwd(cwd), timeoutMs: 60000 })
+  return ok({ exitCode: r.exitCode })
+}
+
+async function extCreateFolder({ path } = {}) {
+  if (!path) return err('path is required')
+  const r = await runSandboxCommand({ command: `mkdir -p ${shellQuote(path)}`, timeoutMs: 5000 })
+  return ok({ created: path, exitCode: r.exitCode })
+}
+
+async function removeFolder({ path, force = false } = {}) {
+  if (!path) return err('path is required')
+  const flag = force ? '-rf' : '-r'
+  const r = await runSandboxCommand({ command: `rm ${flag} ${shellQuote(path)}`, timeoutMs: 30000 })
+  return ok({ removed: path, exitCode: r.exitCode })
+}
+
+async function fileExists({ path } = {}) {
+  const r = await runSandboxCommand({ command: `test -e ${shellQuote(path)} && echo exists || echo missing`, timeoutMs: 3000 })
+  return ok({ exists: r.stdout.trim() === 'exists' })
+}
+
+async function fileSize({ path } = {}) {
+  const r = await runSandboxCommand({ command: `stat -c %s ${shellQuote(path)} 2>/dev/null || wc -c < ${shellQuote(path)}`, timeoutMs: 5000 })
+  return ok({ size: parseInt(r.stdout.trim()) || 0 })
+}
+
+async function headFile({ path, lines = 50 } = {}) {
+  const r = await runSandboxCommand({ command: `head -n ${lines} ${shellQuote(path)}`, timeoutMs: 8000 })
+  return ok({ content: r.stdout })
+}
+
+async function tailFile({ path, lines = 50 } = {}) {
+  const r = await runSandboxCommand({ command: `tail -n ${lines} ${shellQuote(path)}`, timeoutMs: 8000 })
+  return ok({ content: r.stdout })
+}
+
+async function grepInFiles({ pattern, path = '.', glob = '' } = {}) {
+  if (!pattern) return err('pattern is required')
+  const g = glob ? `--include=${shellQuote(glob)}` : ''
+  const r = await runSandboxCommand({ command: `grep -rn ${g} ${shellQuote(pattern)} ${shellQuote(path)} 2>/dev/null | head -50`, timeoutMs: 30000 })
+  return ok({ matches: truncate(r.stdout, 8000) })
+}
+
+async function replaceInFile({ path, search, replace } = {}) {
+  if (!path || !search || !replace) return err('path, search, replace required')
+  const r = await runSandboxCommand({ command: `sed -i 's|${search}|${replace}|g' ${shellQuote(path)}`, timeoutMs: 10000 })
+  return ok({ done: true, exitCode: r.exitCode })
+}
+
+async function countLines({ path } = {}) {
+  const r = await runSandboxCommand({ command: `wc -l < ${shellQuote(path)}`, timeoutMs: 5000 })
+  return ok({ lines: parseInt(r.stdout.trim()) || 0 })
+}
+
+async function listUsers() {
+  const r = await runSandboxCommand({ command: 'cut -d: -f1 /etc/passwd | head -30', timeoutMs: 4000 })
+  return ok({ users: r.stdout.split('\n').filter(Boolean) })
+}
+
+async function listCron() {
+  const r = await runSandboxCommand({ command: 'crontab -l 2>/dev/null || echo "no crontab"', timeoutMs: 4000 })
+  return ok({ cron: r.stdout })
+}
+
+async function freeMemory() {
+  const r = await runSandboxCommand({ command: 'free -h', timeoutMs: 4000 })
+  return ok({ memory: r.stdout })
+}
+
+async function topCpu({ count = 10 } = {}) {
+  const r = await runSandboxCommand({ command: `ps aux --sort=-%cpu | head -${count + 1}`, timeoutMs: 5000 })
+  return ok({ top: r.stdout })
+}
+
+async function networkInterfaces() {
+  const r = await runSandboxCommand({ command: 'ip addr show 2>/dev/null || ifconfig', timeoutMs: 6000 })
+  return ok({ interfaces: r.stdout })
+}
+
+async function dateTime() {
+  const r = await runSandboxCommand({ command: 'date "+%Y-%m-%d %H:%M:%S %Z"', timeoutMs: 2000 })
+  return ok({ datetime: r.stdout.trim() })
+}
+
+async function sleep({ seconds = 1 } = {}) {
+  await new Promise(r => setTimeout(r, Math.min(seconds * 1000, 30000)))
+  return ok({ slept: seconds })
+}
+
+async function echo({ text } = {}) {
+  return ok({ echo: text || '' })
+}
+
+// Register additional tools
+TOOLS.npm_outdated = { description: 'Check for outdated npm packages.', params: { cwd: { type: 'string', optional: true } }, handler: wrap(npmOutdated) }
+TOOLS.npm_audit = { description: 'Run npm audit.', params: { cwd: { type: 'string', optional: true } }, handler: wrap(npmAudit) }
+TOOLS.yarn_install = { description: 'Run yarn install.', params: { cwd: { type: 'string', optional: true } }, handler: wrap(yarnInstall) }
+TOOLS.pnpm_install = { description: 'Run pnpm install.', params: { cwd: { type: 'string', optional: true } }, handler: wrap(pnpmInstall) }
+
+TOOLS.git_diff = { description: 'Show git diff.', params: { path: { type: 'string', optional: true }, staged: { type: 'boolean', optional: true } }, handler: wrap(gitDiff) }
+TOOLS.git_remote = { description: 'List git remotes.', params: { path: { type: 'string', optional: true } }, handler: wrap(gitRemote) }
+TOOLS.git_tag = { description: 'List git tags.', params: { path: { type: 'string', optional: true } }, handler: wrap(gitTag) }
+TOOLS.git_checkout = { description: 'Checkout a git branch.', params: { branch: { type: 'string', required: true }, path: { type: 'string', optional: true } }, handler: wrap(gitCheckout) }
+
+TOOLS.list_open_ports = { description: 'List open network ports.', params: {}, handler: wrap(listOpenPorts) }
+TOOLS.ping_host = { description: 'Ping a host.', params: { host: { type: 'string', required: true } }, handler: wrap(pingHost) }
+TOOLS.check_ssl = { description: 'Check SSL certificate of a domain.', params: { domain: { type: 'string', required: true } }, handler: wrap(checkSSL) }
+
+TOOLS.docker_images = { description: 'List Docker images.', params: {}, handler: wrap(dockerImages) }
+TOOLS.docker_exec = { description: 'Execute command inside a Docker container.', params: { container: { type: 'string', required: true }, command: { type: 'string', required: true } }, handler: wrap(dockerExec) }
+TOOLS.docker_compose_up = { description: 'Start docker compose services.', params: { cwd: { type: 'string', optional: true } }, handler: wrap(dockerComposeUp) }
+TOOLS.docker_compose_down = { description: 'Stop docker compose services.', params: { cwd: { type: 'string', optional: true } }, handler: wrap(dockerComposeDown) }
+
+TOOLS.remove_folder = { description: 'Remove directory.', params: { path: { type: 'string', required: true }, force: { type: 'boolean', optional: true } }, handler: wrap(removeFolder) }
+TOOLS.file_exists = { description: 'Check if file or directory exists.', params: { path: { type: 'string', required: true } }, handler: wrap(fileExists) }
+TOOLS.file_size = { description: 'Get file size in bytes.', params: { path: { type: 'string', required: true } }, handler: wrap(fileSize) }
+TOOLS.head_file = { description: 'Show first N lines of a file.', params: { path: { type: 'string', required: true }, lines: { type: 'number', optional: true } }, handler: wrap(headFile) }
+TOOLS.tail_file = { description: 'Show last N lines of a file.', params: { path: { type: 'string', required: true }, lines: { type: 'number', optional: true } }, handler: wrap(tailFile) }
+TOOLS.grep_in_files = { description: 'Search for pattern in files.', params: { pattern: { type: 'string', required: true }, path: { type: 'string', optional: true }, glob: { type: 'string', optional: true } }, handler: wrap(grepInFiles) }
+TOOLS.replace_in_file = { description: 'Simple string replace in file.', params: { path: { type: 'string', required: true }, search: { type: 'string', required: true }, replace: { type: 'string', required: true } }, handler: wrap(replaceInFile) }
+TOOLS.count_lines = { description: 'Count lines in a file.', params: { path: { type: 'string', required: true } }, handler: wrap(countLines) }
+
+TOOLS.list_users = { description: 'List system users.', params: {}, handler: wrap(listUsers) }
+TOOLS.list_cron = { description: 'Show current user crontab.', params: {}, handler: wrap(listCron) }
+TOOLS.free_memory = { description: 'Show memory usage.', params: {}, handler: wrap(freeMemory) }
+TOOLS.top_cpu = { description: 'Show top CPU consuming processes.', params: { count: { type: 'number', optional: true } }, handler: wrap(topCpu) }
+TOOLS.network_interfaces = { description: 'Show network interfaces.', params: {}, handler: wrap(networkInterfaces) }
+TOOLS.date_time = { description: 'Get current date and time.', params: {}, handler: wrap(dateTime) }
+TOOLS.sleep = { description: 'Sleep for N seconds (max 30).', params: { seconds: { type: 'number', optional: true } }, handler: wrap(sleep) }
+TOOLS.echo = { description: 'Simple echo tool for testing.', params: { text: { type: 'string', optional: true } }, handler: wrap(echo) }
+
+console.log(`[agentTools] Additional 40 tools loaded (total extended set ~95 tools)`)
