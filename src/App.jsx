@@ -181,7 +181,9 @@ function BrowserApp({ user, reloadAuth }) {
     }
 
     const route = autoMode
-      ? routeUserMessage(text, attachments)
+      ? (effectiveAgentMode
+          ? { mode: 'agent', reason: 'Агент включён вручную', icon: '🤖' }
+          : routeUserMessage(text, attachments))
       : {
           mode: effectiveAgentMode ? 'agent' : 'chat',
           reason: effectiveAgentMode ? 'Агент включён вручную' : 'Обычный чат',
