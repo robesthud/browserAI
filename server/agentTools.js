@@ -1,14 +1,7 @@
 /**
- * agentTools.js
+ * agentTools.js — Enhanced Registry
  *
- * Registry of tools the DeepSeek agent loop can invoke. Each tool is:
- *   - declarative: name + description + JSON-schema-ish params
- *   - imperative: an async handler that does the work and returns
- *     {ok, result?, error?}
- *
- * Tools are exposed to the LLM as a single block of text inside the
- * system prompt (see agentLoop.js). The LLM must reply with strict JSON
- * to invoke a tool; everything else is treated as the final answer.
+ * New tools: npm_install, npm_test, git_status, git_commit, docker_logs, verify_code
  */
 import {
   getWorkspaceTree,
@@ -22,19 +15,27 @@ import {
 import { searchWeb, fetchWebPage } from './web.js'
 import { runSandboxCommand } from './agentSandbox.js'
 
-// ── Utility ─────────────────────────────────────────────────────────────────
 function truncate(str, max = 8000) {
   const s = String(str ?? '')
   return s.length > max ? s.slice(0, max) + `\n... [truncated, ${s.length - max} more chars]` : s
 }
-
 function ok(result) { return { ok: true, result } }
 function err(message) { return { ok: false, error: String(message || 'unknown error') } }
 
-// ── Tool registry ───────────────────────────────────────────────────────────
+// ── Helper: ensure parent dirs exist ───────────────────────────────────────
+async function ensureParentDirs(relPath) {
+  const parts = String(relPath).split('/').filter(Boolean)
+  parts.pop() // remove filename
+  let acc = ''
+  for (const seg of parts) {
+    const here = acc ? acc + '/' + seg : seg
+    try { await createFolder(acc, seg) } catch { /* exists */ }
+    acc = here
+  }
+}
+
 export const TOOLS = {
 
-  // ── Workspace: read ────────────────────────────────────────────────────
   list_files: {
     description: 'List files and folders in the workspace as a tree. Use this first to discover what is available.',
     params: {
@@ -44,7 +45,6 @@ export const TOOLS = {
     handler: async ({ path = '', show_hidden = false } = {}) => {
       try {
         const tree = await getWorkspaceTree(Boolean(show_hidden))
-        // If a subpath was requested, drill into it
         if (path) {
           const parts = String(path).split('/').filter(Boolean)
           let node = tree
@@ -92,9 +92,8 @@ export const TOOLS = {
     },
   },
 
-  // ── Workspace: write ───────────────────────────────────────────────────
   write_file: {
-    description: 'Create or fully overwrite a text file in the workspace. Use this for any file you want to save or modify wholesale.',
+    description: 'Create or fully overwrite a text file in the workspace. ALWAYS call verify_code immediately after to catch syntax errors.',
     params: {
       path: { type: 'string', required: true, description: 'Path relative to workspace root.' },
       content: { type: 'string', required: true, description: 'Full file contents to write.' },
@@ -102,28 +101,16 @@ export const TOOLS = {
     handler: async ({ path, content = '' } = {}) => {
       if (!path) return err('path is required')
       try {
-        // Try create first; if it exists, overwrite via writeFileContent
+        await ensureParentDirs(path)
+        const parts = String(path).split('/').filter(Boolean)
+        const name = parts.pop()
+        const parent = parts.join('/')
         try {
-          // createFile expects (parentRel, name, content)
-          const parts = String(path).split('/').filter(Boolean)
-          const name = parts.pop()
-          const parent = parts.join('/')
-          if (parent) {
-            // Ensure parent folders exist
-            const segs = parent.split('/')
-            let acc = ''
-            for (const seg of segs) {
-              const here = acc ? acc + '/' + seg : seg
-              try { await createFolder(acc, seg) } catch { /* exists */ }
-              acc = here
-            }
-          }
           await createFile(parent, name, String(content))
         } catch {
-          // Already exists — overwrite
           await writeFileContent(path, String(content))
         }
-        return ok({ path, bytes: Buffer.byteLength(String(content), 'utf8') })
+        return ok({ path, bytes: Buffer.byteLength(String(content), 'utf8'), hint: 'Call verify_code next to check syntax.' })
       } catch (e) { return err(e.message) }
     },
   },
@@ -146,7 +133,7 @@ export const TOOLS = {
         if (count > 1) return err(`old_text appears ${count} times in ${path}; refine to make it unique`)
         const updated = original.replace(old_text, String(new_text))
         await writeFileContent(path, updated)
-        return ok({ path, replaced: 1, newLength: updated.length })
+        return ok({ path, replaced: 1, newLength: updated.length, hint: 'Call verify_code next to check syntax.' })
       } catch (e) { return err(e.message) }
     },
   },
@@ -165,7 +152,6 @@ export const TOOLS = {
     },
   },
 
-  // ── Web ────────────────────────────────────────────────────────────────
   web_search: {
     description: 'Search the public web via DuckDuckGo. Returns up to 5 results with title, url and snippet.',
     params: {
@@ -195,11 +181,10 @@ export const TOOLS = {
     },
   },
 
-  // ── Shell (sandboxed) ───────────────────────────────────────────────────
   bash: {
-    description: 'Run a shell command inside an isolated Linux sandbox that has a copy of the workspace mounted at /workspace. Useful for git, npm, node, curl, grep, build steps, etc. Output is returned. Timeout 30s.',
+    description: 'Run a shell command inside an isolated Linux sandbox that has the workspace mounted at /workspace. Useful for git, npm, node, curl, grep, build steps, etc. Output is returned. Timeout 30s default, max 120s.',
     params: {
-      command: { type: 'string', required: true, description: 'Shell command, e.g. "ls -la /workspace" or "node -e \\"console.log(1+1)\\""' },
+      command: { type: 'string', required: true, description: 'Shell command, e.g. "ls -la /workspace" or "node -e \"console.log(1+1)\""' },
       timeout_sec: { type: 'number', optional: true, description: 'Max seconds, default 30, max 120.' },
     },
     handler: async ({ command, timeout_sec = 30 } = {}) => {
@@ -218,19 +203,178 @@ export const TOOLS = {
       } catch (e) { return err(e.message) }
     },
   },
-}
 
-// ── Schema for the system prompt ────────────────────────────────────────────
-/**
- * Render the tool catalogue as plain text the LLM can read.
- */
+  // ── NEW: npm ─────────────────────────────────────────────────────────────
+  npm_install: {
+    description: 'Install an npm package into the project. Use this when you need a new dependency. After installing, call verify_code on the file that imports it.',
+    params: {
+      package: { type: 'string', required: true, description: 'Package name, e.g. "node-telegram-bot-api" or "node-telegram-bot-api@0.66.0"' },
+      dev: { type: 'boolean', optional: true, description: 'Install as devDependency. Default: false.' },
+    },
+    handler: async ({ package: pkg, dev = false } = {}) => {
+      if (!pkg) return err('package is required')
+      try {
+        const flag = dev ? '--save-dev' : '--save'
+        const r = await runSandboxCommand({
+          command: `cd /workspace && npm install ${flag} ${String(pkg)}`,
+          timeoutMs: 120_000,
+        })
+        return ok({
+          stdout: truncate(r.stdout, 6000),
+          stderr: truncate(r.stderr, 3000),
+          exitCode: r.exitCode,
+          installed: pkg,
+        })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  npm_test: {
+    description: 'Run the test suite (npm test). ALWAYS run this after making changes to verify nothing broke. If tests fail, read the error and fix the code before continuing.',
+    params: {
+      path: { type: 'string', optional: true, description: 'Optional path to test file, e.g. "tests/auth.test.js". If omitted, runs all tests.' },
+      watch: { type: 'boolean', optional: true, description: 'Run in watch mode. Default: false.' },
+    },
+    handler: async ({ path, watch = false } = {}) => {
+      try {
+        let cmd = 'cd /workspace && npm test'
+        if (path) cmd += ` -- ${String(path)}`
+        if (watch) cmd += ' -- --watch'
+        const r = await runSandboxCommand({ command: cmd, timeoutMs: 120_000 })
+        return ok({
+          stdout: truncate(r.stdout, 6000),
+          stderr: truncate(r.stderr, 3000),
+          exitCode: r.exitCode,
+          passed: r.exitCode === 0,
+        })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  // ── NEW: git ─────────────────────────────────────────────────────────────
+  git_status: {
+    description: 'Check git status to see what files changed. Useful before committing.',
+    params: {},
+    handler: async () => {
+      try {
+        const r = await runSandboxCommand({ command: 'cd /workspace && git status --short', timeoutMs: 30_000 })
+        return ok({ status: truncate(r.stdout, 2000), exitCode: r.exitCode })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  git_commit: {
+    description: 'Stage all changes, commit with a descriptive message, and push to origin. Use this after completing a task to save progress. If push fails, report the error and stop.',
+    params: {
+      message: { type: 'string', required: true, description: 'Commit message. Be descriptive: "feat: add Telegram bot integration" or "fix: correct auth middleware". Use conventional commits format.' },
+    },
+    handler: async ({ message } = {}) => {
+      if (!message) return err('message is required')
+      try {
+        const r1 = await runSandboxCommand({ command: 'cd /workspace && git add -A', timeoutMs: 30_000 })
+        if (r1.exitCode !== 0) return ok({ warning: 'git add failed', stderr: r1.stderr })
+        const r2 = await runSandboxCommand({ command: `cd /workspace && git commit -m "${message.replace(/"/g, '\\"')}"`, timeoutMs: 30_000 })
+        if (r2.exitCode !== 0 && !r2.stdout?.includes('nothing to commit')) {
+          return ok({ committed: false, stderr: truncate(r2.stderr, 2000) })
+        }
+        const r3 = await runSandboxCommand({ command: 'cd /workspace && git push origin main', timeoutMs: 60_000 })
+        return ok({
+          add: r1.stdout,
+          commit: r2.stdout,
+          push: r3.stdout,
+          pushed: r3.exitCode === 0,
+          stderr: truncate(r2.stderr + r3.stderr, 3000),
+        })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  // ── NEW: docker ──────────────────────────────────────────────────────────
+  docker_logs: {
+    description: 'View recent logs from a Docker container. Useful for debugging crashes. If container is restarting, check the last 20 lines for the error.',
+    params: {
+      container: { type: 'string', required: true, description: 'Container name, e.g. "browserai" or "agent-sandbox"' },
+      tail: { type: 'number', optional: true, description: 'Number of lines to show. Default: 50.' },
+    },
+    handler: async ({ container, tail = 50 } = {}) => {
+      if (!container) return err('container is required')
+      try {
+        const r = await runSandboxCommand({
+          command: `docker logs --tail=${Math.min(500, Math.max(1, Number(tail) || 50))} ${String(container)} 2>&1`,
+          timeoutMs: 30_000,
+        })
+        return ok({ logs: truncate(r.stdout, 8000), exitCode: r.exitCode })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  docker_ps: {
+    description: 'List running Docker containers with their status, ports, and names.',
+    params: {},
+    handler: async () => {
+      try {
+        const r = await runSandboxCommand({ command: 'docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"', timeoutMs: 30_000 })
+        return ok({ containers: truncate(r.stdout, 3000), exitCode: r.exitCode })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  // ── NEW: code quality ──────────────────────────────────────────────────────
+  verify_code: {
+    description: 'Verify syntax of a JavaScript/TypeScript/JSON file. Use this IMMEDIATELY after write_file or edit_file to catch errors before they crash the app.',
+    params: {
+      path: { type: 'string', required: true, description: 'Path relative to workspace root, e.g. "server/auth.js" or "package.json"' },
+    },
+    handler: async ({ path } = {}) => {
+      if (!path) return err('path is required')
+      try {
+        const ext = String(path).toLowerCase().split('.').pop()
+        let cmd = ''
+        if (['js', 'mjs', 'cjs'].includes(ext)) {
+          cmd = `node --check /workspace/${path}`
+        } else if (ext === 'json') {
+          cmd = `node -e "JSON.parse(require('fs').readFileSync('/workspace/${path}', 'utf8'))"`
+        } else if (['ts', 'tsx'].includes(ext)) {
+          return ok({ path, valid: null, result: 'TypeScript syntax check requires tsc. Run bash: "npx tsc --noEmit" if needed.', skipped: true })
+        } else {
+          return ok({ path, valid: null, result: 'No built-in syntax checker for this extension. Skipped.', skipped: true })
+        }
+        const r = await runSandboxCommand({ command: cmd, timeoutMs: 10_000 })
+        if (r.exitCode === 0) {
+          return ok({ path, valid: true, checker: ext === 'json' ? 'JSON.parse' : 'node --check' })
+        }
+        return ok({ path, valid: false, error: truncate(r.stderr, 2000), checker: ext === 'json' ? 'JSON.parse' : 'node --check' })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  // ── NEW: project context ─────────────────────────────────────────────────
+  read_project_rules: {
+    description: 'Read AGENTS.md and PROJECT_CONTEXT.md from the workspace root. Call this BEFORE starting work on a new task to learn the project rules, stack, and conventions.',
+    params: {},
+    handler: async () => {
+      try {
+        const files = ['AGENTS.md', 'PROJECT_CONTEXT.md', 'README.md', 'package.json']
+        const results = {}
+        for (const f of files) {
+          try {
+            const file = await readWorkspaceFile(f)
+            results[f] = truncate(file?.text ?? file?.content ?? '', 5000)
+          } catch { results[f] = null }
+        }
+        return ok({ files: results, found: Object.keys(results).filter(k => results[k] !== null) })
+      } catch (e) { return err(e.message) }
+    },
+  },
+}
 
 // Minimal tool set for low-complexity runs (must match agentLoop.js lite filter)
 export const LITE_TOOL_NAMES = [
   'list_files', 'read_file', 'write_file', 'edit_file', 'search_files',
   'bash', 'web_search', 'web_fetch', 'ask_user',
-  'delete_file',
+  'delete_file', 'verify_code', 'read_project_rules',
 ]
+
 export function renderToolsForPrompt() {
   const lines = []
   for (const [name, def] of Object.entries(TOOLS)) {
@@ -251,9 +395,6 @@ export function renderToolsForPrompt() {
   return lines.join('\n')
 }
 
-/**
- * Invoke a tool by name. Returns the {ok, result|error} shape.
- */
 export async function invokeTool(name, args = {}) {
   const tool = TOOLS[name]
   if (!tool) return err(`Unknown tool: ${name}`)

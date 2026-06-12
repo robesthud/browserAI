@@ -2819,17 +2819,6 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
   } catch (e) { console.warn('[agent] recall failed:', e?.message || e) }
 
   const extraSystemFinal = [
-    `## AGENT QUALITY RULES (ENFORCED)
-
-- ALWAYS call read_project_rules BEFORE starting work on a new task. This loads AGENTS.md, README.md, and package.json context automatically.
-- ALWAYS call verify_code IMMEDIATELY after every write_file or edit_file to catch syntax errors before they crash the app.
-- ALWAYS run npm_test after making code changes to verify nothing broke. If tests fail, fix the code before continuing.
-- Use git_status BEFORE git_commit to see what changed. Commit messages must be descriptive: "feat: add Telegram bot" or "fix: correct auth middleware".
-- Use npm_install when you need a new dependency — never write code that imports packages not in package.json.
-- Use docker_logs to debug container crashes. Use docker_ps to see running containers.
-- After creating or editing files, output their FULL content in markdown code blocks in the final answer so the user can see the result.
-- Do NOT end with questions or offers to help further unless genuinely blocked.
-`,
     String(extraSystem || '').replace(/\[browserai-first-turn\]/g, '').trim(),
     modelHintNote,
     userFactsNote,
