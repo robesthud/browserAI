@@ -43,6 +43,8 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - LUMA_API_KEY=${LUMA_API_KEY:-}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
     # Bind-mounts: state lives on the host filesystem, visible with plain ls,
     # easy to rsync / backup, completely independent from docker volumes so
     # `docker compose down -v` does NOT touch it.

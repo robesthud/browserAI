@@ -17,7 +17,8 @@ import { runSandboxCommand } from './agentSandbox.js'
 import { upsertFact, forgetFact, listFacts } from './userMemory.js'
 import { addDocument, deleteDocument, listDocuments, searchKnowledge } from './knowledgeBase.js'
 import { fetchViaProxy, isGoogleGenerativeNativeUrl } from './llmClient.js'
-import { writeFile as fsWriteFile, mkdir as fsMkdir } from 'node:fs/promises'
+import { writeFile as fsWriteFile, readFile as fsReadFile, mkdir as fsMkdir } from 'node:fs/promises'
+import path from 'node:path'
 
 function safeJsonParse(text) { try { return JSON.parse(text) } catch { return null } }
 
@@ -472,6 +473,7 @@ export const LITE_TOOL_NAMES = [
   'list_files', 'read_file', 'write_file', 'edit_file', 'search_files',
   'bash', 'web_search', 'web_fetch', 'ask_user',
   'delete_file', 'verify_code', 'read_project_rules', 'generate_image',
+  'edit_image', 'generate_video', 'analyze_image', 'text_to_speech', 'transcribe_audio',
 ]
 
 export function renderToolsForPrompt() {
