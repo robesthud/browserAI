@@ -96,3 +96,20 @@ export async function runAgentSelfTest({ userId, chatId } = {}) {
 
   return results
 }
+
+export async function extendedSelfTest() {
+  const tests = []
+  const { invokeTool } = await import('./agentTools.js')
+  
+  // Test new tools
+  const newTools = ['get_system_info', 'npm_install', 'run_tests', 'git_log', 'docker_ps', 'generate_password']
+  for (const tool of newTools) {
+    try {
+      const res = await invokeTool(tool, {})
+      tests.push({ tool, ok: res.ok !== false })
+    } catch (e) {
+      tests.push({ tool, ok: false, error: e.message })
+    }
+  }
+  return tests
+}

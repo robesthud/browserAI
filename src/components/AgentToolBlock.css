@@ -1,0 +1,12 @@
+.agent-tool {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  border: 1px solid #333;
+  background: #1a1a1a;
+  color: #ccc;
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin: 4px 0;
+}
+.agent-tool .icon { opacity: 0.7; margin-right: 8px; }
+.agent-tool .action { color: #ddd; }

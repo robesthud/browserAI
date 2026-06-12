@@ -29,7 +29,7 @@ import { spawn } from 'node:child_process'
 import { redactSecrets } from './sandboxPolicy.js'
 
 const SANDBOX_CONTAINER = process.env.AGENT_SANDBOX_CONTAINER || 'agent-sandbox'
-const MAX_STDOUT = 8 * 1024
+const MAX_STDOUT = 16 * 1024
 const MAX_STDERR = 4 * 1024
 
 function clip(buf, max) {
@@ -49,7 +49,7 @@ function clip(buf, max) {
  * @param {string} [opts.cwd='/workspace'] working directory inside container
  * @returns {Promise<{stdout, stderr, exitCode, truncated}>}
  */
-export function runSandboxCommand({ command, timeoutMs = 30_000, cwd = '/workspace', signal, onStdout, onStderr } = {}) {
+export function runSandboxCommand({ command, timeoutMs = 120_000, cwd = '/workspace', signal, onStdout, onStderr } = {}) {
   return new Promise((resolve, reject) => {
     if (!command || typeof command !== 'string') {
       return reject(new Error('command must be a non-empty string'))
