@@ -33,9 +33,9 @@ export function routeUserMessage(text = '', attachments = [], { forceAgent = fal
   // Explicit commands / ops / code changes need the full agent.
   const agentPatterns = [
     /\b(ssh|docker|nginx|systemctl|journalctl|timeweb|vps|vds|deploy|деплой|сервер|логи|логах|github|git|ci\/cd)\b/i,
-    /(исправ|почини|реализуй|добавь|перепиши|измени|обнови|создай файл|удали файл|переименуй|собери|протестируй|проверь код|найди в файлах|прочитай файл)/i,
+    /(исправ|почини|реализуй|добавь|перепиши|измени|обнови|создай|удали|переименуй|собери|протестируй|проверь код|найди в файлах|прочитай файл)/i,
     /(зайди|подключись|настрой|установи|запусти|выполни команд|bash|консоль|терминал)/i,
-    /(workspace|репозитор|проект|код|скрипт|файл|папк|readme|package\.json)/i,
+    /(workspace|репозитор|проект|код|скрипт|файл|папк|readme|package\.json|бот|telegram|telegram bot|weather bot|погод)/i,
   ]
   if (agentPatterns.some((re) => re.test(raw)) || /(code|script|json|jsx|tsx|python|node|npm|vite|react)/i.test(att)) {
     return { mode: 'agent', reason: 'Нужны инструменты/файлы/код', icon: '🤖' }

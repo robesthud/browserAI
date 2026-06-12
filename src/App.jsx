@@ -180,15 +180,12 @@ function BrowserApp({ user, reloadAuth }) {
       }
     }
 
-    const route = autoMode
-      ? (effectiveAgentMode
-          ? { mode: 'agent', reason: 'Агент включён вручную', icon: '🤖' }
-          : routeUserMessage(text, attachments))
-      : {
-          mode: effectiveAgentMode ? 'agent' : 'chat',
-          reason: effectiveAgentMode ? 'Агент включён вручную' : 'Обычный чат',
-          icon: effectiveAgentMode ? '🤖' : '💬',
-        }
+    // Manual agent toggle takes priority over autoMode/smartRouter
+    const route = effectiveAgentMode
+      ? { mode: 'agent', reason: 'Агент включён вручную', icon: '🤖' }
+      : autoMode
+        ? routeUserMessage(text, attachments)
+        : { mode: 'chat', reason: 'Обычный чат', icon: '💬' }
 
     const mergeOverride = (extra = {}) => {
       if (overrideModel && typeof overrideModel === 'object') return { ...overrideModel, ...extra }
