@@ -2837,6 +2837,7 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
         extraHeaders: mergedExtraHeaders,
         model,
         temperature,
+        forceAgent: true,
       },
       history: safeHistory,
       extraSystem: extraSystemFinal,

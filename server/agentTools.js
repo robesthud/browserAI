@@ -224,6 +224,13 @@ export const TOOLS = {
 /**
  * Render the tool catalogue as plain text the LLM can read.
  */
+
+// Minimal tool set for low-complexity runs (must match agentLoop.js lite filter)
+export const LITE_TOOL_NAMES = [
+  'list_files', 'read_file', 'write_file', 'edit_file', 'search_files',
+  'bash', 'web_search', 'web_fetch', 'ask_user',
+  'delete_file',
+]
 export function renderToolsForPrompt() {
   const lines = []
   for (const [name, def] of Object.entries(TOOLS)) {

@@ -2,7 +2,7 @@
 set -e
 
 echo "=== BrowserAI Deploy ==="
-cd /home/user/browserai
+cd /opt/browserai
 
 echo "Pulling latest code..."
 git pull origin main
