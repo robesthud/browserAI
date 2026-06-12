@@ -97,6 +97,45 @@ export function routeUserMessage(text = '', attachments = [], { forceAgent = fal
 
     // Accessibility / i18n
     /(доступност|accessibility|a11y|скринридер|screen reader|aria|семантик|семантическ|перевод|i18n|локализ|localization|internationalization|мультиязычн|мультиязычный|язык|языка)/i,
+
+    // AI / ML / data science
+    /(нейросет|нейросеть|нейронн|ai|машинн обучен|ml|model|модель|обучен|трениров|training|dataset|датасет|embedding|prompt|rag|llm|gpt|claude|генераци изображен|stablediffusion|stable diffusion|dalle|midjourney|chatbot|chat-bot|chat бот)/i,
+
+    // Version control / CI/CD
+    /(commit|коммит|пуш|push|pull request|merge|branch|бранч|fork|clone|клонируй|ребаза|rebase|cherry-pick|gitflow|github actions|gitlab ci|bitbucket|svn)/i,
+
+    // Content / media / design
+    /(изображен|картинк|фото|фотографи|видео|аудио|звук|музык|текст|стать|блог|пост|контент|медиа|thumbnail|превью|иконк|favicon|logo|логотип|баннер|слайдер|карусель|галерея|шрифт|шрифты|font)/i,
+
+    // Commerce / payments
+    /(платёж|платеж|оплат|оплата|stripe|paypal|корзин|cart|заказ|checkout|подписк|subscription|тариф|pricing|прайс|скидк|купон|coupon|товар|товары|каталог|каталога)/i,
+
+    // Notifications / communication
+    /(уведомлен|уведомление|push notification|email|smtp|mailgun|sendgrid|sms|whatsapp|signal|slack|discord|сообщен|сообщение|чат|чата|комментарий|комментарии|реакци|лайк|дизлайк)/i,
+
+    // Performance / monitoring / build
+    /(производител|производительность|speed|скорость|быстр|медлен|lazy load|кеширован|кеш|cache|cdn|сжатие|gzip|brotli|minif|bundl|webpack|esbuild|rollup|vite|профайл|profile|monitoring|метрик|logs|logging|sentry|prometheus|grafana)/i,
+
+    // Accessibility / internationalization
+    /(доступност|accessibility|a11y|скринридер|screen reader|aria|семантик|семантическ|перевод|i18n|локализ|localization|мультиязычн|мультиязычный)/i,
+
+    // Programming languages & frameworks
+    /(javascript|typescript|java|kotlin|swift|rust|golang|ruby|php|scala|haskell|elixir|dart|flutter|spring|laravel|rails|nestjs|graphql|apollo|rest|grpc|websocket|socket\.io)/i,
+
+    // Cloud & hosting
+    /(aws|amazon|gcp|google cloud|azure|heroku|vercel|netlify|railway|render|supabase|firebase|хостинг|домен|домена|cloudfront|s3|lambda|cloud|облако)/i,
+
+    // Data formats & configs
+    /(xml|yaml|yml|toml|ini|properties|env|\.env|\.gitignore|dockerignore|eslint|prettier|tsconfig|babel|postcss)/i,
+
+    // Security
+    /(безопасност|security|уязвимост|vulnerabilit|шифрован|encrypt|decrypt|ssl|tls|https|cors|csrf|xss|инъекц|inject|аутентификац|авториз|auth|login|регистрац|пароль|password|token|jwt|oauth|openid)/i,
+
+    // Dev tools & workflow
+    /(npm|yarn|pnpm|bun|pip|cargo|gem|composer|make|cmake|gradle|maven|lint|formatter|pre-commit|husky|changelog|release|version|semver)/i,
+
+    // General task verbs (catch-all for "help me with...")
+    /(помоги|помогите|помочь|научи|научите|научить|покажи|покажите|показать|объясни|объясните|объяснить|расскажи|расскажите|рассказать|как сделать|как написать|как создать|как добавить|как настроить|как установить|как запустить|как исправить|как работает|как это|как бы|мне нужно|мне надо|хочу чтобы|хочу сделать|хочу создать)/i,
   ]
   if (agentPatterns.some((re) => re.test(raw)) || /(code|script|json|jsx|tsx|py|python|js|node|npm|yarn|vite|react|vue|angular|svelte|css|html|tailwind)/i.test(att)) {
     return { mode: 'agent', reason: 'Нужны инструменты/файлы/код', icon: '🤖' }
