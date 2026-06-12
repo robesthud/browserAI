@@ -375,7 +375,7 @@ export const TOOLS = {
   },
 
   generate_image: {
-    description: 'Generate an image using AI (Google Gemini / Imagen) and save it to the workspace. Requires an active Gemini API key or GEMINI_API_KEY env var.',
+    description: 'Generate an image using AI (Google Gemini / Imagen) and save it to the workspace. Requires an active Gemini API key with image generation access (paid plan). Free tier keys do NOT support image generation.',
     params: {
       file_path: { type: 'string', required: true, description: 'Path relative to workspace root where the image will be saved, e.g. "assets/image.png" or "images/cat.jpg". Must end with .png, .jpg, .jpeg, or .webp.' },
       prompt: { type: 'string', required: true, description: 'Detailed image generation prompt in English. Be descriptive and specific about style, lighting, composition, and subject.' },
@@ -404,63 +404,69 @@ export const TOOLS = {
       const proxySecret = process.env.CF_PROXY_SECRET || ''
 
       try {
-        const model = 'imagen-3.0-generate-002'
-        const targetUrl = `${baseUrl}/models/${model}:predict?key=${encodeURIComponent(apiKey)}`
-        const body = {
-          instances: [{ prompt: String(prompt) }],
-          parameters: {
-            sampleCount: 1,
-            aspectRatio: '1:1',
-            outputMimeType: ext === 'webp' ? 'image/webp' : (ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png'),
-          },
+        // Try available Imagen models (free tier returns 400 "paid plans only")
+        const imagenModels = ['imagen-4.0-generate-001', 'imagen-4.0-fast-generate-001', 'imagen-3.0-generate-002']
+        let lastError = ''
+
+        for (const model of imagenModels) {
+          const targetUrl = `${baseUrl}/models/${model}:predict?key=${encodeURIComponent(apiKey)}`
+          const body = {
+            instances: [{ prompt: String(prompt) }],
+            parameters: {
+              sampleCount: 1,
+              aspectRatio: '1:1',
+              outputMimeType: ext === 'webp' ? 'image/webp' : (ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png'),
+            },
+          }
+
+          let r
+          if (proxyUrl) {
+            r = await fetchViaProxy({
+              url: targetUrl, method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body, proxyUrl, proxySecret, timeoutMs: 120_000,
+            })
+          } else {
+            r = await fetch(targetUrl, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body), signal: AbortSignal.timeout(120_000),
+            })
+          }
+
+          const raw = await r.text()
+          if (!r.ok) {
+            lastError = raw.slice(0, 300)
+            if (raw.includes('paid plans') || raw.includes('quota') || raw.includes('billing') || raw.includes('limit')) {
+              // Free tier / billing issue — try next model or report clearly
+              continue
+            }
+            return err(`Image generation failed: HTTP ${r.status} ${raw.slice(0, 300)}`)
+          }
+
+          const data = safeJsonParse(raw)
+          if (!data) return err(`Image generation returned non-JSON: ${raw.slice(0, 300)}`)
+
+          const prediction = data?.predictions?.[0]
+          if (!prediction?.bytesBase64Encoded) {
+            return err(`No image generated: ${JSON.stringify(data).slice(0, 300)}`)
+          }
+
+          const imageBuffer = Buffer.from(prediction.bytesBase64Encoded, 'base64')
+          const mimeType = prediction.mimeType || (ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png')
+
+          await ensureParentDirs(file_path)
+          const parts = String(file_path).split('/').filter(Boolean)
+          const name = parts.pop()
+          const parent = parts.join('/')
+          const parentFull = parent ? `/workspace/${parent}` : '/workspace'
+          await fsMkdir(parentFull, { recursive: true })
+          await fsWriteFile(`/workspace/${file_path}`, imageBuffer)
+
+          return ok({ file_path, mimeType, bytes: imageBuffer.length, prompt: String(prompt) })
         }
 
-        let r
-        if (proxyUrl) {
-          r = await fetchViaProxy({
-            url: targetUrl,
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body,
-            proxyUrl,
-            proxySecret,
-            timeoutMs: 120_000,
-          })
-        } else {
-          r = await fetch(targetUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-            signal: AbortSignal.timeout(120_000),
-          })
-        }
-
-        const raw = await r.text()
-        if (!r.ok) {
-          return err(`Image generation failed: HTTP ${r.status} ${raw.slice(0, 300)}`)
-        }
-
-        const data = safeJsonParse(raw)
-        if (!data) return err(`Image generation returned non-JSON: ${raw.slice(0, 300)}`)
-
-        const prediction = data?.predictions?.[0]
-        if (!prediction?.bytesBase64Encoded) {
-          return err(`No image generated: ${JSON.stringify(data).slice(0, 300)}`)
-        }
-
-        const imageBuffer = Buffer.from(prediction.bytesBase64Encoded, 'base64')
-        const mimeType = prediction.mimeType || (ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png')
-
-        // Save to workspace using direct fs write (workspace.js writeFileContent converts to string)
-        await ensureParentDirs(file_path)
-        const parts = String(file_path).split('/').filter(Boolean)
-        const name = parts.pop()
-        const parent = parts.join('/')
-        const parentFull = parent ? `/workspace/${parent}` : '/workspace'
-        await fsMkdir(parentFull, { recursive: true })
-        await fsWriteFile(`/workspace/${file_path}`, imageBuffer)
-
-        return ok({ file_path, mimeType, bytes: imageBuffer.length, prompt: String(prompt) })
+        // All models failed — likely free tier
+        return err(`Image generation not available on this API key. ${lastError.includes('paid plans') ? 'Gemini free tier does not support image generation. Upgrade to a paid Google Cloud plan, or use a different provider (e.g. OpenAI DALL-E with OPENAI_API_KEY).' : 'Last error: ' + lastError}`)
       } catch (e) {
         return err(`Image generation error: ${e.message}`)
       }
