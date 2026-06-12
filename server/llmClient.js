@@ -979,6 +979,7 @@ export async function callLLMStream(opts) {
  */
 export function supportsStreaming(baseUrl = '') {
   if (isDeepSeekWebUrl(baseUrl)) return false // soft-fallback handled inside callLLMStream
+  if (isGoogleGenerativeNativeUrl(baseUrl)) return false // Gemini SSE via proxy is flaky; use non-streaming
   if (String(process.env.BROWSERAI_DISABLE_STREAMING || '').trim()) return false
   return true
 }
