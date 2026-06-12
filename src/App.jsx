@@ -262,7 +262,7 @@ function BrowserApp({ user, reloadAuth }) {
         useWebAI={settings.useWebAI} onToggleWebAI={(next) => setParams({ useWebAI: next })}
       />
       {!collapsed && <button className="fixed inset-0 z-30 bg-black/45 md:hidden" onClick={() => setCollapsed(true)} />}
-      <main className="relative flex min-w-0 flex-1 flex-col">
+      <main className="relative flex min-w-0 flex-1 flex-col h-[100dvh] overflow-hidden">
         {collapsed && (
           <button onClick={() => setCollapsed(false)} className="absolute left-3 top-10 z-10 grid h-9 w-9 place-items-center rounded-lg text-cream-dim hover:bg-graphite-800 md:top-3.5">
             <IconExpand />
@@ -280,19 +280,25 @@ function BrowserApp({ user, reloadAuth }) {
         />
         <ChatSearchModal open={searchOpen} chats={chats} onSelectChat={selectChat} onClose={() => setSearchOpen(false)} />
         <CheckpointsTray open={checkpointsOpen} chatId={activeChat?.id || ''} onClose={() => setCheckpointsOpen(false)} />
+        <div className="flex flex-col h-full overflow-hidden">
         {hasMessages ? (
           <>
+            <div className="flex-1 overflow-y-auto min-h-0">
             <MessageList
               messages={messages} aiWorking={aiWorking} onEdit={(m) => { const ta = document.querySelector('textarea'); if (ta) { ta.value = m.content; ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 220) + 'px'; ta.focus() } }}
               onRegenerate={handleRegenerate} onRefresh={() => location.reload()} onJobDone={markJobDone} onBranch={(messageId) => activeChat && branchFromMessage(activeChat.id, messageId)}
               onAnswerAskUser={(messageId, questionId, payload) => answerAgentQuestion(activeChat.id, messageId, questionId, payload)}
               onCancelAskUser={(messageId, questionId) => cancelAgentQuestion(activeChat.id, messageId, questionId)}
             />
+            </div>
+            <div className="shrink-0">
             <Composer hasMessages isStreaming={aiWorking} onSend={handleSendMessage} onStop={stop} chatId={activeChat?.id || ''} {...composerSlashHooks} />
+            </div>
           </>
         ) : (
           <Composer hasMessages={false} isStreaming={aiWorking} onSend={handleSendMessage} onStop={stop} chatId={activeChat?.id || ''} {...composerSlashHooks} />
         )}
+        </div>
       </main>
       <Workspace revision={workspaceRevision} open={workspaceOpen} onClose={() => setWorkspaceOpen(false)} settings={settings} chatId={activeId || ''} onSendToChat={handleSendMessage} onAiBusyChange={setWorkspaceAiBusy} />
       <SettingsModal

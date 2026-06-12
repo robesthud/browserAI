@@ -14,6 +14,8 @@ import {
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
 import { runSandboxCommand } from './agentSandbox.js'
+import { upsertFact, forgetFact, listFacts } from './userMemory.js'
+import { addDocument, deleteDocument, listDocuments, searchKnowledge } from './knowledgeBase.js'
 
 function truncate(str, max = 8000) {
   const s = String(str ?? '')
@@ -395,13 +397,18 @@ export function renderToolsForPrompt() {
   return lines.join('\n')
 }
 
-export async function invokeTool(name, args = {}) {
-  const tool = TOOLS[name]
+export async function invokeTool(name, args = {}, { signal, onStdout, onStderr, userId, chatId, extraTools } = {}) {
+  const tool = TOOLS[name] || (extraTools && extraTools[name])
   if (!tool) return err(`Unknown tool: ${name}`)
   if (typeof tool.handler !== 'function') return err(`Tool ${name} has no handler`)
+  const enrichedArgs = { ...(args || {}) }
+  if (userId) enrichedArgs._userId = userId
+  if (chatId) enrichedArgs._chatId = chatId
   try {
-    return await tool.handler(args || {})
+    if (signal?.aborted) return err('cancelled')
+    return await tool.handler(enrichedArgs)
   } catch (e) {
+    if (signal?.aborted) return err('cancelled')
     return err(e?.message || String(e))
   }
 }
