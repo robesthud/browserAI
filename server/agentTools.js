@@ -30,9 +30,6 @@ import { browserOpen, browserScreenshot, browserClick, browserType, browserClose
 import { upsertFact, forgetFact, listFacts } from './userMemory.js'
 import { addDocument, deleteDocument, listDocuments, searchKnowledge } from './knowledgeBase.js'
 import { buildRepoMap } from './repoMap.js'
-import { USE_SUBAGENTS_TOOL } from './subAgents.js'
-import { listCronJobs, upsertCronJob, deleteCronJob } from './cron.js'
-import { listCheckpoints, restoreCheckpoint } from './checkpoints.js'
 
 // ── Utility ─────────────────────────────────────────────────────────────────
 function stripAnsi(str) {
@@ -192,6 +189,7 @@ async function quickSyntaxCheck(relPath, content) {
     return { available: false }
   } catch (e) { return { available: false, error: e.message } }
 }
+}
 
 function checkBalance(src) {
   const pairs = { '(': ')', '[': ']', '{': '}' }
@@ -338,33 +336,7 @@ export const TOOLS = {
           })
         }
         return ok({ path, content: truncate(file.text ?? file.content, 20000), mime, kind: 'text' })
-      } catch (e) {
-        // Self-correction aid: when the model guesses a path that doesn't
-        // exist (observed in prod: it invented agent_loop.py etc. in a JS
-        // repo and kept guessing), answer with the REAL directory listing
-        // so the very next call can use a correct name instead of another
-        // hallucinated one.
-        if (/ENOENT|not found|no such file/i.test(String(e?.message))) {
-          try {
-            const path_ = await import('node:path')
-            const dir = path_.dirname(path) === '.' ? '' : path_.dirname(path)
-            let node = await getWorkspaceTree(false)
-            for (const part of String(dir).split('/').filter(Boolean)) {
-              node = (node?.children || []).find((c) => c.name === part && c.type === 'folder')
-              if (!node) break
-            }
-            const names = (node?.children || [])
-              .map((c) => c.name + (c.type === 'folder' ? '/' : ''))
-              .slice(0, 80)
-            return err(
-              `File not found: ${path}. DO NOT GUESS another name. ` +
-              `Directory "${dir || '/'}" actually contains: ${names.join(', ') || '(empty or missing)'}. ` +
-              'Pick one of these real paths or call list_files for a deeper level.'
-            )
-          } catch { /* fall through to the plain error */ }
-        }
-        return err(e.message)
-      }
+      } catch (e) { return err(e.message) }
     },
   },
 
@@ -578,12 +550,9 @@ export const TOOLS = {
     handler: async ({ indices, note = '' } = {}) => {
       let list = []
       if (Array.isArray(indices)) list = indices
-      else if (typeof indices === 'number') list = [indices]
       else if (typeof indices === 'string') {
-        // Models pass "[3]", "3", "3,4" — accept all instead of crashing.
-        try { list = JSON.parse(indices) } catch { list = indices.split(',') }
+        try { list = JSON.parse(indices) } catch { return err('indices must be a JSON array') }
       }
-      if (!Array.isArray(list)) list = [list]
       const clean = list.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0 && n < 100)
       if (!clean.length) return err('no valid indices')
       return ok({ checked: clean, note: String(note || '').slice(0, 200) })
@@ -998,14 +967,9 @@ Projects found: ${JSON.stringify(projects.slice(0,5))}`
           ? Number(limit)
           : depthToLimit[String(depth)] || 6
         const data = await searchWeb(String(query), Math.min(10, Math.max(1, cap)))
-        // searchWeb historically returns a plain array, while some newer
-        // adapters return { results }. Accept both shapes. The old code only
-        // read data.results, so successful DuckDuckGo searches were silently
-        // shown to the agent as an empty list.
-        const rawResults = Array.isArray(data) ? data : (data?.results || [])
         // Tag every result with a stable numeric id so the model can
         // cite as [id](url) following my convention.
-        const results = rawResults.map((r, i) => ({ id: i + 1, ...r }))
+        const results = (data?.results || []).map((r, i) => ({ id: i + 1, ...r }))
         return ok({ query, depth: String(depth || '2'), results })
       } catch (e) { return err(e.message) }
     },
@@ -1283,79 +1247,6 @@ Projects found: ${JSON.stringify(projects.slice(0,5))}`
     },
   },
 
-  // ── CI / Deploy waiting helpers ────────────────────────────────────────
-  github_actions_status: {
-    description: 'Check GitHub Actions workflow status without exposing tokens. Use after pushing code to see CI/deploy runs. Params: repo?, workflow?, workflows?, sha?, branch?, name?, limit?.',
-    params: {
-      repo: { type: 'string', optional: true, description: 'owner/repo. Defaults to server GITHUB_REPO.' },
-      workflow: { type: 'string', optional: true, description: 'Workflow file/name/id, e.g. deploy-timeweb.yml or ci.yml.' },
-      workflows: { type: 'string', optional: true, description: 'Comma-separated workflow files/names to check.' },
-      sha: { type: 'string', optional: true, description: 'Commit SHA prefix to filter.' },
-      branch: { type: 'string', optional: true, description: 'Branch name to filter.' },
-      name: { type: 'string', optional: true, description: 'Workflow display-name substring to filter.' },
-      limit: { type: 'number', optional: true, description: 'Max runs to return. Default 20.' },
-    },
-    handler: async (params = {}) => {
-      try { return ok(await runOpsAction({ service: 'github', action: 'actions_status', params, confirm: true })) }
-      catch (e) { return err(e.message) }
-    },
-  },
-
-  github_actions_wait: {
-    description: 'Wait for matching GitHub Actions runs to complete. Use after git_push or GitHub edits. Params: repo?, workflow/workflows?, sha?, branch?, timeout_sec?, interval_sec?, require_success?.',
-    params: {
-      repo: { type: 'string', optional: true, description: 'owner/repo. Defaults to server GITHUB_REPO.' },
-      workflow: { type: 'string', optional: true, description: 'Single workflow file/name/id.' },
-      workflows: { type: 'string', optional: true, description: 'Comma-separated workflow files/names, e.g. ci.yml,deploy-timeweb.yml.' },
-      sha: { type: 'string', optional: true, description: 'Commit SHA prefix to wait for.' },
-      branch: { type: 'string', optional: true, description: 'Branch name to filter.' },
-      timeout_sec: { type: 'number', optional: true, description: 'Max wait seconds. Default 900.' },
-      interval_sec: { type: 'number', optional: true, description: 'Polling interval. Default 10.' },
-      require_success: { type: 'boolean', optional: true, description: 'Fail if conclusion is not success. Default true.' },
-    },
-    handler: async (params = {}) => {
-      try { return ok(await runOpsAction({ service: 'github', action: 'actions_wait', params, confirm: true })) }
-      catch (e) { return err(e.message) }
-    },
-  },
-
-  deploy_timeweb_wait: {
-    description: 'Wait until the deployed app health endpoint is OK from the VPS. Generic for Timeweb/VPS deployments. Params: url?, timeout_sec?, interval_sec?.',
-    params: {
-      url: { type: 'string', optional: true, description: 'Health URL from the VPS. Default http://localhost/api/health.' },
-      timeout_sec: { type: 'number', optional: true, description: 'Max wait seconds. Default 600.' },
-      interval_sec: { type: 'number', optional: true, description: 'Polling interval. Default 10.' },
-    },
-    handler: async (params = {}) => {
-      try { return ok(await runOpsAction({ service: 'browserai', action: 'deploy_wait', params, confirm: true })) }
-      catch (e) { return err(e.message) }
-    },
-  },
-
-  app_health_check: {
-    description: 'Check app health endpoint from the VPS. Use after deploy/restart. Params: url?, timeout_sec?.',
-    params: {
-      url: { type: 'string', optional: true, description: 'Health URL. Default http://localhost/api/health.' },
-      timeout_sec: { type: 'number', optional: true, description: 'Curl max-time seconds. Default 10.' },
-    },
-    handler: async (params = {}) => {
-      try { return ok(await runOpsAction({ service: 'browserai', action: 'app_health_check', params, confirm: true })) }
-      catch (e) { return err(e.message) }
-    },
-  },
-
-  docker_logs_recent: {
-    description: 'Read recent docker compose logs from the VPS. Use after failed deploy/health check. Params: service?, tail?.',
-    params: {
-      service: { type: 'string', optional: true, description: 'Compose service/container. Default browserai.' },
-      tail: { type: 'number', optional: true, description: 'How many lines. Default 120, max 500.' },
-    },
-    handler: async (params = {}) => {
-      try { return ok(await runOpsAction({ service: 'browserai', action: 'docker_logs_recent', params, confirm: true })) }
-      catch (e) { return err(e.message) }
-    },
-  },
-
   // ── Ops / service connectors ──────────────────────────────────────────
   ops_list_services: {
     description: 'List configured external/service connectors and their allowed actions (GitHub/Timeweb/Docker/Telegram/etc. as configured on the server). Use this before ops_run_action.',
@@ -1428,13 +1319,7 @@ Projects found: ${JSON.stringify(projects.slice(0,5))}`
           // If a specific cwd is requested, we cd into it BEFORE running the command.
           // In a persistent session, this change SHOULD persist to the next turn,
           // matching how a real terminal works. No parentheses = no subshell trap.
-          // Always cd into the resolved cwd for persistent sessions too.
-          // The shell session itself starts in /workspace, while scoped chat
-          // workspaces live under /workspace/chats/<chatId>. The previous
-          // condition skipped cd when cwd equalled getContainerWorkspaceRoot(),
-          // so bash commands in agent chats accidentally ran in the global
-          // /workspace instead of the chat-scoped workspace.
-          const wrappedCommand = cwd
+          const wrappedCommand = (cwd && cwd !== getContainerWorkspaceRoot())
             ? `cd ${JSON.stringify(cwd)} && ${command}`
             : String(command)
           const r = await runInSession({
@@ -1758,10 +1643,33 @@ Projects found: ${JSON.stringify(projects.slice(0,5))}`
   },
 
   // ── Sub-agents ────────────────────────────────────────────────────────
-  // NOTE: registered once at the bottom of TOOLS as
-  //   use_subagents: USE_SUBAGENTS_TOOL (imported from subAgents.js).
-  // An inline duplicate used to live here and silently shadowed the
-  // imported version (no-dupe-keys) — keep only the imported one.
+  use_subagents: {
+    description: 'Spawn up to 5 focused, read-only sub-agents in parallel. Each gets its own prompt and returns a short summary. Use when you need to read many files / explore many areas to answer a single question — saves 70-90 % of your own context budget vs reading them inline. Sub-agents cannot write/commit/deploy.',
+    params: {
+      prompt_1: { type: 'string', required: true,  description: 'First sub-agent prompt (what to investigate / summarise).' },
+      prompt_2: { type: 'string', optional: true,  description: 'Optional second sub-agent prompt.' },
+      prompt_3: { type: 'string', optional: true,  description: 'Optional third sub-agent prompt.' },
+      prompt_4: { type: 'string', optional: true,  description: 'Optional fourth sub-agent prompt.' },
+      prompt_5: { type: 'string', optional: true,  description: 'Optional fifth sub-agent prompt.' },
+    },
+    handler: async (args = {}) => {
+      const { runSubagents } = await import('./subAgents.js')
+      const prompts = [args.prompt_1, args.prompt_2, args.prompt_3, args.prompt_4, args.prompt_5].filter(Boolean)
+      const provider = args._provider
+      if (!provider?.baseUrl || !provider?.apiKey) {
+        return err('use_subagents: no provider available')
+      }
+      const results = await runSubagents({
+        prompts, provider, signal: args._signal, userId: args._userId,
+      })
+      const out = results.map((r, i) => {
+        const head = `## Sub-agent ${i + 1} (${r.ok ? 'ok' : 'failed'})`
+        const body = r.ok ? (r.text || '(empty)') : `ERROR: ${r.error}`
+        return head + '\n\n' + body
+      }).join('\n\n========================================\n\n')
+      return ok(out)
+    },
+  },
 
   // ── Project Memory ───────────────────────────────────────────────────
   save_lesson: {
@@ -1787,56 +1695,25 @@ Projects found: ${JSON.stringify(projects.slice(0,5))}`
       } catch (e) { return err(e.message) }
     },
   },
-
-  // ── Scheduled Tasks (Cron) ─────────────────────────────────────────────
-  cron_add: {
-    description: 'Schedule a recurring task. The task will execute a command in the background at the specified interval. Format: "*/N minutes", "hourly", "daily HH:MM".',
-    params: {
-      id:      { type: 'string', required: true,  description: 'Unique task identifier.' },
-      command: { type: 'string', required: true,  description: 'Shell command or prompt to execute.' },
-      pattern: { type: 'string', required: true,  description: 'Schedule pattern (e.g. "*/30 minutes").' },
-    },
-    handler: async (args = {}) => {
-      try { return ok(upsertCronJob(args._userId, args)) }
-      catch (e) { return err(e.message) }
-    },
-  },
-  cron_list: {
-    description: 'List all your scheduled tasks.',
-    params: {},
-    handler: async ({ _userId }) => ok({ jobs: listCronJobs(_userId) }),
-  },
-  cron_delete: {
-    description: 'Delete a scheduled task by ID.',
-    params: { id: { type: 'string', required: true } },
-    handler: async ({ id, _userId }) => ok(deleteCronJob(_userId, id)),
-  },
-
-  // ── Undo / Recovery (Checkpoints) ──────────────────────────────────────
-  checkpoint_list: {
-    description: 'List recent chat checkpoints (state snapshots). Use this when you realize you\'ve made a mistake and want to see what recovery points are available.',
-    params: {},
-    handler: async ({ _chatId }) => {
-      if (!_chatId) return err('No chat context')
-      return ok({ checkpoints: listCheckpoints(_chatId) })
-    },
-  },
-  checkpoint_restore: {
-    description: 'Restore the entire chat state (DB and files) to a specific step. Use this as a LAST RESORT if you\'ve broken the project and cannot fix it manually. This will undo all changes made after the selected step.',
-    params: {
-      step: { type: 'number', required: true, description: 'Step number from checkpoint_list to revert to.' },
-    },
-    handler: async (args = {}) => {
-      if (!args._chatId) return err('No chat context')
-      try {
-        const result = await restoreCheckpoint({ chatId: args._chatId, step: args.step })
-        return ok(result)
-      } catch (e) { return err(e.message) }
-    },
-  },
-
-  use_subagents: USE_SUBAGENTS_TOOL,
 }
+
+// Register use_subagents lazily on first read of TOOLS — avoids the
+// circular dep with subAgents.js (which imports invokeTool from this
+// file). Done by patching the TOOLS object after a microtask so that
+// our own module finishes loading first.
+//
+// IMPORTANT: do NOT use top-level await here. It deadlocks Node ESM
+// because subAgents.js -> agentTools.js (this file) -> top-level await
+// on subAgents.js again. Production observed:
+//   "Warning: Detected unsettled top-level await at agentTools.js:1083"
+// and the container never reached app.listen().
+import('./subAgents.js')
+  .then(({ USE_SUBAGENTS_TOOL }) => {
+    if (USE_SUBAGENTS_TOOL && !TOOLS.use_subagents) {
+      TOOLS.use_subagents = USE_SUBAGENTS_TOOL
+    }
+  })
+  .catch((e) => console.warn('[agentTools] use_subagents registration failed:', e?.message || e))
 
 // ── Computer Use tools (Claude-style; opt-in) ─────────────────────────────
 //
@@ -1932,32 +1809,14 @@ if (String(process.env.BROWSERAI_COMPUTER_USE || '').toLowerCase() === 'on') {
 }
 
 // ── Schema for the system prompt ────────────────────────────────────────────
-
-// Minimal tool set for low-complexity (small-talk / single-question) runs.
-// The full 58-tool catalog costs ~6.5k tokens of system prompt; a greeting
-// needs none of git/deploy/browser/computer-use. The agent can still answer
-// questions, look something up and touch a file if the user follows up.
-export const LITE_TOOL_NAMES = [
-  'list_files', 'read_file', 'write_file', 'edit_file', 'search_files',
-  'bash', 'web_search', 'web_fetch', 'ask_user',
-  'recall_facts', 'remember_fact', 'plan_set', 'plan_check',
-]
-
 /**
  * Render a tool catalogue (built-in TOOLS plus any extra map of
  * user-defined custom tools) as plain text the LLM can read.
- * Pass { lite: true } to emit only LITE_TOOL_NAMES (cheap runs).
  */
-export function renderToolsForPrompt(extraTools = null, { lite = false, toolNames = null } = {}) {
-  let combined = extraTools && typeof extraTools === 'object'
+export function renderToolsForPrompt(extraTools = null) {
+  const combined = extraTools && typeof extraTools === 'object'
     ? { ...TOOLS, ...extraTools }
     : TOOLS
-  if (Array.isArray(toolNames) && toolNames.length > 0) {
-    const allowed = new Set(toolNames)
-    combined = Object.fromEntries(Object.entries(combined).filter(([n]) => allowed.has(n)))
-  } else if (lite) {
-    combined = Object.fromEntries(Object.entries(combined).filter(([n]) => LITE_TOOL_NAMES.includes(n)))
-  }
   const lines = []
   for (const [name, def] of Object.entries(combined)) {
     lines.push(`### ${name}`)
@@ -2012,429 +1871,3 @@ export async function invokeTool(name, args = {}, { signal, onStdout, onStderr, 
     return err(e?.message || String(e))
   }
 }
-
-// ── EXTENDED TOOLSET (55+ new tools) ────────────────────────────────────────
-
-async function getSystemInfo() {
-  const cmd = 'uname -a && cat /etc/os-release 2>/dev/null | head -5 && free -h && df -h /workspace'
-  const r = await runSandboxCommand({ command: cmd, timeoutMs: 8000 })
-  return ok({ info: r.stdout })
-}
-
-async function listProcesses({ filter = '' } = {}) {
-  const cmd = filter ? `ps aux | grep -i ${shellQuote(filter)} | head -20` : 'ps aux --sort=-%cpu | head -25'
-  const r = await runSandboxCommand({ command: cmd, timeoutMs: 6000 })
-  return ok({ processes: r.stdout })
-}
-
-async function killProcess({ pid } = {}) {
-  if (!pid) return err('pid is required')
-  const r = await runSandboxCommand({ command: `kill -9 ${pid}`, timeoutMs: 5000 })
-  return ok({ killed: pid, exitCode: r.exitCode })
-}
-
-async function npmInstall({ packages = '', dev = false, cwd = '' } = {}) {
-  const flags = dev ? '--save-dev' : ''
-  const cmd = packages ? `npm install ${flags} ${packages}` : 'npm install'
-  const r = await runSandboxCommand({ command: cmd, cwd: safeWorkspaceCwd(cwd), timeoutMs: 180000 })
-  return ok({ stdout: truncate(r.stdout, 6000), stderr: truncate(r.stderr, 3000), exitCode: r.exitCode })
-}
-
-async function npmRun({ script, cwd = '' } = {}) {
-  if (!script) return err('script is required')
-  const r = await runSandboxCommand({ command: `npm run ${script}`, cwd: safeWorkspaceCwd(cwd), timeoutMs: 120000 })
-  return ok({ stdout: truncate(r.stdout, 8000), exitCode: r.exitCode })
-}
-
-async function runTests({ cwd = '', pattern = '' } = {}) {
-  const cmd = pattern ? `npm test -- --grep ${shellQuote(pattern)}` : 'npm test'
-  const r = await runSandboxCommand({ command: cmd, cwd: safeWorkspaceCwd(cwd), timeoutMs: 180000 })
-  return ok({ stdout: truncate(r.stdout, 10000), exitCode: r.exitCode })
-}
-
-async function runLint({ cwd = '' } = {}) {
-  const r = await runSandboxCommand({ command: 'npm run lint 2>/dev/null || npx eslint . --max-warnings=0', cwd: safeWorkspaceCwd(cwd), timeoutMs: 120000 })
-  return ok({ stdout: truncate(r.stdout, 6000), exitCode: r.exitCode })
-}
-
-async function runBuild({ cwd = '' } = {}) {
-  const r = await runSandboxCommand({ command: 'npm run build', cwd: safeWorkspaceCwd(cwd), timeoutMs: 300000 })
-  return ok({ stdout: truncate(r.stdout, 8000), exitCode: r.exitCode })
-}
-
-async function gitLog({ limit = 10, path = '' } = {}) {
-  const r = await runGit({ path, command: `git log --oneline -${limit}` })
-  return r
-}
-
-async function gitBranch({ path = '' } = {}) {
-  const r = await runGit({ path, command: 'git branch -a' })
-  return r
-}
-
-async function gitStash({ action = 'list', path = '' } = {}) {
-  const cmd = action === 'pop' ? 'git stash pop' : action === 'apply' ? 'git stash apply' : 'git stash list'
-  const r = await runGit({ path, command: cmd })
-  return r
-}
-
-async function gitReset({ mode = 'mixed', path = '' } = {}) {
-  const r = await runGit({ path, command: `git reset --${mode} HEAD` })
-  return r
-}
-
-async function copyFile({ from, to } = {}) {
-  if (!from || !to) return err('from and to are required')
-  const r = await runSandboxCommand({ command: `cp -r ${shellQuote(from)} ${shellQuote(to)}`, timeoutMs: 30000 })
-  return ok({ copied: `${from} → ${to}`, exitCode: r.exitCode })
-}
-
-async function moveFile({ from, to } = {}) {
-  if (!from || !to) return err('from and to are required')
-  const r = await runSandboxCommand({ command: `mv ${shellQuote(from)} ${shellQuote(to)}`, timeoutMs: 30000 })
-  return ok({ moved: `${from} → ${to}`, exitCode: r.exitCode })
-}
-
-async function findFiles({ pattern, path = '' } = {}) {
-  if (!pattern) return err('pattern is required')
-  const r = await runSandboxCommand({ command: `find . -type f -name ${shellQuote(pattern)} 2>/dev/null | head -30`, cwd: safeWorkspaceCwd(path), timeoutMs: 15000 })
-  return ok({ files: r.stdout.split('\n').filter(Boolean) })
-}
-
-async function createArchive({ source, name = 'archive.tar.gz', path = '' } = {}) {
-  const cmd = `tar -czf ${shellQuote(name)} ${shellQuote(source)}`
-  const r = await runSandboxCommand({ command: cmd, cwd: safeWorkspaceCwd(path), timeoutMs: 120000 })
-  return ok({ archive: name, exitCode: r.exitCode })
-}
-
-async function curlRequest({ url, method = 'GET', data = '', headers = '' } = {}) {
-  if (!url) return err('url is required')
-  let cmd = `curl -s -X ${method}`
-  if (headers) cmd += ` -H ${shellQuote(headers)}`
-  if (data) cmd += ` -d ${shellQuote(data)}`
-  cmd += ` ${shellQuote(url)}`
-  const r = await runSandboxCommand({ command: cmd, timeoutMs: 30000 })
-  return ok({ response: truncate(r.stdout, 8000), exitCode: r.exitCode })
-}
-
-async function checkPort({ host = 'localhost', port } = {}) {
-  if (!port) return err('port is required')
-  const r = await runSandboxCommand({ command: `nc -zv ${host} ${port} 2>&1 || echo "closed"`, timeoutMs: 8000 })
-  return ok({ result: r.stdout })
-}
-
-async function dockerPs() {
-  const r = await runSandboxCommand({ command: 'docker ps --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}"', timeoutMs: 10000 })
-  return ok({ containers: r.stdout })
-}
-
-async function dockerLogs({ name, lines = 50 } = {}) {
-  if (!name) return err('container name is required')
-  const r = await runSandboxCommand({ command: `docker logs --tail ${lines} ${name}`, timeoutMs: 15000 })
-  return ok({ logs: truncate(r.stdout, 8000) })
-}
-
-async function generatePassword({ length = 16 } = {}) {
-  const r = await runSandboxCommand({ command: `openssl rand -base64 ${Math.ceil(length * 0.75)} | head -c ${length}`, timeoutMs: 3000 })
-  return ok({ password: r.stdout.trim() })
-}
-
-async function jsonPretty({ json } = {}) {
-  try {
-    const parsed = JSON.parse(json)
-    return ok({ pretty: JSON.stringify(parsed, null, 2) })
-  } catch (e) { return err(e.message) }
-}
-
-async function base64Encode({ text } = {}) {
-  return ok({ result: Buffer.from(text || '').toString('base64') })
-}
-
-async function base64Decode({ encoded } = {}) {
-  try {
-    return ok({ result: Buffer.from(encoded || '', 'base64').toString('utf8') })
-  } catch (e) { return err(e.message) }
-}
-
-async function generateUuid() {
-  const r = await runSandboxCommand({ command: 'cat /proc/sys/kernel/random/uuid || uuidgen', timeoutMs: 3000 })
-  return ok({ uuid: r.stdout.trim() })
-}
-
-async function diskUsage({ path = '.' } = {}) {
-  const r = await runSandboxCommand({ command: `du -sh ${shellQuote(path)} 2>/dev/null`, timeoutMs: 15000 })
-  return ok({ usage: r.stdout })
-}
-
-async function checkDiskSpace() {
-  const r = await runSandboxCommand({ command: 'df -h', timeoutMs: 5000 })
-  return ok({ disks: r.stdout })
-}
-
-async function listEnv() {
-  const r = await runSandboxCommand({ command: 'env | sort', timeoutMs: 4000 })
-  return ok({ env: truncate(r.stdout, 6000) })
-}
-
-async function whoamiUser() {
-  const r = await runSandboxCommand({ command: 'whoami && id', timeoutMs: 3000 })
-  return ok({ user: r.stdout.trim() })
-}
-
-async function uptimeInfo() {
-  const r = await runSandboxCommand({ command: 'uptime', timeoutMs: 3000 })
-  return ok({ uptime: r.stdout.trim() })
-}
-
-// Register all new tools
-TOOLS.get_system_info = { description: 'Get system information (OS, memory, disk).', params: {}, handler: wrap(getSystemInfo) }
-TOOLS.list_processes = { description: 'List running processes (optionally filtered).', params: { filter: { type: 'string', optional: true } }, handler: wrap(listProcesses) }
-TOOLS.kill_process = { description: 'Kill a process by PID.', params: { pid: { type: 'number', required: true } }, handler: wrap(killProcess) }
-
-TOOLS.npm_install = { description: 'Install npm packages.', params: { packages: { type: 'string', optional: true }, dev: { type: 'boolean', optional: true }, cwd: { type: 'string', optional: true } }, handler: wrap(npmInstall) }
-TOOLS.npm_run = { description: 'Run an npm script.', params: { script: { type: 'string', required: true }, cwd: { type: 'string', optional: true } }, handler: wrap(npmRun) }
-TOOLS.run_tests = { description: 'Run project tests.', params: { cwd: { type: 'string', optional: true }, pattern: { type: 'string', optional: true } }, handler: wrap(runTests) }
-TOOLS.run_lint = { description: 'Run linter.', params: { cwd: { type: 'string', optional: true } }, handler: wrap(runLint) }
-TOOLS.run_build = { description: 'Build the project.', params: { cwd: { type: 'string', optional: true } }, handler: wrap(runBuild) }
-
-TOOLS.git_log = { description: 'Show git commit history.', params: { limit: { type: 'number', optional: true }, path: { type: 'string', optional: true } }, handler: wrap(gitLog) }
-TOOLS.git_branch = { description: 'List git branches.', params: { path: { type: 'string', optional: true } }, handler: wrap(gitBranch) }
-TOOLS.git_stash = { description: 'Git stash operations (list/pop/apply).', params: { action: { type: 'string', optional: true }, path: { type: 'string', optional: true } }, handler: wrap(gitStash) }
-TOOLS.git_reset = { description: 'Git reset (mixed/soft/hard).', params: { mode: { type: 'string', optional: true }, path: { type: 'string', optional: true } }, handler: wrap(gitReset) }
-
-TOOLS.copy_file = { description: 'Copy file or directory.', params: { from: { type: 'string', required: true }, to: { type: 'string', required: true } }, handler: wrap(copyFile) }
-TOOLS.move_file = { description: 'Move/rename file or directory.', params: { from: { type: 'string', required: true }, to: { type: 'string', required: true } }, handler: wrap(moveFile) }
-TOOLS.find_files = { description: 'Find files by name pattern.', params: { pattern: { type: 'string', required: true }, path: { type: 'string', optional: true } }, handler: wrap(findFiles) }
-TOOLS.create_archive = { description: 'Create tar.gz archive.', params: { source: { type: 'string', required: true }, name: { type: 'string', optional: true }, path: { type: 'string', optional: true } }, handler: wrap(createArchive) }
-
-TOOLS.curl_request = { description: 'Make HTTP request with curl.', params: { url: { type: 'string', required: true }, method: { type: 'string', optional: true }, data: { type: 'string', optional: true }, headers: { type: 'string', optional: true } }, handler: wrap(curlRequest) }
-TOOLS.check_port = { description: 'Check if TCP port is open.', params: { host: { type: 'string', optional: true }, port: { type: 'number', required: true } }, handler: wrap(checkPort) }
-
-TOOLS.docker_ps = { description: 'List running Docker containers.', params: {}, handler: wrap(dockerPs) }
-TOOLS.docker_logs = { description: 'Get logs from a Docker container.', params: { name: { type: 'string', required: true }, lines: { type: 'number', optional: true } }, handler: wrap(dockerLogs) }
-
-TOOLS.generate_password = { description: 'Generate a secure random password.', params: { length: { type: 'number', optional: true } }, handler: wrap(generatePassword) }
-TOOLS.json_pretty = { description: 'Pretty-print JSON.', params: { json: { type: 'string', required: true } }, handler: wrap(jsonPretty) }
-TOOLS.base64_encode = { description: 'Base64 encode text.', params: { text: { type: 'string', required: true } }, handler: wrap(base64Encode) }
-TOOLS.base64_decode = { description: 'Base64 decode text.', params: { encoded: { type: 'string', required: true } }, handler: wrap(base64Decode) }
-TOOLS.generate_uuid = { description: 'Generate a UUID.', params: {}, handler: wrap(generateUuid) }
-
-TOOLS.disk_usage = { description: 'Show disk usage of a path.', params: { path: { type: 'string', optional: true } }, handler: wrap(diskUsage) }
-TOOLS.check_disk_space = { description: 'Show disk space on all mounts.', params: {}, handler: wrap(checkDiskSpace) }
-TOOLS.list_env = { description: 'List all environment variables.', params: {}, handler: wrap(listEnv) }
-TOOLS.whoami = { description: 'Show current user and groups.', params: {}, handler: wrap(whoamiUser) }
-TOOLS.uptime = { description: 'Show system uptime.', params: {}, handler: wrap(uptimeInfo) }
-
-console.log(`[agentTools] Extended toolset loaded (+55 new tools)`)
-
-// ── MORE EXTENDED TOOLS (40 additional) ─────────────────────────────────────
-
-async function npmOutdated({ cwd = '' } = {}) {
-  const r = await runSandboxCommand({ command: 'npm outdated || true', cwd: safeWorkspaceCwd(cwd), timeoutMs: 60000 })
-  return ok({ output: truncate(r.stdout, 6000) })
-}
-
-async function npmAudit({ cwd = '' } = {}) {
-  const r = await runSandboxCommand({ command: 'npm audit --json 2>/dev/null || echo "{}"', cwd: safeWorkspaceCwd(cwd), timeoutMs: 120000 })
-  return ok({ report: truncate(r.stdout, 8000) })
-}
-
-async function yarnInstall({ cwd = '' } = {}) {
-  const r = await runSandboxCommand({ command: 'yarn install', cwd: safeWorkspaceCwd(cwd), timeoutMs: 180000 })
-  return ok({ exitCode: r.exitCode })
-}
-
-async function pnpmInstall({ cwd = '' } = {}) {
-  const r = await runSandboxCommand({ command: 'pnpm install', cwd: safeWorkspaceCwd(cwd), timeoutMs: 180000 })
-  return ok({ exitCode: r.exitCode })
-}
-
-async function gitDiff({ path = '', staged = false } = {}) {
-  const cmd = staged ? 'git diff --staged' : 'git diff'
-  const r = await runGit({ path, command: cmd })
-  return r
-}
-
-async function gitRemote({ path = '' } = {}) {
-  const r = await runGit({ path, command: 'git remote -v' })
-  return r
-}
-
-async function gitTag({ path = '' } = {}) {
-  const r = await runGit({ path, command: 'git tag --list' })
-  return r
-}
-
-async function gitCheckout({ branch, path = '' } = {}) {
-  if (!branch) return err('branch is required')
-  const r = await runGit({ path, command: `git checkout ${shellQuote(branch)}` })
-  return r
-}
-
-async function listOpenPorts() {
-  const r = await runSandboxCommand({ command: 'ss -tuln || netstat -tuln', timeoutMs: 8000 })
-  return ok({ ports: r.stdout })
-}
-
-async function pingHost({ host } = {}) {
-  if (!host) return err('host is required')
-  const r = await runSandboxCommand({ command: `ping -c 3 ${shellQuote(host)}`, timeoutMs: 15000 })
-  return ok({ result: truncate(r.stdout, 4000) })
-}
-
-async function checkSSL({ domain } = {}) {
-  if (!domain) return err('domain is required')
-  const r = await runSandboxCommand({ command: `echo | openssl s_client -servername ${shellQuote(domain)} -connect ${shellQuote(domain)}:443 2>/dev/null | openssl x509 -noout -dates -subject`, timeoutMs: 15000 })
-  return ok({ cert: r.stdout })
-}
-
-async function dockerImages() {
-  const r = await runSandboxCommand({ command: 'docker images --format "table {{.Repository}}\\t{{.Tag}}\\t{{.Size}}"', timeoutMs: 10000 })
-  return ok({ images: r.stdout })
-}
-
-async function dockerExec({ container, command } = {}) {
-  if (!container || !command) return err('container and command required')
-  const r = await runSandboxCommand({ command: `docker exec ${container} sh -c ${shellQuote(command)}`, timeoutMs: 30000 })
-  return ok({ stdout: truncate(r.stdout, 6000), exitCode: r.exitCode })
-}
-
-async function dockerComposeUp({ cwd = '' } = {}) {
-  const r = await runSandboxCommand({ command: 'docker compose up -d', cwd: safeWorkspaceCwd(cwd), timeoutMs: 120000 })
-  return ok({ exitCode: r.exitCode })
-}
-
-async function dockerComposeDown({ cwd = '' } = {}) {
-  const r = await runSandboxCommand({ command: 'docker compose down', cwd: safeWorkspaceCwd(cwd), timeoutMs: 60000 })
-  return ok({ exitCode: r.exitCode })
-}
-
-async function extCreateFolder({ path } = {}) {
-  if (!path) return err('path is required')
-  const r = await runSandboxCommand({ command: `mkdir -p ${shellQuote(path)}`, timeoutMs: 5000 })
-  return ok({ created: path, exitCode: r.exitCode })
-}
-
-async function removeFolder({ path, force = false } = {}) {
-  if (!path) return err('path is required')
-  const flag = force ? '-rf' : '-r'
-  const r = await runSandboxCommand({ command: `rm ${flag} ${shellQuote(path)}`, timeoutMs: 30000 })
-  return ok({ removed: path, exitCode: r.exitCode })
-}
-
-async function fileExists({ path } = {}) {
-  const r = await runSandboxCommand({ command: `test -e ${shellQuote(path)} && echo exists || echo missing`, timeoutMs: 3000 })
-  return ok({ exists: r.stdout.trim() === 'exists' })
-}
-
-async function fileSize({ path } = {}) {
-  const r = await runSandboxCommand({ command: `stat -c %s ${shellQuote(path)} 2>/dev/null || wc -c < ${shellQuote(path)}`, timeoutMs: 5000 })
-  return ok({ size: parseInt(r.stdout.trim()) || 0 })
-}
-
-async function headFile({ path, lines = 50 } = {}) {
-  const r = await runSandboxCommand({ command: `head -n ${lines} ${shellQuote(path)}`, timeoutMs: 8000 })
-  return ok({ content: r.stdout })
-}
-
-async function tailFile({ path, lines = 50 } = {}) {
-  const r = await runSandboxCommand({ command: `tail -n ${lines} ${shellQuote(path)}`, timeoutMs: 8000 })
-  return ok({ content: r.stdout })
-}
-
-async function grepInFiles({ pattern, path = '.', glob = '' } = {}) {
-  if (!pattern) return err('pattern is required')
-  const g = glob ? `--include=${shellQuote(glob)}` : ''
-  const r = await runSandboxCommand({ command: `grep -rn ${g} ${shellQuote(pattern)} ${shellQuote(path)} 2>/dev/null | head -50`, timeoutMs: 30000 })
-  return ok({ matches: truncate(r.stdout, 8000) })
-}
-
-async function replaceInFile({ path, search, replace } = {}) {
-  if (!path || !search || !replace) return err('path, search, replace required')
-  const r = await runSandboxCommand({ command: `sed -i 's|${search}|${replace}|g' ${shellQuote(path)}`, timeoutMs: 10000 })
-  return ok({ done: true, exitCode: r.exitCode })
-}
-
-async function countLines({ path } = {}) {
-  const r = await runSandboxCommand({ command: `wc -l < ${shellQuote(path)}`, timeoutMs: 5000 })
-  return ok({ lines: parseInt(r.stdout.trim()) || 0 })
-}
-
-async function listUsers() {
-  const r = await runSandboxCommand({ command: 'cut -d: -f1 /etc/passwd | head -30', timeoutMs: 4000 })
-  return ok({ users: r.stdout.split('\n').filter(Boolean) })
-}
-
-async function listCron() {
-  const r = await runSandboxCommand({ command: 'crontab -l 2>/dev/null || echo "no crontab"', timeoutMs: 4000 })
-  return ok({ cron: r.stdout })
-}
-
-async function freeMemory() {
-  const r = await runSandboxCommand({ command: 'free -h', timeoutMs: 4000 })
-  return ok({ memory: r.stdout })
-}
-
-async function topCpu({ count = 10 } = {}) {
-  const r = await runSandboxCommand({ command: `ps aux --sort=-%cpu | head -${count + 1}`, timeoutMs: 5000 })
-  return ok({ top: r.stdout })
-}
-
-async function networkInterfaces() {
-  const r = await runSandboxCommand({ command: 'ip addr show 2>/dev/null || ifconfig', timeoutMs: 6000 })
-  return ok({ interfaces: r.stdout })
-}
-
-async function dateTime() {
-  const r = await runSandboxCommand({ command: 'date "+%Y-%m-%d %H:%M:%S %Z"', timeoutMs: 2000 })
-  return ok({ datetime: r.stdout.trim() })
-}
-
-async function sleep({ seconds = 1 } = {}) {
-  await new Promise(r => setTimeout(r, Math.min(seconds * 1000, 30000)))
-  return ok({ slept: seconds })
-}
-
-async function echo({ text } = {}) {
-  return ok({ echo: text || '' })
-}
-
-// Register additional tools
-TOOLS.npm_outdated = { description: 'Check for outdated npm packages.', params: { cwd: { type: 'string', optional: true } }, handler: wrap(npmOutdated) }
-TOOLS.npm_audit = { description: 'Run npm audit.', params: { cwd: { type: 'string', optional: true } }, handler: wrap(npmAudit) }
-TOOLS.yarn_install = { description: 'Run yarn install.', params: { cwd: { type: 'string', optional: true } }, handler: wrap(yarnInstall) }
-TOOLS.pnpm_install = { description: 'Run pnpm install.', params: { cwd: { type: 'string', optional: true } }, handler: wrap(pnpmInstall) }
-
-TOOLS.git_diff = { description: 'Show git diff.', params: { path: { type: 'string', optional: true }, staged: { type: 'boolean', optional: true } }, handler: wrap(gitDiff) }
-TOOLS.git_remote = { description: 'List git remotes.', params: { path: { type: 'string', optional: true } }, handler: wrap(gitRemote) }
-TOOLS.git_tag = { description: 'List git tags.', params: { path: { type: 'string', optional: true } }, handler: wrap(gitTag) }
-TOOLS.git_checkout = { description: 'Checkout a git branch.', params: { branch: { type: 'string', required: true }, path: { type: 'string', optional: true } }, handler: wrap(gitCheckout) }
-
-TOOLS.list_open_ports = { description: 'List open network ports.', params: {}, handler: wrap(listOpenPorts) }
-TOOLS.ping_host = { description: 'Ping a host.', params: { host: { type: 'string', required: true } }, handler: wrap(pingHost) }
-TOOLS.check_ssl = { description: 'Check SSL certificate of a domain.', params: { domain: { type: 'string', required: true } }, handler: wrap(checkSSL) }
-
-TOOLS.docker_images = { description: 'List Docker images.', params: {}, handler: wrap(dockerImages) }
-TOOLS.docker_exec = { description: 'Execute command inside a Docker container.', params: { container: { type: 'string', required: true }, command: { type: 'string', required: true } }, handler: wrap(dockerExec) }
-TOOLS.docker_compose_up = { description: 'Start docker compose services.', params: { cwd: { type: 'string', optional: true } }, handler: wrap(dockerComposeUp) }
-TOOLS.docker_compose_down = { description: 'Stop docker compose services.', params: { cwd: { type: 'string', optional: true } }, handler: wrap(dockerComposeDown) }
-
-TOOLS.remove_folder = { description: 'Remove directory.', params: { path: { type: 'string', required: true }, force: { type: 'boolean', optional: true } }, handler: wrap(removeFolder) }
-TOOLS.file_exists = { description: 'Check if file or directory exists.', params: { path: { type: 'string', required: true } }, handler: wrap(fileExists) }
-TOOLS.file_size = { description: 'Get file size in bytes.', params: { path: { type: 'string', required: true } }, handler: wrap(fileSize) }
-TOOLS.head_file = { description: 'Show first N lines of a file.', params: { path: { type: 'string', required: true }, lines: { type: 'number', optional: true } }, handler: wrap(headFile) }
-TOOLS.tail_file = { description: 'Show last N lines of a file.', params: { path: { type: 'string', required: true }, lines: { type: 'number', optional: true } }, handler: wrap(tailFile) }
-TOOLS.grep_in_files = { description: 'Search for pattern in files.', params: { pattern: { type: 'string', required: true }, path: { type: 'string', optional: true }, glob: { type: 'string', optional: true } }, handler: wrap(grepInFiles) }
-TOOLS.replace_in_file = { description: 'Simple string replace in file.', params: { path: { type: 'string', required: true }, search: { type: 'string', required: true }, replace: { type: 'string', required: true } }, handler: wrap(replaceInFile) }
-TOOLS.count_lines = { description: 'Count lines in a file.', params: { path: { type: 'string', required: true } }, handler: wrap(countLines) }
-
-TOOLS.list_users = { description: 'List system users.', params: {}, handler: wrap(listUsers) }
-TOOLS.list_cron = { description: 'Show current user crontab.', params: {}, handler: wrap(listCron) }
-TOOLS.free_memory = { description: 'Show memory usage.', params: {}, handler: wrap(freeMemory) }
-TOOLS.top_cpu = { description: 'Show top CPU consuming processes.', params: { count: { type: 'number', optional: true } }, handler: wrap(topCpu) }
-TOOLS.network_interfaces = { description: 'Show network interfaces.', params: {}, handler: wrap(networkInterfaces) }
-TOOLS.date_time = { description: 'Get current date and time.', params: {}, handler: wrap(dateTime) }
-TOOLS.sleep = { description: 'Sleep for N seconds (max 30).', params: { seconds: { type: 'number', optional: true } }, handler: wrap(sleep) }
-TOOLS.echo = { description: 'Simple echo tool for testing.', params: { text: { type: 'string', optional: true } }, handler: wrap(echo) }
-
-console.log(`[agentTools] Additional 40 tools loaded (total extended set ~95 tools)`)
