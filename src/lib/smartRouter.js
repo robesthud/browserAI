@@ -6,6 +6,9 @@
  *   - chat: plain /api/chat, no tools, cheapest
  *   - web:  plain /api/chat + server-built web context (settings.useWebAI=true)
  *   - agent: full /api/agent/chat with tools/workspace/bash/deploy
+ *
+ * Agent patterns are broad — anything that implies building, fixing, deploying,
+ * reading/writing files, or working with code should go to the agent.
  */
 
 function textFromAttachments(attachments = []) {
@@ -30,33 +33,62 @@ export function routeUserMessage(text = '', attachments = [], { forceAgent = fal
     return { mode: 'chat', reason: 'Вложения без команды', icon: '💬' }
   }
 
-  // Explicit commands / ops / code changes need the full agent.
+  // ── Agent patterns: anything that needs files, tools, code, or deployment ──
   const agentPatterns = [
-    /\b(ssh|docker|nginx|systemctl|journalctl|timeweb|vps|vds|deploy|деплой|сервер|логи|логах|github|git|ci\/cd)\b/i,
-    /(исправ|почини|реализуй|добавь|перепиши|измени|обнови|создай|удали|переименуй|собери|протестируй|проверь код|найди в файлах|прочитай файл)/i,
-    /(зайди|подключись|настрой|установи|запусти|выполни команд|bash|консоль|терминал)/i,
-    /(workspace|репозитор|проект|код|скрипт|файл|папк|readme|package\.json|бот|telegram|telegram bot|weather bot|погод)/i,
+    // DevOps / infrastructure / servers
+    /\b(ssh|docker|nginx|apache|systemctl|journalctl|timeweb|vps|vds|deploy|деплой|сервер|сервере|логи|логах|github|git|ci\/cd|kubernetes|k8s|docker-compose|compose|terraform|ansible|cloudflare|dns)\b/i,
+
+    // Verbs: create / build / modify
+    /(создай|создайте|создать|сделай|сделайте|сделать|напиши|напишите|написать|построй|построить|собери|собрать|реализуй|реализовать|добавь|добавьте|добавить|перепиши|перепишите|измени|измените|изменить|обнови|обновите|обновить|удали|удалите|удалить|переименуй|переименуйте|протестируй|протестировать|проверь код|найди в файлах|прочитай файл|создай файл|удали файл|сгенерируй|сгенерировать|генерируй)/i,
+
+    // Verbs: connect / configure / run / execute
+    /(зайди|зайдите|подключись|подключиться|настрой|настройте|настроить|установи|установите|установить|запусти|запустите|запустить|выполни|выполните|выполнить команд|bash|консоль|терминал|shell|команду)/i,
+
+    // Verbs: fix / debug / optimize
+    /(исправ|исправь|исправьте|почини|почините|починить|дебаг|отладк|debug|фикс|фиксан|проблем|не работает|ломаетс|ошибк|баг|баги|багом|поломк|упал|краш|падает|зависает|тормозит|оптимизируй|оптимизировать|улучш|рефактор|рефакторинг|почему не работает|почему не)/i,
+
+    // Verbs: data / integration / automation
+    /(парсинг|парсить|скрап|скрейп|экспорт|импорт|конвертируй|конвертировать|интеграц|автоматизируй|автоматизировать|скрипт|cron|планировщик|пайплайн|pipeline|отправь|отправить|email|почта|уведомл|push|webhook|телеграм|telegram)/i,
+
+    // Files / projects / workspace
+    /(workspace|репозитор|репозиторий|проект|код|скрипт|файл|файлы|папк|папке|папку|readme|package\.json|compose|dockerfile|gitignore|env|\.env)/i,
+
+    // Apps / bots / services / APIs
+    /(бот|боты|боту|telegram|телеграм|telegram bot|weather bot|погод|сайт|вебсайт|страница|приложени|app|сервис|api|эндпоинт|endpoint|веб|web|лендинг|магазин|e-commerce|плагин|плагина|расширени|extension|компонент|модуль|модуля|микросервис)/i,
+
+    // UI / frontend
+    /(html|css|стиль|стилей|стили|tailwind|bootstrap|верстк|вёрстк|вёрстка|дизайн|дизайнер|макет|интерфейс|ui|ux|форм|кнопк|меню|навигаци|анимац|тем|theme|responsive|адаптив|react|vue|angular|svelte|next\.js)/i,
+
+    // Backend / databases / data
+    /(express|django|flask|fastapi|next|nuxt|prisma|mongoose|mongodb|postgres|postgresql|mysql|sqlite|redis|база данных|базы данных|бд|таблиц|таблица|csv|json|xml|yaml|sequelize|typeorm|knex)/i,
+
+    // Testing / docs / security
+    /(тест|тесты|unit|e2e|покрыти|coverage|jest|playwright|документаци|doc|инструкц|мануал|руководств|readme|безопасност|security|аутентификац|авториз|auth|login|регистрац|пароль|token|jwt)/i,
+
+    // Math / data / visuals
+    /(калькулятор|формула|график|визуализаци|дашборд|dashboard|данные|анализ|статистик|таблица|excel|google sheet|отчёт|report)/i,
+
+    // Miscellaneous creation tasks
+    /(конфиг|конфигурац|настроен|настройка|настройках|деплой|развёртыван|развертыван|миграц|миграция|сиды|seeds|seed|fixture|мок|mock)/i,
   ]
-  if (agentPatterns.some((re) => re.test(raw)) || /(code|script|json|jsx|tsx|python|node|npm|vite|react)/i.test(att)) {
+  if (agentPatterns.some((re) => re.test(raw)) || /(code|script|json|jsx|tsx|py|python|js|node|npm|yarn|vite|react|vue|angular|svelte|css|html|tailwind)/i.test(att)) {
     return { mode: 'agent', reason: 'Нужны инструменты/файлы/код', icon: '🤖' }
   }
 
-  // Current facts should use web, but still not full agent.
+  // ── Web patterns: current facts that need live data ──
   const webPatterns = [
-    /(погода|прогноз|температур|курс|цена|стоимость|котировк|новост|сегодня|сейчас|актуальн|свеж|последн|расписан|афиша|результат матча)/i,
-    /(weather|forecast|news|today|current|latest|price|stock|exchange rate|score|schedule)/i,
-    /(найди в интернете|поищи в интернете|загугли|что происходит|что нового)/i,
+    /(курс валют|курс доллара|курс евро|цена на|стоимость товара|котировк акций|новост сегодня|расписан поездов|результат матча|счёт матча|прогноз погоды)/i,
+    /(weather forecast|stock price today|exchange rate|live news|current events|today's score)/i,
+    /(найди в интернете|поищи в интернете|загугли|что происходит|что нового|что случилось)/i,
   ]
   if (webPatterns.some((re) => re.test(raw))) {
     return { mode: 'web', reason: 'Нужна актуальная информация', icon: '🌐' }
   }
 
-  // Very short conversational / knowledge / writing requests: keep cheap.
+  // ── Default: short text → cheap chat, long text → still cheap unless it has action keywords ──
   if (raw.length <= 1200) {
     return { mode: 'chat', reason: 'Обычный вопрос без инструментов', icon: '💬' }
   }
 
-  // Long pasted text can still be answered by normal chat unless it includes
-  // action/code keywords above.
   return { mode: 'chat', reason: 'Длинный текст, но инструменты не нужны', icon: '💬' }
 }
