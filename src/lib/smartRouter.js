@@ -70,6 +70,33 @@ export function routeUserMessage(text = '', attachments = [], { forceAgent = fal
 
     // Miscellaneous creation tasks
     /(конфиг|конфигурац|настроен|настройка|настройках|деплой|развёртыван|развертыван|миграц|миграция|сиды|seeds|seed|fixture|мок|mock)/i,
+
+    // Common programming languages / frameworks
+    /(javascript|typescript|java|kotlin|swift|rust|go|golang|ruby|php|c\+\+|cpp|csharp|c#|scala|haskell|elixir|dart|flutter|flutter|spring|laravel|rails|nestjs|graphql|apollo|rest|grpc|websocket|socket\.io)/i,
+
+    // Cloud / hosting / networking
+    /(aws|amazon|gcp|google cloud|azure|heroku|vercel|netlify|railway|render|supabase|firebase|hosting|хостинг|домен|домена|доменное|хост|хостинг|cloudfront|s3|lambda|vps|cloud|облако)/i,
+
+    // AI / ML / data science
+    /(нейросет|нейросеть|ai|ml|machine learning|машинное обучение|model|модель|обучен|трениров|training|dataset|датасет|набор данных|embedding|prompt|prompt engineering|rag|llm|chatbot|chat-bot|gpt|claude|image generation|генераци изображен|stablediffusion)/i,
+
+    // Version control / CI
+    /(commit|коммит|пуш|push|pull request|merge|branch|бранч|fork|clone|клонируй|ребаза|rebase|cherry-pick|gitflow|github actions|gitlab ci|bitbucket|subversion|svn)/i,
+
+    // Content / media
+    /(изображен|картинк|фото|фотографи|видео|аудио|звук|музык|текст|стать|блог|пост|контент|медиа|thumbnail|превью|иконк|favicon|logo|логотип|баннер|слайдер|карусель|галерея)/i,
+
+    // Commerce / business
+    /(платёж|платеж|оплат|оплата|stripe|paypal|корзин|cart|заказ|checkout|подписк|subscription|тариф|pricing|прайс|цена|стоимость|скидк|купон|coupon|товар|товары|каталог|каталога)/i,
+
+    // Notifications / communication
+    /(уведомлен|уведомление|push|email|smtp|mailgun|sendgrid|sms|whatsapp|signal|slack|discord|telegram api|сообщен|сообщение|чат|чата|комментарий|комментарии|реакци|лайк|дизлайк)/i,
+
+    // Performance / monitoring
+    /(производител|производительность|speed|скорость|быстр|медлен|lazy load|кеширован|кеш|cache|cdn|сжатие|gzip|brotli|minif|bundl|webpack|esbuild|rollup|vite|профайл|profile|monitoring|метрик|logs|logging|sentry|prometheus|grafana)/i,
+
+    // Accessibility / i18n
+    /(доступност|accessibility|a11y|скринридер|screen reader|aria|семантик|семантическ|перевод|i18n|локализ|localization|internationalization|мультиязычн|мультиязычный|язык|языка)/i,
   ]
   if (agentPatterns.some((re) => re.test(raw)) || /(code|script|json|jsx|tsx|py|python|js|node|npm|yarn|vite|react|vue|angular|svelte|css|html|tailwind)/i.test(att)) {
     return { mode: 'agent', reason: 'Нужны инструменты/файлы/код', icon: '🤖' }
