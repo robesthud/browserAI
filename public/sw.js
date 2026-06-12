@@ -12,7 +12,7 @@
  * Cache name is bumped via the BA_CACHE constant on every breaking
  * change so old SWs drop their content automatically.
  */
-const BA_CACHE = 'browserai-v1'
+const BA_CACHE = 'browserai-v2'
 
 self.addEventListener('install', (e) => {
   self.skipWaiting()
