@@ -44,16 +44,7 @@ const PROVIDER_PRESETS = [
     label: 'Google Gemini',
     name: 'Google Gemini',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    model: 'gemini-2.5-flash',
-    availableModels: [
-      'gemini-2.5-flash',
-      'gemini-2.5-pro',
-      'gemini-2.0-flash',
-      'gemini-2.0-flash-lite',
-      'gemini-1.5-pro',
-      'gemini-1.5-flash',
-    ],
-    hint: 'aistudio.google.com/apikey — бесплатный tier (60 RPM, 1500 RPD)',
+    hint: 'aistudio.google.com/apikey — бесплатный tier (60 RPM, 1500 RPD). Список моделей загрузится автоматически после проверки ключа.',
   },
   {
     id: 'mistral-api',
