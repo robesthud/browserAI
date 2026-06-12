@@ -637,8 +637,11 @@ async function callGeminiOfficial({ baseUrl, apiKey, model, messages, temperatur
   const url = `${joinUrl(baseUrl, normalizeGeminiModel(model) + ':generateContent')}?key=${encodeURIComponent(apiKey)}`
   const proxyUrl = process.env.CF_PROXY_URL || ''
   const proxySecret = process.env.CF_PROXY_SECRET || ''
+  console.log('[Gemini] URL:', url, 'body keys:', Object.keys(body), 'proxyUrl:', proxyUrl ? 'yes' : 'no')
   const r = await fetchViaProxy({ url, method: 'POST', headers: { 'Content-Type': 'application/json' }, body, proxyUrl, proxySecret, timeoutMs: 120_000 })
+  console.log('[Gemini] Response status:', r.status)
   const raw = await r.text()
+  console.log('[Gemini] Raw response:', raw.slice(0, 400))
   if (!r.ok) throw new Error(`Gemini HTTP ${r.status}: ${raw.slice(0, 500)}`)
   const data = safeJsonParse(raw)
   if (!data) throw new Error(`Gemini returned non-JSON: ${raw.slice(0, 400)}`)
