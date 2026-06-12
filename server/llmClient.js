@@ -967,6 +967,13 @@ export async function callLLMStream(opts) {
     try { if (res?.usage) opts.onUsage?.(res.usage) } catch { /* ignore */ }
     return res
   }
+  if (!supportsStreaming(opts.baseUrl)) {
+    // Fallback to non-streaming for providers whose SSE is broken or unsupported.
+    const res = await callLLM(opts)
+    try { if (res?.text) opts.onTextDelta?.(res.text) } catch { /* ignore */ }
+    try { if (res?.usage) opts.onUsage?.(res.usage) } catch { /* ignore */ }
+    return res
+  }
   if (isAnthropicOfficialUrl(opts.baseUrl)) return callAnthropicOfficialStream(opts)
   if (isGoogleGenerativeNativeUrl(opts.baseUrl)) return callGeminiOfficialStream(opts)
   return callOpenAICompatibleStream(opts)
