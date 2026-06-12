@@ -97,6 +97,11 @@ function BrowserApp({ user, reloadAuth }) {
   // that forces agent routing for every message.
   const effectiveAgentMode = agentMode
 
+  // 2. Derived variables
+  const messages = useMemo(() => activeChat?.messages ?? [], [activeChat])
+  const hasMessages = messages.length > 0
+  const aiWorking = isStreaming || jobBusy || workspaceAiBusy
+
   // 3. Memoized values for settings
   const configured = isConfigured(settings)
   const activeKey = useMemo(() => getActiveKey(settings), [settings])
