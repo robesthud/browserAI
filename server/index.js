@@ -91,7 +91,7 @@ import { startTelegramBot } from './telegramBot.js'
 import { runAgent } from './agentLoop.js'
 import {
   callLLM, callLLMStream, isAnthropicOfficialUrl, isGoogleGenerativeNativeUrl,
-  getProviderCapabilities, normalizeProviderError,
+  getProviderCapabilities, normalizeProviderError, fetchViaProxy,
 } from './llmClient.js'
 import { sandboxHealth } from './agentSandbox.js'
 import { browserHealth } from './browserTools.js'
@@ -1246,9 +1246,15 @@ app.post('/api/validate', requireAuth, async (req, res) => {
   // ── Official Google Gemini GenerateContent API (not OpenAI-compatible) ──
   if (isGoogleGenerativeNativeUrl(baseUrl)) {
     try {
-      const r = await fetch(`${root}/models?key=${encodeURIComponent(apiKey)}`, {
-        signal: AbortSignal.timeout(15000),
-      })
+      const proxyUrl = process.env.CF_PROXY_URL || ''
+      const proxySecret = process.env.CF_PROXY_SECRET || ''
+      const targetUrl = `${root}/models?key=${encodeURIComponent(apiKey)}`
+      let r
+      if (proxyUrl) {
+        r = await fetchViaProxy({ url: targetUrl, method: 'GET', proxyUrl, proxySecret, timeoutMs: 15000 })
+      } else {
+        r = await fetch(targetUrl, { signal: AbortSignal.timeout(15000) })
+      }
       const raw = await r.text()
       if (!r.ok) {
         return res.json({ ok: false, message: `Google ответил ${r.status}: ${raw.slice(0, 300)}`, models: [], preferredModel: '' })

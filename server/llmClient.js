@@ -34,6 +34,38 @@ function safeJsonParse(text) {
   try { return JSON.parse(text) } catch { return null }
 }
 
+function normalizeHeaders(headers) {
+  const out = {}
+  for (const [k, v] of Object.entries(headers || {})) {
+    if (v !== undefined && v !== null) out[k] = String(v)
+  }
+  return out
+}
+
+export async function fetchViaProxy({ url, method = 'GET', headers = {}, body = null, proxyUrl = '', proxySecret = '', timeoutMs = 120_000, signal = null }) {
+  const effSignal = signal || AbortSignal.timeout(timeoutMs)
+  if (!proxyUrl) {
+    const init = { method, headers: normalizeHeaders(headers), signal: effSignal }
+    if (body && method !== 'GET' && method !== 'HEAD') {
+      init.body = typeof body === 'string' ? body : JSON.stringify(body)
+    }
+    return fetch(url, init)
+  }
+  const payload = { targetUrl: url, headers: normalizeHeaders(headers), method }
+  if (body && method !== 'GET' && method !== 'HEAD') {
+    payload.body = body
+  }
+  return fetch(proxyUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(proxySecret ? { 'X-Proxy-Key': proxySecret } : {}),
+    },
+    body: JSON.stringify(payload),
+    signal: effSignal,
+  })
+}
+
 function hostOf(baseUrl = '') {
   try { return new URL(baseUrl).hostname.toLowerCase() } catch { return '' }
 }
@@ -603,12 +635,9 @@ async function callGeminiOfficial({ baseUrl, apiKey, model, messages, temperatur
     body.tools = toGeminiTools(tools)
   }
   const url = `${joinUrl(baseUrl, normalizeGeminiModel(model) + ':generateContent')}?key=${encodeURIComponent(apiKey)}`
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
-  })
+  const proxyUrl = process.env.CF_PROXY_URL || ''
+  const proxySecret = process.env.CF_PROXY_SECRET || ''
+  const r = await fetchViaProxy({ url, method: 'POST', headers: { 'Content-Type': 'application/json' }, body, proxyUrl, proxySecret, timeoutMs: 120_000 })
   const raw = await r.text()
   if (!r.ok) throw new Error(`Gemini HTTP ${r.status}: ${raw.slice(0, 500)}`)
   const data = safeJsonParse(raw)
@@ -653,12 +682,9 @@ async function callGeminiOfficialStream({
     body.tools = toGeminiTools(tools)
   }
   const url = `${joinUrl(baseUrl, normalizeGeminiModel(model) + ':streamGenerateContent')}?alt=sse&key=${encodeURIComponent(apiKey)}`
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
-    body: JSON.stringify(body),
-    signal: signal || AbortSignal.timeout(1_800_000), // 30 min hard cap: stream duration counts toward fetch timeout
-  })
+  const proxyUrl = process.env.CF_PROXY_URL || ''
+  const proxySecret = process.env.CF_PROXY_SECRET || ''
+  const r = await fetchViaProxy({ url, method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' }, body, proxyUrl, proxySecret, timeoutMs: 1_800_000, signal })
   if (!r.ok) {
     const raw = await r.text().catch(() => '')
     throw new Error(`Gemini HTTP ${r.status}: ${raw.slice(0, 500)}`)
