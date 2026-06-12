@@ -26,11 +26,6 @@ export default function Sidebar({
   useWebAI,
   onToggleWebAI,
 }) {
-  const devtoolsEnabled = (() => {
-    try { return localStorage.getItem('browserai.devtools') === '1' }
-    catch { return false }
-  })()
-
   return (
     <aside
       className={`fixed inset-y-0 left-0 z-40 flex h-full shrink-0 flex-col overflow-hidden border-r border-white/5 bg-graphite-800
@@ -111,8 +106,7 @@ export default function Sidebar({
 
         {/* низ: режимы + настройки */}
         <div className="space-y-1 border-t border-white/5 px-2.5 py-2.5">
-          {/* Manual Agent toggle — devtools only. Normal users use Auto routing. */}
-          {devtoolsEnabled && (
+          {/* Manual Agent toggle — always visible */}
             <button
               onClick={() => onToggleAgentMode?.(!agentMode)}
               className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2.5 text-left text-[13px] transition-all duration-200 shadow-sm ${
@@ -120,7 +114,7 @@ export default function Sidebar({
                   ? 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-300'
                   : 'bg-graphite-750/50 border border-white/5 text-cream-soft hover:bg-graphite-750 hover:text-cream'
               }`}
-              title="Dev override: принудительно отправлять все запросы в полный агент. В обычном режиме работает Auto router."
+              title="Ручной агент: принудительно отправлять все запросы в полный агент с доступом к файлам, bash, git. Auto Mode работает автоматически."
             >
               <span className="flex items-center gap-3">
                 <span className="text-lg leading-none">{agentMode ? '🤖' : '💬'}</span>
@@ -130,10 +124,8 @@ export default function Sidebar({
                 <div className={`absolute top-[2.5px] h-3.5 w-3.5 rounded-full bg-white transition-transform ${agentMode ? 'translate-x-[18px]' : 'translate-x-[2.5px]'}`} />
               </div>
             </button>
-          )}
 
-          {/* Web AI toggle — devtools only. */}
-          {devtoolsEnabled && (
+          {/* Web AI toggle — always visible */}
             <button
               onClick={() => onToggleWebAI?.(!useWebAI)}
               className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2.5 text-left text-[13px] transition-all duration-200 ${
@@ -151,7 +143,6 @@ export default function Sidebar({
                 <div className={`absolute top-[2.5px] h-3.5 w-3.5 rounded-full bg-white transition-transform ${useWebAI ? 'translate-x-[18px]' : 'translate-x-[2.5px]'}`} />
               </div>
             </button>
-          )}
 
           {/* Agent Lab — Always visible now */}
           <button

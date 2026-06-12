@@ -92,17 +92,10 @@ function BrowserApp({ user, reloadAuth }) {
     } catch { return true }
   })
 
-  // 2. Derived variables
-  const messages = useMemo(() => activeChat?.messages ?? [], [activeChat])
-  const hasMessages = messages.length > 0
-  const aiWorking = isStreaming || jobBusy || workspaceAiBusy
-  const devtoolsEnabled = useMemo(() => {
-    try { return localStorage.getItem('browserai.devtools') === '1' } catch { return false }
-  }, [])
-  // Manual Agent mode is a developer override only. Normal users use Auto,
-  // which routes each turn to chat/web/agent automatically. If Auto is off
-  // for a normal user, we use plain chat rather than a hidden forced agent.
-  const effectiveAgentMode = devtoolsEnabled ? agentMode : false
+  // Manual Agent mode is available to all users. Auto mode routes each turn
+  // to chat/web/agent automatically. Manual mode is a developer override
+  // that forces agent routing for every message.
+  const effectiveAgentMode = agentMode
 
   // 3. Memoized values for settings
   const configured = isConfigured(settings)
