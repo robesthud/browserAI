@@ -375,10 +375,10 @@ export const TOOLS = {
   },
 
   generate_image: {
-    description: 'Generate an image using AI (Google Gemini / Imagen) and save it to the workspace. Requires an active Gemini API key with image generation access (paid plan). Free tier keys do NOT support image generation.',
+    description: 'Generate an image using Gemini AI (free tier supported via gemini-2.5-flash-image or gemini-3.1-flash-image). Saves to workspace as .png/.jpg/.webp.',
     params: {
-      file_path: { type: 'string', required: true, description: 'Path relative to workspace root where the image will be saved, e.g. "assets/image.png" or "images/cat.jpg". Must end with .png, .jpg, .jpeg, or .webp.' },
-      prompt: { type: 'string', required: true, description: 'Detailed image generation prompt in English. Be descriptive and specific about style, lighting, composition, and subject.' },
+      file_path: { type: 'string', required: true, description: 'Path relative to workspace root where the image will be saved, e.g. "images/cat.png". Must end with .png, .jpg, .jpeg, or .webp.' },
+      prompt: { type: 'string', required: true, description: 'Image generation prompt in English. Be descriptive and specific about style, lighting, composition, and subject.' },
     },
     handler: async ({ file_path, prompt, _provider }) => {
       if (!file_path || !prompt) return err('file_path and prompt are required')
@@ -387,91 +387,370 @@ export const TOOLS = {
         return err('file_path must end with .png, .jpg, .jpeg, or .webp')
       }
 
-      // Determine API key and base URL
       let apiKey = ''
       let baseUrl = 'https://generativelanguage.googleapis.com/v1beta'
-
       if (_provider && isGoogleGenerativeNativeUrl(_provider.baseUrl)) {
         apiKey = _provider.apiKey
         baseUrl = String(_provider.baseUrl).replace(/\/+$/, '')
       } else if (process.env.GEMINI_API_KEY) {
         apiKey = process.env.GEMINI_API_KEY
       } else {
-        return err('No Gemini API key available. Add a Gemini provider key or set GEMINI_API_KEY in .env.')
+        return err('No Gemini API key available.')
       }
+
+      const imageModel = _provider?.model?.includes('gemini-3.1') ? 'gemini-3.1-flash-image' :
+                         _provider?.model?.includes('gemini-3') ? 'gemini-3.1-flash-image' :
+                         'gemini-2.5-flash-image'
 
       const proxyUrl = process.env.CF_PROXY_URL || ''
       const proxySecret = process.env.CF_PROXY_SECRET || ''
 
       try {
-        // Try available Imagen models (free tier returns 400 "paid plans only")
-        const imagenModels = ['imagen-4.0-generate-001', 'imagen-4.0-fast-generate-001', 'imagen-3.0-generate-002']
-        let lastError = ''
-
-        for (const model of imagenModels) {
-          const targetUrl = `${baseUrl}/models/${model}:predict?key=${encodeURIComponent(apiKey)}`
-          const body = {
-            instances: [{ prompt: String(prompt) }],
-            parameters: {
-              sampleCount: 1,
-              aspectRatio: '1:1',
-              outputMimeType: ext === 'webp' ? 'image/webp' : (ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png'),
-            },
+        const targetUrl = `${baseUrl}/models/${imageModel}:generateContent?key=${encodeURIComponent(apiKey)}`
+        const body = {
+          contents: [{
+            role: 'user',
+            parts: [{ text: `Generate an image: ${String(prompt)}` }]
+          }],
+          generationConfig: {
+            responseModalities: ['TEXT', 'IMAGE'],
+            temperature: 0.9
           }
-
-          let r
-          if (proxyUrl) {
-            r = await fetchViaProxy({
-              url: targetUrl, method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body, proxyUrl, proxySecret, timeoutMs: 120_000,
-            })
-          } else {
-            r = await fetch(targetUrl, {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(body), signal: AbortSignal.timeout(120_000),
-            })
-          }
-
-          const raw = await r.text()
-          if (!r.ok) {
-            lastError = raw.slice(0, 300)
-            if (raw.includes('paid plans') || raw.includes('quota') || raw.includes('billing') || raw.includes('limit')) {
-              // Free tier / billing issue — try next model or report clearly
-              continue
-            }
-            return err(`Image generation failed: HTTP ${r.status} ${raw.slice(0, 300)}`)
-          }
-
-          const data = safeJsonParse(raw)
-          if (!data) return err(`Image generation returned non-JSON: ${raw.slice(0, 300)}`)
-
-          const prediction = data?.predictions?.[0]
-          if (!prediction?.bytesBase64Encoded) {
-            return err(`No image generated: ${JSON.stringify(data).slice(0, 300)}`)
-          }
-
-          const imageBuffer = Buffer.from(prediction.bytesBase64Encoded, 'base64')
-          const mimeType = prediction.mimeType || (ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png')
-
-          await ensureParentDirs(file_path)
-          const parts = String(file_path).split('/').filter(Boolean)
-          const name = parts.pop()
-          const parent = parts.join('/')
-          const parentFull = parent ? `/workspace/${parent}` : '/workspace'
-          await fsMkdir(parentFull, { recursive: true })
-          await fsWriteFile(`/workspace/${file_path}`, imageBuffer)
-
-          return ok({ file_path, mimeType, bytes: imageBuffer.length, prompt: String(prompt) })
         }
 
-        // All models failed — likely free tier
-        return err(`Image generation not available on this API key. ${lastError.includes('paid plans') ? 'Gemini free tier does not support image generation. Upgrade to a paid Google Cloud plan, or use a different provider (e.g. OpenAI DALL-E with OPENAI_API_KEY).' : 'Last error: ' + lastError}`)
+        let r
+        if (proxyUrl) {
+          r = await fetchViaProxy({
+            url: targetUrl, method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body, proxyUrl, proxySecret, timeoutMs: 120_000,
+          })
+        } else {
+          r = await fetch(targetUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(120_000),
+          })
+        }
+
+        const raw = await r.text()
+        if (!r.ok) {
+          return err(`Image generation failed: HTTP ${r.status} ${raw.slice(0, 300)}`)
+        }
+
+        const data = safeJsonParse(raw)
+        if (!data) return err(`Image generation returned non-JSON: ${raw.slice(0, 300)}`)
+
+        const parts = data?.candidates?.[0]?.content?.parts || []
+        const imagePart = parts.find(p => p.inlineData || p.inline_data)
+        const textPart = parts.find(p => p.text)
+
+        if (!imagePart) {
+          return err(`No image generated. Response: ${textPart?.text || JSON.stringify(data).slice(0, 300)}`)
+        }
+
+        const inlineData = imagePart.inlineData || imagePart.inline_data
+        const mimeType = inlineData?.mimeType || inlineData?.mime_type || 'image/png'
+        const base64Data = inlineData?.data || ''
+
+        if (!base64Data) {
+          return err(`Image data is empty.`)
+        }
+
+        const imageBuffer = Buffer.from(base64Data, 'base64')
+        const outExt = mimeType === 'image/webp' ? 'webp' : mimeType === 'image/jpeg' ? 'jpg' : 'png'
+        const finalPath = String(file_path).replace(/\.[^.]+$/, `.${outExt}`)
+
+        await ensureParentDirs(finalPath)
+        const pathParts = String(finalPath).split('/').filter(Boolean)
+        const name = pathParts.pop()
+        const parent = pathParts.join('/')
+        const parentFull = parent ? `/workspace/${parent}` : '/workspace'
+        await fsMkdir(parentFull, { recursive: true })
+        await fsWriteFile(`/workspace/${finalPath}`, imageBuffer)
+
+        return ok({ file_path: finalPath, mimeType, bytes: imageBuffer.length, prompt: String(prompt) })
       } catch (e) {
         return err(`Image generation error: ${e.message}`)
       }
     },
   },
+
+  edit_image: {
+    description: 'Edit an image using Gemini AI (free tier supported). Provide original image and edit prompt. Saves edited image to workspace.',
+    params: {
+      file_path: { type: 'string', required: true, description: 'Path to the original image in the workspace, e.g. "images/cat.png".' },
+      prompt: { type: 'string', required: true, description: 'Edit instruction in English, e.g. "Add a red hat" or "Change background to sunset".' },
+      output_path: { type: 'string', required: true, description: 'Where to save the edited image. Must end with .png, .jpg, .jpeg, or .webp.' },
+    },
+    handler: async ({ file_path, prompt, output_path, _provider }) => {
+      if (!file_path || !prompt || !output_path) return err('file_path, prompt, and output_path are required')
+      const outExt = String(output_path).toLowerCase().split('.').pop()
+      if (!['png', 'jpg', 'jpeg', 'webp'].includes(outExt)) return err('output_path must end with .png, .jpg, .jpeg, or .webp')
+
+      let apiKey = ''
+      let baseUrl = 'https://generativelanguage.googleapis.com/v1beta'
+      if (_provider && isGoogleGenerativeNativeUrl(_provider.baseUrl)) {
+        apiKey = _provider.apiKey
+        baseUrl = String(_provider.baseUrl).replace(/\/+$/, '')
+      } else if (process.env.GEMINI_API_KEY) {
+        apiKey = process.env.GEMINI_API_KEY
+      } else {
+        return err('No Gemini API key available.')
+      }
+
+      const imageModel = _provider?.model?.includes('gemini-3.1') ? 'gemini-3.1-flash-image' :
+                         _provider?.model?.includes('gemini-3') ? 'gemini-3.1-flash-image' :
+                         'gemini-2.5-flash-image'
+
+      const proxyUrl = process.env.CF_PROXY_URL || ''
+      const proxySecret = process.env.CF_PROXY_SECRET || ''
+
+      try {
+        const imagePath = `/workspace/${String(file_path).replace(/^\/+/, '')}`
+        const imageBuffer = await fsReadFile(imagePath)
+        const base64Image = imageBuffer.toString('base64')
+        const mimeType = String(file_path).toLowerCase().endsWith('.png') ? 'image/png' :
+                         String(file_path).toLowerCase().endsWith('.webp') ? 'image/webp' : 'image/jpeg'
+
+        const targetUrl = `${baseUrl}/models/${imageModel}:generateContent?key=${encodeURIComponent(apiKey)}`
+        const body = {
+          contents: [{
+            role: 'user',
+            parts: [
+              { text: `Edit this image: ${String(prompt)}` },
+              { inlineData: { mimeType, data: base64Image } }
+            ]
+          }],
+          generationConfig: {
+            responseModalities: ['TEXT', 'IMAGE'],
+            temperature: 0.9
+          }
+        }
+
+        let r
+        if (proxyUrl) {
+          r = await fetchViaProxy({
+            url: targetUrl, method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body, proxyUrl, proxySecret, timeoutMs: 120_000,
+          })
+        } else {
+          r = await fetch(targetUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(120_000),
+          })
+        }
+
+        const raw = await r.text()
+        if (!r.ok) {
+          return err(`Image edit failed: HTTP ${r.status} ${raw.slice(0, 300)}`)
+        }
+
+        const data = safeJsonParse(raw)
+        if (!data) return err(`Image edit returned non-JSON: ${raw.slice(0, 300)}`)
+
+        const parts = data?.candidates?.[0]?.content?.parts || []
+        const imagePart = parts.find(p => p.inlineData || p.inline_data)
+        const textPart = parts.find(p => p.text)
+
+        if (!imagePart) {
+          return err(`No edited image returned. Response: ${textPart?.text || JSON.stringify(data).slice(0, 300)}`)
+        }
+
+        const inlineData = imagePart.inlineData || imagePart.inline_data
+        const outMimeType = inlineData?.mimeType || inlineData?.mime_type || 'image/png'
+        const base64Data = inlineData?.data || ''
+
+        if (!base64Data) {
+          return err(`Edited image data is empty.`)
+        }
+
+        const outBuffer = Buffer.from(base64Data, 'base64')
+        const outExt2 = outMimeType === 'image/webp' ? 'webp' : outMimeType === 'image/jpeg' ? 'jpg' : 'png'
+        const finalPath = String(output_path).replace(/\.[^.]+$/, `.${outExt2}`)
+
+        await ensureParentDirs(finalPath)
+        const pathParts = String(finalPath).split('/').filter(Boolean)
+        const name = pathParts.pop()
+        const parent = pathParts.join('/')
+        const parentFull = parent ? `/workspace/${parent}` : '/workspace'
+        await fsMkdir(parentFull, { recursive: true })
+        await fsWriteFile(`/workspace/${finalPath}`, outBuffer)
+
+        return ok({ file_path: finalPath, mimeType: outMimeType, bytes: outBuffer.length, prompt: String(prompt) })
+      } catch (e) {
+        return err(`Image edit error: ${e.message}`)
+      }
+    },
+  },
+
+  generate_video: {
+    description: 'Generate a short AI video using Luma Dream Machine. Requires LUMA_API_KEY in environment. Saves as .mp4.',
+    params: {
+      file_path: { type: 'string', required: true, description: 'Output path, e.g. "videos/clip.mp4". Must end with .mp4.' },
+      prompt: { type: 'string', required: true, description: 'Video description in English. Be detailed about motion, camera, scene.' },
+    },
+    handler: async ({ file_path, prompt }) => {
+      if (!file_path || !prompt) return err('file_path and prompt are required')
+      if (!String(file_path).toLowerCase().endsWith('.mp4')) return err('file_path must end with .mp4')
+      const lumaKey = process.env.LUMA_API_KEY
+      if (!lumaKey) return err('LUMA_API_KEY not set. Get a free key at https://lumalabs.ai/api')
+      try {
+        const createRes = await fetch('https://api.lumalabs.ai/dream-machine/v1/generations', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${lumaKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: String(prompt), aspect_ratio: '16:9' }),
+          signal: AbortSignal.timeout(120_000),
+        })
+        const createData = safeJsonParse(await createRes.text())
+        if (!createRes.ok || !createData?.id) return err(`Luma create failed: ${createRes.status} ${JSON.stringify(createData).slice(0, 300)}`)
+        const genId = createData.id
+        let completed = false, videoUrl = '', attempts = 0
+        while (!completed && attempts < 60) {
+          await new Promise(r => setTimeout(r, 5000))
+          attempts++
+          const pollRes = await fetch(`https://api.lumalabs.ai/dream-machine/v1/generations/${genId}`, {
+            headers: { 'Authorization': `Bearer ${lumaKey}` },
+            signal: AbortSignal.timeout(30_000),
+          })
+          const pollData = safeJsonParse(await pollRes.text())
+          if (pollData?.state === 'completed') { completed = true; videoUrl = pollData?.assets?.video || '' }
+          else if (pollData?.state === 'failed') return err(`Luma generation failed: ${pollData?.failure_reason || 'unknown'}`)
+        }
+        if (!videoUrl) return err('Luma generation timed out after 5 minutes')
+        const videoRes = await fetch(videoUrl, { signal: AbortSignal.timeout(120_000) })
+        if (!videoRes.ok) return err(`Failed to download video: ${videoRes.status}`)
+        const videoBuffer = Buffer.from(await videoRes.arrayBuffer())
+        const outFull = `/workspace/${String(file_path).replace(/^\/+/, '')}`
+        await fsMkdir(path.dirname(outFull), { recursive: true })
+        await fsWriteFile(outFull, videoBuffer)
+        return ok({ file_path, bytes: videoBuffer.length, prompt: String(prompt), luma_id: genId })
+      } catch (e) { return err(`Video generation error: ${e.message}`) }
+    },
+  },
+
+  analyze_image: {
+    description: 'Analyze and describe an image using Gemini Vision AI. Returns a detailed text description of the image content.',
+    params: {
+      file_path: { type: 'string', required: true, description: 'Path to the image in the workspace, e.g. "screenshots/page.png", "images/photo.jpg".' },
+      question: { type: 'string', optional: true, description: 'Specific question about the image. Default: "Describe this image in detail."' },
+    },
+    handler: async ({ file_path, question = 'Describe this image in detail.', _provider }) => {
+      if (!file_path) return err('file_path is required')
+      let apiKey = '', baseUrl = 'https://generativelanguage.googleapis.com/v1beta', model = 'gemini-2.5-flash'
+      if (_provider && isGoogleGenerativeNativeUrl(_provider.baseUrl)) {
+        apiKey = _provider.apiKey; baseUrl = String(_provider.baseUrl).replace(/\/+$/, ''); model = _provider.model || 'gemini-2.5-flash'
+      } else if (process.env.GEMINI_API_KEY) { apiKey = process.env.GEMINI_API_KEY }
+      else { return err('No Gemini API key available.') }
+      try {
+        const imagePath = `/workspace/${String(file_path).replace(/^\/+/, '')}`
+        const imageBuffer = await fsReadFile(imagePath)
+        const base64Image = imageBuffer.toString('base64')
+        const mimeType = String(file_path).toLowerCase().endsWith('.png') ? 'image/png' :
+                         String(file_path).toLowerCase().endsWith('.webp') ? 'image/webp' :
+                         String(file_path).toLowerCase().endsWith('.gif') ? 'image/gif' : 'image/jpeg'
+        const targetUrl = `${baseUrl}/models/${model.replace(/^models\//, '')}:generateContent?key=${encodeURIComponent(apiKey)}`
+        const body = {
+          contents: [{ role: 'user', parts: [{ text: String(question) }, { inline_data: { mime_type: mimeType, data: base64Image } }] }],
+          generationConfig: { temperature: 0.4, maxOutputTokens: 4096 }
+        }
+        const proxyUrl = process.env.CF_PROXY_URL || ''
+        const proxySecret = process.env.CF_PROXY_SECRET || ''
+        let r
+        if (proxyUrl) {
+          r = await fetchViaProxy({ url: targetUrl, method: 'POST', headers: { 'Content-Type': 'application/json' }, body, proxyUrl, proxySecret, timeoutMs: 120_000 })
+        } else {
+          r = await fetch(targetUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(120_000) })
+        }
+        const raw = await r.text()
+        if (!r.ok) return err(`Image analysis failed: HTTP ${r.status} ${raw.slice(0, 300)}`)
+        const data = safeJsonParse(raw)
+        const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || ''
+        if (!text) return err(`No analysis returned: ${raw.slice(0, 300)}`)
+        return ok({ description: text, file_path })
+      } catch (e) { return err(`Image analysis error: ${e.message}`) }
+    },
+  },
+
+  text_to_speech: {
+    description: 'Convert text to speech using ElevenLabs AI. Saves as .mp3 or .wav. Requires ELEVENLABS_API_KEY in environment.',
+    params: {
+      file_path: { type: 'string', required: true, description: 'Output path, e.g. "audio/greeting.mp3". Must end with .mp3 or .wav.' },
+      text: { type: 'string', required: true, description: 'Text to speak. Supports Russian and other languages.' },
+      voice_id: { type: 'string', optional: true, description: 'ElevenLabs voice ID. Default: "21m00Tcm4TlvDq8ikWAM" (Rachel).' },
+    },
+    handler: async ({ file_path, text, voice_id = '21m00Tcm4TlvDq8ikWAM' }) => {
+      if (!file_path || !text) return err('file_path and text are required')
+      const ext = String(file_path).toLowerCase().split('.').pop()
+      if (!['mp3', 'wav'].includes(ext)) return err('file_path must end with .mp3 or .wav')
+      const key = process.env.ELEVENLABS_API_KEY
+      if (!key) return err('ELEVENLABS_API_KEY not set. Get a free key at https://elevenlabs.io')
+      try {
+        const targetUrl = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voice_id)}`
+        const body = { text: String(text), model_id: 'eleven_multilingual_v2', voice_settings: { stability: 0.5, similarity_boost: 0.5 } }
+        const r = await fetch(targetUrl, {
+          method: 'POST',
+          headers: { 'xi-api-key': key, 'Content-Type': 'application/json', 'Accept': 'audio/mpeg' },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(120_000),
+        })
+        if (!r.ok) { const raw = await r.text(); return err(`TTS failed: HTTP ${r.status} ${raw.slice(0, 300)}`) }
+        const audioBuffer = Buffer.from(await r.arrayBuffer())
+        const outFull = `/workspace/${String(file_path).replace(/^\/+/, '')}`
+        await fsMkdir(path.dirname(outFull), { recursive: true })
+        await fsWriteFile(outFull, audioBuffer)
+        return ok({ file_path, bytes: audioBuffer.length, voice_id, text: String(text).slice(0, 200) })
+      } catch (e) { return err(`TTS error: ${e.message}`) }
+    },
+  },
+
+  transcribe_audio: {
+    description: 'Transcribe an audio file to text using Gemini AI. Supports mp3, wav, ogg, m4a, flac. Returns the transcribed text.',
+    params: {
+      file_path: { type: 'string', required: true, description: 'Path to the audio file, e.g. "audio/recording.mp3", "voice.ogg", "call.wav".' },
+      language: { type: 'string', optional: true, description: 'Language hint, e.g. "ru", "en". Auto-detect if omitted.' },
+    },
+    handler: async ({ file_path, language, _provider }) => {
+      if (!file_path) return err('file_path is required')
+      let apiKey = '', baseUrl = 'https://generativelanguage.googleapis.com/v1beta', model = 'gemini-2.5-flash'
+      if (_provider && isGoogleGenerativeNativeUrl(_provider.baseUrl)) {
+        apiKey = _provider.apiKey; baseUrl = String(_provider.baseUrl).replace(/\/+$/, ''); model = _provider.model || 'gemini-2.5-flash'
+      } else if (process.env.GEMINI_API_KEY) { apiKey = process.env.GEMINI_API_KEY }
+      else { return err('No Gemini API key available.') }
+      try {
+        const audioPath = `/workspace/${String(file_path).replace(/^\/+/, '')}`
+        const audioBuffer = await fsReadFile(audioPath)
+        const base64Audio = audioBuffer.toString('base64')
+        const ext = String(file_path).toLowerCase().split('.').pop()
+        const mimeType = ext === 'mp3' ? 'audio/mp3' : ext === 'ogg' ? 'audio/ogg' : ext === 'm4a' ? 'audio/mp4' : ext === 'flac' ? 'audio/flac' : 'audio/wav'
+        const targetUrl = `${baseUrl}/models/${model.replace(/^models\//, '')}:generateContent?key=${encodeURIComponent(apiKey)}`
+        const prompt = language ? `Transcribe this audio in ${language}. Return ONLY the transcription text, no explanations.` : 'Transcribe this audio. Return ONLY the transcription text, no explanations.'
+        const body = {
+          contents: [{ role: 'user', parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64Audio } }] }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 8192 }
+        }
+        const proxyUrl = process.env.CF_PROXY_URL || ''
+        const proxySecret = process.env.CF_PROXY_SECRET || ''
+        let r
+        if (proxyUrl) {
+          r = await fetchViaProxy({ url: targetUrl, method: 'POST', headers: { 'Content-Type': 'application/json' }, body, proxyUrl, proxySecret, timeoutMs: 180_000 })
+        } else {
+          r = await fetch(targetUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(180_000) })
+        }
+        const raw = await r.text()
+        if (!r.ok) return err(`Transcription failed: HTTP ${r.status} ${raw.slice(0, 300)}`)
+        const data = safeJsonParse(raw)
+        const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || ''
+        if (!text) return err(`No transcription returned: ${raw.slice(0, 300)}`)
+        return ok({ transcription: text, file_path, language })
+      } catch (e) { return err(`Transcription error: ${e.message}`) }
+    },
+  },
+
 }
 
 // Minimal tool set for low-complexity runs (must match agentLoop.js lite filter)
