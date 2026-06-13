@@ -1172,6 +1172,64 @@ export const TOOLS = {
     },
   },
 
+  // ── Operator Mode tools ───────────────────────────────────────────────────
+  operator_status: {
+    description: 'Get BrowserAI Operator Mode control/status: projects, recent missions, live ops health/docker/sync.',
+    params: {},
+    handler: async ({ _userId } = {}) => {
+      try {
+        const { getOperatorStatus } = await import('./operatorMode.js')
+        return ok(await getOperatorStatus({ userId: _userId || '' }))
+      } catch (e) { return err(e.message) }
+    },
+  },
+  operator_project_profile: {
+    description: 'List registered Operator Mode projects and production paths. Use before broad development/operator tasks.',
+    params: {},
+    handler: async ({ _userId } = {}) => {
+      try {
+        const { listOperatorProjects } = await import('./operatorMode.js')
+        return ok({ projects: listOperatorProjects({ userId: _userId || '' }) })
+      } catch (e) { return err(e.message) }
+    },
+  },
+  operator_start_mission: {
+    description: 'Start an Operator Mode mission. Use for broad end-to-end tasks: universal_dev_task, code_task, fix_tests, full_diagnostic, fix_deploy, safe_deploy, self_heal_restart. Production-write missions require confirm=true after user approval.',
+    params: {
+      type: { type: 'string', optional: true, description: 'Mission type. Default: universal_dev_task.' },
+      goal: { type: 'string', required: true, description: 'User goal / task description.' },
+      project_id: { type: 'string', optional: true, description: 'Operator project id. Default: browserai.' },
+      confirm: { type: 'boolean', optional: true, description: 'Set true only after explicit user approval for production-write missions.' },
+    },
+    handler: async ({ type = 'universal_dev_task', goal = '', project_id = 'browserai', confirm = false, _userId } = {}) => {
+      try {
+        const { startOperatorMission } = await import('./operatorMode.js')
+        return ok(startOperatorMission({ userId: _userId || '', projectId: project_id || 'browserai', type, goal, confirm }))
+      } catch (e) { return err(e.message) }
+    },
+  },
+  operator_list_missions: {
+    description: 'List recent Operator Mode missions for this user.',
+    params: { limit: { type: 'number', optional: true, description: 'Max missions, default 10.' } },
+    handler: async ({ limit = 10, _userId } = {}) => {
+      try {
+        const { listOperatorMissions } = await import('./operatorMode.js')
+        return ok({ missions: listOperatorMissions({ userId: _userId || '', limit }) })
+      } catch (e) { return err(e.message) }
+    },
+  },
+  operator_get_mission: {
+    description: 'Get one Operator Mode mission by id, including linked workflow/job status.',
+    params: { id: { type: 'string', required: true, description: 'Operator mission id.' } },
+    handler: async ({ id } = {}) => {
+      try {
+        const { getOperatorMission } = await import('./operatorMode.js')
+        const mission = getOperatorMission(id)
+        return mission ? ok({ mission }) : err('mission not found')
+      } catch (e) { return err(e.message) }
+    },
+  },
+
   // ── Ops tools ─────────────────────────────────────────────────────────────
   ops_list_services: {
     description: 'List available deployment / ops services (GitHub, Timeweb, etc).',
