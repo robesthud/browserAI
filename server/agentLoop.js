@@ -26,6 +26,8 @@ import { registerQuestion } from './askUserRegistry.js'
 import { searchWeb, fetchWebPage } from './web.js'
 import { routeHistory } from './smartRouter.js'
 import { routeDeterministicAction } from './deterministicActionRouter.js'
+import { toolProfileForTask, profileToolNames, isToolAllowed } from './toolAllowlist.js'
+import { getRecoveryAction, getRecoveryHint as recoveryHint } from './recoveryEngine.js'
 import {
   clipToolOutput, manageContext, applyAnthropicCacheHints,
   upsertAgentStateDigest,
@@ -45,68 +47,6 @@ const DEFAULT_DEADLINE_MS = 5 * 60 * 1000
 const IDLE_NOTICE_MS = 75 * 1000
 const LLM_HARD_IDLE_MS = 2 * 60 * 1000
 const activeRunsByChat = new Map()
-
-const COMMON_AGENT_TOOLS = [
-  'plan_set', 'plan_check', 'ask_user', 'read_project_rules',
-  'recall_facts', 'remember_fact', 'forget_fact', 'kb_search', 'kb_list', 'kb_add', 'kb_delete',
-]
-
-// Keep these profiles in sync with the real registry in agentTools.js.
-// Listing non-existent tools in the prompt was a major cause of the
-// "thinking forever / no actions" failure: models tried to call tools that
-// the runner then ignored or rejected.
-const TOOL_PROFILES = {
-  general: [
-    ...COMMON_AGENT_TOOLS,
-    'list_files', 'read_file', 'search_files',
-    'write_file', 'edit_file', 'create_folder', 'rename_item', 'delete_file', 'zip_files',
-    'bash', 'verify_code',
-    'web_search', 'web_fetch',
-    'git_status', 'git_clone',
-    'generate_image', 'edit_image', 'generate_video', 'analyze_image', 'text_to_speech', 'transcribe_audio',
-  ],
-  code: [
-    ...COMMON_AGENT_TOOLS,
-    'list_files', 'read_file', 'search_files',
-    'write_file', 'edit_file', 'create_folder', 'rename_item', 'delete_file', 'zip_files',
-    'bash', 'npm_install', 'npm_test', 'verify_code',
-    'git_status', 'git_clone', 'git_commit',
-  ],
-  ops: [
-    ...COMMON_AGENT_TOOLS,
-    'ops_list_services', 'ops_run_action',
-    'docker_ps', 'docker_logs',
-    'bash', 'npm_test', 'verify_code',
-    'web_search', 'web_fetch',
-    'git_status', 'git_clone', 'git_commit',
-    'list_files', 'read_file', 'search_files', 'edit_file', 'write_file', 'create_folder', 'rename_item', 'zip_files',
-  ],
-  research: [
-    ...COMMON_AGENT_TOOLS,
-    'web_search', 'web_fetch',
-    'list_files', 'read_file', 'search_files',
-  ],
-  browser: [
-    ...COMMON_AGENT_TOOLS,
-    'browser_open', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_close',
-    'web_search', 'web_fetch',
-  ],
-}
-
-function toolProfileForTask(task = {}) {
-  switch (task?.type) {
-    case 'deploy_ops': return 'ops'
-    case 'coding_change': return 'code'
-    case 'repo_analysis': return 'code'
-    case 'research': return 'research'
-    case 'browser_task': return 'browser'
-    default: return 'general'
-  }
-}
-
-function profileToolNames(profile = 'general') {
-  return [...new Set(TOOL_PROFILES[profile] || TOOL_PROFILES.general)]
-}
 
 // ── System prompt builder ───────────────────────────────────────────────────
 async function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null, chatId = '', lite = false, toolNames = null } = {}) {
@@ -648,32 +588,8 @@ async function runDeterministicAction({ action, res, userId, chatId }) {
 }
 
 // ── Error recovery helpers ──────────────────────────────────────────────────
-function getRecoveryHint(tool, error, args = {}) {
-  const err = String(error || '').toLowerCase()
-  const path = args.path || args.file || args.file_path
-  
-  if (err.includes('not found') || err.includes('enoent') || err.includes('no such file')) {
-    if (path) {
-      const parts = path.split('/').filter(Boolean)
-      const parent = parts.length > 1 ? parts.slice(0, -1).join('/') : '/'
-      return `File "${path}" not found. 
-ACTION: Call list_files(path="${parent}") to verify the exact filename and casing. Remember: Linux is CASE-SENSITIVE.`
-    }
-    return 'Resource not found. Verify the path using list_files.'
-  }
-  
-  if (err.includes('path traversal') || err.includes('policy')) {
-    return 'Security policy blocked this path. Stay inside /workspace and do not use ../ or absolute paths.'
-  }
-  
-  if (tool === 'edit_file' && (err.includes('old_text not found') || err.includes('not found in'))) {
-    return `The block of code you tried to replace was not found EXACTLY as written. 
-ACTION: 
-1. Call read_file(path="${path}") to get the LATEST version of the code. 
-2. Ensure your old_text matches the indentation and whitespace 100%.`
-  }
-  
-  return null
+function getRecoveryHint(tool, error, args = {}, recentToolHistory = []) {
+  return recoveryHint({ tool, error, args, recentToolHistory })
 }
 
 // ── Agent Loop ──────────────────────────────────────────────────────────────
@@ -1033,7 +949,7 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
         if (violatesPreDeployVerify(call, recentToolHistory)) return { call, r: makeToolErrorResult('Blocked: verify_code required.'), pushedBack: true }
         if (isStuckLoop(recentCallFingerprints, callFingerprint(call))) return { call, r: makeToolErrorResult('Stuck in loop.'), pushedBack: true }
 
-        if (allowedToolSet && !allowedToolSet.has(call.tool) && !(extraTools && extraTools[call.tool])) {
+        if (!isToolAllowed(call.tool, allowedToolSet, extraTools)) {
           const rErr = makeToolErrorResult(`Tool ${call.tool} is not available in the current ${toolProfile} tool profile. Use one of: ${[...allowedToolSet].join(', ')}`)
           sse(res, 'tool_router', { step, sub: idx, name: call.tool, warnings: [rErr.error] })
           sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
@@ -1083,7 +999,8 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
           })
         }
         if (!r.ok && !pushedBackThisTurn && !aborted && categoryOf(call.tool) !== 'ask') {
-          const hint = getRecoveryHint(call.tool, r.error, call.args)
+          const recovery = getRecoveryAction({ tool: call.tool, error: r.error, args: call.args, recentToolHistory })
+          const hint = recovery?.message || getRecoveryHint(call.tool, r.error, call.args, recentToolHistory)
           if (hint) {
             pushedBackThisTurn = true
             sse(res, 'thought', { step, sub: idx, text: `ОШИБКА: ${call.tool} — ${r.error}. Исправляю…` })
@@ -1112,15 +1029,23 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
 
       let sawPushBack = false
       for (const res of results) { if (res?.pushedBack) sawPushBack = true; if (res?.call && res?.r) { recentToolHistory.push({ tool: res.call.tool, ok: !!res.r.ok, at: Date.now(), args: summarizeCallArgsForDigest(res.call.args || {}), outcome: summarizeToolOutcome(res.call.tool, res.r) }); if (res.call.tool === 'read_file' && res.call.args?.path) { (res.r.ok ? okReadPaths : failedReadPaths).add(String(res.call.args.path)) } if (res.call.tool === 'plan_set' && res.r.ok) planState.done = new Set(); else if (res.call.tool === 'plan_check' && res.r.ok) (res.r.result?.checked || []).forEach(idx => planState.done.add(Number(idx))) } }
-      if (sawPushBack) continue
 
+      // Always feed observations back into the conversation, even for
+      // push-back/recovery turns. Otherwise the next LLM step would see the
+      // assistant tool call but not the failure/recovery instruction.
       for (const { call, r } of results) {
         let obsRaw = r.ok ? (typeof r.result === 'string' ? r.result : JSON.stringify(r.result, null, 2)) : 'ERROR: ' + r.error
         let obsContent = clipToolOutput(call.tool, obsRaw, provider?.model)
         if (r.ok && r.result?.dataUrl && useNativeTools) obsContent = [{ type: 'text', text: clipToolOutput(call.tool, { ...obsRaw, dataUrl: undefined }, provider?.model) }, { type: 'image_url', image_url: { url: r.result.dataUrl } }]
         if (call.nativeId) convo.push({ role: 'tool', tool_call_id: call.nativeId, name: call.tool, content: obsContent })
-        else convo.push({ role: 'user', content: `<arena-system-message>\nTool result for ${call.tool}:\nok: ${r.ok}\n</arena-system-message>\n${obsContent}` })
+        else convo.push({ role: 'user', content: `<arena-system-message>
+Tool result for ${call.tool}:
+ok: ${r.ok}
+</arena-system-message>
+${obsContent}` })
       }
+      if (sawPushBack) continue
+
     }
     if (step >= maxSteps) { sse(res, 'error', { message: `Stopped after ${maxSteps} steps` }); sseDone(res, { steps: step, reason: 'max-steps' }, tokens) }
   } catch (e) { sse(res, 'error', { message: e.message }); sseDone(res, { steps: step, reason: 'crash' }, tokens) } finally { clearInterval(idleWatchdog); if (chatId) activeRunsByChat.delete(chatId); try { res.end() } catch { /* best-effort: ignore */ } }
