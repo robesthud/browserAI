@@ -207,8 +207,14 @@ export function startDeploySession(sessionId) {
       try { notifyDeploySession(done) } catch { /* best-effort */ }
     } catch (e) {
       if (isDeploySessionCancelled(sessionId)) return
-      const failed = patchSession(sessionId, { status: 'failed', progress: 100, error: e?.message || String(e), finishedAt: now() })
-      addDeployEvent(sessionId, { type: 'error', phase: 'failed', message: e?.message || String(e), data: { report: renderDeploySessionReport(failed) } })
+      let failed = patchSession(sessionId, { status: 'failed', progress: 100, error: e?.message || String(e), finishedAt: now() })
+      let routed = null
+      try {
+        const { routeFailure } = await import('./autonomousFailureRouter.js')
+        routed = routeFailure({ userId: failed?.userId || session.userId || '', source: 'deploy_session', title: `Deploy failed: ${failed?.title || session.title}`, error: e?.message || String(e), entityType: 'deploy', entityId: sessionId, data: { session: failed }, incident: true, notify: false })
+        failed = patchSession(sessionId, { result: { ...(failed?.result || {}), failure: routed } })
+      } catch { /* best-effort */ }
+      addDeployEvent(sessionId, { type: 'error', phase: 'failed', message: e?.message || String(e), data: { report: renderDeploySessionReport(failed), failure: routed } })
       try { notifyDeploySession(failed) } catch { /* best-effort */ }
     } finally {
       running.delete(sessionId)

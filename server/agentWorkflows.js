@@ -4,6 +4,7 @@ import { invokeTool } from './agentTools.js'
 import { runOpsAction } from './ops.js'
 import { withWorkspaceScope } from './workspace.js'
 import { evaluateWorkflowStart, initAutomationPolicy } from './automationPolicy.js'
+import { notifyWorkflow } from './notifications.js'
 
 let initialized = false
 const running = new Set()
@@ -374,7 +375,12 @@ export function startWorkflow(workflowId) {
           patchStep(step.id, { status: 'failed', result: out?.result || {}, error: out?.error || 'step failed', finishedAt: now() })
           let failed = patchWorkflow(workflowId, { status: 'failed', error: `${step.title}: ${out?.error || 'failed'}`, progress: Math.round(((step.idx - 1) / Math.max(steps.length, 1)) * 100), finishedAt: now() })
           const report = renderWorkflowReport(failed)
-          failed = patchWorkflow(workflowId, { result: { ...(failed?.result || {}), report } })
+          let routed = null
+          try {
+            const { routeFailure } = await import('./autonomousFailureRouter.js')
+            routed = routeFailure({ userId: failed?.userId || workflow.userId || '', source: 'workflow', title: `Workflow failed: ${failed?.title || workflow.title}`, error: `${step.title}: ${out?.error || 'failed'}`, entityType: 'workflow', entityId: workflowId, data: { workflow: failed, step, result: out }, incident: true, notify: false })
+          } catch { /* best-effort */ }
+          failed = patchWorkflow(workflowId, { result: { ...(failed?.result || {}), report, failure: routed } })
           await notifyWorkflowIfNeeded(failed)
           return
         }
@@ -394,7 +400,13 @@ export function startWorkflow(workflowId) {
       final = patchWorkflow(workflowId, { result: { ...(final?.result || {}), report } })
       await notifyWorkflowIfNeeded(final)
     } catch (e) {
-      patchWorkflow(workflowId, { status: 'failed', error: e?.message || String(e), finishedAt: now() })
+      let failed = patchWorkflow(workflowId, { status: 'failed', error: e?.message || String(e), finishedAt: now() })
+      try {
+        const { routeFailure } = await import('./autonomousFailureRouter.js')
+        const routed = routeFailure({ userId: failed?.userId || '', source: 'workflow_crash', title: `Workflow crashed: ${failed?.title || workflowId}`, error: e?.message || String(e), entityType: 'workflow', entityId: workflowId, data: { workflow: failed }, incident: true, notify: false })
+        failed = patchWorkflow(workflowId, { result: { ...(failed?.result || {}), failure: routed } })
+        await notifyWorkflowIfNeeded(failed)
+      } catch { /* best-effort */ }
     } finally {
       running.delete(workflowId)
       cancelled.delete(workflowId)

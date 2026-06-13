@@ -657,3 +657,74 @@ BrowserAI уже имеет:
 - добавить `.browserai/runbooks/*` generation/update;
 - сохранять lessons from RCA/code task/deploy;
 - добавить tests.
+
+---
+
+## 21. Notification Center + Routing
+
+Добавлено:
+
+- `server/notifications.js`
+- notifications table
+- Notification Center UI
+- Sidebar unread badge
+- Browser Push routing through existing `push.js`
+- Telegram routing by severity
+- automatic notifications for incidents, workflows and deploy sessions
+
+API:
+
+- `GET /api/notifications`
+- `GET /api/notifications/summary`
+- `POST /api/notifications/:id/read`
+- `POST /api/notifications/read-all`
+
+---
+
+## 22. Failure Classifier + Auto-Fix Policy
+
+Добавлено:
+
+- `server/failureClassifier.js`
+- `server/autonomousFailureRouter.js`
+- `FailureAdvisorPanel`
+- failure classification categories:
+  - `secret_leak`
+  - `auth_failure`
+  - `disk_failure`
+  - `git_lock_failure`
+  - `dependency_failure`
+  - `test_failure`
+  - `build_failure`
+  - `ci_failure`
+  - `docker_failure`
+  - `health_failure`
+  - `deploy_failure`
+  - `timeout_failure`
+  - `unknown_failure`
+- auto-fix recommendations and policies
+- automatic failure routing for jobs/workflows/deploy sessions
+
+API:
+
+- `POST /api/operator/failure/classify`
+- `POST /api/operator/failure/incident`
+- `POST /api/operator/failure/execute`
+
+Tools:
+
+- `operator_classify_failure`
+- `operator_execute_auto_fix`
+
+---
+
+## Quality rule update
+
+From this point every new package should include:
+
+1. backend implementation;
+2. UI if user-facing;
+3. Agent tools if useful to the internal agent;
+4. tests;
+5. docs/runbook updates;
+6. deploy + health/log verification.

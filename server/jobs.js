@@ -553,7 +553,12 @@ export function startJob(id) {
       else throw new Error(`Unknown job type: ${job.type}`)
     } catch (e) {
       appendJobLog(id, `Ошибка: ${e.message || String(e)}`)
-      setJobPatch(id, { status: 'failed', error: e.message || String(e), finishedAt: now() })
+      const failed = setJobPatch(id, { status: 'failed', error: e.message || String(e), finishedAt: now() })
+      try {
+        const { routeFailure } = await import('./autonomousFailureRouter.js')
+        const routed = routeFailure({ userId: failed?.userId || job.userId || '', source: 'job', title: `Job failed: ${failed?.title || job.title || job.type}`, error: e.message || String(e), entityType: 'job', entityId: id, data: { job: failed || job }, incident: job.type === 'agent_run' || job.type.startsWith('tool_') })
+        if (routed?.classification) setJobPatch(id, { result: { ...(failed?.result || {}), failure: routed } })
+      } catch { /* best-effort failure routing */ }
     } finally {
       running.delete(id)
       cancelled.delete(id)
