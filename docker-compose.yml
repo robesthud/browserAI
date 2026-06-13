@@ -9,7 +9,7 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=8080
-      - OPS_APP_DIR=/app
+      - OPS_APP_DIR=/opt/browserai
       # DeepSeek managed-session env (optional bootstrap, can be set later via UI/TG)
       - DEEPSEEK_STATE_FILE=/data/deepseek_session.json
       - CHAT_DEBUG_LOG=/data/chat-debug.log
@@ -58,7 +58,7 @@ services:
       - ${WORKSPACE_DIR:-./workspace}:/workspace
       # Allows `docker exec agent-sandbox ...` from inside this container.
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./.git:/app/.git
+      - /opt/browserai:/opt/browserai
     depends_on:
       - agent-sandbox
 

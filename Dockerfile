@@ -20,7 +20,7 @@ WORKDIR /app
 
 # Native deps for better-sqlite3 + docker-cli so the agent loop can
 # 'docker exec agent-sandbox …' through the mounted /var/run/docker.sock
-RUN apk add --no-cache python3 make g++ docker-cli openssh-client fontconfig ttf-dejavu chromium nss harfbuzz git \
+RUN apk add --no-cache python3 make g++ docker-cli docker-cli-compose openssh-client fontconfig ttf-dejavu chromium nss harfbuzz git \
  && rm -rf /var/cache/apk/*
 
 # Copy app + built assets + production node_modules
@@ -29,7 +29,6 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/server ./server
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/public ./public
-COPY docker-compose.yml .
 
 # Persisted state (sessions, workspace, deepseek_session.json, sqlite db)
 RUN mkdir -p /data /workspace
