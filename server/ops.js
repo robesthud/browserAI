@@ -499,15 +499,17 @@ if [ "$LOCAL" = "$REMOTE" ]; then echo "in_sync: yes"; else echo "in_sync: NO (d
 DIRTY=$(git status --short); if [ -n "$DIRTY" ]; then echo "dirty_files:"; echo "$DIRTY"; else echo "dirty_files: none"; fi
 echo -n "health: "; curl -fsS http://localhost:${process.env.PORT || 8080}/api/health && echo || echo "UNHEALTHY"
 [ "$LOCAL" = "$REMOTE" ]`,
-    deploy: `set -e; cd ${shQuote(APP_DIR)}; git fetch --quiet origin main; git reset --hard origin/main; git log -1 --oneline; docker compose build; docker compose up -d; sleep 8; curl -fsS http://localhost:${process.env.PORT || 8080}/api/health; echo`,
-    deploy_safe: `cd ${shQuote(APP_DIR)}
+    deploy: `set -e; cd ${shQuote(APP_DIR)}; git fetch --quiet origin main; git reset --hard origin/main; git log -1 --oneline; docker compose build; echo '== deploy helper =='; docker run -d --rm --name deploy-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc ${shQuote('docker compose up -d && sleep 20 && curl -fsS http://127.0.0.1:80/api/health && echo DEPLOY_OK || echo DEPLOY_FAIL')}; echo 'Deploy helper started'`,
+    deploy_safe: `cd ${shQuote(APP_DIR)} && cat > .deploy-safe.sh << 'EOF'
+#!/bin/sh
 set +e
+cd ${shQuote(APP_DIR)}
 PREV=$(git rev-parse HEAD); echo "== prev commit == $PREV"
 git fetch --quiet origin main; git reset --hard origin/main; NEW=$(git rev-parse HEAD); echo "== new commit == $NEW"; git log -1 --oneline
 echo "== build =="; docker compose build; BUILD=$?
 echo "== up =="; docker compose up -d; UP=$?
-sleep 8
-echo "== health =="; curl -fsS http://localhost:${process.env.PORT || 8080}/api/health; H1=$?; echo
+sleep 20
+echo "== health =="; curl -fsS http://127.0.0.1:80/api/health; H1=$?; echo
 if [ $BUILD -eq 0 ] && [ $UP -eq 0 ] && [ $H1 -eq 0 ]; then
   docker image prune -f >/dev/null 2>&1
   echo "== DEPLOY OK == $NEW"
@@ -515,31 +517,43 @@ if [ $BUILD -eq 0 ] && [ $UP -eq 0 ] && [ $H1 -eq 0 ]; then
 fi
 echo "!! DEPLOY FAILED (build:$BUILD up:$UP health:$H1) — ROLLING BACK to $PREV"
 git reset --hard "$PREV"; git log -1 --oneline
-docker compose build; RB_BUILD=$?
-docker compose up -d; RB_UP=$?
-sleep 8
-curl -fsS http://localhost:${process.env.PORT || 8080}/api/health; RB_H=$?; echo
+echo "== rollback build =="; docker compose build; RB_BUILD=$?
+echo "== rollback up =="; docker compose up -d; RB_UP=$?
+sleep 20
+curl -fsS http://127.0.0.1:80/api/health; RB_H=$?; echo
 if [ $RB_BUILD -eq 0 ] && [ $RB_UP -eq 0 ] && [ $RB_H -eq 0 ]; then
   echo "== ROLLBACK OK == restored $PREV"
 else
   echo "!! ROLLBACK ALSO FAILED (build:$RB_BUILD up:$RB_UP health:$RB_H) — manual intervention needed"
 fi
-exit 1`,
-    repair_deploy: `cd ${shQuote(APP_DIR)}
+exit 1
+EOF
+chmod +x .deploy-safe.sh
+echo '== deploy-safe helper =='
+docker run -d --rm --name deploy-safe-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc /opt/browserai/.deploy-safe.sh
+echo 'Deploy-safe helper started'`,
+    repair_deploy: `cd ${shQuote(APP_DIR)} && cat > .repair-deploy.sh << 'EOF'
+#!/bin/sh
 set +e
+cd ${shQuote(APP_DIR)}
 echo '== pre git =='; git log -1 --oneline; git status --short
 echo '== pre containers =='; docker compose ps
 echo '== fetch/reset =='; git fetch origin main; FETCH=$?; git reset --hard origin/main; RESET=$?; git log -1 --oneline
 echo '== build =='; docker compose build; BUILD=$?
 echo '== up =='; docker compose up -d; UP=$?
 sleep 8
-echo '== health =='; curl -fsS http://localhost:${process.env.PORT || 8080}/api/health; H1=$?; echo
+echo '== health =='; curl -fsS http://127.0.0.1:80/api/health; H1=$?; echo
 echo '== containers =='; docker compose ps
 echo '== browserai logs =='; docker compose logs --tail=160 browserai
 echo "== summary == fetch:$FETCH reset:$RESET build:$BUILD up:$UP health_browserai:$H1"
 if [ $FETCH -ne 0 ] || [ $RESET -ne 0 ] || [ $BUILD -ne 0 ] || [ $UP -ne 0 ] || [ $H1 -ne 0 ]; then exit 1; fi
-exit 0`,
-    restart: `cd ${shQuote(APP_DIR)} && docker compose restart browserai && sleep 5 && curl -fsS http://localhost:${process.env.PORT || 8080}/api/health`,
+exit 0
+EOF
+chmod +x .repair-deploy.sh
+echo '== repair-deploy helper =='
+docker run -d --rm --name repair-deploy-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc /opt/browserai/.repair-deploy.sh
+echo 'Repair-deploy helper started'`,
+    restart: `cd ${shQuote(APP_DIR)} && echo '== restart helper ==' && docker run -d --rm --name restart-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc ${shQuote('docker compose restart browserai && sleep 5 && curl -fsS http://127.0.0.1:80/api/health && echo RESTART_OK || echo RESTART_FAIL')}; echo 'Restart helper started'`,
   }
   const command = commands[action]
   if (!command) throw new Error(`Action not implemented: ${service}.${action}`)
