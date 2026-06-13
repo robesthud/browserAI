@@ -186,6 +186,22 @@ export default function AutomationCenter() {
     } catch (e) { setError(e.message || String(e)) }
   }
 
+  const createGithubWebhook = async () => {
+    try {
+      if (!webhookConfig?.configured) {
+        setError('Generate/configure webhook secret first.')
+        return
+      }
+      const ok = window.confirm('Create or update GitHub webhook for this repository?')
+      if (!ok) return
+      const data = await api('/api/ops/action', {
+        method: 'POST',
+        body: JSON.stringify({ service: 'github', action: 'create_webhook', params: { endpoint: webhookConfig.endpoint }, confirm: true }),
+      })
+      setError(`GitHub webhook ready: ${JSON.stringify(data.result?.hook || data.result || {})}`)
+    } catch (e) { setError(e.message || String(e)) }
+  }
+
   return (
     <section className="rounded-2xl border border-white/10 bg-graphite-800/45 p-4">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -236,6 +252,7 @@ export default function AutomationCenter() {
           <div className="flex flex-wrap gap-2">
             <button onClick={() => navigator.clipboard?.writeText(webhookConfig?.endpoint || '')} className="rounded border border-white/10 px-2 py-1 text-[11px] hover:bg-white/5">copy endpoint</button>
             {!webhookConfig?.configured && <button onClick={() => void generateWebhookSecret()} className="rounded border border-violet-400/25 bg-violet-500/10 px-2 py-1 text-[11px] text-violet-100 hover:bg-violet-500/20">generate secret</button>}
+            {webhookConfig?.configured && <button onClick={() => void createGithubWebhook()} className="rounded border border-emerald-400/25 bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-100 hover:bg-emerald-500/20">auto-create in GitHub</button>}
             <span className="text-[11px] text-cream-faint">source: {webhookConfig?.source || 'unknown'} · required: {webhookConfig?.required ? 'yes' : 'no'}</span>
           </div>
           {webhookSecret && (

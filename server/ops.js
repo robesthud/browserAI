@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import AdmZip from 'adm-zip'
+import { getMeta } from './db.js'
 
 const DEFAULT_TIMEOUT_MS = 180_000
 const SSH_HOST = process.env.OPS_SSH_HOST || '186.246.31.78'
@@ -291,6 +292,28 @@ async function githubAction(action, params = {}) {
       runs: lastRuns,
     }
   }
+  if (action === 'create_webhook') {
+    const endpoint = String(params.endpoint || params.url || '').trim()
+    const secret = String(params.secret || process.env.GITHUB_WEBHOOK_SECRET || getMeta('github_webhook_secret') || '').trim()
+    const events = Array.isArray(params.events) && params.events.length ? params.events : ['push', 'workflow_run']
+    if (!endpoint) throw new Error('endpoint required')
+    if (!secret) throw new Error('webhook secret is not configured')
+    const hooks = await (await githubApi(`/repos/${repo}/hooks?per_page=100`)).json()
+    const existing = (hooks || []).find((h) => String(h.config?.url || '') === endpoint)
+    const body = {
+      name: 'web',
+      active: true,
+      events,
+      config: { url: endpoint, content_type: 'json', insecure_ssl: '0', secret },
+    }
+    let j
+    if (existing?.id) {
+      j = await (await githubApi(`/repos/${repo}/hooks/${existing.id}`, { method: 'PATCH', body })).json()
+    } else {
+      j = await (await githubApi(`/repos/${repo}/hooks`, { method: 'POST', body })).json()
+    }
+    return { stdout: JSON.stringify({ id: j.id, url: j.config?.url, events: j.events, active: j.active, updated: Boolean(existing?.id) }, null, 2), stderr: '', exitCode: 0, hook: { id: j.id, url: j.config?.url, events: j.events, active: j.active } }
+  }
   if (action === 'workflow_logs') {
     const runId = params.run_id || params.runId
     if (!runId) throw new Error('run_id required')
@@ -382,6 +405,7 @@ export const OPS_SERVICES = {
       put_file: { safe: false, description: 'Create/update a file in GitHub repo. params: path, content, message?, branch?, repo?' },
       rerun_workflow: { safe: false, description: 'Rerun a GitHub Actions workflow run. params: run_id, repo?' },
       create_pull_request: { safe: false, description: 'Open a pull request. params: head, title, body?, base?, repo?' },
+      create_webhook: { safe: false, description: 'Create GitHub webhook for BrowserAI. params: endpoint, secret?, repo?, events?' },
     },
   },
   browserai: {
@@ -500,7 +524,7 @@ if [ "$LOCAL" = "$REMOTE" ]; then echo "in_sync: yes"; else echo "in_sync: NO (d
 DIRTY=$(git status --short); if [ -n "$DIRTY" ]; then echo "dirty_files:"; echo "$DIRTY"; else echo "dirty_files: none"; fi
 echo -n "health: "; curl -fsS http://localhost:${process.env.PORT || 8080}/api/health && echo || echo "UNHEALTHY"
 [ "$LOCAL" = "$REMOTE" ]`,
-    deploy: `set -e; cd ${shQuote(APP_DIR)}; git fetch --quiet origin main; git reset --hard origin/main; git log -1 --oneline; docker compose build > /tmp/deploy-build.log 2>&1 && echo 'Build OK' || { echo 'Build FAIL, tail:'; tail -n 40 /tmp/deploy-build.log; exit 1; }; echo '== deploy helper =='; docker run -d --rm --name deploy-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc ${shQuote(cleanupStaleCompose + 'docker compose up -d --remove-orphans && sleep 20 && curl -fsS http://127.0.0.1:80/api/health && echo DEPLOY_OK || echo DEPLOY_FAIL')}; echo 'Deploy helper started'`,
+    deploy: `set -e; cd ${shQuote(APP_DIR)}; git fetch --quiet origin main; git reset --hard origin/main; git log -1 --oneline; docker compose build > /tmp/deploy-build.log 2>&1 && echo 'Build OK' || { echo 'Build FAIL, tail:'; tail -n 40 /tmp/deploy-build.log; exit 1; }; echo '== deploy helper =='; docker rm -f deploy-helper 2>/dev/null || true; docker run -d --rm --name deploy-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc ${shQuote(cleanupStaleCompose + 'docker compose up -d --remove-orphans && sleep 20 && curl -fsS http://127.0.0.1:80/api/health && echo DEPLOY_OK || echo DEPLOY_FAIL')}; echo 'Deploy helper started'`,
     deploy_safe: `cd ${shQuote(APP_DIR)} && cat > .deploy-safe.sh << 'EOF'
 #!/bin/sh
 set +e
@@ -533,6 +557,7 @@ exit 1
 EOF
 chmod +x .deploy-safe.sh
 echo '== deploy-safe helper =='
+docker rm -f deploy-safe-helper 2>/dev/null || true
 docker run -d --rm --name deploy-safe-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc /opt/browserai/.deploy-safe.sh
 echo 'Deploy-safe helper started'`,
     repair_deploy: `cd ${shQuote(APP_DIR)} && cat > .repair-deploy.sh << 'EOF'
@@ -555,9 +580,10 @@ exit 0
 EOF
 chmod +x .repair-deploy.sh
 echo '== repair-deploy helper =='
+docker rm -f repair-deploy-helper 2>/dev/null || true
 docker run -d --rm --name repair-deploy-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc /opt/browserai/.repair-deploy.sh
 echo 'Repair-deploy helper started'`,
-    restart: `cd ${shQuote(APP_DIR)} && echo '== restart helper ==' && docker run -d --rm --name restart-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc ${shQuote(cleanupStaleCompose + 'docker compose up -d --remove-orphans browserai && sleep 5 && curl -fsS http://127.0.0.1:80/api/health && echo RESTART_OK || echo RESTART_FAIL')}; echo 'Restart helper started'`,
+    restart: `cd ${shQuote(APP_DIR)} && echo '== restart helper ==' && docker rm -f restart-helper 2>/dev/null || true && docker run -d --rm --name restart-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc ${shQuote(cleanupStaleCompose + 'docker compose up -d --remove-orphans browserai && sleep 5 && curl -fsS http://127.0.0.1:80/api/health && echo RESTART_OK || echo RESTART_FAIL')}; echo 'Restart helper started'`,
   }
   const command = commands[action]
   if (!command) throw new Error(`Action not implemented: ${service}.${action}`)

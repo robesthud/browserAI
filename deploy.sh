@@ -1,20 +1,36 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 echo "=== BrowserAI Deploy ==="
 cd /opt/browserai
 
 echo "Pulling latest code..."
-git pull origin main
+git fetch origin main
+git reset --hard origin/main
+git log -1 --oneline
 
-echo "Building docker images..."
-docker compose build --no-cache browserai
+echo "Building docker image..."
+docker compose build browserai
+
+echo "Removing stale compose replacement containers..."
+docker rm -f browserai agent-sandbox 2>/dev/null || true
+docker ps -a --format '{{.Names}}' | grep -E '^[0-9a-f]+_browserai$' | xargs -r docker rm -f 2>/dev/null || true
 
 echo "Restarting services..."
-docker compose up -d --force-recreate browserai agent-sandbox
+docker compose up -d --remove-orphans browserai agent-sandbox
 
 echo "Waiting for health..."
-sleep 8
-docker ps | grep browserai
+for i in $(seq 1 30); do
+  if curl -fsS http://127.0.0.1/api/health >/dev/null 2>&1; then
+    echo "Health OK"
+    docker ps --format '{{.Names}} {{.Status}} {{.Ports}}' | grep -E 'browserai|agent-sandbox'
+    echo "=== Deploy completed ==="
+    exit 0
+  fi
+  echo "health not ready ($i/30)"
+  sleep 2
+done
 
-echo "=== Deploy completed ==="
+echo "Health check failed; recent logs:"
+docker logs --tail=120 browserai 2>&1 || true
+exit 1
