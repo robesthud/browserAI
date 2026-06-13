@@ -754,8 +754,6 @@ export const TOOLS = {
     },
   },
 
-}
-
 
   // ── Browser tools (headless Playwright) ───────────────────────────────────
   browser_open: {
@@ -878,6 +876,7 @@ export const TOOLS = {
       try { return ok(await runOpsAction({ service, action, params, confirm })) } catch (e) { return err(e.message) }
     },
   },
+}
 
 // Minimal tool set for low-complexity runs (must match agentLoop.js lite filter)
 export const LITE_TOOL_NAMES = [
