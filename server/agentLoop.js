@@ -30,6 +30,7 @@ import { toolProfileForTask, profileToolNames, isToolAllowed } from './toolAllow
 import { getRecoveryAction, getRecoveryHint as recoveryHint } from './recoveryEngine.js'
 import { createWorkspaceSnapshot } from './workspaceSnapshots.js'
 import { deriveTaskPhase, allowedToolsForPhase } from './taskStateMachine.js'
+import { createAgentTask, updateAgentTask, finishAgentTask } from './agentTasks.js'
 import {
   clipToolOutput, manageContext, applyAnthropicCacheHints,
   upsertAgentStateDigest,
@@ -619,7 +620,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   res.setHeader('X-Accel-Buffering', 'no')
   res.flushHeaders?.()
 
-  sse(res, 'stream_protocol', { version: 1, events: ['stream_protocol', 'agent_context', 'agent_state', 'thinking', 'thinking_delta', 'assistant_delta', 'assistant', 'thought', 'tool_preview', 'tool_router', 'tool_start', 'tool_progress', 'tool_result', 'tool_diagnostic', 'ask_user', 'tool_approval', 'usage', 'done', 'error'] })
+  sse(res, 'stream_protocol', { version: 1, events: ['stream_protocol', 'agent_context', 'agent_task', 'agent_state', 'thinking', 'thinking_delta', 'assistant_delta', 'assistant', 'thought', 'tool_preview', 'tool_router', 'tool_start', 'tool_progress', 'tool_result', 'tool_diagnostic', 'ask_user', 'tool_approval', 'usage', 'done', 'error'] })
 
   if (chatId) {
     const existing = activeRunsByChat.get(chatId)
@@ -691,6 +692,10 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
   if (agentContext.runtime.effectiveMaxSteps > maxSteps) maxSteps = agentContext.runtime.effectiveMaxSteps
   const agentState = createAgentState({ agentContext, history })
+  let persistedTask = null
+  try {
+    persistedTask = createAgentTask({ userId, chatId, goal: agentState.goal, taskType: agentContext?.task?.type || '', phase: agentState.phase || '', state: agentState, history })
+  } catch { /* persistence is best-effort */ }
   res.__browseraiLastRealEventAt = Date.now()
   res.__browseraiLastEventAt = Date.now()
   res.__agentPhase = 'starting'
@@ -794,6 +799,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       currentPhaseAllowedSet = allowedToolsForPhase(currentPhase)
       agentState.phase = currentPhase
       agentState.phaseReason = phaseInfo.reason
+      try { if (persistedTask) updateAgentTask(persistedTask.id, { phase: currentPhase, state: agentState, history: convo }) } catch { /* best-effort */ }
       upsertAgentStateDigest(convo, agentState, recentToolHistory)
       manageContext(convo, provider?.model)
       
@@ -923,6 +929,7 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
         // sent, the UI spinner never stops and the Composer silently
         // swallows every next message. Lessons are best-effort background
         // work and must never delay stream completion.
+        try { if (persistedTask) finishAgentTask(persistedTask.id, { status: 'succeeded', state: agentState, history: convo }) } catch { /* best-effort */ }
         sseDone(res, { steps: step, reason: 'final' }, tokens); res.end()
         if (didRealWork && !aborted && userId) {
           void (async () => {
@@ -1059,7 +1066,7 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
           sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
           return { call, r: rErr, pushedBack: true }
         }
-        updateAgentStateFromTool(agentState, call.tool, r, call.args); sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult(call.tool, r, { step, sub: idx }) }); sse(res, 'agent_state', agentState)
+        updateAgentStateFromTool(agentState, call.tool, r, call.args); try { if (persistedTask) updateAgentTask(persistedTask.id, { phase: agentState.phase || currentPhase, state: agentState, history: convo }) } catch { /* best-effort */ }; sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult(call.tool, r, { step, sub: idx }) }); sse(res, 'agent_state', agentState)
         res.__agentPhase = 'agent'
         res.__agentActiveTool = ''
         return { call, r }
@@ -1087,7 +1094,7 @@ ${obsContent}` })
 
     }
     if (step >= maxSteps) { sse(res, 'error', { message: `Stopped after ${maxSteps} steps` }); sseDone(res, { steps: step, reason: 'max-steps' }, tokens) }
-  } catch (e) { sse(res, 'error', { message: e.message }); sseDone(res, { steps: step, reason: 'crash' }, tokens) } finally { clearInterval(idleWatchdog); if (chatId) activeRunsByChat.delete(chatId); try { res.end() } catch { /* best-effort: ignore */ } }
+  } catch (e) { try { if (persistedTask) finishAgentTask(persistedTask.id, { status: 'failed', state: agentState, history: convo }) } catch { /* best-effort */ }; sse(res, 'error', { message: e.message }); sseDone(res, { steps: step, reason: 'crash' }, tokens) } finally { clearInterval(idleWatchdog); if (chatId) activeRunsByChat.delete(chatId); try { res.end() } catch { /* best-effort: ignore */ } }
 }
 
 function sseDone(res, payload, tokens) { sse(res, 'done', { ...payload, tokens }) }

@@ -91,6 +91,7 @@ import {
 import { startTelegramBot } from './telegramBot.js'
 import { runAgent, listActiveAgentRuns, clearActiveAgentRun } from './agentLoop.js'
 import { listDeterministicActions } from './deterministicActionRouter.js'
+import { getAgentTask, latestAgentTask, listAgentTasks, buildResumeSystemMessage } from './agentTasks.js'
 import {
   callLLM, callLLMStream, isAnthropicOfficialUrl, isGoogleGenerativeNativeUrl,
   getProviderCapabilities, normalizeProviderError, fetchViaProxy,
@@ -2857,6 +2858,15 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
     }
   } catch (e) { console.warn('[agent] recall failed:', e?.message || e) }
 
+  let resumeTaskNote = ''
+  try {
+    const lastUser = [...safeHistory].reverse().find((m) => m.role === 'user')
+    if (/^(продолжай|continue|resume|дальше|go on)/i.test(String(lastUser?.content || '').trim())) {
+      const task = latestAgentTask({ chatId, userId: req.user?.id || '', includeDone: true })
+      resumeTaskNote = buildResumeSystemMessage(task)
+    }
+  } catch { /* optional */ }
+
   const extraSystemFinal = [
     `## AGENT QUALITY RULES (ENFORCED)
 
@@ -2873,6 +2883,7 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
     modelHintNote,
     userFactsNote,
     recallNote,
+    resumeTaskNote,
     projectRulesNote,
     realActivityNote,
   ].filter(Boolean).join('\n\n')
@@ -2922,6 +2933,26 @@ app.get('/api/agent/actions', requireAuth, (_req, res) => {
 
 app.get('/api/agent/runs', requireAuth, (_req, res) => {
   res.json({ runs: listActiveAgentRuns() })
+})
+
+app.get('/api/agent/tasks', requireAuth, (req, res) => {
+  res.json({ tasks: listAgentTasks({ chatId: String(req.query.chatId || ''), userId: req.user?.id || '', limit: req.query.limit || 20 }) })
+})
+
+app.get('/api/agent/tasks/latest', requireAuth, (req, res) => {
+  res.json({ task: latestAgentTask({ chatId: String(req.query.chatId || ''), userId: req.user?.id || '', includeDone: true }) })
+})
+
+app.get('/api/agent/tasks/:id', requireAuth, (req, res) => {
+  const task = getAgentTask(req.params.id)
+  if (!task) return res.status(404).json({ error: 'task not found' })
+  res.json({ task })
+})
+
+app.post('/api/agent/tasks/:id/resume-note', requireAuth, (req, res) => {
+  const task = getAgentTask(req.params.id)
+  if (!task) return res.status(404).json({ error: 'task not found' })
+  res.json({ note: buildResumeSystemMessage(task), task })
 })
 
 app.post('/api/agent/runs/:chatId/reset', requireAuth, (req, res) => {
