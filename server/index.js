@@ -82,6 +82,7 @@ import { getAgentControlPlane } from './agentControlPlane.js'
 import { initOperatorMode, getOperatorStatus, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorMission, listOperatorMissionEvents } from './operatorMode.js'
 import { initDeploySessions, createDeploySession, getDeploySession, listDeploySessions, startDeploySession } from './deploySessions.js'
 import { listRunbooks, readRunbook, writeRunbook, appendLesson } from './operatorRunbooks.js'
+import { analyzeOperatorProject } from './operatorProjectOnboarding.js'
 import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr } from './operatorCode.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
@@ -3138,6 +3139,13 @@ app.get('/api/operator/projects', requireAuth, (req, res) => {
 app.post('/api/operator/projects', requireAuth, (req, res) => {
   try { res.json({ ok: true, project: upsertOperatorProject({ userId: req.user?.id || '', ...(req.body || {}) }) }) }
   catch (e) { res.status(400).json({ ok: false, error: e?.message || String(e) }) }
+})
+
+app.post('/api/operator/projects/analyze', requireAuth, async (req, res) => {
+  try {
+    const result = await analyzeOperatorProject({ userId: req.user?.id || '', ...(req.body || {}) })
+    res.json({ ok: true, ...result })
+  } catch (e) { res.status(400).json({ ok: false, error: e?.message || String(e) }) }
 })
 
 app.get('/api/operator/missions', requireAuth, (req, res) => {

@@ -1194,6 +1194,24 @@ export const TOOLS = {
     },
   },
 
+  operator_analyze_project: {
+    description: 'Onboard/analyze any GitHub repository for Operator Mode: clone/fetch, detect stack, infer commands, save project config, generate project runbook.',
+    params: {
+      repo: { type: 'string', required: true, description: 'GitHub repo slug or clone URL.' },
+      id: { type: 'string', optional: true, description: 'Project id.' },
+      name: { type: 'string', optional: true, description: 'Project name.' },
+      local_path: { type: 'string', optional: true, description: 'Local workspace path.' },
+      production_path: { type: 'string', optional: true, description: 'Production path if known.' },
+      default_branch: { type: 'string', optional: true, description: 'Default branch, default main.' },
+    },
+    handler: async ({ repo, id = '', name = '', local_path = '', production_path = '', default_branch = 'main', _userId } = {}) => {
+      try {
+        const { analyzeOperatorProject } = await import('./operatorProjectOnboarding.js')
+        return ok(await analyzeOperatorProject({ userId: _userId || '', repo, id, name, localPath: local_path, productionPath: production_path, defaultBranch: default_branch }))
+      } catch (e) { return err(e.message) }
+    },
+  },
+
   operator_list_runbooks: {
     description: 'List BrowserAI Operator runbooks and lessons memory files.',
     params: {},

@@ -62,6 +62,16 @@ export default function OperatorProjectsPanel() {
       await refresh()
     } catch (e) { setError(e.message || String(e)) }
   }
+  const analyze = async () => {
+    if (!form.repo.trim()) { setError('Repo is required'); return }
+    try {
+      setSaved(false)
+      const data = await api('/api/operator/projects/analyze', { method: 'POST', body: JSON.stringify({ repo: form.repo, id: form.id, name: form.name, localPath: form.localPath, productionPath: form.productionPath, defaultBranch: form.defaultBranch }) })
+      setForm(formFromProject(data.project))
+      setSaved(true)
+      await refresh()
+    } catch (e) { setError(e.message || String(e)) }
+  }
   const set = (key, val) => { setForm((f) => ({ ...f, [key]: val })); setSaved(false) }
 
   return (
@@ -71,7 +81,7 @@ export default function OperatorProjectsPanel() {
           <h2 className="text-[15px] font-medium">Operator Projects</h2>
           <p className="text-[12px] text-cream-faint">Project Registry v2: repo, paths, commands, health URL, deploy recipe and branch policy.</p>
         </div>
-        <button onClick={() => void save()} className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 px-3 py-1.5 text-[12px] text-emerald-100 hover:bg-emerald-500/20">{saved ? 'Saved' : 'Save project'}</button>
+        <div className="flex gap-2"><button onClick={() => void analyze()} className="rounded-lg border border-violet-400/25 bg-violet-500/10 px-3 py-1.5 text-[12px] text-violet-100 hover:bg-violet-500/20">Analyze project</button><button onClick={() => void save()} className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 px-3 py-1.5 text-[12px] text-emerald-100 hover:bg-emerald-500/20">{saved ? 'Saved' : 'Save project'}</button></div>
       </div>
       {error && <div className="mb-2 rounded border border-red-400/25 bg-red-500/10 p-2 text-[12px] text-red-200">{error}</div>}
       <div className="mb-3 flex flex-wrap gap-2">
