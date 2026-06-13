@@ -37,6 +37,7 @@ let running = false
 let offset = 0
 const activeRuns = new Map() // chatId -> { stop, startedAt, placeholderId }
 const pendingApprovalScope = new Map() // questionId -> { userId, chatId }
+const lastLogs = new Map() // chatId -> { stdout, stderr, exitCode }
 
 function log(...a) { console.log('[tg-v2]', ...a) }
 function warn(...a) { console.warn('[tg-v2]', ...a) }
@@ -538,7 +539,35 @@ async function handleCallback(cb) {
     return sendMessage(chatId, `🩺 BrowserAI health\nstatus: ${h.ok ? 'OK ✅' : 'FAIL ❌'}\nurl: ${h.url}\n${h.text || ''}`, { reply_markup: mainKeyboard() })
   }
   if (data === 'ops:docker') return runOpsAndReply(chatId, messageId, 'Docker', 'browserai', 'docker_ps', {}, true, mainKeyboard())
-  if (data === 'ops:logs') return runOpsAndReply(chatId, messageId, 'Logs', 'browserai', 'docker_logs_recent', { service: 'browserai', tail: 160 }, true, mainKeyboard())
+  if (data === 'ops:logs') {
+    await editMessage(chatId, messageId, '⏳ Загружаю логи…').catch(() => {})
+    try {
+      const r = await runOpsAction({ service: 'browserai', action: 'docker_logs_recent', params: { service: 'browserai', tail: 160 }, confirm: true })
+      lastLogs.set(String(chatId), { stdout: r.stdout || '', stderr: r.stderr || '', exitCode: r.exitCode })
+      const text = fmtOpsResult('📜 Logs', r)
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: '📋 Скопировать', callback_data: 'logs:copy' }, { text: '🔄 Обновить', callback_data: 'ops:logs' }],
+          [{ text: '⬅ Назад', callback_data: 'menu:main' }],
+        ],
+      }
+      return editMessage(chatId, messageId, text, { reply_markup: keyboard }).catch(async () => {
+        await sendMessage(chatId, text, { reply_markup: keyboard })
+      })
+    } catch (e) {
+      return editMessage(chatId, messageId, `❌ Logs: ${e?.message || String(e)}`, { reply_markup: mainKeyboard() }).catch(() => {})
+    }
+  }
+  if (data === 'logs:copy') {
+    const last = lastLogs.get(String(chatId))
+    if (!last) {
+      return editMessage(chatId, messageId, 'Нет сохранённых логов. Нажмите 📜 Логи сначала.', { reply_markup: mainKeyboard() }).catch(() => {})
+    }
+    const r = { stdout: last.stdout, stderr: last.stderr, exitCode: last.exitCode }
+    const text = fmtOpsResult('📜 Logs (copy)', r)
+    await sendMessage(chatId, text)
+    return editMessage(chatId, messageId, 'Логи отправлены отдельным сообщением для копирования.', { reply_markup: mainKeyboard() }).catch(() => {})
+  }
   if (data === 'ops:ci') return runOpsAndReply(chatId, messageId, 'GitHub Actions', 'github', 'actions_status', { limit: 5 }, true, deployKeyboard())
   if (data === 'ops:ci_wait') return runOpsAndReply(chatId, messageId, 'Waiting GitHub Actions', 'github', 'actions_wait', { workflows: 'CI,Deploy to Timeweb', limit: 10, timeout_sec: 900, interval_sec: 10 }, true, deployKeyboard())
   if (data === 'deploy:safe') {
