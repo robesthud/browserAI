@@ -19,6 +19,20 @@ export const OPERATOR_MISSION_TYPES = [
     risk: 'agent',
   },
   {
+    id: 'code_task',
+    title: 'Code Operator task',
+    icon: '💻',
+    description: 'Полноценная задача разработки: изучить проект, править файлы, запускать verify/test/build, готовить diff/report.',
+    risk: 'agent',
+  },
+  {
+    id: 'fix_tests',
+    title: 'Fix tests / build',
+    icon: '🧪',
+    description: 'Найти и исправить ошибки тестов/сборки: npm test/build → diagnose → patch → verify.',
+    risk: 'agent',
+  },
+  {
     id: 'full_diagnostic',
     title: 'Full diagnostic',
     icon: '🔎',
@@ -134,6 +148,11 @@ function rowToMission(r) {
   }
   if (mission.workflowId) mission.workflow = getWorkflow(mission.workflowId)
   if (mission.jobId) mission.job = getJob(mission.jobId)
+  const linkedStatus = mission.workflow?.status || mission.job?.status || ''
+  if (linkedStatus && mission.status === 'running' && ['succeeded', 'failed', 'cancelled'].includes(linkedStatus)) {
+    mission.status = linkedStatus
+    mission.finishedAt = mission.workflow?.finishedAt || mission.job?.finishedAt || mission.finishedAt
+  }
   return mission
 }
 
@@ -223,8 +242,36 @@ export function classifyOperatorGoal(goal = '') {
   if (wantsProdWrite) return { route: 'safe_deploy', reason: 'production deploy requested', requiresConfirmation: true }
   if (wantsFixDeploy) return { route: 'fix_deploy', reason: 'deploy failure investigation requested' }
   if (wantsCi) return { route: 'full_diagnostic', reason: 'CI/GitHub status requested' }
-  if (wantsDiagnostic) return { route: 'full_diagnostic', reason: 'diagnostic/status requested' }
+  if (wantsDiagnostic && !isCodingGoal(text)) return { route: 'full_diagnostic', reason: 'diagnostic/status requested' }
+  if (isCodingGoal(text)) return { route: 'code_task', reason: 'software development task' }
   return { route: 'custom_agent', reason: 'general development/operator task' }
+}
+
+
+function isCodingGoal(goal = '') {
+  const t = String(goal || '').toLowerCase()
+  return /(код|фич|feature|bug|исправ|почини|реализ|добав|измен|перепиш|refactor|frontend|backend|ui|api|endpoint|test|build|npm|vite|eslint|кнопк|страниц|компонент|модул)/i.test(t)
+}
+
+function buildCodeOperatorPrompt(project, goal = '', missionType = 'code_task') {
+  return [
+    operatorSystemPrompt(project, missionType),
+    '',
+    '[code-operator-contract]',
+    'You are doing a real software development task. Use the available tools, not prose-only answers.',
+    'Default repository workflow:',
+    `1. Ensure repository is local. If needed, use git_clone for ${project?.repo || 'the target repo'} into a stable project folder.`,
+    '2. Read project rules and inspect package.json/README/entry files before editing.',
+    '3. Make minimal coherent changes with edit_file/write_file.',
+    '4. After each code/config edit, run verify_code or verify_task.',
+    '5. Run npm_test and, when available, npm run build via bash/verify_task before final success.',
+    '6. Run secret_scan before any commit/deploy recommendation.',
+    '7. Produce a final report with changed files, tests/build results, and exact remaining blockers if any.',
+    '8. If the user requested production deploy, do NOT run risky production changes silently: use ops workflows/actions and ask for approval when required.',
+    'If tests fail, diagnose from the actual output, patch, and retry. Do not stop at the first failure unless blocked by missing credentials or policy.',
+    `User goal: ${goal}`,
+    '[/code-operator-contract]',
+  ].join('\n')
 }
 
 function operatorSystemPrompt(project, missionType) {
@@ -295,7 +342,7 @@ export function startOperatorMission({ userId = '', projectId = 'browserai', typ
       input: {
         prompt,
         history: [{ role: 'user', content: prompt }],
-        extraSystem: [operatorSystemPrompt(project, missionType.id), routeInfo ? `\n[operator-route] ${JSON.stringify(routeInfo)} [/operator-route]` : ''].filter(Boolean).join('\n'),
+        extraSystem: [(['code_task', 'fix_tests'].includes(missionType.id) ? buildCodeOperatorPrompt(project, prompt, missionType.id) : operatorSystemPrompt(project, missionType.id)), routeInfo ? `\n[operator-route] ${JSON.stringify(routeInfo)} [/operator-route]` : ''].filter(Boolean).join('\n'),
         provider: { baseUrl: provider.baseUrl, model: provider.model, authType: provider.authType, authHeader: provider.authHeader, extraHeaders: provider.extraHeaders, temperature: 0.2 },
       },
     })

@@ -9,6 +9,7 @@ describe('operator mode', () => {
     expect(projects.some((p) => p.id === 'browserai')).toBe(true)
     expect(projects.find((p) => p.id === 'browserai')?.productionPath).toBeTruthy()
     expect(OPERATOR_MISSION_TYPES.map((m) => m.id)).toContain('universal_dev_task')
+    expect(OPERATOR_MISSION_TYPES.map((m) => m.id)).toContain('code_task')
     expect(OPERATOR_MISSION_TYPES.map((m) => m.id)).toContain('custom_agent')
     expect(OPERATOR_MISSION_TYPES.map((m) => m.id)).toContain('safe_deploy')
   })
@@ -16,7 +17,7 @@ describe('operator mode', () => {
   it('routes arbitrary operator goals to a safe first action', () => {
     expect(classifyOperatorGoal('проверь почему деплой падает и логи').route).toBe('fix_deploy')
     expect(classifyOperatorGoal('задеплой новую версию').route).toBe('safe_deploy')
-    expect(classifyOperatorGoal('добавь кнопку в интерфейс и протестируй').route).toBe('custom_agent')
+    expect(classifyOperatorGoal('добавь кнопку в интерфейс и протестируй').route).toBe('code_task')
     expect(classifyOperatorGoal('перезапусти сервис и проверь health').route).toBe('self_heal_restart')
   })
 
