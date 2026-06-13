@@ -481,14 +481,14 @@ export async function runOpsAction({ service, action, params = {}, confirm = fal
 
   const tail = Math.min(500, Math.max(20, Number(params.tail) || 120))
   const serviceName = String(params.service || 'browserai').replace(/[^a-zA-Z0-9_-]/g, '') || 'browserai'
-  const healthUrl = String(params.url || 'http://localhost/api/health').replace(/'/g, '')
+  const healthUrl = String(params.url || 'http://127.0.0.1/api/health').replace(/'/g, '')
   const healthTimeout = Math.min(60, Math.max(2, Number(params.timeout_sec || params.timeoutSec) || 10))
   const waitTimeout = Math.min(3600, Math.max(10, Number(params.timeout_sec || params.timeoutSec) || 600))
   const waitInterval = Math.min(60, Math.max(3, Number(params.interval_sec || params.intervalSec) || 10))
   const cleanupStaleCompose = "docker ps -a --format '{{.Names}}' | grep -E '^[0-9a-f]+_browserai$' | xargs -r docker rm -f 2>/dev/null || true; "
 
   const commands = {
-    health: `set -e; echo 'BrowserAI:'; curl -fsS http://localhost:${process.env.PORT || 8080}/api/health; echo; echo 'Gemini:'; curl -fsS http://172.17.0.1:8080/health || true; echo`,
+    health: `set -e; echo 'BrowserAI:'; curl -fsS http://127.0.0.1/api/health; echo; echo 'Container direct:'; docker exec browserai wget -qO- http://127.0.0.1:8080/api/health || true; echo`,
     docker_ps: `cd ${shQuote(APP_DIR)} && docker compose ps`,
     docker_logs: `cd ${shQuote(APP_DIR)} && docker compose logs --tail=${tail} ${shQuote(serviceName)}`,
     docker_logs_recent: `cd ${shQuote(APP_DIR)} && docker compose logs --tail=${tail} ${shQuote(serviceName)}`,
@@ -522,7 +522,7 @@ echo "local:  $LOCAL"
 echo "origin: $REMOTE"
 if [ "$LOCAL" = "$REMOTE" ]; then echo "in_sync: yes"; else echo "in_sync: NO (deployed checkout differs from origin/main)"; fi
 DIRTY=$(git status --short); if [ -n "$DIRTY" ]; then echo "dirty_files:"; echo "$DIRTY"; else echo "dirty_files: none"; fi
-echo -n "health: "; curl -fsS http://localhost:${process.env.PORT || 8080}/api/health && echo || echo "UNHEALTHY"
+echo -n "health: "; curl -fsS http://127.0.0.1/api/health && echo || echo "UNHEALTHY"
 [ "$LOCAL" = "$REMOTE" ]`,
     deploy: `set -e; cd ${shQuote(APP_DIR)}; git fetch --quiet origin main; git reset --hard origin/main; git log -1 --oneline; docker compose build > /tmp/deploy-build.log 2>&1 && echo 'Build OK' || { echo 'Build FAIL, tail:'; tail -n 40 /tmp/deploy-build.log; exit 1; }; echo '== deploy helper =='; docker rm -f deploy-helper 2>/dev/null || true; docker run -d --rm --name deploy-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc ${shQuote(cleanupStaleCompose + 'docker compose up -d --remove-orphans && sleep 20 && curl -fsS http://127.0.0.1:80/api/health && echo DEPLOY_OK || echo DEPLOY_FAIL')}; echo 'Deploy helper started'`,
     deploy_safe: `cd ${shQuote(APP_DIR)} && cat > .deploy-safe.sh << 'EOF'
