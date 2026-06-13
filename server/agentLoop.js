@@ -28,6 +28,7 @@ import { routeHistory } from './smartRouter.js'
 import { routeDeterministicAction } from './deterministicActionRouter.js'
 import { toolProfileForTask, profileToolNames, isToolAllowed } from './toolAllowlist.js'
 import { getRecoveryAction, getRecoveryHint as recoveryHint } from './recoveryEngine.js'
+import { deriveTaskPhase, allowedToolsForPhase } from './taskStateMachine.js'
 import {
   clipToolOutput, manageContext, applyAnthropicCacheHints,
   upsertAgentStateDigest,
@@ -752,6 +753,8 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   res.on('close', () => clearInterval(keepAliveInterval))
 
   const recentCallFingerprints = [], recentToolHistory = [], planState = { done: new Set() }
+  let currentPhase = 'execute'
+  let currentPhaseAllowedSet = null
   // Anti-fabrication bookkeeping: which paths were actually read vs failed.
   // Used before the final answer to catch reports citing files that were
   // never successfully opened (observed: invented *.py files in a JS repo).
@@ -772,6 +775,11 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
         convo.push({ role: 'user', content: `[focus_chain_reminder]\n${renderAgentStateDigest(agentState, recentToolHistory)}` })
       }
       pushedBackThisTurn = false
+      const phaseInfo = deriveTaskPhase({ agentContext, agentState, recentToolHistory })
+      currentPhase = phaseInfo.phase
+      currentPhaseAllowedSet = allowedToolsForPhase(currentPhase)
+      agentState.phase = currentPhase
+      agentState.phaseReason = phaseInfo.reason
       upsertAgentStateDigest(convo, agentState, recentToolHistory)
       manageContext(convo, provider?.model)
       
@@ -952,6 +960,14 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
         if (!isToolAllowed(call.tool, allowedToolSet, extraTools)) {
           const rErr = makeToolErrorResult(`Tool ${call.tool} is not available in the current ${toolProfile} tool profile. Use one of: ${[...allowedToolSet].join(', ')}`)
           sse(res, 'tool_router', { step, sub: idx, name: call.tool, warnings: [rErr.error] })
+          sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
+          return { call, r: rErr, pushedBack: true }
+        }
+
+        if (!isToolAllowed(call.tool, currentPhaseAllowedSet, extraTools)) {
+          const allowed = currentPhaseAllowedSet ? [...currentPhaseAllowedSet].join(', ') : 'all profile tools'
+          const rErr = makeToolErrorResult(`Tool ${call.tool} is blocked in phase ${currentPhase}. Use one of: ${allowed}`)
+          sse(res, 'tool_router', { step, sub: idx, name: call.tool, warnings: [rErr.error], phase: currentPhase })
           sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
           return { call, r: rErr, pushedBack: true }
         }

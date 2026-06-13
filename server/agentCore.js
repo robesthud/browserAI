@@ -200,6 +200,8 @@ export function createAgentState({ agentContext = {}, history = [] } = {}) {
   return {
     schema: 'browserai.agent_state.v1',
     status: needsPlan ? 'planning' : 'running',
+    phase: needsPlan ? 'discover' : 'execute',
+    phaseReason: needsPlan ? 'initial-grounding' : 'simple-task',
     goal,
     plan: {
       title: '',
