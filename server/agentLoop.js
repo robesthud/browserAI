@@ -28,6 +28,7 @@ import { routeHistory } from './smartRouter.js'
 import { routeDeterministicAction } from './deterministicActionRouter.js'
 import { toolProfileForTask, profileToolNames, isToolAllowed } from './toolAllowlist.js'
 import { getRecoveryAction, getRecoveryHint as recoveryHint } from './recoveryEngine.js'
+import { createWorkspaceSnapshot } from './workspaceSnapshots.js'
 import { deriveTaskPhase, allowedToolsForPhase } from './taskStateMachine.js'
 import {
   clipToolOutput, manageContext, applyAnthropicCacheHints,
@@ -237,6 +238,9 @@ function summarizeToolOutcome(tool, r) {
   if (tool === 'verify_task') return result?.passed ? `passed ${result?.results?.length || 0} checks` : `failed ${result?.results?.length || 0} checks`
   if (tool === 'git_clone') return `path=${result?.path || ''}`
   if (tool === 'zip_files') return `path=${result?.file_path || ''} entries=${result?.entries || 0}`
+  if (tool === 'secret_scan') return result?.ok ? `ok scanned=${result?.scannedFiles || 0}` : `findings high=${result?.high || 0} medium=${result?.medium || 0}`
+  if (tool === 'workspace_snapshot_create') return `id=${result?.id || ''} entries=${result?.entries || 0}`
+  if (tool === 'workspace_snapshot_restore') return `id=${result?.id || ''} restored=${Boolean(result?.restored)}`
   if (tool === 'bash') return `exit=${result?.exitCode ?? '?'}`
   return String(result?.message || result?.path || result?.file_path || 'ok').slice(0, 180)
 }
@@ -756,6 +760,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   const recentCallFingerprints = [], recentToolHistory = [], planState = { done: new Set() }
   let currentPhase = 'execute'
   let currentPhaseAllowedSet = null
+  let autoSnapshotCreated = false
   // Anti-fabrication bookkeeping: which paths were actually read vs failed.
   // Used before the final answer to catch reports citing files that were
   // never successfully opened (observed: invented *.py files in a JS repo).
@@ -987,6 +992,15 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
           return { call, r: makeToolErrorResult(validation.error) }
         }
         call.args = validation.args
+        if (!autoSnapshotCreated && ['write_file', 'edit_file', 'delete_file', 'create_folder', 'rename_item', 'workspace_snapshot_restore'].includes(call.tool)) {
+          try {
+            const snap = await withWorkspaceScope(chatId, () => createWorkspaceSnapshot({ label: `before-${call.tool}-step-${step}` }))
+            autoSnapshotCreated = true
+            sse(res, 'tool_diagnostic', { step, sub: idx, name: 'workspace_snapshot_create', path: snap.file, message: `Rollback snapshot created: ${snap.id}` })
+          } catch (e) {
+            sse(res, 'thought', { step, sub: idx, text: `Не удалось создать snapshot перед ${call.tool}: ${e.message}` })
+          }
+        }
         if (call.tool !== 'ask_user' && requiresApproval(call.tool, userId)) {
           const { id: aqId, promise: aqPromise, expiresAt } = registerQuestion({ kind: 'tool_approval', userId, chatId, step, sub: idx, tool: call.tool, category: categoryOf(call.tool), question: `Approve ${call.tool}?`, options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }] })
           sse(res, 'tool_approval', { step, sub: idx, question_id: aqId, expiresAt, tool: call.tool, args: call.args })

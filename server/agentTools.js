@@ -27,6 +27,8 @@ import { computerScreenshot, computerClick, computerType, computerOpenApp, compu
 import { listOpsServices, runOpsAction } from './ops.js'
 import { buildProjectProfile } from './projectProfiler.js'
 import { buildVerificationPlan } from './verifyOrchestrator.js'
+import { scanSecrets } from './secretScan.js'
+import { createWorkspaceSnapshot, listWorkspaceSnapshots, restoreWorkspaceSnapshot } from './workspaceSnapshots.js'
 
 function safeJsonParse(text) { try { return JSON.parse(text) } catch { return null } }
 
@@ -56,7 +58,8 @@ function defaultCloneDir(url = '') {
   return tail.replace(/\.git$/i, '').replace(/[^a-zA-Z0-9._-]+/g, '-') || 'repo'
 }
 
-const ZIP_EXCLUDED_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', '.cache', '.vite', '.turbo'])
+const ZIP_EXCLUDED_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', '.cache', '.vite', '.turbo', '.history', '.snapshots'])
+const ZIP_EXCLUDED_FILE_RE = /(^|\/)(\.env(\..*)?|.*\.pem|.*\.key|id_rsa|id_ed25519|\.netrc|credentials|secrets?\.(json|ya?ml|env))$/i
 
 async function addPathToZip(zip, abs, zipRel, outputAbs) {
   const st = await fsStat(abs)
@@ -73,6 +76,7 @@ async function addPathToZip(zip, abs, zipRel, outputAbs) {
     return
   }
   if (!st.isFile()) return
+  if (ZIP_EXCLUDED_FILE_RE.test(zipRel)) return
   if (path.resolve(abs) === path.resolve(outputAbs)) return
   if (st.size > 50 * 1024 * 1024) return
   const data = await fsReadFile(abs)
@@ -424,6 +428,40 @@ export const TOOLS = {
     },
   },
 
+  secret_scan: {
+    description: 'Scan workspace files for secrets/tokens before archiving, committing or deploying.',
+    params: {
+      root: { type: 'string', optional: true, description: 'Folder to scan, relative to workspace root. Empty = whole workspace.' },
+    },
+    handler: async ({ root = '' } = {}) => {
+      try { return ok(await scanSecrets({ root })) } catch (e) { return err(e.message) }
+    },
+  },
+
+  workspace_snapshot_create: {
+    description: 'Create a rollback snapshot of the current workspace before risky edits.',
+    params: { label: { type: 'string', optional: true, description: 'Snapshot label.' } },
+    handler: async ({ label = 'manual' } = {}) => {
+      try { return ok(await createWorkspaceSnapshot({ label })) } catch (e) { return err(e.message) }
+    },
+  },
+
+  workspace_snapshot_list: {
+    description: 'List rollback snapshots for the current workspace.',
+    params: {},
+    handler: async () => {
+      try { return ok({ snapshots: await listWorkspaceSnapshots() }) } catch (e) { return err(e.message) }
+    },
+  },
+
+  workspace_snapshot_restore: {
+    description: 'Restore a previous workspace snapshot by id. Destructive: current files are replaced.',
+    params: { id: { type: 'string', required: true, description: 'Snapshot id.' } },
+    handler: async ({ id } = {}) => {
+      try { return ok(await restoreWorkspaceSnapshot({ id })) } catch (e) { return err(e.message) }
+    },
+  },
+
   project_profile: {
     description: 'Inspect the current workspace and detect project root, stack, package manager, scripts, entrypoints and deploy files.',
     params: {
@@ -517,6 +555,7 @@ export const TOOLS = {
         const out = String(output_path || 'workspace.zip').toLowerCase().endsWith('.zip') ? String(output_path || 'workspace.zip') : `${output_path}.zip`
         const sourceAbs = safePath(String(source_path || '').replace(/^\/+/, ''))
         const outputAbs = safePath(out.replace(/^\/+/, ''))
+        const scan = await scanSecrets({ root: source_path || '' })
         await fsMkdir(path.dirname(outputAbs), { recursive: true })
         const zip = new AdmZip()
         const sourceName = String(source_path || '').trim().replace(/^\/+|\/+$/g, '')
@@ -524,7 +563,7 @@ export const TOOLS = {
         await addPathToZip(zip, sourceAbs, rootRel, outputAbs)
         const buffer = zip.toBuffer()
         await fsWriteFile(outputAbs, buffer)
-        return ok({ file_path: out, path: out, source_path: source_path || '.', bytes: buffer.length, entries: zip.getEntries().length, download_url: `/api/workspace/download?path=${encodeURIComponent(out)}${_chatId ? `&chatId=${encodeURIComponent(_chatId)}` : ''}`, visible_in_files: true })
+        return ok({ file_path: out, path: out, source_path: source_path || '.', bytes: buffer.length, entries: zip.getEntries().length, secret_scan: { ok: scan.ok, high: scan.high, medium: scan.medium, excludedSensitiveFiles: true }, download_url: `/api/workspace/download?path=${encodeURIComponent(out)}${_chatId ? `&chatId=${encodeURIComponent(_chatId)}` : ''}`, visible_in_files: true })
       } catch (e) { return err(e.message) }
     },
   },
@@ -556,6 +595,8 @@ export const TOOLS = {
     handler: async ({ message } = {}) => {
       if (!message) return err('message is required')
       try {
+        const scan = await scanSecrets({ root: '' })
+        if (!scan.ok) return err(`Secret scan blocked commit: ${scan.high} high-risk finding(s). Remove secrets or exclude files before committing.`)
         const r1 = await runWorkspaceCommand('git add -A', { timeoutMs: 30_000 })
         if (r1.exitCode !== 0) return ok({ warning: 'git add failed', stderr: r1.stderr })
         const r2 = await runWorkspaceCommand(`git commit -m "${message.replace(/"/g, '\\"')}"`, { timeoutMs: 30_000 })

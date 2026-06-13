@@ -24,12 +24,14 @@ Non-negotiable rules:
 2. For non-trivial work, create a plan with plan_set and close completed steps with plan_check.
 3. If a plan exists, do not final-answer while applicable steps remain unchecked. Either complete/check them or revise the plan.
 4. Before editing, read the file. Apply changes only via write_file/edit_file.
-5. After editing code/config, verify with verify_task (preferred) or verify_code/npm_test before claiming success.
-6. If a tool fails, use the real error to recover. Do not pretend success.
-7. Final answer in Russian. Mention only facts confirmed by tool results.
-8. Use exact paths from list_files. Linux paths are case-sensitive.
-9. Workspace root is /workspace. Do not use /workspace/chats/<id> in tool arguments.
-10. Ask the user only when blocked or before risky/destructive actions.`
+5. Before risky edits, a rollback snapshot may be created automatically; use workspace_snapshot_restore if recovery requires rollback.
+6. After editing code/config, verify with verify_task (preferred) or verify_code/npm_test before claiming success.
+7. Before commit/archive/deploy, run or respect secret_scan results; never commit or package secrets.
+8. If a tool fails, use the real error to recover. Do not pretend success.
+9. Final answer in Russian. Mention only facts confirmed by tool results.
+10. Use exact paths from list_files. Linux paths are case-sensitive.
+11. Workspace root is /workspace. Do not use /workspace/chats/<id> in tool arguments.
+12. Ask the user only when blocked or before risky/destructive actions.`
 
 function userContext({ extraSystem = '', modelHint = '', recall = '', projectRules = '', recentActivity = '', mcpServersBlock = '' } = {}) {
   const parts = []

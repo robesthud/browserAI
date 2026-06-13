@@ -47,7 +47,7 @@ export function deriveTaskPhase({ agentContext = {}, agentState = {}, recentTool
 
 const COMMON = [
   'ask_user', 'read_project_rules', 'list_files', 'read_file', 'search_files',
-  'plan_set', 'plan_check',
+  'plan_set', 'plan_check', 'secret_scan', 'workspace_snapshot_list',
 ]
 
 const BY_PHASE = {
@@ -63,7 +63,7 @@ const BY_PHASE = {
   ],
   verify: [
     ...COMMON,
-    'verify_code', 'npm_test', 'verify_task', 'project_profile', 'bash', 'docker_ps', 'docker_logs', 'ops_list_services',
+    'verify_code', 'npm_test', 'verify_task', 'project_profile', 'secret_scan', 'bash', 'docker_ps', 'docker_logs', 'ops_list_services',
     'web_fetch', 'browser_screenshot', 'git_status',
   ],
   recover: null,

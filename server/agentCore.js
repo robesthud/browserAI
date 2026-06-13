@@ -149,8 +149,8 @@ export function buildAgentContext({ provider = {}, history = [], extraSystem = '
 }
 
 function resultTypeForTool(name = '') {
-  if (['read_file', 'list_files', 'search_files', 'read_project_rules', 'project_profile'].includes(name)) return 'workspace_read'
-  if (['write_file', 'edit_file', 'delete_file'].includes(name)) return 'workspace_write'
+  if (['read_file', 'list_files', 'search_files', 'read_project_rules', 'project_profile', 'secret_scan', 'workspace_snapshot_list'].includes(name)) return 'workspace_read'
+  if (['write_file', 'edit_file', 'delete_file', 'create_folder', 'rename_item', 'workspace_snapshot_create', 'workspace_snapshot_restore'].includes(name)) return 'workspace_write'
   if (['bash', 'npm_test', 'npm_install', 'docker_logs', 'docker_ps', 'verify_code', 'verify_task'].includes(name)) return 'command_result'
   if (['web_search', 'web_fetch'].includes(name)) return 'web_result'
   if (['ask_user'].includes(name)) return 'user_interaction'
@@ -356,7 +356,7 @@ export function updateAgentStateFromTool(state, toolName, rawResult, args = {}) 
   }
 
   const path = args?.path || args?.file || args?.file_path
-  if (path && ['write_file', 'edit_file', 'delete_file'].includes(toolName)) {
+  if (path && ['write_file', 'edit_file', 'delete_file', 'create_folder', 'rename_item', 'workspace_snapshot_create', 'workspace_snapshot_restore'].includes(toolName)) {
     pushUnique(state.touchedFiles, path, 50)
   }
   if (Array.isArray(result?.touched)) {
