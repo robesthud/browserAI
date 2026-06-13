@@ -587,10 +587,10 @@ async function runLightweightChat({ res, provider, history, userId, chatId, mode
 async function runDeterministicAction({ action, res, userId, chatId }) {
   const tokens = { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: 0 }
   sse(res, 'agent_context', { deterministicAction: { id: action.id, tool: action.tool, reason: action.reason }, task: { type: action.id, complexity: 'low' } })
-  sse(res, 'thinking', { step: 0 })
-  sse(res, 'tool_start', { step: 0, sub: 0, name: action.tool, args: action.args || {} })
+  // Deterministic actions are intentionally compact: no visible tool_start card,
+  // no LLM thinking. We still emit tool_result so the workspace panel refreshes.
   const r = await invokeTool(action.tool, action.args || {}, { userId, chatId })
-  sse(res, 'tool_result', { step: 0, sub: 0, name: action.tool, ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult(action.tool, r, { step: 0, sub: 0 }) })
+  sse(res, 'tool_result', { step: 0, sub: 0, name: action.tool, ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult(action.tool, r, { step: 0, sub: 0 }), compact: true })
   const text = r.ok ? action.successText?.(r) : action.errorText?.(r)
   await streamFinalAnswer(res, text || (r.ok ? '✅ Готово.' : `❌ Ошибка: ${r.error || 'unknown error'}`))
   sseDone(res, { steps: 0, reason: r.ok ? (action.successReason || `${action.id}-done`) : (action.errorReason || `${action.id}-error`) }, tokens)
