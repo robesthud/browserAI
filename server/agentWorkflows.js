@@ -260,8 +260,18 @@ export function renderWorkflowReport(workflow) {
   return lines.join('\n')
 }
 
+async function attachIncidentRcaIfNeeded(workflow) {
+  const incidentId = workflow?.input?.incidentId
+  if (!incidentId) return
+  try {
+    const { attachIncidentRcaFromWorkflow } = await import('./incidents.js')
+    attachIncidentRcaFromWorkflow(incidentId, workflow)
+  } catch { /* RCA is best-effort */ }
+}
+
 async function notifyWorkflowIfNeeded(workflow) {
   if (!workflow) return
+  await attachIncidentRcaIfNeeded(workflow)
   const recipe = getAutomationRecipe(workflow.recipeId)
   const shouldNotify = workflow.status === 'failed' || recipe?.risk === 'production-write' || workflow.input?.notifyTelegram === true
   if (!shouldNotify) return

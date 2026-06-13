@@ -102,6 +102,15 @@ export default function AgentInbox() {
                 <div className="flex items-center justify-between gap-2"><span className="truncate text-cream-soft">{i.title}</span><Pill tone={i.severity === 'high' ? 'red' : i.severity === 'low' ? 'zinc' : 'amber'}>{i.severity}</Pill></div>
                 <div className="mt-1 text-[10px] text-cream-faint">{i.source} · {i.status}</div>
                 {i.workflowId && <div className="mt-1 truncate font-mono text-[10px] text-violet-200">wf: {i.workflowId}</div>}
+                {i.details?.rca && (
+                  <details className="mt-2 rounded border border-white/10 bg-black/15 p-1.5">
+                    <summary className="cursor-pointer text-[10px] text-cream-faint">RCA: {i.details.rca.primaryCategory}</summary>
+                    <div className="mt-1 text-[11px] text-cream-soft">{i.details.rca.summary}</div>
+                    <ul className="mt-1 list-disc pl-4 text-[10px] text-cream-faint">
+                      {(i.details.rca.recommendedActions || []).slice(0, 3).map((a, idx) => <li key={idx}>{a}</li>)}
+                    </ul>
+                  </details>
+                )}
                 <div className="mt-2 flex gap-1.5">
                   <button onClick={() => void diagnoseIncident(i.id)} className="rounded bg-violet-500/15 px-2 py-1 text-[11px] text-violet-100">diagnose</button>
                   <button onClick={() => void resolveIncident(i.id)} className="rounded bg-emerald-500/15 px-2 py-1 text-[11px] text-emerald-100">resolve</button>

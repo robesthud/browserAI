@@ -117,6 +117,70 @@ export function linkIncidentWorkflow(incidentId, workflowId) {
   return updateIncident(incidentId, { status: 'investigating', workflowId, details: { ...(inc.details || {}), workflowId } })
 }
 
+
+function summarizeStepForRca(step = {}) {
+  const result = step.result || {}
+  const raw = JSON.stringify(result.result || result || {}).slice(0, 1800)
+  const stderr = result.result?.stderr || result.error || step.error || ''
+  const stdout = result.result?.stdout || ''
+  const text = `${step.title || ''}
+${step.error || ''}
+${stderr}
+${stdout}
+${raw}`.toLowerCase()
+  let category = 'unknown'
+  if (/health|connection refused|timeout|unhealthy|failed to connect|curl/.test(text)) category = 'health_check_failure'
+  else if (/github|workflow|actions|conclusion|failed/.test(text)) category = 'github_ci_failure'
+  else if (/docker|container|compose|port is already allocated/.test(text)) category = 'docker_or_compose_failure'
+  else if (/build fail|npm error|syntaxerror|failed to compile|vite/.test(text)) category = 'build_failure'
+  else if (/secret|token|permission|unauthorized|forbidden|401|403/.test(text)) category = 'auth_or_secret_failure'
+  return {
+    idx: step.idx,
+    title: step.title,
+    status: step.status,
+    category,
+    error: step.error || result.error || '',
+    evidence: String(stderr || stdout || raw || '').slice(0, 1200),
+  }
+}
+
+export function generateIncidentRcaFromWorkflow(workflow = {}) {
+  const failed = (workflow.steps || []).filter((s) => s.status === 'failed')
+  const interesting = failed.length ? failed : (workflow.steps || []).filter((s) => s.error || s.status !== 'succeeded')
+  const evidence = (interesting.length ? interesting : (workflow.steps || []).slice(-3)).map(summarizeStepForRca)
+  const categories = [...new Set(evidence.map((e) => e.category).filter(Boolean))]
+  const primary = categories.find((c) => c !== 'unknown') || categories[0] || 'unknown'
+  const status = workflow.status || 'unknown'
+  const summary = status === 'succeeded'
+    ? `Workflow ${workflow.title || workflow.id} completed successfully. No unresolved failure was detected.`
+    : `Workflow ${workflow.title || workflow.id} ended with status ${status}. Primary suspected category: ${primary}.`
+  const recommendedActions = []
+  if (primary === 'health_check_failure') recommendedActions.push('Check browserai container logs and run production_self_heal_restart if policy allows.', 'Verify public /api/health and internal container health separately.')
+  else if (primary === 'github_ci_failure') recommendedActions.push('Open GitHub Actions logs for failed jobs.', 'Run GitHub CI diagnostic and create a fix branch/PR if failures are reproducible.')
+  else if (primary === 'docker_or_compose_failure') recommendedActions.push('Run docker compose ps/logs and remove stale orphan containers.', 'Retry deploy_safe after confirming the container names are stable.')
+  else if (primary === 'build_failure') recommendedActions.push('Inspect build output, run npm test/build locally, then redeploy with rollback protection.')
+  else if (primary === 'auth_or_secret_failure') recommendedActions.push('Verify server-side env/vault credentials and rotate exposed tokens if needed.')
+  else recommendedActions.push('Run Full BrowserAI diagnostic and inspect linked workflow step outputs.')
+  return {
+    schema: 'browserai.incident_rca.v1',
+    generatedAt: new Date().toISOString(),
+    workflowId: workflow.id || '',
+    workflowStatus: status,
+    primaryCategory: primary,
+    summary,
+    evidence,
+    recommendedActions,
+  }
+}
+
+export function attachIncidentRcaFromWorkflow(incidentId, workflow = {}) {
+  const inc = getIncident(incidentId)
+  if (!inc) return null
+  const rca = generateIncidentRcaFromWorkflow(workflow)
+  const nextStatus = workflow.status === 'succeeded' && inc.status === 'investigating' ? 'open' : inc.status
+  return updateIncident(incidentId, { status: nextStatus, details: { ...(inc.details || {}), rca, rcaUpdatedAt: new Date().toISOString() } })
+}
+
 export function createIncidentWorkflow({ incident, recipeId = 'browserai_full_diagnostic', userId = '', input = {} } = {}) {
   if (!incident?.id) throw new Error('incident required')
   const wf = createWorkflow({
