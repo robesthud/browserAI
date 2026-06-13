@@ -7,6 +7,7 @@ import { createJob, getJob, startJob } from './jobs.js'
 import { getActiveKeyDecrypted } from './db.js'
 import { scanSecrets } from './secretScan.js'
 import { withWorkspaceScope } from './workspace.js'
+import { createWorkflow, startWorkflow } from './agentWorkflows.js'
 
 let initialized = false
 const monitors = new Map()
@@ -558,4 +559,51 @@ export async function finalizeOperatorCodeTask({ taskId = '', commitMessage = ''
   return getOperatorCodeTask(task.id)
 }
 
-export default { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix }
+
+export async function mergeOperatorCodeTaskPr({ taskId = '', mergeMethod = 'squash', deploy = false, confirmDeploy = false } = {}) {
+  initOperatorCode()
+  let task = getOperatorCodeTask(taskId)
+  if (!task) throw new Error('code task not found')
+  const pr = task.result?.finalize?.pullRequest
+  if (!pr?.number) throw new Error('code task has no pull request to merge')
+  const ci = task.result?.ci
+  if (ci && ci.ok !== true) throw new Error(`refusing to merge: CI is ${ci.status || 'not green'}`)
+  if (!ci) throw new Error('refusing to merge before CI check; run wait CI first')
+
+  const repo = repoSlug(task.repo)
+  const prDetails = await githubJson(`/repos/${repo}/pulls/${pr.number}`)
+  if (prDetails.state !== 'open') {
+    const mergedResult = { ...(task.result || {}), merge: { skipped: true, reason: `PR is ${prDetails.state}`, number: pr.number, url: pr.url || pr.html_url } }
+    patchTask(task.id, { status: 'succeeded', result: mergedResult })
+    return getOperatorCodeTask(task.id)
+  }
+  if (prDetails.draft) throw new Error('refusing to merge draft PR')
+  const allowed = ['merge', 'squash', 'rebase'].includes(String(mergeMethod)) ? String(mergeMethod) : 'squash'
+  const body = {
+    commit_title: `operator: ${task.goal.slice(0, 80) || 'merge code task'}`,
+    commit_message: renderCodeTaskReport(task, task.verify),
+    merge_method: allowed,
+    ...(task.result?.finalize?.commit ? { sha: task.result.finalize.commit } : {}),
+  }
+  const merged = await githubJson(`/repos/${repo}/pulls/${pr.number}/merge`, { method: 'PUT', body })
+  const merge = { ok: Boolean(merged.merged), sha: merged.sha, message: merged.message, number: pr.number, url: pr.url || pr.html_url || prDetails.html_url, method: allowed, mergedAt: new Date().toISOString() }
+  let result = { ...(task.result || {}), merge }
+
+  if (deploy) {
+    if (confirmDeploy !== true) throw new Error('deploy after merge requires confirmDeploy=true')
+    const wf = createWorkflow({
+      userId: task.userId,
+      chatId: '',
+      recipeId: 'browserai_deploy_safe',
+      input: { codeTaskId: task.id, pullRequest: merge, notifyTelegram: true },
+      confirm: true,
+      source: 'operator',
+    })
+    startWorkflow(wf.id)
+    result = { ...result, deployWorkflowId: wf.id }
+  }
+  patchTask(task.id, { status: 'succeeded', result, error: '', finishedAt: task.finishedAt || now() })
+  return getOperatorCodeTask(task.id)
+}
+
+export default { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr }

@@ -95,6 +95,18 @@ export default function OperatorConsole() {
     finally { setBusy(false) }
   }
 
+  const mergePr = async (taskId, deploy = false) => {
+    const ok = window.confirm(deploy ? 'Merge PR and start safe production deploy?' : 'Merge this PR?')
+    if (!ok) return
+    setBusy(true)
+    setError('')
+    try {
+      await api(`/api/operator/code-tasks/${encodeURIComponent(taskId)}/merge`, { method: 'POST', body: JSON.stringify({ mergeMethod: 'squash', deploy, confirmDeploy: deploy }) })
+      await refresh()
+    } catch (e) { setError(e.message || String(e)) }
+    finally { setBusy(false) }
+  }
+
   const missions = operator?.missions || []
   const types = operator?.missionTypes || []
   return (
@@ -162,6 +174,14 @@ export default function OperatorConsole() {
               {m.codeTask?.result?.ci?.status && <span className={`rounded px-1.5 py-0.5 text-[10px] ${m.codeTask.result.ci.ok ? 'bg-emerald-500/15 text-emerald-200' : 'bg-red-500/15 text-red-200'}`}>CI {m.codeTask.result.ci.status}</span>}
               {m.codeTask?.result?.ci?.status === 'failed' && <button onClick={() => void autoFixCi(m.result.codeTaskId)} className="rounded border border-amber-400/25 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-100 hover:bg-amber-500/20">auto-fix CI</button>}
               {m.codeTask?.result?.ciFix?.status && <span className={`rounded px-1.5 py-0.5 text-[10px] ${m.codeTask.result.ciFix.status === 'succeeded' ? 'bg-emerald-500/15 text-emerald-200' : 'bg-amber-500/15 text-amber-200'}`}>fix {m.codeTask.result.ciFix.status}</span>}
+              {m.codeTask?.result?.ci?.ok === true && m.codeTask?.result?.finalize?.pullRequest?.number && !m.codeTask?.result?.merge?.ok && (
+                <>
+                  <button onClick={() => void mergePr(m.result.codeTaskId, false)} className="rounded border border-emerald-400/25 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-100 hover:bg-emerald-500/20">merge</button>
+                  <button onClick={() => void mergePr(m.result.codeTaskId, true)} className="rounded border border-amber-400/25 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-100 hover:bg-amber-500/20">merge+deploy</button>
+                </>
+              )}
+              {m.codeTask?.result?.merge?.ok && <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-200">merged</span>}
+              {m.codeTask?.result?.deployWorkflowId && <span className="font-mono text-[10px] text-amber-200">deploy {m.codeTask.result.deployWorkflowId.slice(-8)}</span>}
               {m.error && <span className="text-red-200">{m.error}</span>}
             </div>
           ))}

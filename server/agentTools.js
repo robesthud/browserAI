@@ -1277,6 +1277,22 @@ export const TOOLS = {
     },
   },
 
+  operator_merge_code_task_pr: {
+    description: 'Merge a Code Operator PR after CI is green. Optionally starts safe production deploy after merge. Requires explicit user approval for deploy=true.',
+    params: {
+      id: { type: 'string', required: true, description: 'Operator code task id.' },
+      merge_method: { type: 'string', optional: true, description: 'merge, squash, or rebase. Default squash.' },
+      deploy: { type: 'boolean', optional: true, description: 'Start safe deploy after merge. Default false.' },
+      confirm_deploy: { type: 'boolean', optional: true, description: 'Must be true after explicit approval if deploy=true.' },
+    },
+    handler: async ({ id, merge_method = 'squash', deploy = false, confirm_deploy = false } = {}) => {
+      try {
+        const { mergeOperatorCodeTaskPr } = await import('./operatorCode.js')
+        return ok(await mergeOperatorCodeTaskPr({ taskId: id, mergeMethod: merge_method, deploy, confirmDeploy: confirm_deploy }))
+      } catch (e) { return err(e.message) }
+    },
+  },
+
   // ── Ops tools ─────────────────────────────────────────────────────────────
   ops_list_services: {
     description: 'List available deployment / ops services (GitHub, Timeweb, etc).',
