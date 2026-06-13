@@ -50,6 +50,14 @@ const IDLE_NOTICE_MS = 75 * 1000
 const LLM_HARD_IDLE_MS = 2 * 60 * 1000
 const activeRunsByChat = new Map()
 
+export function listActiveAgentRuns() {
+  return [...activeRunsByChat.entries()].map(([chatId, v]) => ({ chatId, startedAt: v.startedAt, ageMs: Date.now() - Number(v.startedAt || Date.now()) }))
+}
+
+export function clearActiveAgentRun(chatId = '') {
+  return activeRunsByChat.delete(String(chatId || ''))
+}
+
 // ── System prompt builder ───────────────────────────────────────────────────
 async function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null, chatId = '', lite = false, toolNames = null } = {}) {
   // Lite profile: skip workspace scans and MCP discovery entirely —

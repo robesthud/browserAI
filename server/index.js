@@ -74,7 +74,7 @@ import {
 import { searchWeb, fetchWebPage } from './web.js'
 // gateway.js (free-gateway routing) удалён вместе с gemini-web-proxy.
 // retryVideoJob удалён вместе с gemini_video runner.
-import { createJob, getJob, initJobs, listJobs, startJob, cancelJob } from './jobs.js'
+import { createJob, getJob, initJobs, listJobs, startJob, cancelJob, retryJob } from './jobs.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
@@ -89,7 +89,7 @@ import {
   setSession as setDeepSeekSession,
 } from './deepseekTokenRefresher.js'
 import { startTelegramBot } from './telegramBot.js'
-import { runAgent } from './agentLoop.js'
+import { runAgent, listActiveAgentRuns, clearActiveAgentRun } from './agentLoop.js'
 import { listDeterministicActions } from './deterministicActionRouter.js'
 import {
   callLLM, callLLMStream, isAnthropicOfficialUrl, isGoogleGenerativeNativeUrl,
@@ -1885,6 +1885,24 @@ app.post('/api/jobs', requireAuth, (req, res) => {
   }
 })
 
+app.post('/api/jobs/tool', requireAuth, (req, res) => {
+  try {
+    const { tool, args = {}, chatId = '', title = '' } = req.body || {}
+    if (!tool) return res.status(400).json({ ok: false, error: 'tool required' })
+    const job = createJob({
+      userId: req.user?.id || '',
+      chatId,
+      type: `tool_${tool}`,
+      title: title || `Tool: ${tool}`,
+      input: { tool, args },
+    })
+    startJob(job.id)
+    res.json({ ok: true, job: getJob(job.id) })
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message || 'Не удалось создать tool-задачу' })
+  }
+})
+
 app.get('/api/jobs/:id', requireAuth, (req, res) => {
   const job = getJob(req.params.id)
   if (!job) return res.status(404).json({ error: 'job not found' })
@@ -1897,6 +1915,12 @@ app.get('/api/jobs', requireAuth, (req, res) => {
 
 app.post('/api/jobs/:id/cancel', requireAuth, (req, res) => {
   const job = cancelJob(req.params.id)
+  if (!job) return res.status(404).json({ error: 'job not found' })
+  res.json({ ok: true, job })
+})
+
+app.post('/api/jobs/:id/retry', requireAuth, (req, res) => {
+  const job = retryJob(req.params.id)
   if (!job) return res.status(404).json({ error: 'job not found' })
   res.json({ ok: true, job })
 })
@@ -2894,6 +2918,15 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
 
 app.get('/api/agent/actions', requireAuth, (_req, res) => {
   res.json({ actions: listDeterministicActions() })
+})
+
+app.get('/api/agent/runs', requireAuth, (_req, res) => {
+  res.json({ runs: listActiveAgentRuns() })
+})
+
+app.post('/api/agent/runs/:chatId/reset', requireAuth, (req, res) => {
+  const cleared = clearActiveAgentRun(req.params.chatId || '')
+  res.json({ ok: true, cleared })
 })
 
 // Provider adapter metadata. Lets UI/self-tests understand which protocol

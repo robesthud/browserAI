@@ -194,6 +194,25 @@ async function saveGeneratedFile(chatId, file) {
   return `generated/${file.name}`
 }
 
+async function runToolJob(job) {
+  const { invokeTool } = await import('./agentTools.js')
+  const input = job.input || {}
+  const tool = input.tool || job.type.replace(/^tool_/, '')
+  const args = input.args || {}
+  appendJobLog(job.id, `Запускаю tool: ${tool}`)
+  setJobPatch(job.id, { status: 'running', progress: 10 })
+  if (isCancelled(job.id)) return
+  const result = await withWorkspaceScope(job.chatId, () => invokeTool(tool, args, { userId: job.userId, chatId: job.chatId }))
+  if (isCancelled(job.id)) return
+  if (!result?.ok) {
+    appendJobLog(job.id, `Ошибка tool ${tool}: ${result?.error || 'unknown error'}`)
+    setJobPatch(job.id, { status: 'failed', progress: 100, error: result?.error || 'tool failed', result: { tool, raw: result }, finishedAt: now() })
+    return
+  }
+  appendJobLog(job.id, `Tool ${tool} завершён успешно`)
+  setJobPatch(job.id, { status: 'succeeded', progress: 100, result: { tool, ...(result.result || {}) }, finishedAt: now() })
+}
+
 // Find ANY active LLM key in the DB and use it for short text-generation
 // tasks (PDF / DOCX / XLSX / PPTX document body generation). Picks the
 // first active row; falls back to the first row if none active.
@@ -368,6 +387,14 @@ async function runLocalDocumentJob(job) {
 }
 
 
+export function retryJob(id) {
+  const old = getJob(id)
+  if (!old) return null
+  const next = createJob({ userId: old.userId, chatId: old.chatId, type: old.type, title: old.title || old.type, input: old.input || {} })
+  startJob(next.id)
+  return getJob(next.id)
+}
+
 export function startJob(id) {
   const job = getJob(id)
   if (!job || running.has(id)) return job
@@ -375,7 +402,7 @@ export function startJob(id) {
   ;(async () => {
     try {
       if (job.type.startsWith('generate_')) await runLocalDocumentJob(job)
-
+      else if (job.type.startsWith('tool_')) await runToolJob(job)
       else throw new Error(`Unknown job type: ${job.type}`)
     } catch (e) {
       appendJobLog(id, `Ошибка: ${e.message || String(e)}`)
