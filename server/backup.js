@@ -133,4 +133,3 @@ export function stopBackupScheduler() {
   if (timer) clearInterval(timer)
   timer = null
 }
-export function stopBackupScheduler() { try { clearInterval(backupTimer) } catch {} }

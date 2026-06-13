@@ -97,25 +97,15 @@ export function installGracefulShutdown({ server, beforeExit } = {}) {
   const stop = async (sig) => {
     console.log(`[monitoring] received ${sig}, shutting down…`)
     try { if (typeof beforeExit === 'function') await beforeExit() } catch { /* ignore */ }
+    const doCleanup = async () => {
+      try { const { stopBackupScheduler } = await import('./backup.js'); stopBackupScheduler() } catch {}
+      try { const { stopCron } = await import('./cron.js'); stopCron() } catch {}
+      try { const { stopDeepseekTimers } = await import('./deepseekTokenRefresher.js'); stopDeepseekTimers() } catch {}
+    }
     if (server && typeof server.close === 'function') {
-      server.close(() => globalIntervals.forEach(i => { try { clearInterval(i) } catch {} })
-  try { const { stopBackupScheduler } = await import('./backup.js'); stopBackupScheduler() } catch {}
-  try { const { stopCron } = await import('./cron.js'); stopCron() } catch {}
-  try { const { stopDeepseekTimers } = await import('./deepseekTokenRefresher.js'); stopDeepseekTimers() } catch {}
-  try { clearInterval(sessionCleanupInterval) } catch {}
-  process.exit(0))
-      setTimeout(() => globalIntervals.forEach(i => { try { clearInterval(i) } catch {} })
-  try { const { stopBackupScheduler } = await import('./backup.js'); stopBackupScheduler() } catch {}
-  try { const { stopCron } = await import('./cron.js'); stopCron() } catch {}
-  try { const { stopDeepseekTimers } = await import('./deepseekTokenRefresher.js'); stopDeepseekTimers() } catch {}
-  try { clearInterval(sessionCleanupInterval) } catch {}
-  process.exit(0), 8000).unref()
-    } else { globalIntervals.forEach(i => { try { clearInterval(i) } catch {} })
-  try { const { stopBackupScheduler } = await import('./backup.js'); stopBackupScheduler() } catch {}
-  try { const { stopCron } = await import('./cron.js'); stopCron() } catch {}
-  try { const { stopDeepseekTimers } = await import('./deepseekTokenRefresher.js'); stopDeepseekTimers() } catch {}
-  try { clearInterval(sessionCleanupInterval) } catch {}
-  process.exit(0) }
+      server.close(async () => { await doCleanup(); process.exit(0) })
+      setTimeout(async () => { await doCleanup(); process.exit(0) }, 8000).unref()
+    } else { await doCleanup(); process.exit(0) }
   }
   process.on('SIGTERM', () => stop('SIGTERM'))
   process.on('SIGINT',  () => stop('SIGINT'))
