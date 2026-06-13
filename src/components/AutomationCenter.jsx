@@ -82,6 +82,8 @@ export default function AutomationCenter() {
   const [workflows, setWorkflows] = useState([])
   const [busyRecipe, setBusyRecipe] = useState('')
   const [error, setError] = useState('')
+  const [scheduleRecipe, setScheduleRecipe] = useState('production_health_check')
+  const [scheduleExpr, setScheduleExpr] = useState('*/15 minutes')
 
   const runningCount = useMemo(() => workflows.filter((w) => !TERMINAL.has(w.status)).length, [workflows])
 
@@ -123,6 +125,29 @@ export default function AutomationCenter() {
     }
   }
 
+  const scheduleSafeRecipe = async () => {
+    const recipe = recipes.find((r) => r.id === scheduleRecipe)
+    if (!recipe) return
+    if (recipe.requiresConfirmation || recipe.risk !== 'safe') {
+      setError('Scheduled automations currently allow only safe recipes without confirmation.')
+      return
+    }
+    try {
+      await api('/api/cron', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: `workflow: ${recipe.title}`,
+          schedule: scheduleExpr,
+          trigger: 'workflow',
+          prompt: recipe.id,
+        }),
+      })
+      setError(`Scheduled: ${recipe.title} (${scheduleExpr})`)
+    } catch (e) {
+      setError(e.message || String(e))
+    }
+  }
+
   return (
     <section className="rounded-2xl border border-white/10 bg-graphite-800/45 p-4">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -152,6 +177,20 @@ export default function AutomationCenter() {
             <div className="mt-2 text-[10px] text-cream-faint">{(r.steps || []).length} steps · {(r.tags || []).join(', ')}</div>
           </button>
         ))}
+      </div>
+
+      <div className="mt-4 rounded-xl border border-white/10 bg-black/15 p-3">
+        <div className="mb-2">
+          <h3 className="text-[13px] font-medium">Scheduled automation</h3>
+          <p className="text-[11px] text-cream-faint">Запуск safe recipes по расписанию. Форматы: */15 minutes, hourly, daily 09:00, weekly mon 10:00.</p>
+        </div>
+        <div className="flex flex-col gap-2 md:flex-row">
+          <select value={scheduleRecipe} onChange={(e) => setScheduleRecipe(e.target.value)} className="rounded-lg border border-white/10 bg-graphite-900 px-2 py-1.5 text-[12px] text-cream">
+            {recipes.filter((r) => r.risk === 'safe' && !r.requiresConfirmation).map((r) => <option key={r.id} value={r.id}>{r.title}</option>)}
+          </select>
+          <input value={scheduleExpr} onChange={(e) => setScheduleExpr(e.target.value)} className="rounded-lg border border-white/10 bg-graphite-900 px-2 py-1.5 text-[12px] text-cream" placeholder="*/15 minutes" />
+          <button onClick={() => void scheduleSafeRecipe()} className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 px-3 py-1.5 text-[12px] text-emerald-100 hover:bg-emerald-500/20">Schedule</button>
+        </div>
       </div>
 
       <div className="mt-4">

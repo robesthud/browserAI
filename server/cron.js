@@ -15,6 +15,7 @@
  * Trigger types:
  *   - chat        → enqueue a user message into the user's "Cron" chat
  *   - notify_tg   → send to admin via Telegram (uses ops connector)
+ *   - workflow    → start a safe Automation Center recipe (prompt = recipe id)
  *
  * Polling tick: 60 s. Last run tracked per job so we don't double-fire
  * across restarts (initial tick after boot skips anything <90 s since
@@ -99,7 +100,7 @@ export function upsertCronJob(userId, body) {
   const prompt = String(body.prompt || '').trim().slice(0, 4000)
   const trigger = String(body.trigger || 'chat')
   if (!name || !schedule || !prompt) throw new Error('name, schedule and prompt are required')
-  if (!['chat', 'notify_tg'].includes(trigger)) throw new Error('trigger must be chat or notify_tg')
+  if (!['chat', 'notify_tg', 'workflow'].includes(trigger)) throw new Error('trigger must be chat, notify_tg or workflow')
   // Validate schedule by computing next run; throws if unrecognised format.
   const next = nextRunFromSchedule(schedule)
 
@@ -140,6 +141,23 @@ async function fireJob(job) {
         confirm: true,
       })
     } catch (e) { console.warn('[cron] tg notify failed:', e.message) }
+    return
+  }
+  if (job.trigger === 'workflow') {
+    try {
+      const { createWorkflow, startWorkflow } = await import('./agentWorkflows.js')
+      const wf = createWorkflow({
+        userId: job.user_id,
+        chatId: '',
+        recipeId: String(job.prompt || '').trim(),
+        input: { cronId: job.id, cronName: job.name, schedule: job.schedule },
+        // Scheduled workflows are intentionally limited to recipes that do
+        // not require confirmation. Production-write automations remain
+        // manual unless a future policy engine grants them explicitly.
+        confirm: false,
+      })
+      startWorkflow(wf.id)
+    } catch (e) { console.warn('[cron] workflow enqueue failed:', e.message) }
     return
   }
   // 'chat' trigger: post the prompt as a virtual user message into a
