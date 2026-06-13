@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { runAgent } from '../server/agentLoop.js'
 import * as llmClient from '../server/llmClient.js'
-import * as agentTools from '../server/agentTools.js'
 
 vi.mock('../server/llmClient.js', () => {
   return {
@@ -24,7 +23,7 @@ vi.mock('../server/contextManager.js', async (importOriginal) => {
     applyAnthropicCacheHints: vi.fn((m) => m),
     clipToolOutput: mod.clipToolOutput,
     manageContext: mod.manageContext,
-    upsertAgentStateDigest: mod.upsertAgentStateDigest
+    upsertAgentStateDigest: mod.upsertAgentStateDigest,
   }
 })
 
@@ -32,10 +31,7 @@ vi.mock('../server/agentTools.js', async (importOriginal) => {
   const actual = await importOriginal()
   return {
     ...actual,
-    invokeTool: vi.fn(async (tool, args, opts) => {
-      opts?.onStdout?.('mock stdout progress')
-      return { ok: true, result: 'mocked tool result' }
-    })
+    invokeTool: vi.fn(async () => ({ ok: true, result: 'mocked tool result' })),
   }
 })
 
@@ -47,13 +43,12 @@ vi.mock('../server/costTracker.js', () => {
   }
 })
 
-describe('v2.22 - Automatic Memory Integration', () => {
-  it('should auto-call recall_facts and kb_search for a high complexity task', async () => {
-    llmClient.callLLMStream
-      .mockImplementationOnce(async ({ onTextDelta }) => {
-        await onTextDelta('Final answer.', { kind: 'text' })
-        return { text: 'Final answer.', reasoning: '', toolCalls: [], usage: { prompt: 20, completion: 10 } }
-      })
+describe('automatic memory preload', () => {
+  it('does not auto-call recall_facts/kb_search before simple agent work', async () => {
+    llmClient.callLLMStream.mockImplementationOnce(async ({ onTextDelta }) => {
+      await onTextDelta('Final answer.', { kind: 'text' })
+      return { text: 'Final answer.', reasoning: '', toolCalls: [], usage: { prompt: 20, completion: 10 } }
+    })
 
     const events = []
     const res = {
@@ -63,14 +58,11 @@ describe('v2.22 - Automatic Memory Integration', () => {
         const lines = chunk.split('\n')
         let currentEvent = null
         for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            currentEvent = line.substring(7).trim()
-          } else if (line.startsWith('data: ')) {
+          if (line.startsWith('event: ')) currentEvent = line.substring(7).trim()
+          else if (line.startsWith('data: ')) {
             const dataStr = line.substring(6)
             if (dataStr === '[DONE]') continue
-            try {
-              events.push({ event: currentEvent, data: JSON.parse(dataStr) })
-            } catch (e) { }
+            try { events.push({ event: currentEvent, data: JSON.parse(dataStr) }) } catch { /* ignore */ }
           }
         }
       }),
@@ -87,16 +79,11 @@ describe('v2.22 - Automatic Memory Integration', () => {
       res,
     })
 
-    const eventNames = events.map(e => e.event)
-    
-    // We expect tool_start for recall_facts and kb_search before the first LLM call (which emits thinking/assistant)
-    const toolStarts = events.filter(e => e.event === 'tool_start')
-    expect(toolStarts.length).toBeGreaterThanOrEqual(2)
-    expect(toolStarts[0].data.payload.name).toBe('recall_facts')
-    expect(toolStarts[1].data.payload.name).toBe('kb_search')
+    const autoMemoryStarts = events
+      .filter(e => e.event === 'tool_start')
+      .map(e => e.data.payload.name)
+      .filter(name => ['recall_facts', 'kb_search'].includes(name))
 
-    // Confirm they ran with step 0
-    expect(toolStarts[0].data.payload.step).toBe(0)
-    expect(toolStarts[1].data.payload.step).toBe(0)
+    expect(autoMemoryStarts).toEqual([])
   })
 })

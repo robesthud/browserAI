@@ -785,7 +785,7 @@ export function useChats(settings) {
                         : tc,
                     ),
                   }))
-                  if (['bash', 'write_file', 'edit_file', 'download_url', 'delete_file'].includes(data.name)) {
+                  if (['bash', 'write_file', 'edit_file', 'download_url', 'delete_file', 'git_clone', 'zip_files'].includes(data.name)) {
                     setWorkspaceRevision(Date.now())
                   }
                   // Small haptic so the user can feel progress in long

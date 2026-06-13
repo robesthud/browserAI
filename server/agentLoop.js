@@ -532,6 +532,44 @@ async function runLightweightChat({ res, provider, history, userId, chatId, mode
 }
 
 
+function lastUserText(history = []) {
+  return String([...history].reverse().find((m) => m?.role === 'user')?.content || '')
+}
+
+function extractGithubRepoUrl(text = '') {
+  const m = String(text || '').match(/https?:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?(?:\/)?/i)
+  if (!m) return ''
+  return m[0].replace(/\/$/, '').replace(/\.git$/i, '') + '.git'
+}
+
+function isRepoDownloadRequest(history = []) {
+  const text = lastUserText(history)
+  if (!extractGithubRepoUrl(text)) return false
+  return /(скачай|скачать|загрузи|загрузить|клонир|clone|download|pull|обнови)/i.test(text)
+}
+
+async function runRepoDownloadShortcut({ res, userId, chatId, history }) {
+  const tokens = { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: 0 }
+  const url = extractGithubRepoUrl(lastUserText(history))
+  sse(res, 'agent_context', { shortcut: 'git_clone', task: { type: 'repo_download', complexity: 'low' } })
+  sse(res, 'thinking', { step: 0 })
+  sse(res, 'tool_start', { step: 0, sub: 0, name: 'git_clone', args: { url } })
+  const r = await invokeTool('git_clone', { url }, { userId, chatId })
+  sse(res, 'tool_result', { step: 0, sub: 0, name: 'git_clone', ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult('git_clone', r, { step: 0, sub: 0 }) })
+  if (!r.ok) {
+    await streamFinalAnswer(res, `❌ Не смог скачать репозиторий: ${r.error}`)
+    sseDone(res, { steps: 0, reason: 'repo-download-error' }, tokens)
+    res.end()
+    return
+  }
+  const path = r.result?.path || 'repo'
+  await streamFinalAnswer(res, `✅ Файлы скачаны в \`${path}\`.
+
+Я только клонировал репозиторий — без анализа, установки зависимостей, сборки и тестов.`)
+  sseDone(res, { steps: 0, reason: 'repo-download-shortcut' }, tokens)
+  res.end()
+}
+
 function isArchiveRequest(history = []) {
   const last = [...history].reverse().find((m) => m?.role === 'user')
   const text = String(last?.content || '').toLowerCase()
@@ -623,6 +661,15 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
   if (!provider?.baseUrl || !provider?.apiKey) {
     sse(res, 'error', { message: 'Provider not configured' }); sseDone(res, { steps: 0, reason: 'no-provider' }, tokens); res.end(); if (chatId) activeRunsByChat.delete(chatId); return
+  }
+
+  if (isRepoDownloadRequest(history)) {
+    try {
+      await runRepoDownloadShortcut({ res, userId, chatId, history })
+    } finally {
+      if (chatId) activeRunsByChat.delete(chatId)
+    }
+    return
   }
 
   if (isArchiveRequest(history)) {
@@ -723,27 +770,11 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   sse(res, 'agent_context', { ...agentContext, toolProfile, toolNames: activeToolNames }); sse(res, 'agent_state', agentState)
   if (res.flushHeaders) res.flushHeaders()
 
-  // v2.22: Automatic Memory Integration — pre-load saved facts and 
-  // relevant knowledge-base passages before the first LLM call.
-  if (userId && ['medium', 'high'].includes(agentContext?.task?.complexity) && !aborted) {
-    const lastUserText = String([...history].reverse().find((m) => m.role === 'user')?.content || '').slice(0, 500)
-    const memCalls = [
-      { tool: 'recall_facts', args: {} },
-      { tool: 'kb_search', args: { query: lastUserText } },
-    ]
-    for (let i = 0; i < memCalls.length; i++) {
-      const mc = memCalls[i]
-      try {
-        sse(res, 'tool_start', { step: 0, sub: i, name: mc.tool, args: mc.args })
-        const r = await invokeTool(mc.tool, mc.args, { signal: abortCtl.signal, userId, chatId, extraTools })
-        sse(res, 'tool_result', { step: 0, sub: i, name: mc.tool, ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult(mc.tool, r, { step: 0, sub: i }) })
-        if (r.ok && r.result) {
-          const text = typeof r.result === 'string' ? r.result : JSON.stringify(r.result)
-          if (text && text !== '{}' && text !== '[]') convo.push({ role: 'user', content: `<arena-system-message>\nAuto-memory (${mc.tool}):\n${text.slice(0, 4000)}\n</arena-system-message>` })
-        }
-      } catch { /* best-effort: ignore */ } // memory preload is best-effort — never blocks the run
-    }
-  }
+  // Automatic memory preload disabled: it added noisy, low-value tool cards
+  // (recall_facts / kb_search) before every real task and confused simple
+  // requests like 'скачай файлы'. Memory tools remain available if the model
+  // explicitly needs them.
+
 
   // 1:1 Arena Parity: Proactive Discovery.
   // Pre-read lessons learned and repo map BEFORE the first step.
