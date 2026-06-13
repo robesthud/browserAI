@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask } from '../server/operatorCode.js'
+import { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, renderCodeTaskReport } from '../server/operatorCode.js'
 
 describe('operator code pipeline', () => {
   it('creates a queued code task with checkout metadata', () => {
@@ -18,5 +18,11 @@ describe('operator code pipeline', () => {
     expect(task.repo).toBe('robesthud/browserAI')
     expect(task.branch).toContain('operator/code_task')
     expect(getOperatorCodeTask(task.id)?.goal).toContain('inspect project')
+  })
+
+  it('renders code task verification reports', () => {
+    const report = renderCodeTaskReport({ id: 'code-1', goal: 'add button', repo: 'owner/repo', branch: 'operator/x', workdir: '/workspace/projects/repo' }, { passed: true, results: [{ name: 'npm test', ok: true, exitCode: 0 }] })
+    expect(report).toContain('Code Operator task verified')
+    expect(report).toContain('npm test')
   })
 })

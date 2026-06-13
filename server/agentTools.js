@@ -1230,6 +1230,24 @@ export const TOOLS = {
     },
   },
 
+  operator_finalize_code_task: {
+    description: 'Finalize a verified Operator Code Task: rerun deterministic verification, secret scan, git commit, push branch and optionally create a GitHub PR. Requires GitHub token for push/PR.',
+    params: {
+      id: { type: 'string', required: true, description: 'Operator code task id.' },
+      commit_message: { type: 'string', optional: true, description: 'Commit message.' },
+      push: { type: 'boolean', optional: true, description: 'Push branch to GitHub. Default true.' },
+      create_pr: { type: 'boolean', optional: true, description: 'Create GitHub PR. Default true.' },
+      pr_title: { type: 'string', optional: true, description: 'Optional PR title.' },
+      pr_body: { type: 'string', optional: true, description: 'Optional PR body.' },
+    },
+    handler: async ({ id, commit_message = '', push = true, create_pr = true, pr_title = '', pr_body = '' } = {}) => {
+      try {
+        const { finalizeOperatorCodeTask } = await import('./operatorCode.js')
+        return ok(await finalizeOperatorCodeTask({ taskId: id, commitMessage: commit_message, push, createPr: create_pr, prTitle: pr_title, prBody: pr_body }))
+      } catch (e) { return err(e.message) }
+    },
+  },
+
   // ── Ops tools ─────────────────────────────────────────────────────────────
   ops_list_services: {
     description: 'List available deployment / ops services (GitHub, Timeweb, etc).',

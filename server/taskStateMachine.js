@@ -48,7 +48,7 @@ export function deriveTaskPhase({ agentContext = {}, agentState = {}, recentTool
 const COMMON = [
   'ask_user', 'read_project_rules', 'list_files', 'read_file', 'search_files',
   'plan_set', 'plan_check', 'secret_scan', 'workspace_snapshot_list',
-  'operator_status', 'operator_project_profile', 'operator_start_mission', 'operator_list_missions', 'operator_get_mission',
+  'operator_status', 'operator_project_profile', 'operator_start_mission', 'operator_list_missions', 'operator_get_mission', 'operator_finalize_code_task',
 ]
 
 const BY_PHASE = {

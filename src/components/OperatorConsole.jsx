@@ -61,6 +61,18 @@ export default function OperatorConsole() {
     finally { setBusy(false) }
   }
 
+  const finalizeCodeTask = async (taskId) => {
+    const ok = window.confirm('Commit, push branch and create PR for this code task?')
+    if (!ok) return
+    setBusy(true)
+    setError('')
+    try {
+      await api(`/api/operator/code-tasks/${encodeURIComponent(taskId)}/finalize`, { method: 'POST', body: JSON.stringify({ push: true, createPr: true }) })
+      await refresh()
+    } catch (e) { setError(e.message || String(e)) }
+    finally { setBusy(false) }
+  }
+
   const missions = operator?.missions || []
   const types = operator?.missionTypes || []
   return (
@@ -120,6 +132,10 @@ export default function OperatorConsole() {
               {m.workflowId && <span className="font-mono text-[10px] text-violet-200">wf {m.workflowId.slice(-8)}</span>}
               {m.jobId && <span className="font-mono text-[10px] text-violet-200">job {m.jobId.slice(-8)}</span>}
               {m.result?.codeTaskId && <span className="font-mono text-[10px] text-violet-200">code {m.result.codeTaskId.slice(-8)}</span>}
+              {m.codeTask?.status === 'succeeded' && !m.codeTask?.result?.finalize?.committed && (
+                <button onClick={() => void finalizeCodeTask(m.result.codeTaskId)} className="rounded border border-emerald-400/25 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-100 hover:bg-emerald-500/20">commit+PR</button>
+              )}
+              {m.codeTask?.result?.finalize?.pullRequest?.url && <a href={m.codeTask.result.finalize.pullRequest.url} target="_blank" rel="noreferrer" className="text-[10px] text-emerald-200 underline">PR #{m.codeTask.result.finalize.pullRequest.number}</a>}
               {m.error && <span className="text-red-200">{m.error}</span>}
             </div>
           ))}

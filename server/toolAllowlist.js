@@ -1,7 +1,7 @@
 const COMMON_AGENT_TOOLS = [
   'plan_set', 'plan_check', 'ask_user', 'read_project_rules', 'project_profile', 'secret_scan', 'workspace_snapshot_list',
   'recall_facts', 'remember_fact', 'forget_fact', 'kb_search', 'kb_list', 'kb_add', 'kb_delete',
-  'operator_status', 'operator_project_profile', 'operator_start_mission', 'operator_list_missions', 'operator_get_mission',
+  'operator_status', 'operator_project_profile', 'operator_start_mission', 'operator_list_missions', 'operator_get_mission', 'operator_finalize_code_task',
 ]
 
 export const TOOL_PROFILES = {

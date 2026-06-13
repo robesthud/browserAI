@@ -15,6 +15,34 @@ function id(prefix = 'code') { return `${prefix}-${Date.now()}-${Math.random().t
 function parse(raw, fallback) { try { return JSON.parse(raw || '') } catch { return fallback } }
 function shQuote(v = '') { return `'${String(v).replace(/'/g, `'"'"'`)}'` }
 function clip(s = '', max = 20000) { const x = String(s || ''); return x.length > max ? x.slice(0, max) + `\n…[truncated ${x.length - max} chars]` : x }
+function redact(s = '') {
+  let out = String(s || '')
+  for (const v of [process.env.GITHUB_TOKEN, process.env.GH_TOKEN].filter(Boolean)) out = out.split(v).join('<redacted-token>')
+  return out.replace(/x-access-token:[^@\s]+@/g, 'x-access-token:<redacted>@')
+}
+function repoSlug(repo = '') {
+  return String(repo || '').replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '')
+}
+async function githubJson(path, { method = 'GET', body = null } = {}) {
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || ''
+  if (!token) throw new Error('GITHUB_TOKEN is not configured')
+  const r = await fetch(`https://api.github.com${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+    signal: AbortSignal.timeout(60_000),
+  })
+  const text = await r.text().catch(() => '')
+  let data
+  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+  if (!r.ok) throw new Error(`GitHub ${r.status}: ${clip(text, 1000)}`)
+  return data
+}
 
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || '/workspace'
 const PROJECTS_ROOT = path.join(WORKSPACE_ROOT, 'projects')
@@ -260,4 +288,82 @@ export function renderCodeTaskReport(task, verify = task?.verify || {}) {
   return lines.join('\n')
 }
 
-export default { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, listOperatorCodeTasks }
+
+export async function finalizeOperatorCodeTask({ taskId = '', commitMessage = '', push = true, createPr = true, prTitle = '', prBody = '' } = {}) {
+  initOperatorCode()
+  let task = getOperatorCodeTask(taskId)
+  if (!task) throw new Error('code task not found')
+  if (!task.workdir || !existsSync(path.join(task.workdir, '.git'))) throw new Error('code task checkout not found')
+  patchTask(task.id, { status: 'finalizing' })
+  task = getOperatorCodeTask(task.id)
+  const verify = task.verify?.results?.length ? task.verify : await verifyCodeTask(task)
+  if (!verify.passed) {
+    patchTask(task.id, { status: 'failed', verify, error: 'verification failed; refusing to commit/push', finishedAt: now() })
+    return getOperatorCodeTask(task.id)
+  }
+
+  const status = await run('git status --short', { cwd: task.workdir, timeoutMs: 30_000 })
+  const changed = String(status.stdout || '').trim()
+  if (!changed) {
+    const result = { ...(task.result || {}), finalize: { committed: false, pushed: false, pr: null, message: 'No changes to commit' } }
+    patchTask(task.id, { status: 'succeeded', verify, result, finishedAt: now() })
+    return getOperatorCodeTask(task.id)
+  }
+
+  const scan = await withWorkspaceScope('', () => scanSecrets({ root: path.relative(WORKSPACE_ROOT, task.workdir).replace(/\\/g, '/') }))
+  if (!scan.ok) {
+    patchTask(task.id, { status: 'failed', verify: { ...verify, secretScan: scan }, error: `secret scan blocked finalize: ${scan.high} high findings`, finishedAt: now() })
+    return getOperatorCodeTask(task.id)
+  }
+
+  const msg = String(commitMessage || `operator: ${task.goal.slice(0, 72) || 'code task'}`).replace(/\n+/g, ' ').trim()
+  const add = await run('git add -A', { cwd: task.workdir, timeoutMs: 30_000 })
+  if (add.exitCode !== 0) throw new Error(`git add failed: ${add.stderr || add.stdout}`)
+  const commit = await run(`git commit -m ${shQuote(msg)}`, { cwd: task.workdir, timeoutMs: 60_000 })
+  const commitOk = commit.exitCode === 0 || /nothing to commit/i.test(commit.stdout + commit.stderr)
+  if (!commitOk) throw new Error(`git commit failed: ${commit.stderr || commit.stdout}`)
+  const sha = (await run('git rev-parse HEAD', { cwd: task.workdir, timeoutMs: 30_000 })).stdout.trim()
+
+  let pushResult = null
+  if (push) {
+    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || ''
+    if (!token) throw new Error('GITHUB_TOKEN is required to push operator branch')
+    const slug = repoSlug(task.repo)
+    const remote = `https://x-access-token:${token}@github.com/${slug}.git`
+    const pr = await run(`git push ${shQuote(remote)} HEAD:${shQuote(task.branch)}`, { cwd: task.workdir, timeoutMs: 2 * 60_000 })
+    pushResult = { exitCode: pr.exitCode, stdout: redact(pr.stdout), stderr: redact(pr.stderr) }
+    if (pr.exitCode !== 0) throw new Error(`git push failed: ${redact(pr.stderr || pr.stdout)}`)
+  }
+
+  let pullRequest = null
+  if (push && createPr) {
+    const slug = repoSlug(task.repo)
+    const body = {
+      title: prTitle || msg,
+      head: task.branch,
+      base: 'main',
+      body: prBody || renderCodeTaskReport(task, verify),
+    }
+    try {
+      const pr = await githubJson(`/repos/${slug}/pulls`, { method: 'POST', body })
+      pullRequest = { number: pr.number, url: pr.html_url, state: pr.state, head: pr.head?.ref, base: pr.base?.ref }
+    } catch (e) {
+      if (/A pull request already exists/i.test(e.message)) {
+        const pulls = await githubJson(`/repos/${slug}/pulls?head=${encodeURIComponent(slug.split('/')[0] + ':' + task.branch)}&state=open`)
+        const pr = Array.isArray(pulls) ? pulls[0] : null
+        if (pr) pullRequest = { number: pr.number, url: pr.html_url, state: pr.state, head: pr.head?.ref, base: pr.base?.ref, existing: true }
+        else throw e
+      } else throw e
+    }
+  }
+
+  const final = {
+    ...(task.result || {}),
+    finalize: { committed: true, pushed: Boolean(pushResult), commit: sha, branch: task.branch, push: pushResult, pullRequest, message: msg },
+    report: renderCodeTaskReport(task, verify) + `\n\nCommit: ${sha}\nBranch: ${task.branch}${pullRequest?.url ? `\nPR: ${pullRequest.url}` : ''}`,
+  }
+  patchTask(task.id, { status: 'succeeded', verify, result: final, error: '', finishedAt: now() })
+  return getOperatorCodeTask(task.id)
+}
+
+export default { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask }

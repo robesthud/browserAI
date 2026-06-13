@@ -80,7 +80,7 @@ import { getAutomationPolicy, listAutomationPolicyEvents } from './automationPol
 import { initIncidents, listIncidents, getIncident, resolveIncident, createIncident, createIncidentWorkflow } from './incidents.js'
 import { getAgentControlPlane } from './agentControlPlane.js'
 import { initOperatorMode, getOperatorStatus, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorMission } from './operatorMode.js'
-import { getOperatorCodeTask, listOperatorCodeTasks } from './operatorCode.js'
+import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask } from './operatorCode.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
@@ -3115,6 +3115,22 @@ app.get('/api/operator/code-tasks/:id', requireAuth, (req, res) => {
   const task = getOperatorCodeTask(req.params.id)
   if (!task || (task.userId && task.userId !== req.user?.id)) return res.status(404).json({ error: 'code task not found' })
   res.json({ task })
+})
+
+app.post('/api/operator/code-tasks/:id/finalize', requireAuth, async (req, res) => {
+  try {
+    const task = getOperatorCodeTask(req.params.id)
+    if (!task || (task.userId && task.userId !== req.user?.id)) return res.status(404).json({ error: 'code task not found' })
+    const updated = await finalizeOperatorCodeTask({
+      taskId: req.params.id,
+      commitMessage: String(req.body?.commitMessage || ''),
+      push: req.body?.push !== false,
+      createPr: req.body?.createPr !== false,
+      prTitle: String(req.body?.prTitle || ''),
+      prBody: String(req.body?.prBody || ''),
+    })
+    res.json({ ok: true, task: updated })
+  } catch (e) { res.status(400).json({ ok: false, error: e?.message || String(e) }) }
 })
 
 app.post('/api/operator/missions', requireAuth, (req, res) => {
