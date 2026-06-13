@@ -77,6 +77,7 @@ import { searchWeb, fetchWebPage } from './web.js'
 import { createJob, getJob, initJobs, listJobs, startJob, cancelJob, retryJob, registerRuntimeInput } from './jobs.js'
 import { initAgentWorkflows, listAutomationRecipes, createWorkflow, startWorkflow, getWorkflow, listWorkflows, cancelWorkflow, retryWorkflow } from './agentWorkflows.js'
 import { getAutomationPolicy, listAutomationPolicyEvents } from './automationPolicy.js'
+import { initIncidents, listIncidents, getIncident, resolveIncident, createIncident, createIncidentWorkflow } from './incidents.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
@@ -237,7 +238,7 @@ const corsOptions = (origin, callback) => {
 };
 
 app.use(cors({ origin: corsOptions, credentials: true }))
-app.use(express.json({ limit: '50mb' }))
+app.use(express.json({ limit: '50mb', verify: (req, _res, buf) => { req.rawBody = buf } }))
 
 // ---- Auth + encrypted cloud sync ----
 const AUTH_COOKIE = 'browserai_session'
@@ -1775,6 +1776,55 @@ app.get('/api/ops/audit', requireAuth, (req, res) => {
   res.json({ entries: readOpsAudit({ limit: req.query.limit || 100 }) })
 })
 
+// ── Public webhooks ────────────────────────────────────────────────────────
+function verifyGithubWebhookSignature(req) {
+  const secret = process.env.GITHUB_WEBHOOK_SECRET || ''
+  if (!secret) return process.env.GITHUB_WEBHOOK_SECRET_REQUIRED === '1' ? false : true
+  const sig = String(req.get('x-hub-signature-256') || '')
+  if (!sig.startsWith('sha256=')) return false
+  const body = req.rawBody || Buffer.from(JSON.stringify(req.body || {}))
+  const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(body).digest('hex')
+  try { return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected)) } catch { return false }
+}
+
+app.post('/api/webhooks/github', async (req, res) => {
+  if (!verifyGithubWebhookSignature(req)) return res.status(401).json({ ok: false, error: 'invalid github webhook signature' })
+  const event = String(req.get('x-github-event') || '')
+  const delivery = String(req.get('x-github-delivery') || '')
+  const body = req.body || {}
+  try {
+    if (event === 'workflow_run' && body.action === 'completed' && body.workflow_run?.conclusion && body.workflow_run.conclusion !== 'success') {
+      const run = body.workflow_run
+      const repo = body.repository?.full_name || ''
+      const inc = createIncident({
+        source: 'github.workflow_run',
+        severity: 'high',
+        title: `GitHub Actions failed: ${run.name || 'workflow'} (${run.conclusion})`,
+        fingerprint: `github-workflow-${repo}-${run.id}-${run.conclusion}`,
+        details: { event, delivery, repo, runId: run.id, name: run.name, conclusion: run.conclusion, status: run.status, branch: run.head_branch, sha: run.head_sha, url: run.html_url },
+      })
+      const wf = createIncidentWorkflow({ incident: inc, recipeId: 'github_ci_status', input: { githubEvent: event, delivery, repo, runId: run.id, sha: run.head_sha } })
+      return res.json({ ok: true, event, incident: inc, workflowId: wf.id })
+    }
+    if (event === 'push' && body.ref === 'refs/heads/main') {
+      const repo = body.repository?.full_name || ''
+      const inc = createIncident({
+        source: 'github.push',
+        severity: 'low',
+        title: `Push to main: ${repo}`,
+        fingerprint: `github-push-main-${repo}-${body.after || delivery}`,
+        details: { event, delivery, repo, before: body.before, after: body.after, pusher: body.pusher?.name, compare: body.compare },
+      })
+      const wf = createIncidentWorkflow({ incident: inc, recipeId: 'production_health_check', input: { githubEvent: event, delivery, repo, sha: body.after } })
+      return res.json({ ok: true, event, incident: inc, workflowId: wf.id })
+    }
+    return res.json({ ok: true, event, ignored: true })
+  } catch (e) {
+    console.warn('[github webhook] failed:', e?.message || e)
+    return res.status(500).json({ ok: false, error: e?.message || String(e), event })
+  }
+})
+
 // ── User-defined custom tools (MCP-style) ──────────────────────────────────
 app.get('/api/custom-tools', requireAuth, async (req, res) => {
   try {
@@ -2475,6 +2525,7 @@ try {
   await ensureWorkspaceRoot();
   initJobs();
   initAgentWorkflows();
+  initIncidents();
 } catch (err) {
   console.error('FATAL: Failed to initialize workspace:', err.message);
   process.exit(1);
@@ -2966,6 +3017,23 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
 })
 
 
+
+// ── Incidents ──────────────────────────────────────────────────────────────
+app.get('/api/incidents', requireAuth, (req, res) => {
+  res.json({ incidents: listIncidents({ userId: req.user?.id || '', status: String(req.query.status || ''), limit: req.query.limit || 50 }) })
+})
+
+app.get('/api/incidents/:id', requireAuth, (req, res) => {
+  const incident = getIncident(req.params.id)
+  if (!incident || (incident.userId && incident.userId !== req.user?.id)) return res.status(404).json({ error: 'incident not found' })
+  res.json({ incident })
+})
+
+app.post('/api/incidents/:id/resolve', requireAuth, (req, res) => {
+  const incident = getIncident(req.params.id)
+  if (!incident || (incident.userId && incident.userId !== req.user?.id)) return res.status(404).json({ error: 'incident not found' })
+  res.json({ ok: true, incident: resolveIncident(req.params.id, { note: String(req.body?.note || '') }) })
+})
 
 // ── Agent Automation Workflows ─────────────────────────────────────────────
 app.get('/api/agent/recipes', requireAuth, (_req, res) => {

@@ -26,6 +26,7 @@ function Pill({ tone = 'zinc', children }) {
 
 export default function AgentInbox() {
   const [questions, setQuestions] = useState([])
+  const [incidents, setIncidents] = useState([])
   const [workflows, setWorkflows] = useState([])
   const [jobs, setJobs] = useState([])
   const [error, setError] = useState('')
@@ -33,22 +34,25 @@ export default function AgentInbox() {
 
   const actionable = useMemo(() => {
     const pendingQ = questions.length
+    const openIncidents = incidents.filter((i) => i.status !== 'resolved').length
     const failedWf = workflows.filter((w) => w.status === 'failed').length
     const runningWf = workflows.filter((w) => !terminal.has(w.status)).length
     const failedJobs = jobs.filter((j) => j.status === 'failed').length
-    return { pendingQ, failedWf, runningWf, failedJobs, total: pendingQ + failedWf + runningWf + failedJobs }
-  }, [questions, workflows, jobs])
+    return { pendingQ, openIncidents, failedWf, runningWf, failedJobs, total: pendingQ + openIncidents + failedWf + runningWf + failedJobs }
+  }, [questions, incidents, workflows, jobs])
 
   const refresh = async () => {
     setBusy(true)
     setError('')
     try {
-      const [q, w, j] = await Promise.all([
+      const [q, inc, w, j] = await Promise.all([
         api('/api/agent/questions').catch(() => ({ questions: [] })),
+        api('/api/incidents?limit=12').catch(() => ({ incidents: [] })),
         api('/api/agent/workflows?limit=20').catch(() => ({ workflows: [] })),
         api('/api/jobs?limit=20').catch(() => ({ jobs: [] })),
       ])
       setQuestions(q.questions || [])
+      setIncidents((inc.incidents || []).filter((x) => x.status !== 'resolved').slice(0, 8))
       setWorkflows((w.workflows || []).filter((x) => !terminal.has(x.status) || x.status === 'failed').slice(0, 8))
       setJobs((j.jobs || []).filter((x) => !terminal.has(x.status) || x.status === 'failed').slice(0, 8))
     } catch (e) {
@@ -70,6 +74,7 @@ export default function AgentInbox() {
     await api('/api/agent/answer', { method: 'POST', body: JSON.stringify({ question_id: id, answer: { selected: [selected] } }) })
     await refresh()
   }
+  const resolveIncident = async (id) => { await api(`/api/incidents/${id}/resolve`, { method: 'POST', body: JSON.stringify({ note: 'resolved from Agent Inbox' }) }); await refresh() }
   const retryWorkflow = async (id) => { await api(`/api/agent/workflows/${id}/retry`, { method: 'POST' }); await refresh() }
   const cancelWorkflow = async (id) => { await api(`/api/agent/workflows/${id}/cancel`, { method: 'POST' }); await refresh() }
 
@@ -78,7 +83,7 @@ export default function AgentInbox() {
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
           <h2 className="text-[15px] font-medium">Agent Inbox</h2>
-          <p className="text-[12px] text-cream-faint">Единая очередь внимания: approvals, вопросы, running/failed workflows и jobs.</p>
+          <p className="text-[12px] text-cream-faint">Единая очередь внимания: incidents, approvals, running/failed workflows и jobs.</p>
         </div>
         <div className="flex items-center gap-2">
           {actionable.total > 0 && <Pill tone="amber">{actionable.total} attention</Pill>}
@@ -87,9 +92,23 @@ export default function AgentInbox() {
       </div>
       {error && <div className="mb-2 rounded-lg border border-red-400/25 bg-red-500/10 p-2 text-[12px] text-red-200">{error}</div>}
 
-      <div className="grid gap-3 lg:grid-cols-3">
+      <div className="grid gap-3 lg:grid-cols-4">
         <div className="rounded-xl border border-white/10 bg-black/15 p-3">
-          <div className="mb-2 flex items-center justify-between"><h3 className="text-[13px] font-medium">Approvals / Questions</h3><Pill tone={questions.length ? 'amber' : 'emerald'}>{questions.length}</Pill></div>
+          <div className="mb-2 flex items-center justify-between"><h3 className="text-[13px] font-medium">Incidents</h3><Pill tone={actionable.openIncidents ? 'red' : 'emerald'}>{incidents.length}</Pill></div>
+          <div className="space-y-2">
+            {incidents.length === 0 ? <div className="text-[12px] text-cream-faint">No open incidents.</div> : incidents.map((i) => (
+              <div key={i.id} className="rounded-lg border border-white/10 bg-graphite-900/60 p-2 text-[12px]">
+                <div className="flex items-center justify-between gap-2"><span className="truncate text-cream-soft">{i.title}</span><Pill tone={i.severity === 'high' ? 'red' : i.severity === 'low' ? 'zinc' : 'amber'}>{i.severity}</Pill></div>
+                <div className="mt-1 text-[10px] text-cream-faint">{i.source} · {i.status}</div>
+                {i.workflowId && <div className="mt-1 truncate font-mono text-[10px] text-violet-200">wf: {i.workflowId}</div>}
+                <button onClick={() => void resolveIncident(i.id)} className="mt-2 rounded bg-emerald-500/15 px-2 py-1 text-[11px] text-emerald-100">resolve</button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-white/10 bg-black/15 p-3">
+          <div className="mb-2 flex items-center justify-between"><h3 className="text-[13px] font-medium">Approvals</h3><Pill tone={questions.length ? 'amber' : 'emerald'}>{questions.length}</Pill></div>
           <div className="space-y-2">
             {questions.length === 0 ? <div className="text-[12px] text-cream-faint">Нет ожидающих вопросов.</div> : questions.map((q) => (
               <div key={q.id} className="rounded-lg border border-white/10 bg-graphite-900/60 p-2 text-[12px]">
