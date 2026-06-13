@@ -75,6 +75,7 @@ import { searchWeb, fetchWebPage } from './web.js'
 // gateway.js (free-gateway routing) удалён вместе с gemini-web-proxy.
 // retryVideoJob удалён вместе с gemini_video runner.
 import { createJob, getJob, initJobs, listJobs, startJob, cancelJob, retryJob, registerRuntimeInput } from './jobs.js'
+import { initAgentWorkflows, listAutomationRecipes, createWorkflow, startWorkflow, getWorkflow, listWorkflows, cancelWorkflow, retryWorkflow } from './agentWorkflows.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
@@ -2458,6 +2459,7 @@ if (existsSync(distDir)) {
 try {
   await ensureWorkspaceRoot();
   initJobs();
+  initAgentWorkflows();
 } catch (err) {
   console.error('FATAL: Failed to initialize workspace:', err.message);
   process.exit(1);
@@ -2948,6 +2950,51 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
   }
 })
 
+
+
+// ── Agent Automation Workflows ─────────────────────────────────────────────
+app.get('/api/agent/recipes', requireAuth, (_req, res) => {
+  res.json({ recipes: listAutomationRecipes() })
+})
+
+app.get('/api/agent/workflows', requireAuth, (req, res) => {
+  res.json({ workflows: listWorkflows({ userId: req.user?.id || '', chatId: String(req.query.chatId || ''), limit: req.query.limit || 30 }) })
+})
+
+app.post('/api/agent/workflows', requireAuth, (req, res) => {
+  try {
+    const wf = createWorkflow({
+      userId: req.user?.id || '',
+      chatId: String(req.body?.chatId || ''),
+      recipeId: String(req.body?.recipeId || ''),
+      input: req.body?.input || {},
+      confirm: req.body?.confirm === true,
+    })
+    startWorkflow(wf.id)
+    res.json({ ok: true, workflow: getWorkflow(wf.id) })
+  } catch (e) {
+    const status = e?.code === 'CONFIRM_REQUIRED' ? 409 : 400
+    res.status(status).json({ ok: false, error: e?.message || String(e), code: e?.code || 'ERROR' })
+  }
+})
+
+app.get('/api/agent/workflows/:id', requireAuth, (req, res) => {
+  const wf = getWorkflow(req.params.id)
+  if (!wf || (wf.userId && wf.userId !== req.user?.id)) return res.status(404).json({ error: 'workflow not found' })
+  res.json({ workflow: wf })
+})
+
+app.post('/api/agent/workflows/:id/cancel', requireAuth, (req, res) => {
+  const wf = getWorkflow(req.params.id)
+  if (!wf || (wf.userId && wf.userId !== req.user?.id)) return res.status(404).json({ error: 'workflow not found' })
+  res.json({ ok: true, workflow: cancelWorkflow(req.params.id) })
+})
+
+app.post('/api/agent/workflows/:id/retry', requireAuth, (req, res) => {
+  const wf = getWorkflow(req.params.id)
+  if (!wf || (wf.userId && wf.userId !== req.user?.id)) return res.status(404).json({ error: 'workflow not found' })
+  res.json({ ok: true, workflow: retryWorkflow(req.params.id) })
+})
 
 app.get('/api/agent/actions', requireAuth, (_req, res) => {
   res.json({ actions: listDeterministicActions() })

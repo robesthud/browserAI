@@ -5,6 +5,7 @@ import AgentToolBlock from './AgentToolBlock.jsx'
 import Markdown from '../lib/markdown.jsx'
 import AgentThought from './AgentThought.jsx'
 import AgentAskUser from './AgentAskUser.jsx'
+import AutomationCenter from './AutomationCenter.jsx'
 
 function JsonBlock({ data }) {
   if (!data) return null
@@ -125,6 +126,8 @@ export default function AgentAdmin() {
       </header>
 
       <main className="mx-auto max-w-5xl space-y-4 px-4 py-5">
+        <AutomationCenter />
+
         <section className="rounded-2xl border border-white/10 bg-graphite-800/45 p-4">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
