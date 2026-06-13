@@ -7,7 +7,9 @@
  * The registry stores metadata so the UI/debug endpoints can restore pending
  * questions for the current user/chat without exposing secrets.
  */
-const PENDING = new Map() // id -> {resolve,reject,timer,createdAt,expiresAt,meta,status}
+const PENDING = new Map()
+const PENDING_TTL_MS = 30 * 60 * 1000  // 30 minutes
+ // id -> {resolve,reject,timer,createdAt,expiresAt,meta,status}
 const ASK_TIMEOUT_MS = Number(process.env.BROWSERAI_ASK_TIMEOUT_MS || 10 * 60 * 1000)
 
 function genId() {
@@ -120,3 +122,17 @@ export function getPendingQuestion(id, scope = {}) {
 export function pendingCount(filter = {}) {
   return listPendingQuestions(filter).length
 }
+// ── Expired question cleanup ───────────────────────────────────────────────
+function cleanupExpiredQuestions() {
+  const now = Date.now()
+  let evicted = 0
+  for (const [id, q] of PENDING) {
+    if (now - (q.createdAt || 0) > PENDING_TTL_MS) {
+      try { q.reject?.(new Error('Question expired after 30 min')) } catch {}
+      PENDING.delete(id)
+      evicted++
+    }
+  }
+  if (evicted) console.warn(`[askUser] expired ${evicted} unanswered questions`)
+}
+setInterval(cleanupExpiredQuestions, 5 * 60 * 1000).unref?.()

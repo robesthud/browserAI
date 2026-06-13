@@ -236,7 +236,11 @@ const AUTH_COOKIE = 'browserai_session'
 const SESSION_DAYS = 30
 const APP_URL = (process.env.APP_URL
   || 'http://localhost:8787').replace(/\/$/, '')
-const AUTH_SECRET = process.env.AUTH_SECRET || 'browserai-dev-secret-change-me'
+const AUTH_SECRET = process.env.AUTH_SECRET
+if (!AUTH_SECRET) {
+  console.error('FATAL: AUTH_SECRET is not set. Set a long random string (≥32 chars) in .env or environment variable.')
+  process.exit(1)
+}
 if (!process.env.AUTH_SECRET) {
   console.warn('⚠ AUTH_SECRET is not set. Set a long random AUTH_SECRET in the .env / environment for production.')
 }
@@ -417,7 +421,7 @@ function cleanExpiredSessions() {
   }
 }
 cleanExpiredSessions()
-setInterval(cleanExpiredSessions, 60 * 60 * 1000)
+const sessionCleanupInterval = setInterval(cleanExpiredSessions, 60 * 60 * 1000)
 
 function getSessionUser(req) {
   const token = parseCookies(req)[AUTH_COOKIE]
@@ -2245,7 +2249,7 @@ app.get('/api/health', (req, res) => res.json({ ok: true }))
 // network error. Sending `max-age=0` once tells the browser to forget
 // the pin. Safe to call anytime — has no effect when there's no pin and
 // no effect once HSTS is correctly served over real HTTPS.
-app.get('/api/hsts-reset', (_req, res) => {
+app.get('/api/hsts-reset', requireAuth, requireUnlocked, (_req, res) => {
   res.setHeader('Strict-Transport-Security', 'max-age=0')
   res.json({ ok: true, message: 'HSTS pin cleared (max-age=0).' })
 })
@@ -3016,7 +3020,7 @@ app.post('/api/agent/questions/:id/cancel', requireAuth, (req, res) => {
 // Public-ish: lets the chat UI know whether a managed DeepSeek session is
 // available without exposing the token. No auth required because it returns
 // only booleans + model ids.
-app.get('/api/deepseek/managed', (req, res) => {
+app.get('/api/deepseek/managed', requireAuth, (req, res) => {
   const s = getDeepSeekState()
   res.json({
     available: Boolean(s.hasToken && s.alive !== false),

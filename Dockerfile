@@ -38,3 +38,5 @@ ENV WORKSPACE_ROOT=/workspace
 EXPOSE 8080
 
 CMD ["node", "server/index.js"]
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 \n  CMD node -e "require('http').get('http://localhost:8080/api/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"

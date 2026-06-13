@@ -4,6 +4,9 @@ import { chromium } from 'playwright-core'
 import { safePath } from './workspace.js'
 
 const sessions = new Map()
+const SESSION_MAX_AGE_MS = 60 * 60 * 1000  // 1 hour
+const SESSION_MAX_COUNT = 10
+
 let browserPromise = null
 let seq = 0
 
@@ -77,7 +80,7 @@ export async function browserOpen({ url, waitMs = 1500, screenshot = true } = {}
   const context = await browser.newContext({ viewport: { width: 1365, height: 900 }, ignoreHTTPSErrors: true })
   const page = await context.newPage()
   const id = sessionId()
-  const state = { id, context, page, console: [], network: [] }
+  const state = { id, context, page, console: [], network: [], createdAt: Date.now() }
   attachCollectors(page, state)
   sessions.set(id, state)
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 })
@@ -137,3 +140,28 @@ export async function browserHealth() {
     return { ok: false, error: e.message }
   }
 }
+// ── Session cleanup (TTL 1h + max 10 sessions) ────────────────────────────
+function cleanupOldSessions() {
+  const now = Date.now()
+  let evicted = 0
+  for (const [id, state] of sessions) {
+    if (!state.createdAt) { state.createdAt = now; continue }
+    if (now - state.createdAt > SESSION_MAX_AGE_MS) {
+      try { state.context?.close()?.catch(() => {}) } catch {}
+      sessions.delete(id)
+      evicted++
+    }
+  }
+  // If still over limit, evict oldest
+  if (sessions.size > SESSION_MAX_COUNT) {
+    const sorted = [...sessions.entries()].sort((a, b) => (a[1].createdAt || 0) - (b[1].createdAt || 0))
+    const toDelete = sorted.slice(0, sessions.size - SESSION_MAX_COUNT)
+    for (const [id, state] of toDelete) {
+      try { state.context?.close()?.catch(() => {}) } catch {}
+      sessions.delete(id)
+      evicted++
+    }
+  }
+  if (evicted) console.warn(`[browserTools] cleaned up ${evicted} stale sessions`)
+}
+setInterval(cleanupOldSessions, 10 * 60 * 1000).unref?.()

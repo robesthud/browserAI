@@ -439,3 +439,7 @@ export function bootstrap() {
     `heartbeat=${HEARTBEAT_INTERVAL_MS / 1000}s models=${MODELS_REFRESH_MS / 1000}s`,
   )
 }
+export function stopDeepseekTimers() {
+  try { clearInterval(heartbeatTimer) } catch {}
+  try { clearInterval(modelsTimer) } catch {}
+}

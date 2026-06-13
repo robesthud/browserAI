@@ -123,7 +123,7 @@ export function startBackupScheduler() {
   setTimeout(() => {
     runBackup().catch((e) => console.warn('[backup] failed:', e.message))
   }, 90_000)
-  timer = setInterval(() => {
+  const backupTimer = setInterval(() => {
     runBackup().catch((e) => console.warn('[backup] failed:', e.message))
   }, 24 * 60 * 60 * 1000)
   console.log('[backup] scheduler started (daily, kept-last=' + KEEP_LAST + ')')
@@ -133,3 +133,4 @@ export function stopBackupScheduler() {
   if (timer) clearInterval(timer)
   timer = null
 }
+export function stopBackupScheduler() { try { clearInterval(backupTimer) } catch {} }
