@@ -32,7 +32,17 @@ describe('deterministic action router', () => {
     expect(readme?.args.path).toBe('README.md')
   })
 
+  it('routes write/destructive file commands with risk metadata', () => {
+    expect(routeDeterministicAction([{ role: 'user', content: 'создай папку docs' }])?.tool).toBe('create_folder')
+    const rename = routeDeterministicAction([{ role: 'user', content: 'переименуй old.txt в new.txt' }])
+    expect(rename?.tool).toBe('rename_item')
+    expect(rename?.requiresApproval).toBe(true)
+    const del = routeDeterministicAction([{ role: 'user', content: 'удали файл trash.txt' }])
+    expect(del?.tool).toBe('delete_file')
+    expect(del?.risk).toBe('destructive')
+  })
+
   it('exposes declarative action metadata', () => {
-    expect(listDeterministicActions().map(a => a.id)).toEqual(['list_files', 'read_file', 'repo_download', 'archive_zip'])
+    expect(listDeterministicActions().map(a => a.id)).toEqual(['list_files', 'read_file', 'repo_download', 'create_folder', 'rename_item', 'delete_file', 'archive_zip'])
   })
 })

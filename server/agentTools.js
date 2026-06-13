@@ -301,6 +301,40 @@ export const TOOLS = {
     },
   },
 
+  create_folder: {
+    description: 'Create a folder in the current chat workspace.',
+    params: {
+      path: { type: 'string', required: true, description: 'Folder path relative to workspace root.' },
+    },
+    handler: async ({ path } = {}) => {
+      if (!path) return err('path is required')
+      try {
+        const parts = String(path).split('/').filter(Boolean)
+        const name = parts.pop()
+        const parent = parts.join('/')
+        await createFolder(parent, name)
+        return ok({ path, visible_in_files: true })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  rename_item: {
+    description: 'Rename a file or folder in the current chat workspace.',
+    params: {
+      path: { type: 'string', required: true, description: 'Existing file/folder path.' },
+      new_name: { type: 'string', required: true, description: 'New basename, not a full path.' },
+    },
+    handler: async ({ path, new_name } = {}) => {
+      if (!path || !new_name) return err('path and new_name are required')
+      try {
+        await renameItem(path, new_name)
+        const parent = String(path).split('/').filter(Boolean).slice(0, -1).join('/')
+        const newPath = parent ? `${parent}/${new_name}` : String(new_name)
+        return ok({ path: newPath, old_path: path, visible_in_files: true })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
   delete_file: {
     description: 'Delete a file or folder from the workspace. Folders are deleted recursively. Use with care.',
     params: {

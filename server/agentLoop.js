@@ -59,7 +59,7 @@ const TOOL_PROFILES = {
   general: [
     ...COMMON_AGENT_TOOLS,
     'list_files', 'read_file', 'search_files',
-    'write_file', 'edit_file', 'delete_file', 'zip_files',
+    'write_file', 'edit_file', 'create_folder', 'rename_item', 'delete_file', 'zip_files',
     'bash', 'verify_code',
     'web_search', 'web_fetch',
     'git_status', 'git_clone',
@@ -68,7 +68,7 @@ const TOOL_PROFILES = {
   code: [
     ...COMMON_AGENT_TOOLS,
     'list_files', 'read_file', 'search_files',
-    'write_file', 'edit_file', 'delete_file', 'zip_files',
+    'write_file', 'edit_file', 'create_folder', 'rename_item', 'delete_file', 'zip_files',
     'bash', 'npm_install', 'npm_test', 'verify_code',
     'git_status', 'git_clone', 'git_commit',
   ],
@@ -79,7 +79,7 @@ const TOOL_PROFILES = {
     'bash', 'npm_test', 'verify_code',
     'web_search', 'web_fetch',
     'git_status', 'git_clone', 'git_commit',
-    'list_files', 'read_file', 'search_files', 'edit_file', 'write_file', 'zip_files',
+    'list_files', 'read_file', 'search_files', 'edit_file', 'write_file', 'create_folder', 'rename_item', 'zip_files',
   ],
   research: [
     ...COMMON_AGENT_TOOLS,
@@ -615,7 +615,28 @@ async function runLightweightChat({ res, provider, history, userId, chatId, mode
 
 async function runDeterministicAction({ action, res, userId, chatId }) {
   const tokens = { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: 0 }
-  sse(res, 'agent_context', { deterministicAction: { id: action.id, tool: action.tool, reason: action.reason }, task: { type: action.id, complexity: 'low' } })
+  sse(res, 'agent_context', { deterministicAction: { id: action.id, tool: action.tool, reason: action.reason, risk: action.risk, requiresApproval: action.requiresApproval }, task: { type: action.id, complexity: 'low' } })
+  if (action.requiresApproval) {
+    const { id: aqId, promise: aqPromise, expiresAt } = registerQuestion({
+      kind: 'tool_approval', userId, chatId, step: 0, sub: 0,
+      tool: action.tool, category: categoryOf(action.tool),
+      question: action.approvalQuestion || `Разрешить ${action.tool}?`,
+      options: [{ id: 'approve', label: 'Разрешить' }, { id: 'deny', label: 'Запретить' }],
+    })
+    sse(res, 'tool_approval', { step: 0, sub: 0, question_id: aqId, expiresAt, tool: action.tool, category: categoryOf(action.tool), args: action.args || {} })
+    let approved = false
+    try {
+      const ans = await aqPromise
+      const pick = Array.isArray(ans?.selected) ? String(ans.selected[0]) : String(ans?.text || ans)
+      approved = ['approve', 'yes', 'ok', 'allow', 'true', 'разрешить'].includes(pick.toLowerCase().trim())
+    } catch { /* denied/expired */ }
+    if (!approved) {
+      await streamFinalAnswer(res, '❌ Действие отменено: нет подтверждения.')
+      sseDone(res, { steps: 0, reason: `${action.id}-denied` }, tokens)
+      res.end()
+      return
+    }
+  }
   // Deterministic actions are intentionally compact: no visible tool_start card,
   // no LLM thinking. We still emit tool_result so the workspace panel refreshes.
   const r = await invokeTool(action.tool, action.args || {}, { userId, chatId })

@@ -42,6 +42,8 @@ const TOOL_CATEGORY = {
   // writes / workspace mutation / memory mutation
   write_file: 'write',
   edit_file: 'write',
+  create_folder: 'write',
+  rename_item: 'write',
   delete_file: 'write',
   restore_file: 'write',
   replace_across_files: 'write',
@@ -61,6 +63,7 @@ const TOOL_CATEGORY = {
   fetch_page: 'net',
   scrape_url: 'net',
   download_url: 'net',
+  zip_files: 'write',
   browser_open: 'net',
   browser_screenshot: 'net',
   browser_click: 'net',
