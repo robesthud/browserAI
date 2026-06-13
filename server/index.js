@@ -79,13 +79,13 @@ import { initAgentWorkflows, listAutomationRecipes, createWorkflow, startWorkflo
 import { getAutomationPolicy, listAutomationPolicyEvents } from './automationPolicy.js'
 import { initIncidents, listIncidents, getIncident, resolveIncident, createIncident, createIncidentWorkflow } from './incidents.js'
 import { getAgentControlPlane } from './agentControlPlane.js'
-import { initOperatorMode, getOperatorStatus, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorMission, listOperatorMissionEvents } from './operatorMode.js'
-import { initDeploySessions, createDeploySession, getDeploySession, listDeploySessions, startDeploySession } from './deploySessions.js'
+import { initOperatorMode, getOperatorStatus, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorMission, listOperatorMissionEvents, cancelOperatorMission, resumeOperatorMission } from './operatorMode.js'
+import { initDeploySessions, createDeploySession, getDeploySession, listDeploySessions, startDeploySession, cancelDeploySession, resumeDeploySession } from './deploySessions.js'
 import { listRunbooks, readRunbook, writeRunbook, appendLesson } from './operatorRunbooks.js'
 import { analyzeOperatorProject } from './operatorProjectOnboarding.js'
 import { getOperatorReport, saveOperatorReport, sendOperatorReportTelegram } from './operatorReports.js'
 import { initNotifications, listNotifications, notificationSummary, markNotificationRead, markAllNotificationsRead } from './notifications.js'
-import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr, reviewOperatorCodeTask } from './operatorCode.js'
+import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr, reviewOperatorCodeTask, cancelOperatorCodeTask, resumeOperatorCodeTask } from './operatorCode.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
@@ -3148,6 +3148,18 @@ app.post('/api/operator/deploy-sessions/:id/start', requireAuth, (req, res) => {
   res.json({ ok: true, session: startDeploySession(req.params.id) })
 })
 
+app.post('/api/operator/deploy-sessions/:id/cancel', requireAuth, (req, res) => {
+  const session = getDeploySession(req.params.id)
+  if (!session || (session.userId && session.userId !== req.user?.id)) return res.status(404).json({ error: 'deploy session not found' })
+  res.json({ ok: true, session: cancelDeploySession(req.params.id) })
+})
+
+app.post('/api/operator/deploy-sessions/:id/resume', requireAuth, (req, res) => {
+  const session = getDeploySession(req.params.id)
+  if (!session || (session.userId && session.userId !== req.user?.id)) return res.status(404).json({ error: 'deploy session not found' })
+  res.json({ ok: true, session: resumeDeploySession(req.params.id) })
+})
+
 app.get('/api/operator/runbooks', requireAuth, async (_req, res) => {
   res.json(await listRunbooks())
 })
@@ -3199,6 +3211,18 @@ app.get('/api/operator/missions/:id/events', requireAuth, (req, res) => {
   res.json({ events: listOperatorMissionEvents({ missionId: req.params.id, userId: req.user?.id || '', limit: req.query.limit || 200 }) })
 })
 
+app.post('/api/operator/missions/:id/cancel', requireAuth, (req, res) => {
+  const mission = getOperatorMission(req.params.id)
+  if (!mission || (mission.userId && mission.userId !== req.user?.id)) return res.status(404).json({ error: 'mission not found' })
+  res.json({ ok: true, mission: cancelOperatorMission(req.params.id) })
+})
+
+app.post('/api/operator/missions/:id/resume', requireAuth, (req, res) => {
+  const mission = getOperatorMission(req.params.id)
+  if (!mission || (mission.userId && mission.userId !== req.user?.id)) return res.status(404).json({ error: 'mission not found' })
+  res.json({ ok: true, mission: resumeOperatorMission(req.params.id) })
+})
+
 app.get('/api/operator/code-tasks', requireAuth, (req, res) => {
   res.json({ tasks: listOperatorCodeTasks({ userId: req.user?.id || '', limit: req.query.limit || 30 }) })
 })
@@ -3207,6 +3231,18 @@ app.get('/api/operator/code-tasks/:id', requireAuth, (req, res) => {
   const task = getOperatorCodeTask(req.params.id)
   if (!task || (task.userId && task.userId !== req.user?.id)) return res.status(404).json({ error: 'code task not found' })
   res.json({ task })
+})
+
+app.post('/api/operator/code-tasks/:id/cancel', requireAuth, (req, res) => {
+  const task = getOperatorCodeTask(req.params.id)
+  if (!task || (task.userId && task.userId !== req.user?.id)) return res.status(404).json({ error: 'code task not found' })
+  res.json({ ok: true, task: cancelOperatorCodeTask(req.params.id) })
+})
+
+app.post('/api/operator/code-tasks/:id/resume', requireAuth, (req, res) => {
+  const task = getOperatorCodeTask(req.params.id)
+  if (!task || (task.userId && task.userId !== req.user?.id)) return res.status(404).json({ error: 'code task not found' })
+  res.json({ ok: true, task: resumeOperatorCodeTask(req.params.id) })
 })
 
 app.post('/api/operator/code-tasks/:id/finalize', requireAuth, async (req, res) => {

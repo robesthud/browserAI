@@ -1,9 +1,9 @@
 import db from './db.js'
-import { createWorkflow, getWorkflow, startWorkflow } from './agentWorkflows.js'
-import { createJob, getJob, startJob } from './jobs.js'
+import { createWorkflow, getWorkflow, startWorkflow, cancelWorkflow, retryWorkflow } from './agentWorkflows.js'
+import { createJob, getJob, startJob, cancelJob } from './jobs.js'
 import { getActiveKeyDecrypted } from './db.js'
 import { runOpsAction } from './ops.js'
-import { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask } from './operatorCode.js'
+import { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, cancelOperatorCodeTask, resumeOperatorCodeTask } from './operatorCode.js'
 
 let initialized = false
 
@@ -426,6 +426,44 @@ export function startOperatorMission({ userId = '', projectId = 'browserai', typ
   }
 }
 
+
+export function cancelOperatorMission(missionId) {
+  initOperatorMode()
+  const mission = getOperatorMission(missionId)
+  if (!mission) return null
+  if (['succeeded', 'failed', 'cancelled'].includes(mission.status)) return mission
+  try { if (mission.workflowId) cancelWorkflow(mission.workflowId) } catch { /* best-effort */ }
+  try { if (mission.jobId) cancelJob(mission.jobId) } catch { /* best-effort */ }
+  try { if (mission.result?.codeTaskId) cancelOperatorCodeTask(mission.result.codeTaskId) } catch { /* best-effort */ }
+  addOperatorMissionEvent({ missionId, userId: mission.userId, type: 'warn', title: 'Mission cancelled', message: 'Cancelled by user' })
+  return patchMission(missionId, { status: 'cancelled', error: 'cancelled by user', finishedAt: now() })
+}
+
+export function resumeOperatorMission(missionId) {
+  initOperatorMode()
+  const mission = getOperatorMission(missionId)
+  if (!mission) return null
+  if (!['failed', 'cancelled'].includes(mission.status)) return mission
+  addOperatorMissionEvent({ missionId, userId: mission.userId, type: 'info', title: 'Mission resumed', message: 'Resume requested by user' })
+  try {
+    if (mission.result?.codeTaskId) {
+      resumeOperatorCodeTask(mission.result.codeTaskId)
+      return patchMission(missionId, { status: 'running', error: '', finishedAt: null })
+    }
+    if (mission.workflowId) {
+      retryWorkflow(mission.workflowId)
+      return patchMission(missionId, { status: 'running', error: '', finishedAt: null })
+    }
+    if (mission.jobId) {
+      startJob(mission.jobId)
+      return patchMission(missionId, { status: 'running', error: '', finishedAt: null })
+    }
+  } catch (e) {
+    return patchMission(missionId, { status: 'failed', error: e?.message || String(e), finishedAt: now() })
+  }
+  return patchMission(missionId, { status: 'failed', error: 'No linked resumable task found', finishedAt: now() })
+}
+
 export async function getOperatorStatus({ userId = '' } = {}) {
   initOperatorMode()
   const projects = listOperatorProjects({ userId })
@@ -445,4 +483,4 @@ export async function getOperatorStatus({ userId = '' } = {}) {
   }
 }
 
-export default { initOperatorMode, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorStatus, classifyOperatorGoal, addOperatorMissionEvent, listOperatorMissionEvents }
+export default { initOperatorMode, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorStatus, classifyOperatorGoal, addOperatorMissionEvent, listOperatorMissionEvents, cancelOperatorMission, resumeOperatorMission }

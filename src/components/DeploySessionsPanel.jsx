@@ -53,6 +53,9 @@ export default function DeploySessionsPanel() {
     finally { setBusy(false) }
   }
 
+  const cancelSession = async (id) => { await api(`/api/operator/deploy-sessions/${encodeURIComponent(id)}/cancel`, { method: 'POST' }); await refresh() }
+  const resumeSession = async (id) => { await api(`/api/operator/deploy-sessions/${encodeURIComponent(id)}/resume`, { method: 'POST' }); await refresh() }
+
   return (
     <section className="rounded-2xl border border-white/10 bg-graphite-800/45 p-4">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -85,7 +88,11 @@ export default function DeploySessionsPanel() {
               ))}
             </div>
             {s.result?.report && <pre className="mt-3 max-h-52 overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 text-[11px] text-cream-soft">{s.result.report}</pre>}
-            <button onClick={() => setReportTarget({ kind: 'deploy', id: s.id })} className="mt-2 rounded border border-white/10 px-2 py-1 text-[11px] text-cream-soft hover:bg-white/5">report</button>
+            <div className="mt-2 flex gap-2">
+              {['queued', 'running'].includes(s.status) && <button onClick={() => void cancelSession(s.id)} className="rounded border border-red-400/25 bg-red-500/10 px-2 py-1 text-[11px] text-red-100 hover:bg-red-500/20">cancel</button>}
+              {['failed', 'cancelled'].includes(s.status) && <button onClick={() => void resumeSession(s.id)} className="rounded border border-violet-400/25 bg-violet-500/10 px-2 py-1 text-[11px] text-violet-100 hover:bg-violet-500/20">resume</button>}
+              <button onClick={() => setReportTarget({ kind: 'deploy', id: s.id })} className="rounded border border-white/10 px-2 py-1 text-[11px] text-cream-soft hover:bg-white/5">report</button>
+            </div>
           </details>
         ))}
       </div>

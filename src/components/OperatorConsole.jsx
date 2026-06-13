@@ -120,6 +120,16 @@ export default function OperatorConsole() {
     finally { setBusy(false) }
   }
 
+  const cancelMission = async (missionId) => {
+    if (!window.confirm('Cancel this operator mission?')) return
+    await api(`/api/operator/missions/${encodeURIComponent(missionId)}/cancel`, { method: 'POST' })
+    await refresh()
+  }
+  const resumeMission = async (missionId) => {
+    await api(`/api/operator/missions/${encodeURIComponent(missionId)}/resume`, { method: 'POST' })
+    await refresh()
+  }
+
   const missions = operator?.missions || []
   const types = operator?.missionTypes || []
   return (
@@ -199,6 +209,8 @@ export default function OperatorConsole() {
               )}
               {m.codeTask?.result?.merge?.ok && <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-200">merged</span>}
               {m.codeTask?.result?.deployWorkflowId && <span className="font-mono text-[10px] text-amber-200">deploy {m.codeTask.result.deployWorkflowId.slice(-8)}</span>}
+              {['running', 'queued', 'agent_running', 'verifying', 'ci_fixing', 'finalizing'].includes(m.workflow?.status || m.job?.status || m.codeTask?.status || m.status) && <button onClick={() => void cancelMission(m.id)} className="rounded border border-red-400/25 bg-red-500/10 px-2 py-0.5 text-[10px] text-red-100 hover:bg-red-500/20">cancel</button>}
+              {['failed', 'cancelled'].includes(m.workflow?.status || m.job?.status || m.codeTask?.status || m.status) && <button onClick={() => void resumeMission(m.id)} className="rounded border border-violet-400/25 bg-violet-500/10 px-2 py-0.5 text-[10px] text-violet-100 hover:bg-violet-500/20">resume</button>}
               <button onClick={() => setReportTarget({ kind: 'mission', id: m.id })} className="rounded border border-white/10 px-2 py-0.5 text-[10px] text-cream-soft hover:bg-white/5">report</button>
               {m.error && <span className="text-red-200">{m.error}</span>}
               {m.events?.length > 0 && (

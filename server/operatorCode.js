@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 import AdmZip from 'adm-zip'
 import db from './db.js'
-import { createJob, getJob, startJob } from './jobs.js'
+import { createJob, getJob, startJob, cancelJob } from './jobs.js'
 import { getActiveKeyDecrypted } from './db.js'
 import { scanSecrets } from './secretScan.js'
 import { withWorkspaceScope } from './workspace.js'
@@ -274,6 +274,31 @@ async function verifyCodeTask(task) {
   return { passed, results, git: { status: status.stdout, diff: diff.stdout }, secretScan: scan }
 }
 
+function isCodeTaskCancelled(taskId) {
+  return getOperatorCodeTask(taskId)?.status === 'cancelled'
+}
+
+export function cancelOperatorCodeTask(taskId) {
+  initOperatorCode()
+  const task = getOperatorCodeTask(taskId)
+  if (!task) return null
+  if (['succeeded', 'failed', 'cancelled'].includes(task.status)) return task
+  if (task.jobId) { try { cancelJob(task.jobId) } catch { /* best-effort */ } }
+  emitTaskEvent(task, 'warn', 'Code task cancelled', 'Cancelled by user')
+  return patchTask(taskId, { status: 'cancelled', error: 'cancelled by user', finishedAt: now() })
+}
+
+export function resumeOperatorCodeTask(taskId) {
+  initOperatorCode()
+  const task = getOperatorCodeTask(taskId)
+  if (!task) return null
+  if (!['failed', 'cancelled'].includes(task.status)) return task
+  emitTaskEvent(task, 'info', 'Code task resumed', 'Resuming from checkout/agent stage')
+  patchTask(taskId, { status: 'queued', error: '', finishedAt: null })
+  setTimeout(() => monitorCodeTask(taskId), 10).unref?.()
+  return getOperatorCodeTask(taskId)
+}
+
 export function monitorCodeTask(taskId) {
   initOperatorCode()
   if (monitors.has(taskId)) return
@@ -281,7 +306,7 @@ export function monitorCodeTask(taskId) {
   ;(async () => {
     try {
       let task = getOperatorCodeTask(taskId)
-      if (!task) return
+      if (!task || isCodeTaskCancelled(taskId)) return
       if (task.status === 'queued' || task.status === 'preparing') {
         patchTask(taskId, { status: 'preparing' })
         const prepared = await prepareCheckout(task)
@@ -310,6 +335,7 @@ export function monitorCodeTask(taskId) {
       // Poll linked agent job until terminal, then run deterministic verification.
       let current = getOperatorCodeTask(taskId)
       while (current?.jobId) {
+        if (isCodeTaskCancelled(taskId)) return
         const j = getJob(current.jobId)
         if (j && ['succeeded', 'failed', 'cancelled'].includes(j.status)) break
         await new Promise((r) => setTimeout(r, 2500))
@@ -321,6 +347,7 @@ export function monitorCodeTask(taskId) {
         patchTask(taskId, { status: 'failed', error: `agent job ${job.status}: ${job.error || ''}`, finishedAt: now(), result: { ...(current.result || {}), job } })
         return
       }
+      if (isCodeTaskCancelled(taskId)) return
       patchTask(taskId, { status: 'verifying' })
       const verify = await verifyCodeTask(getOperatorCodeTask(taskId))
       const finalStatus = verify.passed ? 'succeeded' : 'failed'
@@ -397,6 +424,7 @@ export function startOperatorCodeCiAutoFix({ taskId = '', maxAttempts = 2 } = {}
       patchTask(taskId, { status: 'ci_fixing', result: { ...(task.result || {}), ciFix } })
 
       for (let attempt = ciFix.attempts.length + 1; attempt <= attemptsLimit; attempt += 1) {
+        if (isCodeTaskCancelled(taskId)) return
         task = getOperatorCodeTask(taskId)
         const provider = getActiveKeyDecrypted(null)
         if (!provider?.baseUrl || !provider?.model) throw new Error('No active provider configured for CI auto-fix')
@@ -420,13 +448,15 @@ export function startOperatorCodeCiAutoFix({ taskId = '', maxAttempts = 2 } = {}
         patchTask(taskId, { status: 'ci_fixing', jobId: job.id, result: { ...(getOperatorCodeTask(taskId).result || {}), ciFix } })
         startJob(job.id)
         const jobDone = await waitJobTerminal(job.id)
+        if (isCodeTaskCancelled(taskId)) return
         if (jobDone.status !== 'succeeded') {
           ciFix.attempts[ciFix.attempts.length - 1] = { ...ciFix.attempts[ciFix.attempts.length - 1], status: jobDone.status, error: jobDone.error || 'agent failed', finishedAt: new Date().toISOString() }
           patchTask(taskId, { status: 'failed', error: `CI auto-fix agent ${jobDone.status}: ${jobDone.error || ''}`, result: { ...(getOperatorCodeTask(taskId).result || {}), ciFix }, finishedAt: now() })
           return
         }
 
-        patchTask(taskId, { status: 'verifying' })
+        if (isCodeTaskCancelled(taskId)) return
+      patchTask(taskId, { status: 'verifying' })
         const verify = await verifyCodeTask(getOperatorCodeTask(taskId))
         if (!verify.passed) {
           ciFix.attempts[ciFix.attempts.length - 1] = { ...ciFix.attempts[ciFix.attempts.length - 1], status: 'verification_failed', verify, finishedAt: new Date().toISOString() }
@@ -530,6 +560,7 @@ export async function waitOperatorCodeTaskCi({ taskId = '', timeoutSec = 900, in
   patchTask(task.id, { result: { ...(task.result || {}), ci: { status: 'waiting', branch, commit, startedAt: new Date().toISOString() } } })
 
   while (Date.now() < deadline) {
+    if (isCodeTaskCancelled(task.id)) throw new Error('code task cancelled')
     iterations += 1
     const qs = new URLSearchParams({ branch, per_page: '20' })
     const data = await githubJson(`/repos/${repo}/actions/runs?${qs}`)
@@ -703,4 +734,4 @@ export async function mergeOperatorCodeTaskPr({ taskId = '', mergeMethod = 'squa
   return getOperatorCodeTask(task.id)
 }
 
-export default { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr, reviewOperatorCodeTask }
+export default { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr, reviewOperatorCodeTask, cancelOperatorCodeTask, resumeOperatorCodeTask }

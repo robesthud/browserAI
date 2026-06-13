@@ -109,11 +109,37 @@ export function addDeployEvent(sessionId, { type = 'info', phase = '', message =
   return eventId
 }
 
+function isDeploySessionCancelled(sessionId) {
+  return getDeploySession(sessionId)?.status === 'cancelled'
+}
+
+export function cancelDeploySession(sessionId) {
+  initDeploySessions()
+  const session = getDeploySession(sessionId)
+  if (!session) return null
+  if (['succeeded', 'failed', 'cancelled'].includes(session.status)) return session
+  addDeployEvent(sessionId, { type: 'warn', phase: 'cancel', message: 'Deploy session cancellation requested' })
+  return patchSession(sessionId, { status: 'cancelled', error: 'cancelled by user', progress: 100, finishedAt: now() })
+}
+
+export function resumeDeploySession(sessionId) {
+  initDeploySessions()
+  const session = getDeploySession(sessionId)
+  if (!session) return null
+  if (!['failed', 'cancelled'].includes(session.status)) return session
+  addDeployEvent(sessionId, { type: 'info', phase: 'resume', message: 'Deploy session resumed' })
+  patchSession(sessionId, { status: 'queued', error: '', progress: 0, finishedAt: null })
+  setTimeout(() => startDeploySession(sessionId), 10).unref?.()
+  return getDeploySession(sessionId)
+}
+
 async function runStep(sessionId, { phase, service = 'browserai', action, params = {}, confirm = true, progress = 0, successMessage = '' }) {
+  if (isDeploySessionCancelled(sessionId)) throw new Error('deploy session cancelled')
   addDeployEvent(sessionId, { type: 'info', phase, message: `Starting ${service}.${action}`, data: { params } })
   patchSession(sessionId, { status: 'running', progress })
   const started = now()
   const result = await runOpsAction({ service, action, params, confirm })
+  if (isDeploySessionCancelled(sessionId)) throw new Error('deploy session cancelled')
   const ok = Number(result?.exitCode ?? 0) === 0 && !result?.requiresConfirmation
   addDeployEvent(sessionId, {
     type: ok ? 'success' : 'error',
@@ -163,6 +189,7 @@ export function startDeploySession(sessionId) {
   running.add(sessionId)
   ;(async () => {
     try {
+      if (isDeploySessionCancelled(sessionId)) return
       patchSession(sessionId, { status: 'running', progress: 2 })
       const sync = await runStep(sessionId, { phase: 'preflight', action: 'sync_check', confirm: true, progress: 10, successMessage: 'Preflight sync/health OK' })
       await runStep(sessionId, { phase: 'deploy', action: 'deploy_safe', confirm: true, progress: 35, successMessage: 'Deploy helper started' })
@@ -179,6 +206,7 @@ export function startDeploySession(sessionId) {
       addDeployEvent(sessionId, { type: 'success', phase: 'done', message: 'Deploy session completed successfully', data: { report: done.result?.report } })
       try { notifyDeploySession(done) } catch { /* best-effort */ }
     } catch (e) {
+      if (isDeploySessionCancelled(sessionId)) return
       const failed = patchSession(sessionId, { status: 'failed', progress: 100, error: e?.message || String(e), finishedAt: now() })
       addDeployEvent(sessionId, { type: 'error', phase: 'failed', message: e?.message || String(e), data: { report: renderDeploySessionReport(failed) } })
       try { notifyDeploySession(failed) } catch { /* best-effort */ }
@@ -189,4 +217,4 @@ export function startDeploySession(sessionId) {
   return getDeploySession(sessionId)
 }
 
-export default { initDeploySessions, createDeploySession, startDeploySession, getDeploySession, listDeploySessions, addDeployEvent, renderDeploySessionReport }
+export default { initDeploySessions, createDeploySession, startDeploySession, getDeploySession, listDeploySessions, addDeployEvent, renderDeploySessionReport, cancelDeploySession, resumeDeploySession }
