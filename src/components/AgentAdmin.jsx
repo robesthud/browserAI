@@ -9,6 +9,7 @@ import AutomationCenter from './AutomationCenter.jsx'
 import AgentInbox from './AgentInbox.jsx'
 import AgentControlPlanePanel from './AgentControlPlanePanel.jsx'
 import OperatorConsole from './OperatorConsole.jsx'
+import OperatorRunbooks from './OperatorRunbooks.jsx'
 
 function JsonBlock({ data }) {
   if (!data) return null
@@ -132,6 +133,8 @@ export default function AgentAdmin() {
         <AgentControlPlanePanel />
 
         <OperatorConsole />
+
+        <OperatorRunbooks />
 
         <AgentInbox />
 

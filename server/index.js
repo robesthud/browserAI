@@ -80,6 +80,7 @@ import { getAutomationPolicy, listAutomationPolicyEvents } from './automationPol
 import { initIncidents, listIncidents, getIncident, resolveIncident, createIncident, createIncidentWorkflow } from './incidents.js'
 import { getAgentControlPlane } from './agentControlPlane.js'
 import { initOperatorMode, getOperatorStatus, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorMission, listOperatorMissionEvents } from './operatorMode.js'
+import { listRunbooks, readRunbook, writeRunbook, appendLesson } from './operatorRunbooks.js'
 import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr } from './operatorCode.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
@@ -3086,6 +3087,25 @@ app.get('/api/agent/control-plane', requireAuth, (req, res) => {
 
 app.get('/api/operator/status', requireAuth, async (req, res) => {
   res.json({ operator: await getOperatorStatus({ userId: req.user?.id || '' }) })
+})
+
+app.get('/api/operator/runbooks', requireAuth, async (_req, res) => {
+  res.json(await listRunbooks())
+})
+
+app.get('/api/operator/runbooks/:name', requireAuth, async (req, res) => {
+  try { res.json({ runbook: await readRunbook(req.params.name) }) }
+  catch (e) { res.status(404).json({ error: e?.message || String(e) }) }
+})
+
+app.post('/api/operator/runbooks/:name', requireAuth, async (req, res) => {
+  try { res.json({ ok: true, runbook: await writeRunbook(req.params.name, String(req.body?.text || '')) }) }
+  catch (e) { res.status(400).json({ error: e?.message || String(e) }) }
+})
+
+app.post('/api/operator/lessons', requireAuth, async (req, res) => {
+  try { res.json({ ok: true, lesson: await appendLesson({ title: req.body?.title || '', body: req.body?.body || '', source: req.body?.source || 'manual', tags: req.body?.tags || [] }) }) }
+  catch (e) { res.status(400).json({ error: e?.message || String(e) }) }
 })
 
 app.get('/api/operator/projects', requireAuth, (req, res) => {

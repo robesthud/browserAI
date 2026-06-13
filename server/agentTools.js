@@ -1193,6 +1193,35 @@ export const TOOLS = {
       } catch (e) { return err(e.message) }
     },
   },
+
+  operator_list_runbooks: {
+    description: 'List BrowserAI Operator runbooks and lessons memory files.',
+    params: {},
+    handler: async () => {
+      try { const { listRunbooks } = await import('./operatorRunbooks.js'); return ok(await listRunbooks()) } catch (e) { return err(e.message) }
+    },
+  },
+  operator_read_runbook: {
+    description: 'Read an Operator runbook or lessons file. Use before deploy/CI/incident/code tasks to reuse project memory.',
+    params: { name: { type: 'string', required: true, description: 'Runbook name, e.g. deploy.md, ci.md, incidents.md, lessons.md.' } },
+    handler: async ({ name } = {}) => {
+      try { const { readRunbook } = await import('./operatorRunbooks.js'); return ok(await readRunbook(name)) } catch (e) { return err(e.message) }
+    },
+  },
+  operator_update_runbook: {
+    description: 'Overwrite an Operator runbook or lessons file with improved instructions.',
+    params: { name: { type: 'string', required: true, description: 'Runbook name.' }, text: { type: 'string', required: true, description: 'Markdown content.' } },
+    handler: async ({ name, text } = {}) => {
+      try { const { writeRunbook } = await import('./operatorRunbooks.js'); return ok(await writeRunbook(name, text)) } catch (e) { return err(e.message) }
+    },
+  },
+  operator_append_lesson: {
+    description: 'Append a lesson learned to .browserai/lessons.md so future Operator tasks remember it.',
+    params: { title: { type: 'string', required: true, description: 'Lesson title.' }, body: { type: 'string', required: true, description: 'Lesson body.' }, tags: { type: 'array', optional: true, description: 'Tags.' } },
+    handler: async ({ title, body, tags = [] } = {}) => {
+      try { const { appendLesson } = await import('./operatorRunbooks.js'); return ok(await appendLesson({ title, body, tags, source: 'agent_tool' })) } catch (e) { return err(e.message) }
+    },
+  },
   operator_start_mission: {
     description: 'Start an Operator Mode mission. Use for broad end-to-end tasks: universal_dev_task, code_task, fix_tests, full_diagnostic, fix_deploy, safe_deploy, self_heal_restart. Production-write missions require confirm=true after user approval.',
     params: {

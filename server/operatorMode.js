@@ -318,6 +318,7 @@ function operatorSystemPrompt(project, missionType) {
     'For coding: read before edit, apply patches with tools, run verify_code/verify_task/npm_test/build, run secret_scan before commit/deploy.',
     'For deploy/production: prefer ops workflows, read logs, wait for health, use rollback-safe actions, and require approval when policy requires it.',
     'For unknown tasks: discover first; do not ask user unless blocked by missing credentials/decision/risky production action.',
+    'Before serious work, consult Operator runbooks/lessons when available via operator runbook tools or project files under .browserai/.',
     'Never claim success without tool evidence. If a tool fails, diagnose and retry with a different safe approach.',
     `Project: ${project?.name || 'BrowserAI'} (${project?.repo || ''})`,
     `Repository: ${project?.repo || ''}`,

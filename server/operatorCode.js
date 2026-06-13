@@ -9,6 +9,7 @@ import { scanSecrets } from './secretScan.js'
 import { withWorkspaceScope } from './workspace.js'
 import { createWorkflow, startWorkflow } from './agentWorkflows.js'
 import { addOperatorMissionEvent } from './operatorMode.js'
+import { appendLesson } from './operatorRunbooks.js'
 
 let initialized = false
 const monitors = new Map()
@@ -469,6 +470,7 @@ export async function waitOperatorCodeTaskCi({ taskId = '', timeoutSec = 900, in
       }
       const result = { ...(getOperatorCodeTask(task.id)?.result || {}), ci }
       emitTaskEvent(task, ok ? 'success' : 'error', ok ? 'CI passed' : 'CI failed', failed[0]?.html_url || '', { ci })
+      if (!ok) appendLesson({ title: `CI failed: ${task.goal.slice(0, 100)}`, body: ci.failedLogs || JSON.stringify(ci, null, 2), source: task.id, tags: ['ci', 'failure'] }).catch(() => {})
       patchTask(task.id, { status: ok ? 'succeeded' : 'failed', result, error: ok ? '' : 'CI failed', finishedAt: ok ? (getOperatorCodeTask(task.id)?.finishedAt || now()) : now() })
       if (!ok) {
         try {
@@ -568,6 +570,7 @@ export async function finalizeOperatorCodeTask({ taskId = '', commitMessage = ''
     report: renderCodeTaskReport(task, verify) + `\n\nCommit: ${sha}\nBranch: ${task.branch}${pullRequest?.url ? `\nPR: ${pullRequest.url}` : ''}`,
   }
   emitTaskEvent(task, 'success', 'Code task finalized', pullRequest?.url || sha, { commit: sha, branch: task.branch, pullRequest })
+  appendLesson({ title: `Code task finalized: ${task.goal.slice(0, 90)}`, body: final.report || renderCodeTaskReport(task, verify), source: task.id, tags: ['code', 'operator'] }).catch(() => {})
   patchTask(task.id, { status: 'succeeded', verify, result: final, error: '', finishedAt: now() })
   return getOperatorCodeTask(task.id)
 }

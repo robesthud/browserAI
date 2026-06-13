@@ -178,7 +178,9 @@ export function attachIncidentRcaFromWorkflow(incidentId, workflow = {}) {
   if (!inc) return null
   const rca = generateIncidentRcaFromWorkflow(workflow)
   const nextStatus = workflow.status === 'succeeded' && inc.status === 'investigating' ? 'open' : inc.status
-  return updateIncident(incidentId, { status: nextStatus, details: { ...(inc.details || {}), rca, rcaUpdatedAt: new Date().toISOString() } })
+  const updated = updateIncident(incidentId, { status: nextStatus, details: { ...(inc.details || {}), rca, rcaUpdatedAt: new Date().toISOString() } })
+  import('./operatorRunbooks.js').then((m) => m.captureLessonFromRca({ incident: updated, rca, workflow })).catch(() => {})
+  return updated
 }
 
 export function createIncidentWorkflow({ incident, recipeId = 'browserai_full_diagnostic', userId = '', input = {} } = {}) {
