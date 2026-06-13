@@ -74,6 +74,16 @@ export default function OperatorConsole() {
     finally { setBusy(false) }
   }
 
+  const reviewCodeTask = async (taskId) => {
+    setBusy(true)
+    setError('')
+    try {
+      await api(`/api/operator/code-tasks/${encodeURIComponent(taskId)}/review`, { method: 'POST' })
+      await refresh()
+    } catch (e) { setError(e.message || String(e)) }
+    finally { setBusy(false) }
+  }
+
   const waitCi = async (taskId) => {
     setBusy(true)
     setError('')
@@ -167,6 +177,10 @@ export default function OperatorConsole() {
               {m.workflowId && <span className="font-mono text-[10px] text-violet-200">wf {m.workflowId.slice(-8)}</span>}
               {m.jobId && <span className="font-mono text-[10px] text-violet-200">job {m.jobId.slice(-8)}</span>}
               {m.result?.codeTaskId && <span className="font-mono text-[10px] text-violet-200">code {m.result.codeTaskId.slice(-8)}</span>}
+              {m.codeTask?.status === 'succeeded' && !m.codeTask?.result?.review && (
+                <button onClick={() => void reviewCodeTask(m.result.codeTaskId)} className="rounded border border-violet-400/25 bg-violet-500/10 px-2 py-0.5 text-[10px] text-violet-100 hover:bg-violet-500/20">review</button>
+              )}
+              {m.codeTask?.result?.review && <span className={`rounded px-1.5 py-0.5 text-[10px] ${m.codeTask.result.review.risk === 'critical' || m.codeTask.result.review.risk === 'high' ? 'bg-amber-500/15 text-amber-200' : 'bg-emerald-500/15 text-emerald-200'}`}>risk {m.codeTask.result.review.risk}</span>}
               {m.codeTask?.status === 'succeeded' && !m.codeTask?.result?.finalize?.committed && (
                 <button onClick={() => void finalizeCodeTask(m.result.codeTaskId)} className="rounded border border-emerald-400/25 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-100 hover:bg-emerald-500/20">commit+PR</button>
               )}

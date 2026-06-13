@@ -452,6 +452,68 @@ export function startOperatorCodeCiAutoFix({ taskId = '', maxAttempts = 2 } = {}
   return getOperatorCodeTask(taskId)
 }
 
+
+export function riskForChangedFile(file = '') {
+  const f = String(file || '')
+  if (/\.env|secret|credential|token|private|\.pem|\.key|id_rsa|id_ed25519/i.test(f)) return { level: 'critical', reason: 'sensitive file path' }
+  if (/package-lock\.json|pnpm-lock\.yaml|yarn\.lock|package\.json/i.test(f)) return { level: 'medium', reason: 'dependency/package metadata changed' }
+  if (/docker|compose|nginx|deploy|workflow|\.github|server\/ops|server\/index|auth|crypto|security|policy/i.test(f)) return { level: 'high', reason: 'deployment/security/backend critical path' }
+  if (/test|spec/i.test(f)) return { level: 'low', reason: 'test file' }
+  if (/\.(js|jsx|ts|tsx|mjs|cjs)$/i.test(f)) return { level: 'medium', reason: 'source code' }
+  return { level: 'low', reason: 'regular file' }
+}
+function maxRisk(a, b) {
+  const order = { low: 1, medium: 2, high: 3, critical: 4 }
+  return (order[b] || 0) > (order[a] || 0) ? b : a
+}
+
+export async function reviewOperatorCodeTask({ taskId = '' } = {}) {
+  initOperatorCode()
+  const task = getOperatorCodeTask(taskId)
+  if (!task) throw new Error('code task not found')
+  if (!task.workdir || !existsSync(path.join(task.workdir, '.git'))) throw new Error('code task checkout not found')
+  const status = await run('git status --short', { cwd: task.workdir, timeoutMs: 30_000 })
+  const stat = await run('git diff --stat', { cwd: task.workdir, timeoutMs: 30_000 })
+  const names = await run('git diff --name-only', { cwd: task.workdir, timeoutMs: 30_000 })
+  const diffShort = await run('git diff -- . \' :(exclude)package-lock.json\' | head -n 800', { cwd: task.workdir, timeoutMs: 30_000 })
+  const files = String(names.stdout || '').split('\n').map((x) => x.trim()).filter(Boolean)
+  const fileRisks = files.map((file) => ({ file, ...riskForChangedFile(file) }))
+  let risk = 'low'
+  for (const r of fileRisks) risk = maxRisk(risk, r.level)
+  const verifyPassed = task.verify?.passed === true
+  const ciOk = task.result?.ci ? task.result.ci.ok === true : null
+  const secretOk = task.verify?.secretScan ? task.verify.secretScan.ok === true : true
+  const blockers = []
+  if (!files.length) blockers.push('No changed files detected')
+  if (!verifyPassed) blockers.push('Verification has not passed')
+  if (ciOk === false) blockers.push('CI is failing')
+  if (secretOk === false) blockers.push('Secret scan failed')
+  if (risk === 'critical') blockers.push('Critical-risk file changes detected')
+  const warnings = []
+  if (risk === 'high') warnings.push('High-risk critical path changed; require human review before merge/deploy')
+  if (ciOk === null) warnings.push('CI has not been checked yet')
+  const approvedForMerge = blockers.length === 0 && risk !== 'critical' && (ciOk === true || ciOk === null)
+  const approvedForDeploy = approvedForMerge && verifyPassed && ciOk === true && !['high', 'critical'].includes(risk)
+  const review = {
+    schema: 'browserai.operator_code_review.v1',
+    generatedAt: new Date().toISOString(),
+    taskId: task.id,
+    risk,
+    approvedForMerge,
+    approvedForDeploy,
+    blockers,
+    warnings,
+    files,
+    fileRisks,
+    verification: { passed: verifyPassed, ciOk, secretOk },
+    git: { status: status.stdout, stat: stat.stdout, diffPreview: diffShort.stdout },
+    summary: `${files.length} changed file(s), risk=${risk}, merge=${approvedForMerge ? 'allowed' : 'blocked'}, deploy=${approvedForDeploy ? 'allowed' : 'blocked'}`,
+  }
+  emitTaskEvent(task, approvedForMerge ? 'success' : 'warn', 'Code review completed', review.summary, { review })
+  patchTask(task.id, { result: { ...(task.result || {}), review } })
+  return getOperatorCodeTask(task.id)
+}
+
 export async function waitOperatorCodeTaskCi({ taskId = '', timeoutSec = 900, intervalSec = 15 } = {}) {
   initOperatorCode()
   let task = getOperatorCodeTask(taskId)
@@ -599,6 +661,10 @@ export async function mergeOperatorCodeTaskPr({ taskId = '', mergeMethod = 'squa
   const ci = task.result?.ci
   if (ci && ci.ok !== true) throw new Error(`refusing to merge: CI is ${ci.status || 'not green'}`)
   if (!ci) throw new Error('refusing to merge before CI check; run wait CI first')
+  task = (await reviewOperatorCodeTask({ taskId })).result ? getOperatorCodeTask(taskId) : task
+  const review = task.result?.review
+  if (!review?.approvedForMerge) throw new Error(`refusing to merge: review gate blocked (${(review?.blockers || []).join('; ') || 'not approved'})`)
+  if (deploy && !review?.approvedForDeploy) throw new Error(`refusing deploy after merge: deploy review gate blocked (${(review?.warnings || []).join('; ') || 'risk too high or CI not green'})`)
 
   const repo = repoSlug(task.repo)
   const prDetails = await githubJson(`/repos/${repo}/pulls/${pr.number}`)
@@ -637,4 +703,4 @@ export async function mergeOperatorCodeTaskPr({ taskId = '', mergeMethod = 'squa
   return getOperatorCodeTask(task.id)
 }
 
-export default { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr }
+export default { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr, reviewOperatorCodeTask }

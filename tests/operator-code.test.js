@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, renderCodeTaskReport } from '../server/operatorCode.js'
+import { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, renderCodeTaskReport, riskForChangedFile } from '../server/operatorCode.js'
 
 describe('operator code pipeline', () => {
   it('creates a queued code task with checkout metadata', () => {
@@ -25,5 +25,11 @@ describe('operator code pipeline', () => {
     expect(report).toContain('Code Operator task verified')
     expect(report).toContain('npm test')
     expect(report).toContain('Branch: operator/x')
+  })
+
+  it('scores risky file paths for merge gates', () => {
+    expect(riskForChangedFile('server/index.js').level).toBe('high')
+    expect(riskForChangedFile('.env').level).toBe('critical')
+    expect(riskForChangedFile('src/App.jsx').level).toBe('medium')
   })
 })

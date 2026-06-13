@@ -1277,6 +1277,17 @@ export const TOOLS = {
     },
   },
 
+  operator_review_code_task: {
+    description: 'Review an Operator Code Task diff, assign risk score, identify blockers/warnings, and decide whether merge/deploy gates are allowed.',
+    params: { id: { type: 'string', required: true, description: 'Operator code task id.' } },
+    handler: async ({ id } = {}) => {
+      try {
+        const { reviewOperatorCodeTask } = await import('./operatorCode.js')
+        return ok(await reviewOperatorCodeTask({ taskId: id }))
+      } catch (e) { return err(e.message) }
+    },
+  },
+
   operator_finalize_code_task: {
     description: 'Finalize a verified Operator Code Task: rerun deterministic verification, secret scan, git commit, push branch and optionally create a GitHub PR. Requires GitHub token for push/PR.',
     params: {

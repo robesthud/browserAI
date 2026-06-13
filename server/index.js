@@ -83,7 +83,7 @@ import { initOperatorMode, getOperatorStatus, listOperatorProjects, upsertOperat
 import { initDeploySessions, createDeploySession, getDeploySession, listDeploySessions, startDeploySession } from './deploySessions.js'
 import { listRunbooks, readRunbook, writeRunbook, appendLesson } from './operatorRunbooks.js'
 import { analyzeOperatorProject } from './operatorProjectOnboarding.js'
-import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr } from './operatorCode.js'
+import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr, reviewOperatorCodeTask } from './operatorCode.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
@@ -3187,6 +3187,15 @@ app.post('/api/operator/code-tasks/:id/finalize', requireAuth, async (req, res) 
       prBody: String(req.body?.prBody || ''),
     })
     res.json({ ok: true, task: updated })
+  } catch (e) { res.status(400).json({ ok: false, error: e?.message || String(e) }) }
+})
+
+app.post('/api/operator/code-tasks/:id/review', requireAuth, async (req, res) => {
+  try {
+    const task = getOperatorCodeTask(req.params.id)
+    if (!task || (task.userId && task.userId !== req.user?.id)) return res.status(404).json({ error: 'code task not found' })
+    const updated = await reviewOperatorCodeTask({ taskId: req.params.id })
+    res.json({ ok: true, task: updated, review: updated.result?.review || null })
   } catch (e) { res.status(400).json({ ok: false, error: e?.message || String(e) }) }
 })
 
