@@ -87,6 +87,7 @@ import { PROJECT_TEMPLATES } from './operatorProjectTemplates.js'
 import { RUNTIME_ADAPTERS } from './operatorRuntimeAdapters.js'
 import { getOperatorReport, saveOperatorReport, sendOperatorReportTelegram } from './operatorReports.js'
 import { initNotifications, listNotifications, notificationSummary, markNotificationRead, markAllNotificationsRead } from './notifications.js'
+import { classifyFailure, recommendAutoFix, executeAutoFixRecommendation, createIncidentFromFailure } from './failureClassifier.js'
 import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr, reviewOperatorCodeTask, cancelOperatorCodeTask, resumeOperatorCodeTask } from './operatorCode.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
@@ -3112,6 +3113,28 @@ app.get('/api/agent/control-plane', requireAuth, (req, res) => {
 
 app.get('/api/operator/status', requireAuth, async (req, res) => {
   res.json({ operator: await getOperatorStatus({ userId: req.user?.id || '' }) })
+})
+
+app.post('/api/operator/failure/classify', requireAuth, (req, res) => {
+  try {
+    const classification = classifyFailure(req.body || {})
+    res.json({ classification, recommendation: recommendAutoFix(classification) })
+  } catch (e) { res.status(400).json({ error: e?.message || String(e) }) }
+})
+
+app.post('/api/operator/failure/incident', requireAuth, (req, res) => {
+  try {
+    const classification = classifyFailure(req.body || {})
+    const incident = createIncidentFromFailure({ userId: req.user?.id || '', input: req.body || {}, classification })
+    res.json({ ok: true, incident, classification })
+  } catch (e) { res.status(400).json({ error: e?.message || String(e) }) }
+})
+
+app.post('/api/operator/failure/execute', requireAuth, (req, res) => {
+  try {
+    const result = executeAutoFixRecommendation({ userId: req.user?.id || '', input: req.body?.input || req.body || {}, confirm: req.body?.confirm === true })
+    res.json({ ok: true, ...result })
+  } catch (e) { res.status(e?.code === 'CONFIRM_REQUIRED' ? 409 : 400).json({ ok: false, error: e?.message || String(e), code: e?.code || 'ERROR', recommendation: e?.recommendation || null }) }
 })
 
 app.get('/api/operator/reports/:kind/:id', requireAuth, (req, res) => {

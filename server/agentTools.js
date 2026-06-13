@@ -1271,6 +1271,29 @@ export const TOOLS = {
       } catch (e) { return err(e.message) }
     },
   },
+  operator_classify_failure: {
+    description: 'Classify an error/log/output into failure category and recommend an auto-fix policy. Use before choosing recovery action.',
+    params: {
+      error: { type: 'string', optional: true, description: 'Error text.' },
+      logs: { type: 'string', optional: true, description: 'Logs/output.' },
+      title: { type: 'string', optional: true, description: 'Failure title/context.' },
+      source: { type: 'string', optional: true, description: 'Failure source.' },
+    },
+    handler: async (args = {}) => {
+      try { const { classifyFailure, recommendAutoFix } = await import('./failureClassifier.js'); const classification = classifyFailure(args); return ok({ classification, recommendation: recommendAutoFix(classification) }) } catch (e) { return err(e.message) }
+    },
+  },
+  operator_execute_auto_fix: {
+    description: 'Execute recommended auto-fix action for a classified failure. Safe diagnostics/code tasks can auto-start; production/blocked actions require confirm=true after approval.',
+    params: {
+      input: { type: 'object', required: true, description: 'Failure input/classification context.' },
+      confirm: { type: 'boolean', optional: true, description: 'Approval flag for risky actions.' },
+    },
+    handler: async ({ input = {}, confirm = false, _userId } = {}) => {
+      try { const { executeAutoFixRecommendation } = await import('./failureClassifier.js'); return ok(executeAutoFixRecommendation({ userId: _userId || '', input, confirm })) } catch (e) { return err(e.message) }
+    },
+  },
+
   operator_get_report: {
     description: 'Generate a Markdown report for an Operator mission, code task, deploy session, or incident.',
     params: {

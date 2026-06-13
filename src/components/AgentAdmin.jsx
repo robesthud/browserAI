@@ -9,6 +9,7 @@ import AutomationCenter from './AutomationCenter.jsx'
 import AgentInbox from './AgentInbox.jsx'
 import AgentControlPlanePanel from './AgentControlPlanePanel.jsx'
 import NotificationCenter from './NotificationCenter.jsx'
+import FailureAdvisorPanel from './FailureAdvisorPanel.jsx'
 import OperatorConsole from './OperatorConsole.jsx'
 import OperatorProjectsPanel from './OperatorProjectsPanel.jsx'
 import OperatorRunbooks from './OperatorRunbooks.jsx'
@@ -136,6 +137,8 @@ export default function AgentAdmin() {
         <AgentControlPlanePanel />
 
         <NotificationCenter />
+
+        <FailureAdvisorPanel />
 
         <OperatorConsole />
 
