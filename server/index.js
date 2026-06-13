@@ -172,6 +172,9 @@ app.use(helmet({
   // https:// + DNS name. When false, helmet does NOT set the
   // Strict-Transport-Security header at all.
   hsts: HSTS_ENABLED,
+  // COOP is only meaningful on potentially trustworthy origins (HTTPS or localhost).
+  // On a bare http://IP deployment browsers ignore it and spam the console.
+  crossOriginOpenerPolicy: HSTS_ENABLED ? { policy: 'same-origin' } : false,
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
