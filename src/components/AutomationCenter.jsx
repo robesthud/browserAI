@@ -10,10 +10,12 @@ function statusClass(status) {
 }
 
 function riskLabel(risk) {
-  return {
-    safe: 'safe',
-    'production-write': 'production',
-  }[risk] || risk || 'unknown'
+  return { safe: 'safe', 'production-write': 'production' }[risk] || risk || 'unknown'
+}
+
+function fmtTime(ts) {
+  if (!ts) return '—'
+  try { return new Date(ts).toLocaleString() } catch { return String(ts) }
 }
 
 async function api(path, options = {}) {
@@ -26,6 +28,7 @@ async function api(path, options = {}) {
   if (!r.ok) {
     const err = new Error(data.error || `HTTP ${r.status}`)
     err.code = data.code
+    err.policy = data.policy
     throw err
   }
   return data
@@ -34,6 +37,7 @@ async function api(path, options = {}) {
 function WorkflowCard({ workflow, onRefresh }) {
   const [open, setOpen] = useState(false)
   const running = !TERMINAL.has(workflow.status)
+  const report = workflow.result?.report || ''
   return (
     <div className={`rounded-xl border p-3 text-[12px] ${statusClass(workflow.status)}`}>
       <div className="flex items-center justify-between gap-2">
@@ -52,6 +56,15 @@ function WorkflowCard({ workflow, onRefresh }) {
       {workflow.error && <div className="mt-2 text-red-200">{workflow.error}</div>}
       {open && (
         <div className="mt-3 space-y-2">
+          {report && (
+            <div className="rounded-lg border border-white/10 bg-black/15 p-2">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="font-medium text-cream">Report</span>
+                <button onClick={() => navigator.clipboard?.writeText(report)} className="rounded border border-white/10 px-2 py-0.5 text-[10px] hover:bg-white/5">copy</button>
+              </div>
+              <pre className="max-h-44 overflow-auto whitespace-pre-wrap text-[11px] text-cream-soft">{report}</pre>
+            </div>
+          )}
           {(workflow.steps || []).map((s) => (
             <div key={s.id} className="rounded-lg border border-white/10 bg-black/15 p-2">
               <div className="flex items-center justify-between gap-2">
@@ -80,6 +93,9 @@ function WorkflowCard({ workflow, onRefresh }) {
 export default function AutomationCenter() {
   const [recipes, setRecipes] = useState([])
   const [workflows, setWorkflows] = useState([])
+  const [cronJobs, setCronJobs] = useState([])
+  const [policy, setPolicy] = useState(null)
+  const [policyEvents, setPolicyEvents] = useState([])
   const [busyRecipe, setBusyRecipe] = useState('')
   const [error, setError] = useState('')
   const [scheduleRecipe, setScheduleRecipe] = useState('production_health_check')
@@ -88,12 +104,17 @@ export default function AutomationCenter() {
   const runningCount = useMemo(() => workflows.filter((w) => !TERMINAL.has(w.status)).length, [workflows])
 
   const refresh = async () => {
-    const [r, w] = await Promise.all([
+    const [r, w, c, p] = await Promise.all([
       api('/api/agent/recipes'),
       api('/api/agent/workflows?limit=20'),
+      api('/api/cron').catch(() => ({ jobs: [] })),
+      api('/api/agent/policy?limit=20').catch(() => ({ policy: null, events: [] })),
     ])
     setRecipes(r.recipes || [])
     setWorkflows(w.workflows || [])
+    setCronJobs(c.jobs || [])
+    setPolicy(p.policy || null)
+    setPolicyEvents(p.events || [])
   }
 
   useEffect(() => {
@@ -113,10 +134,7 @@ export default function AutomationCenter() {
         confirm = window.confirm(`Запустить automation recipe «${recipe.title}»?\n\nRisk: ${recipe.risk}\nЭто может изменить production.`)
         if (!confirm) return
       }
-      await api('/api/agent/workflows', {
-        method: 'POST',
-        body: JSON.stringify({ recipeId: recipe.id, confirm }),
-      })
+      await api('/api/agent/workflows', { method: 'POST', body: JSON.stringify({ recipeId: recipe.id, confirm }) })
       await refresh()
     } catch (e) {
       setError(e.message || String(e))
@@ -135,17 +153,25 @@ export default function AutomationCenter() {
     try {
       await api('/api/cron', {
         method: 'POST',
-        body: JSON.stringify({
-          name: `workflow: ${recipe.title}`,
-          schedule: scheduleExpr,
-          trigger: 'workflow',
-          prompt: recipe.id,
-        }),
+        body: JSON.stringify({ name: `workflow: ${recipe.title}`, schedule: scheduleExpr, trigger: 'workflow', prompt: recipe.id }),
       })
       setError(`Scheduled: ${recipe.title} (${scheduleExpr})`)
-    } catch (e) {
-      setError(e.message || String(e))
-    }
+      await refresh()
+    } catch (e) { setError(e.message || String(e)) }
+  }
+
+  const toggleCron = async (job) => {
+    await api(`/api/cron/${encodeURIComponent(job.id)}`, { method: 'PATCH', body: JSON.stringify({ enabled: !job.enabled }) })
+    await refresh()
+  }
+  const deleteCron = async (job) => {
+    if (!window.confirm(`Удалить schedule «${job.name}»?`)) return
+    await api(`/api/cron/${encodeURIComponent(job.id)}`, { method: 'DELETE' })
+    await refresh()
+  }
+  const runCronNow = async (job) => {
+    await api(`/api/cron/${encodeURIComponent(job.id)}/run`, { method: 'POST' })
+    await refresh()
   }
 
   return (
@@ -158,17 +184,23 @@ export default function AutomationCenter() {
         <button onClick={() => void refresh()} className="rounded-lg border border-white/10 px-2.5 py-1 text-[12px] text-cream-soft hover:bg-graphite-750">↻</button>
       </div>
 
-      {error && <div className="mb-3 rounded-lg border border-red-400/25 bg-red-500/10 p-2 text-[12px] text-red-200">{error}</div>}
+      {error && <div className="mb-3 rounded-lg border border-amber-400/25 bg-amber-500/10 p-2 text-[12px] text-amber-100">{error}</div>}
+
+      {policy && (
+        <details className="mb-3 rounded-xl border border-white/10 bg-black/15 p-3 text-[12px]">
+          <summary className="cursor-pointer text-cream-soft">Policy Engine v{policy.version} · running/user {policy.maxRunningWorkflowsPerUser} · prod/hour {policy.maxProductionWritesPerHour}</summary>
+          <div className="mt-2 grid gap-2 md:grid-cols-2">
+            <pre className="max-h-44 overflow-auto rounded bg-black/25 p-2 text-[10px] text-cream-faint">{JSON.stringify(policy, null, 2)}</pre>
+            <div className="max-h-44 overflow-auto space-y-1 text-[11px] text-cream-faint">
+              {policyEvents.map((e) => <div key={e.id} className="rounded border border-white/5 px-2 py-1">{e.decision === 'allow' ? '✓' : '✗'} {e.recipeId} · {e.source} · {e.reason}</div>)}
+            </div>
+          </div>
+        </details>
+      )}
 
       <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
         {recipes.map((r) => (
-          <button
-            key={r.id}
-            type="button"
-            disabled={busyRecipe === r.id}
-            onClick={() => void runRecipe(r)}
-            className="rounded-xl border border-white/10 bg-black/15 p-3 text-left transition hover:border-white/20 hover:bg-white/5 disabled:opacity-60"
-          >
+          <button key={r.id} type="button" disabled={busyRecipe === r.id} onClick={() => void runRecipe(r)} className="rounded-xl border border-white/10 bg-black/15 p-3 text-left transition hover:border-white/20 hover:bg-white/5 disabled:opacity-60">
             <div className="mb-1 flex items-center justify-between gap-2">
               <span className="font-medium text-cream">{r.icon} {r.title}</span>
               <span className={`rounded-full px-2 py-0.5 text-[10px] ${r.risk === 'safe' ? 'bg-emerald-500/15 text-emerald-200' : 'bg-amber-500/15 text-amber-200'}`}>{riskLabel(r.risk)}</span>
@@ -190,6 +222,19 @@ export default function AutomationCenter() {
           </select>
           <input value={scheduleExpr} onChange={(e) => setScheduleExpr(e.target.value)} className="rounded-lg border border-white/10 bg-graphite-900 px-2 py-1.5 text-[12px] text-cream" placeholder="*/15 minutes" />
           <button onClick={() => void scheduleSafeRecipe()} className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 px-3 py-1.5 text-[12px] text-emerald-100 hover:bg-emerald-500/20">Schedule</button>
+        </div>
+        <div className="mt-3 space-y-1">
+          {cronJobs.length === 0 ? <div className="text-[12px] text-cream-faint">Нет schedules.</div> : cronJobs.map((j) => (
+            <div key={j.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-graphite-900/60 px-2 py-1.5 text-[11px]">
+              <span className={j.enabled ? 'text-emerald-200' : 'text-cream-faint'}>{j.enabled ? '●' : '○'}</span>
+              <span className="min-w-0 flex-1 truncate text-cream-soft">{j.name}</span>
+              <span className="font-mono text-cream-faint">{j.schedule}</span>
+              <span className="text-cream-faint">next: {fmtTime(j.next_run_at)}</span>
+              <button onClick={() => void runCronNow(j)} className="rounded border border-white/10 px-1.5 py-0.5 hover:bg-white/5">run</button>
+              <button onClick={() => void toggleCron(j)} className="rounded border border-white/10 px-1.5 py-0.5 hover:bg-white/5">{j.enabled ? 'pause' : 'enable'}</button>
+              <button onClick={() => void deleteCron(j)} className="rounded border border-red-400/20 px-1.5 py-0.5 text-red-200 hover:bg-red-500/10">del</button>
+            </div>
+          ))}
         </div>
       </div>
 

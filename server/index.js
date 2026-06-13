@@ -76,6 +76,7 @@ import { searchWeb, fetchWebPage } from './web.js'
 // retryVideoJob удалён вместе с gemini_video runner.
 import { createJob, getJob, initJobs, listJobs, startJob, cancelJob, retryJob, registerRuntimeInput } from './jobs.js'
 import { initAgentWorkflows, listAutomationRecipes, createWorkflow, startWorkflow, getWorkflow, listWorkflows, cancelWorkflow, retryWorkflow } from './agentWorkflows.js'
+import { getAutomationPolicy, listAutomationPolicyEvents } from './automationPolicy.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
@@ -1818,6 +1819,20 @@ app.delete('/api/cron/:id', requireAuth, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }) }
 })
 
+app.patch('/api/cron/:id', requireAuth, async (req, res) => {
+  try {
+    const { setCronJobEnabled } = await import('./cron.js')
+    res.json({ ok: true, ...setCronJobEnabled(req.user?.id, req.params.id, req.body?.enabled !== false) })
+  } catch (e) { res.status(400).json({ error: e.message }) }
+})
+
+app.post('/api/cron/:id/run', requireAuth, async (req, res) => {
+  try {
+    const { triggerCronJobNow } = await import('./cron.js')
+    res.json(await triggerCronJobNow(req.user?.id, req.params.id))
+  } catch (e) { res.status(400).json({ error: e.message }) }
+})
+
 // ── Knowledge base (RAG) ───────────────────────────────────────────────────
 app.get('/api/kb', requireAuth, async (req, res) => {
   try {
@@ -2957,6 +2972,10 @@ app.get('/api/agent/recipes', requireAuth, (_req, res) => {
   res.json({ recipes: listAutomationRecipes() })
 })
 
+app.get('/api/agent/policy', requireAuth, (req, res) => {
+  res.json({ policy: getAutomationPolicy(), events: listAutomationPolicyEvents({ userId: req.user?.id || '', limit: Number(req.query.limit || 50) }) })
+})
+
 app.get('/api/agent/workflows', requireAuth, (req, res) => {
   res.json({ workflows: listWorkflows({ userId: req.user?.id || '', chatId: String(req.query.chatId || ''), limit: req.query.limit || 30 }) })
 })
@@ -2969,12 +2988,13 @@ app.post('/api/agent/workflows', requireAuth, (req, res) => {
       recipeId: String(req.body?.recipeId || ''),
       input: req.body?.input || {},
       confirm: req.body?.confirm === true,
+      source: String(req.body?.source || 'manual'),
     })
     startWorkflow(wf.id)
     res.json({ ok: true, workflow: getWorkflow(wf.id) })
   } catch (e) {
     const status = e?.code === 'CONFIRM_REQUIRED' ? 409 : 400
-    res.status(status).json({ ok: false, error: e?.message || String(e), code: e?.code || 'ERROR' })
+    res.status(status).json({ ok: false, error: e?.message || String(e), code: e?.code || 'ERROR', policy: e?.policy || null })
   }
 })
 

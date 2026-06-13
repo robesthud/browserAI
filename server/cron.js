@@ -128,6 +128,25 @@ export function deleteCronJob(userId, id) {
   return { deleted: r.changes }
 }
 
+export function setCronJobEnabled(userId, id, enabled = true) {
+  init()
+  if (!userId) throw new Error('userId required')
+  const r = db.prepare('UPDATE cron_jobs SET enabled=?, updated_at=? WHERE id=? AND user_id=?').run(enabled ? 1 : 0, Date.now(), id, userId)
+  return { updated: r.changes }
+}
+
+export async function triggerCronJobNow(userId, id) {
+  init()
+  if (!userId) throw new Error('userId required')
+  const job = db.prepare('SELECT * FROM cron_jobs WHERE id=? AND user_id=?').get(id, userId)
+  if (!job) throw new Error('cron job not found')
+  await fireJob(job)
+  const ts = Date.now()
+  const next = nextRunFromSchedule(job.schedule, ts)
+  db.prepare('UPDATE cron_jobs SET last_run_at=?, next_run_at=?, updated_at=? WHERE id=?').run(ts, next, ts, id)
+  return { ok: true, last_run_at: ts, next_run_at: next }
+}
+
 /** Fire a single cron job. Both triggers degrade gracefully on failure. */
 async function fireJob(job) {
   console.log(`[cron] firing ${job.id} (${job.name}) for user ${job.user_id}`)
@@ -155,6 +174,7 @@ async function fireJob(job) {
         // not require confirmation. Production-write automations remain
         // manual unless a future policy engine grants them explicitly.
         confirm: false,
+        source: 'schedule',
       })
       startWorkflow(wf.id)
     } catch (e) { console.warn('[cron] workflow enqueue failed:', e.message) }

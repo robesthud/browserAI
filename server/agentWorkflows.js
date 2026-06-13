@@ -3,6 +3,7 @@ import db from './db.js'
 import { invokeTool } from './agentTools.js'
 import { runOpsAction } from './ops.js'
 import { withWorkspaceScope } from './workspace.js'
+import { evaluateWorkflowStart, initAutomationPolicy } from './automationPolicy.js'
 
 let initialized = false
 const running = new Set()
@@ -88,6 +89,21 @@ export const AUTOMATION_RECIPES = [
       { title: 'Actions status', kind: 'ops', service: 'github', action: 'actions_status', safe: true, params: { limit: 8 } },
     ],
   },
+  {
+    id: 'browserai_full_diagnostic',
+    title: 'Full BrowserAI diagnostic',
+    icon: '🔎',
+    description: 'Полный safe diagnostic: health, docker, recent logs, git sync, GitHub CI.',
+    risk: 'safe',
+    tags: ['ops', 'diagnostic', 'github'],
+    steps: [
+      { title: 'App health', kind: 'ops', service: 'browserai', action: 'health', safe: true },
+      { title: 'Docker compose status', kind: 'ops', service: 'browserai', action: 'docker_ps', safe: true },
+      { title: 'Recent app logs', kind: 'ops', service: 'browserai', action: 'docker_logs_recent', safe: true, params: { service: 'browserai', tail: 100 } },
+      { title: 'Git/deploy sync status', kind: 'ops', service: 'browserai', action: 'sync_check', safe: true },
+      { title: 'GitHub Actions status', kind: 'ops', service: 'github', action: 'actions_status', safe: true, params: { limit: 8 } },
+    ],
+  },
 ]
 
 export function initAgentWorkflows() {
@@ -138,6 +154,7 @@ export function initAgentWorkflows() {
       created_at INTEGER NOT NULL
     );
   `)
+  initAutomationPolicy()
   initialized = true
 
   const resumable = db.prepare(`SELECT id FROM agent_workflows WHERE status IN ('queued','running') ORDER BY created_at ASC`).all()
@@ -212,20 +229,54 @@ function patchStep(stepId, patch = {}) {
   return db.prepare('SELECT * FROM agent_workflow_steps WHERE id=?').get(stepId)
 }
 
-export function createWorkflow({ userId = '', chatId = '', recipeId = '', input = {}, confirm = false } = {}) {
+export function renderWorkflowReport(workflow) {
+  if (!workflow) return ''
+  const icon = workflow.status === 'succeeded' ? '✅' : workflow.status === 'failed' ? '❌' : workflow.status === 'cancelled' ? '⊘' : '⏳'
+  const dur = workflow.finishedAt && workflow.createdAt ? `${Math.round((workflow.finishedAt - workflow.createdAt) / 1000)}s` : ''
+  const lines = [
+    `${icon} ${workflow.title}`,
+    '',
+    `Workflow: ${workflow.id}`,
+    `Recipe: ${workflow.recipeId}`,
+    `Status: ${workflow.status}`,
+    dur ? `Duration: ${dur}` : '',
+    workflow.error ? `Error: ${workflow.error}` : '',
+    '',
+    'Steps:',
+  ].filter(Boolean)
+  for (const s of workflow.steps || []) {
+    const mark = s.status === 'succeeded' ? '✓' : s.status === 'failed' ? '✗' : s.status === 'cancelled' ? '⊘' : '…'
+    lines.push(`${mark} ${s.idx}. ${s.title}${s.error ? ` — ${s.error}` : ''}`)
+  }
+  return lines.join('\n')
+}
+
+async function notifyWorkflowIfNeeded(workflow) {
+  if (!workflow) return
+  const recipe = getAutomationRecipe(workflow.recipeId)
+  const shouldNotify = workflow.status === 'failed' || recipe?.risk === 'production-write' || workflow.input?.notifyTelegram === true
+  if (!shouldNotify) return
+  try {
+    await runOpsAction({ service: 'telegram', action: 'notify_admin', params: { text: renderWorkflowReport(workflow) }, confirm: true })
+  } catch { /* notification is best-effort */ }
+}
+
+export function createWorkflow({ userId = '', chatId = '', recipeId = '', input = {}, confirm = false, source = 'manual' } = {}) {
   initAgentWorkflows()
   const recipe = getAutomationRecipe(recipeId)
   if (!recipe) throw new Error(`Unknown automation recipe: ${recipeId}`)
-  if (recipe.requiresConfirmation && confirm !== true) {
-    const err = new Error(`Recipe ${recipeId} requires confirmation`)
-    err.code = 'CONFIRM_REQUIRED'
+  const policyDecision = evaluateWorkflowStart({ recipe, userId, source, confirm })
+  if (!policyDecision.ok) {
+    const err = new Error(policyDecision.reason || `Recipe ${recipeId} blocked by policy`)
+    err.code = policyDecision.code || 'POLICY_DENY'
+    err.policy = policyDecision
     throw err
   }
   const workflowId = id('wf')
   const ts = now()
   db.prepare(`INSERT INTO agent_workflows (id,user_id,chat_id,recipe_id,title,status,input_json,result_json,created_at,updated_at)
     VALUES (?,?,?,?,?,'queued',?,'{}',?,?)`).run(
-    workflowId, String(userId || ''), String(chatId || ''), recipe.id, recipe.title, JSON.stringify({ ...(input || {}), confirmed: Boolean(confirm) }), ts, ts,
+    workflowId, String(userId || ''), String(chatId || ''), recipe.id, recipe.title, JSON.stringify({ ...(input || {}), confirmed: Boolean(confirm), source }), ts, ts,
   )
   recipe.steps.forEach((step, i) => {
     db.prepare(`INSERT INTO agent_workflow_steps (id,workflow_id,idx,title,kind,status,input_json,result_json,updated_at)
@@ -289,21 +340,27 @@ export function startWorkflow(workflowId) {
         const out = await executeStep({ workflow, step: { ...step, status: 'running' } })
         if (!out.ok) {
           patchStep(step.id, { status: 'failed', result: out.result || {}, error: out.error || 'step failed', finishedAt: now() })
-          patchWorkflow(workflowId, { status: 'failed', error: `${step.title}: ${out.error || 'failed'}`, progress: Math.round(((step.idx - 1) / Math.max(steps.length, 1)) * 100), finishedAt: now() })
+          let failed = patchWorkflow(workflowId, { status: 'failed', error: `${step.title}: ${out.error || 'failed'}`, progress: Math.round(((step.idx - 1) / Math.max(steps.length, 1)) * 100), finishedAt: now() })
+          const report = renderWorkflowReport(failed)
+          failed = patchWorkflow(workflowId, { result: { ...(failed?.result || {}), report } })
+          await notifyWorkflowIfNeeded(failed)
           return
         }
         patchStep(step.id, { status: 'succeeded', result: out, error: '', finishedAt: now() })
         patchWorkflow(workflowId, { status: 'running', progress: Math.round((step.idx / Math.max(steps.length, 1)) * 100) })
       }
       if (cancelled.has(workflowId)) return
-      const final = getWorkflow(workflowId)
-      patchWorkflow(workflowId, {
+      let final = getWorkflow(workflowId)
+      final = patchWorkflow(workflowId, {
         status: 'succeeded', progress: 100, finishedAt: now(),
         result: {
           summary: `${final.title} completed`,
           steps: final.steps.map((s) => ({ idx: s.idx, title: s.title, status: s.status, ok: s.status === 'succeeded', preview: clip(s.result, 1200) })),
         },
       })
+      const report = renderWorkflowReport(final)
+      final = patchWorkflow(workflowId, { result: { ...(final?.result || {}), report } })
+      await notifyWorkflowIfNeeded(final)
     } catch (e) {
       patchWorkflow(workflowId, { status: 'failed', error: e?.message || String(e), finishedAt: now() })
     } finally {
