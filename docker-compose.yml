@@ -9,6 +9,7 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=8080
+      - OPS_APP_DIR=/app
       # DeepSeek managed-session env (optional bootstrap, can be set later via UI/TG)
       - DEEPSEEK_STATE_FILE=/data/deepseek_session.json
       - CHAT_DEBUG_LOG=/data/chat-debug.log

@@ -29,6 +29,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/server ./server
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/public ./public
+COPY docker-compose.yml .
 
 # Persisted state (sessions, workspace, deepseek_session.json, sqlite db)
 RUN mkdir -p /data /workspace
