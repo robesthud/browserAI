@@ -619,6 +619,9 @@ export function buildClineSystemPrompt({
   write_file(path, content)
       — create or overwrite a file; parent folders are auto-created.
 
+  zip_files(source_path='', output_path='workspace.zip')
+      — create a ZIP archive in the current chat workspace.
+
   edit_file(path, old_text, new_text)
       — exact search-and-replace. Read the file first; if it fails, re-read.
 

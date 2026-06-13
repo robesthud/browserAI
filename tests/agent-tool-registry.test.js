@@ -4,7 +4,7 @@ import { buildClineSystemPrompt } from '../server/clinePrompt.js'
 
 describe('agent tool registry and prompt', () => {
   it('exposes planning, user question and memory tools used by the agent loop', () => {
-    for (const name of ['plan_set', 'plan_check', 'ask_user', 'recall_facts', 'remember_fact', 'kb_search', 'kb_list', 'read_project_rules', 'npm_test', 'git_clone']) {
+    for (const name of ['plan_set', 'plan_check', 'ask_user', 'recall_facts', 'remember_fact', 'kb_search', 'kb_list', 'read_project_rules', 'npm_test', 'git_clone', 'zip_files']) {
       expect(TOOLS[name]).toBeTruthy()
     }
   })

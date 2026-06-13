@@ -58,7 +58,7 @@ const TOOL_PROFILES = {
   general: [
     ...COMMON_AGENT_TOOLS,
     'list_files', 'read_file', 'search_files',
-    'write_file', 'edit_file', 'delete_file',
+    'write_file', 'edit_file', 'delete_file', 'zip_files',
     'bash', 'verify_code',
     'web_search', 'web_fetch',
     'git_status', 'git_clone',
@@ -67,7 +67,7 @@ const TOOL_PROFILES = {
   code: [
     ...COMMON_AGENT_TOOLS,
     'list_files', 'read_file', 'search_files',
-    'write_file', 'edit_file', 'delete_file',
+    'write_file', 'edit_file', 'delete_file', 'zip_files',
     'bash', 'npm_install', 'npm_test', 'verify_code',
     'git_status', 'git_clone', 'git_commit',
   ],
@@ -78,7 +78,7 @@ const TOOL_PROFILES = {
     'bash', 'npm_test', 'verify_code',
     'web_search', 'web_fetch',
     'git_status', 'git_clone', 'git_commit',
-    'list_files', 'read_file', 'search_files', 'edit_file', 'write_file',
+    'list_files', 'read_file', 'search_files', 'edit_file', 'write_file', 'zip_files',
   ],
   research: [
     ...COMMON_AGENT_TOOLS,
@@ -531,6 +531,34 @@ async function runLightweightChat({ res, provider, history, userId, chatId, mode
   res.end()
 }
 
+
+function isArchiveRequest(history = []) {
+  const last = [...history].reverse().find((m) => m?.role === 'user')
+  const text = String(last?.content || '').toLowerCase()
+  return /(zip|archive|архив|заархив|запак|упак|сжать)/i.test(text)
+}
+
+async function runArchiveShortcut({ res, userId, chatId, history }) {
+  const tokens = { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: 0 }
+  sse(res, 'agent_context', { shortcut: 'zip_files', task: { type: 'archive', complexity: 'low' } })
+  sse(res, 'thinking', { step: 0 })
+  sse(res, 'tool_start', { step: 0, sub: 0, name: 'zip_files', args: { source_path: '', output_path: 'workspace.zip' } })
+  const r = await invokeTool('zip_files', { source_path: '', output_path: 'workspace.zip' }, { userId, chatId })
+  sse(res, 'tool_result', { step: 0, sub: 0, name: 'zip_files', ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult('zip_files', r, { step: 0, sub: 0 }) })
+  if (!r.ok) {
+    await streamFinalAnswer(res, `❌ Не смог создать ZIP: ${r.error}`)
+    sseDone(res, { steps: 0, reason: 'archive-error' }, tokens)
+    res.end()
+    return
+  }
+  const info = r.result || {}
+  await streamFinalAnswer(res, `✅ Архив готов: \`${info.file_path}\` (${info.entries || 0} файлов, ${info.bytes || 0} байт).
+
+Он появился в панели «Файлы» справа — можно скачать оттуда.`)
+  sseDone(res, { steps: 0, reason: 'archive-shortcut' }, tokens)
+  res.end()
+}
+
 // ── Error recovery helpers ──────────────────────────────────────────────────
 function getRecoveryHint(tool, error, args = {}) {
   const err = String(error || '').toLowerCase()
@@ -595,6 +623,15 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
   if (!provider?.baseUrl || !provider?.apiKey) {
     sse(res, 'error', { message: 'Provider not configured' }); sseDone(res, { steps: 0, reason: 'no-provider' }, tokens); res.end(); if (chatId) activeRunsByChat.delete(chatId); return
+  }
+
+  if (isArchiveRequest(history)) {
+    try {
+      await runArchiveShortcut({ res, userId, chatId, history })
+    } finally {
+      if (chatId) activeRunsByChat.delete(chatId)
+    }
+    return
   }
 
   let extraTools = null

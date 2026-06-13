@@ -19,7 +19,8 @@ import { runSandboxCommand } from './agentSandbox.js'
 import { upsertFact, forgetFact, listFacts } from './userMemory.js'
 import { addDocument, deleteDocument, listDocuments, searchKnowledge } from './knowledgeBase.js'
 import { fetchViaProxy, isGoogleGenerativeNativeUrl } from './llmClient.js'
-import { writeFile as fsWriteFile, readFile as fsReadFile, mkdir as fsMkdir } from 'node:fs/promises'
+import { writeFile as fsWriteFile, readFile as fsReadFile, mkdir as fsMkdir, readdir as fsReaddir, stat as fsStat } from 'node:fs/promises'
+import AdmZip from 'adm-zip'
 import path from 'node:path'
 import { browserOpen, browserScreenshot, browserClick, browserType, browserClose } from './browserTools.js'
 import { computerScreenshot, computerClick, computerType, computerOpenApp, computerStatus } from './computerUse.js'
@@ -51,6 +52,29 @@ async function runWorkspaceCommand(command, { timeoutMs = 120_000, signal, onStd
 function defaultCloneDir(url = '') {
   const tail = String(url).replace(/\/+$/, '').split('/').pop() || 'repo'
   return tail.replace(/\.git$/i, '').replace(/[^a-zA-Z0-9._-]+/g, '-') || 'repo'
+}
+
+const ZIP_EXCLUDED_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', '.cache', '.vite', '.turbo'])
+
+async function addPathToZip(zip, abs, zipRel, outputAbs) {
+  const st = await fsStat(abs)
+  if (st.isDirectory()) {
+    const base = path.basename(abs)
+    if (ZIP_EXCLUDED_DIRS.has(base)) return
+    const entries = await fsReaddir(abs, { withFileTypes: true })
+    if (entries.length === 0 && zipRel) zip.addFile(zipRel.replace(/\\/g, '/') + '/.keep', Buffer.alloc(0))
+    for (const entry of entries) {
+      const childAbs = path.join(abs, entry.name)
+      const childRel = zipRel ? `${zipRel}/${entry.name}` : entry.name
+      await addPathToZip(zip, childAbs, childRel, outputAbs)
+    }
+    return
+  }
+  if (!st.isFile()) return
+  if (path.resolve(abs) === path.resolve(outputAbs)) return
+  if (st.size > 50 * 1024 * 1024) return
+  const data = await fsReadFile(abs)
+  zip.addFile(zipRel.replace(/\\/g, '/'), data)
 }
 
 function truncate(str, max = 8000) {
@@ -394,6 +418,29 @@ export const TOOLS = {
       try {
         const r = await runWorkspaceCommand('git status --short', { timeoutMs: 30_000 })
         return ok({ status: truncate(r.stdout, 2000), exitCode: r.exitCode })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  zip_files: {
+    description: 'Create a ZIP archive from files/folders in the current chat workspace. Use this when the user asks to zip/archive/package downloaded files.',
+    params: {
+      source_path: { type: 'string', optional: true, description: 'File/folder to archive, relative to workspace root. Empty = whole chat workspace.' },
+      output_path: { type: 'string', optional: true, description: 'ZIP file path to create, relative to workspace root. Default: workspace.zip.' },
+    },
+    handler: async ({ source_path = '', output_path = 'workspace.zip' } = {}) => {
+      try {
+        const out = String(output_path || 'workspace.zip').toLowerCase().endsWith('.zip') ? String(output_path || 'workspace.zip') : `${output_path}.zip`
+        const sourceAbs = safePath(String(source_path || '').replace(/^\/+/, ''))
+        const outputAbs = safePath(out.replace(/^\/+/, ''))
+        await fsMkdir(path.dirname(outputAbs), { recursive: true })
+        const zip = new AdmZip()
+        const sourceName = String(source_path || '').trim().replace(/^\/+|\/+$/g, '')
+        const rootRel = sourceName ? path.basename(sourceName) : ''
+        await addPathToZip(zip, sourceAbs, rootRel, outputAbs)
+        const buffer = zip.toBuffer()
+        await fsWriteFile(outputAbs, buffer)
+        return ok({ file_path: out, source_path: source_path || '.', bytes: buffer.length, entries: zip.getEntries().length })
       } catch (e) { return err(e.message) }
     },
   },
