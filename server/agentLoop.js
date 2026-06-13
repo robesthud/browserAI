@@ -194,7 +194,7 @@ function needsVerificationSinceLastEdit(recentToolHistory = []) {
     if (isCodeLikePath(p)) lastEdit = i
   }
   if (lastEdit < 0) return false
-  return !recentToolHistory.slice(lastEdit + 1).some((h) => h?.ok && ['verify_code', 'npm_test'].includes(h.tool))
+  return !recentToolHistory.slice(lastEdit + 1).some((h) => h?.ok && ['verify_code', 'npm_test', 'verify_task'].includes(h.tool))
 }
 
 function commandLooksLikeHealthCheck(argsText = '') {
@@ -234,6 +234,7 @@ function summarizeToolOutcome(tool, r) {
   if (tool === 'edit_file') return `replaced=${result?.replaced ?? 1}`
   if (tool === 'verify_code') return result?.valid === false ? 'invalid' : 'valid/skipped'
   if (tool === 'npm_test') return result?.passed ? 'passed' : `exit=${result?.exitCode ?? '?'}`
+  if (tool === 'verify_task') return result?.passed ? `passed ${result?.results?.length || 0} checks` : `failed ${result?.results?.length || 0} checks`
   if (tool === 'git_clone') return `path=${result?.path || ''}`
   if (tool === 'zip_files') return `path=${result?.file_path || ''} entries=${result?.entries || 0}`
   if (tool === 'bash') return `exit=${result?.exitCode ?? '?'}`
@@ -878,7 +879,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
         if (!verificationPushback && needsVerificationSinceLastEdit(recentToolHistory) && !aborted) {
           verificationPushback = true
           sse(res, 'thought', { step, text: 'Самопроверка: после изменения кода не было verify_code/npm_test. Запускаю проверку перед финальным ответом.' })
-          convo.push({ role: 'user', content: `[verification_required]\nYou changed code/config files but have not verified them after the last edit. Call verify_code on touched files or npm_test now. Do not final-answer until verification is done or explicitly explain a skipped verifier via tool result.` })
+          convo.push({ role: 'user', content: `[verification_required]\nYou changed code/config files but have not verified them after the last edit. Call verify_task, verify_code on touched files, or npm_test now. Do not final-answer until verification is done or explicitly explain a skipped verifier via tool result.` })
           continue
         }
 

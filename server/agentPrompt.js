@@ -24,7 +24,7 @@ Non-negotiable rules:
 2. For non-trivial work, create a plan with plan_set and close completed steps with plan_check.
 3. If a plan exists, do not final-answer while applicable steps remain unchecked. Either complete/check them or revise the plan.
 4. Before editing, read the file. Apply changes only via write_file/edit_file.
-5. After editing code/config, verify with verify_code and/or npm_test before claiming success.
+5. After editing code/config, verify with verify_task (preferred) or verify_code/npm_test before claiming success.
 6. If a tool fails, use the real error to recover. Do not pretend success.
 7. Final answer in Russian. Mention only facts confirmed by tool results.
 8. Use exact paths from list_files. Linux paths are case-sensitive.
@@ -62,7 +62,7 @@ Code change:
 - plan_set for multi-step work
 - read target files
 - edit_file/write_file
-- verify_code/npm_test
+- verify_task (preferred) or verify_code/npm_test
 - plan_check completed steps
 - final concise report`
 }

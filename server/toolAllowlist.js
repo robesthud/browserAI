@@ -1,5 +1,5 @@
 const COMMON_AGENT_TOOLS = [
-  'plan_set', 'plan_check', 'ask_user', 'read_project_rules',
+  'plan_set', 'plan_check', 'ask_user', 'read_project_rules', 'project_profile',
   'recall_facts', 'remember_fact', 'forget_fact', 'kb_search', 'kb_list', 'kb_add', 'kb_delete',
 ]
 
@@ -8,7 +8,7 @@ export const TOOL_PROFILES = {
     ...COMMON_AGENT_TOOLS,
     'list_files', 'read_file', 'search_files',
     'write_file', 'edit_file', 'create_folder', 'rename_item', 'delete_file', 'zip_files',
-    'bash', 'verify_code',
+    'bash', 'verify_code', 'verify_task',
     'web_search', 'web_fetch',
     'git_status', 'git_clone',
     'generate_image', 'edit_image', 'generate_video', 'analyze_image', 'text_to_speech', 'transcribe_audio',
@@ -17,14 +17,14 @@ export const TOOL_PROFILES = {
     ...COMMON_AGENT_TOOLS,
     'list_files', 'read_file', 'search_files',
     'write_file', 'edit_file', 'create_folder', 'rename_item', 'delete_file', 'zip_files',
-    'bash', 'npm_install', 'npm_test', 'verify_code',
+    'bash', 'npm_install', 'npm_test', 'verify_code', 'verify_task',
     'git_status', 'git_clone', 'git_commit',
   ],
   ops: [
     ...COMMON_AGENT_TOOLS,
     'ops_list_services', 'ops_run_action',
     'docker_ps', 'docker_logs',
-    'bash', 'npm_test', 'verify_code',
+    'bash', 'npm_test', 'verify_code', 'verify_task',
     'web_search', 'web_fetch',
     'git_status', 'git_clone', 'git_commit',
     'list_files', 'read_file', 'search_files', 'edit_file', 'write_file', 'create_folder', 'rename_item', 'zip_files',

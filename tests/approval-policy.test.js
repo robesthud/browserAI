@@ -5,8 +5,10 @@ describe('approval policy', () => {
   it('uses the same categories as the UI', () => {
     expect(categoryOf('bash')).toBe('bash')
     expect(categoryOf('verify_code')).toBe('bash')
+    expect(categoryOf('verify_task')).toBe('bash')
     expect(categoryOf('ops_run_action')).toBe('deploy')
     expect(categoryOf('web_search')).toBe('net')
+    expect(categoryOf('project_profile')).toBe('read')
     expect(categoryOf('edit_file')).toBe('write')
     expect(categoryOf('create_folder')).toBe('write')
     expect(categoryOf('rename_item')).toBe('write')

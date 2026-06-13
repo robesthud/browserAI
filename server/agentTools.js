@@ -25,6 +25,8 @@ import path from 'node:path'
 import { browserOpen, browserScreenshot, browserClick, browserType, browserClose } from './browserTools.js'
 import { computerScreenshot, computerClick, computerType, computerOpenApp, computerStatus } from './computerUse.js'
 import { listOpsServices, runOpsAction } from './ops.js'
+import { buildProjectProfile } from './projectProfiler.js'
+import { buildVerificationPlan } from './verifyOrchestrator.js'
 
 function safeJsonParse(text) { try { return JSON.parse(text) } catch { return null } }
 
@@ -418,6 +420,54 @@ export const TOOLS = {
           exitCode: r.exitCode,
           installed: pkg,
         })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  project_profile: {
+    description: 'Inspect the current workspace and detect project root, stack, package manager, scripts, entrypoints and deploy files.',
+    params: {
+      root: { type: 'string', optional: true, description: 'Preferred project root relative to workspace.' },
+    },
+    handler: async ({ root = '' } = {}) => {
+      try { return ok(await buildProjectProfile({ preferredRoot: root })) } catch (e) { return err(e.message) }
+    },
+  },
+
+  verify_task: {
+    description: 'Run an automatic verification plan based on touched files and project profile. Use after code/config changes instead of guessing which checks to run.',
+    params: {
+      touched_files: { type: 'array', optional: true, description: 'Touched file paths relative to workspace root.' },
+      task_type: { type: 'string', optional: true, description: 'Task type, e.g. coding_change or deploy_ops.' },
+      root: { type: 'string', optional: true, description: 'Preferred project root.' },
+    },
+    handler: async ({ touched_files = [], task_type = '', root = '' } = {}) => {
+      try {
+        const profile = await buildProjectProfile({ preferredRoot: root })
+        const plan = buildVerificationPlan({ profile, touchedFiles: Array.isArray(touched_files) ? touched_files : [], taskType: task_type })
+        const results = []
+        for (const action of plan.actions) {
+          if (action.kind === 'tool' && action.tool === 'verify_code') {
+            const pathArg = action.args?.path
+            const ext = String(pathArg || '').toLowerCase().split('.').pop()
+            let cmd = ''
+            if (['js', 'mjs', 'cjs'].includes(ext)) cmd = `node --check ${shQuote(safePath(pathArg))}`
+            else if (ext === 'json') cmd = `node -e "JSON.parse(require('fs').readFileSync(${JSON.stringify(safePath(pathArg))}, 'utf8'))"`
+            else { results.push({ action, ok: true, skipped: true, message: 'No syntax checker for extension' }); continue }
+            const r = await runWorkspaceCommand(cmd, { timeoutMs: 30_000 })
+            results.push({ action, ok: r.exitCode === 0, exitCode: r.exitCode, stdout: truncate(r.stdout, 2000), stderr: truncate(r.stderr, 2000) })
+          } else if (action.kind === 'tool' && action.tool === 'npm_test') {
+            const r = await runWorkspaceCommand('npm test', { timeoutMs: 120_000 })
+            results.push({ action, ok: r.exitCode === 0, exitCode: r.exitCode, stdout: truncate(r.stdout, 3000), stderr: truncate(r.stderr, 2000) })
+          } else if (action.kind === 'command') {
+            const r = await runWorkspaceCommand(action.command, { timeoutMs: Math.max(1, Number(action.timeoutSec || 120)) * 1000 })
+            results.push({ action, ok: r.exitCode === 0, exitCode: r.exitCode, stdout: truncate(r.stdout, 3000), stderr: truncate(r.stderr, 2000) })
+          } else {
+            results.push({ action, ok: true, skipped: true })
+          }
+        }
+        const passed = results.every((r) => r.ok)
+        return ok({ profile, plan, results, passed })
       } catch (e) { return err(e.message) }
     },
   },

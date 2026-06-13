@@ -149,9 +149,9 @@ export function buildAgentContext({ provider = {}, history = [], extraSystem = '
 }
 
 function resultTypeForTool(name = '') {
-  if (['read_file', 'list_files', 'search_files', 'read_project_rules'].includes(name)) return 'workspace_read'
+  if (['read_file', 'list_files', 'search_files', 'read_project_rules', 'project_profile'].includes(name)) return 'workspace_read'
   if (['write_file', 'edit_file', 'delete_file'].includes(name)) return 'workspace_write'
-  if (['bash', 'npm_test', 'npm_install', 'docker_logs', 'docker_ps', 'verify_code'].includes(name)) return 'command_result'
+  if (['bash', 'npm_test', 'npm_install', 'docker_logs', 'docker_ps', 'verify_code', 'verify_task'].includes(name)) return 'command_result'
   if (['web_search', 'web_fetch'].includes(name)) return 'web_result'
   if (['ask_user'].includes(name)) return 'user_interaction'
   if (name.startsWith('browser_') || name.startsWith('computer_')) return 'browser_computer_result'
@@ -240,7 +240,7 @@ export function buildPlanningDirective(agentContext = {}) {
     'Use remember_fact for stable user preferences and kb_add for important documents.',
     'Keep the user-visible final answer honest: mention only actions that actually happened in tool results.',
     'If you need a decision or missing credential, call ask_user, but ONLY if you cannot find the answer by exploring the workspace.',
-    'For code changes: read before edit, edit via tools, then verify_code or npm_test before claiming success.',
+    'For code changes: read before edit, edit via tools, then verify_task or verify_code/npm_test before claiming success.',
     '[/agent_runtime_directive]',
   ].join('\n')
 }
@@ -251,7 +251,7 @@ export function buildDoneCriteriaDirective(agentContext = {}) {
     coding_change: [
       'read the relevant files before editing',
       'apply changes with write_file/edit_file',
-      'run verify_code and/or npm_test after the last code/config edit',
+      'run verify_task (preferred) or verify_code/npm_test after the last code/config edit',
       'final answer lists changed files and verification result',
     ],
     repo_analysis: [

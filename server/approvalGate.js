@@ -25,6 +25,7 @@ const TOOL_CATEGORY = {
   list_files: 'read',
   find_projects: 'read',
   read_file: 'read',
+  project_profile: 'read',
   search_files: 'read',
   file_history: 'read',
   build_repo_map: 'read',
@@ -87,6 +88,7 @@ const TOOL_CATEGORY = {
   bash_stop: 'bash',
   bash_list: 'bash',
   verify_code: 'bash',
+  verify_task: 'bash',
   run_tests: 'bash',
   run_python_with_plot: 'bash',
 

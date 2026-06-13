@@ -20,7 +20,7 @@ export function hasUnverifiedCodeEdit(history = []) {
     if (isCodeLikePath(p)) lastCodeEdit = i
   }
   if (lastCodeEdit < 0) return false
-  return !history.slice(lastCodeEdit + 1).some((h) => h?.ok && ['verify_code', 'npm_test'].includes(h.tool))
+  return !history.slice(lastCodeEdit + 1).some((h) => h?.ok && ['verify_code', 'npm_test', 'verify_task'].includes(h.tool))
 }
 
 export function deriveTaskPhase({ agentContext = {}, agentState = {}, recentToolHistory = [] } = {}) {
@@ -63,7 +63,7 @@ const BY_PHASE = {
   ],
   verify: [
     ...COMMON,
-    'verify_code', 'npm_test', 'bash', 'docker_ps', 'docker_logs', 'ops_list_services',
+    'verify_code', 'npm_test', 'verify_task', 'project_profile', 'bash', 'docker_ps', 'docker_logs', 'ops_list_services',
     'web_fetch', 'browser_screenshot', 'git_status',
   ],
   recover: null,
