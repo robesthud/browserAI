@@ -1777,8 +1777,12 @@ app.get('/api/ops/audit', requireAuth, (req, res) => {
 })
 
 // ── Public webhooks ────────────────────────────────────────────────────────
+function getGithubWebhookSecret() {
+  return process.env.GITHUB_WEBHOOK_SECRET || getMeta('github_webhook_secret') || ''
+}
+
 function verifyGithubWebhookSignature(req) {
-  const secret = process.env.GITHUB_WEBHOOK_SECRET || ''
+  const secret = getGithubWebhookSecret()
   if (!secret) return process.env.GITHUB_WEBHOOK_SECRET_REQUIRED === '1' ? false : true
   const sig = String(req.get('x-hub-signature-256') || '')
   if (!sig.startsWith('sha256=')) return false
@@ -1786,6 +1790,24 @@ function verifyGithubWebhookSignature(req) {
   const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(body).digest('hex')
   try { return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected)) } catch { return false }
 }
+
+app.get('/api/webhooks/github/config', requireAuth, (req, res) => {
+  const proto = req.get('x-forwarded-proto') || req.protocol || 'http'
+  const host = req.get('host') || ''
+  res.json({
+    endpoint: `${proto}://${host}/api/webhooks/github`,
+    configured: Boolean(getGithubWebhookSecret()),
+    required: process.env.GITHUB_WEBHOOK_SECRET_REQUIRED === '1',
+    source: process.env.GITHUB_WEBHOOK_SECRET ? 'env' : (getMeta('github_webhook_secret') ? 'db' : 'none'),
+  })
+})
+
+app.post('/api/webhooks/github/secret', requireAuth, (_req, res) => {
+  if (process.env.GITHUB_WEBHOOK_SECRET) return res.status(409).json({ ok: false, error: 'GITHUB_WEBHOOK_SECRET is configured via environment; rotate it in server env.' })
+  const secret = crypto.randomBytes(32).toString('hex')
+  setMeta('github_webhook_secret', secret)
+  res.json({ ok: true, secret, configured: true })
+})
 
 app.post('/api/webhooks/github', async (req, res) => {
   if (!verifyGithubWebhookSignature(req)) return res.status(401).json({ ok: false, error: 'invalid github webhook signature' })
@@ -3332,6 +3354,14 @@ try {
   startCronWorker()
 } catch (e) {
   console.warn('[cron] bootstrap failed:', e.message)
+}
+
+// Production watchdog — safe health monitor that opens incidents and diagnostics.
+try {
+  const { startProductionWatchdog } = await import('./productionWatchdog.js')
+  startProductionWatchdog()
+} catch (e) {
+  console.warn('[watchdog] bootstrap failed:', e.message)
 }
 
 // MCP hub — spawn any servers listed in /data/mcp.json (disabled by default).

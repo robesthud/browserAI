@@ -96,6 +96,8 @@ export default function AutomationCenter() {
   const [cronJobs, setCronJobs] = useState([])
   const [policy, setPolicy] = useState(null)
   const [policyEvents, setPolicyEvents] = useState([])
+  const [webhookConfig, setWebhookConfig] = useState(null)
+  const [webhookSecret, setWebhookSecret] = useState('')
   const [busyRecipe, setBusyRecipe] = useState('')
   const [error, setError] = useState('')
   const [scheduleRecipe, setScheduleRecipe] = useState('production_health_check')
@@ -104,17 +106,19 @@ export default function AutomationCenter() {
   const runningCount = useMemo(() => workflows.filter((w) => !TERMINAL.has(w.status)).length, [workflows])
 
   const refresh = async () => {
-    const [r, w, c, p] = await Promise.all([
+    const [r, w, c, p, wh] = await Promise.all([
       api('/api/agent/recipes'),
       api('/api/agent/workflows?limit=20'),
       api('/api/cron').catch(() => ({ jobs: [] })),
       api('/api/agent/policy?limit=20').catch(() => ({ policy: null, events: [] })),
+      api('/api/webhooks/github/config').catch(() => null),
     ])
     setRecipes(r.recipes || [])
     setWorkflows(w.workflows || [])
     setCronJobs(c.jobs || [])
     setPolicy(p.policy || null)
     setPolicyEvents(p.events || [])
+    setWebhookConfig(wh)
   }
 
   useEffect(() => {
@@ -174,6 +178,14 @@ export default function AutomationCenter() {
     await refresh()
   }
 
+  const generateWebhookSecret = async () => {
+    try {
+      const data = await api('/api/webhooks/github/secret', { method: 'POST' })
+      setWebhookSecret(data.secret || '')
+      await refresh()
+    } catch (e) { setError(e.message || String(e)) }
+  }
+
   return (
     <section className="rounded-2xl border border-white/10 bg-graphite-800/45 p-4">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -209,6 +221,30 @@ export default function AutomationCenter() {
             <div className="mt-2 text-[10px] text-cream-faint">{(r.steps || []).length} steps · {(r.tags || []).join(', ')}</div>
           </button>
         ))}
+      </div>
+
+      <div className="mt-4 rounded-xl border border-white/10 bg-black/15 p-3">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-[13px] font-medium">GitHub webhook setup</h3>
+            <p className="text-[11px] text-cream-faint">Подключи GitHub → Settings → Webhooks: workflow_run failed и push to main будут создавать incidents и diagnostics workflows.</p>
+          </div>
+          <span className={`rounded-full px-2 py-0.5 text-[10px] ${webhookConfig?.configured ? 'bg-emerald-500/15 text-emerald-200' : 'bg-amber-500/15 text-amber-200'}`}>{webhookConfig?.configured ? 'configured' : 'no secret'}</span>
+        </div>
+        <div className="space-y-2 text-[12px]">
+          <div className="rounded-lg border border-white/10 bg-graphite-900 px-2 py-1.5 font-mono text-[11px] text-cream-soft">{webhookConfig?.endpoint || '/api/webhooks/github'}</div>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => navigator.clipboard?.writeText(webhookConfig?.endpoint || '')} className="rounded border border-white/10 px-2 py-1 text-[11px] hover:bg-white/5">copy endpoint</button>
+            {!webhookConfig?.configured && <button onClick={() => void generateWebhookSecret()} className="rounded border border-violet-400/25 bg-violet-500/10 px-2 py-1 text-[11px] text-violet-100 hover:bg-violet-500/20">generate secret</button>}
+            <span className="text-[11px] text-cream-faint">source: {webhookConfig?.source || 'unknown'} · required: {webhookConfig?.required ? 'yes' : 'no'}</span>
+          </div>
+          {webhookSecret && (
+            <div className="rounded-lg border border-amber-400/25 bg-amber-500/10 p-2">
+              <div className="mb-1 text-[11px] text-amber-100">Secret shown once — paste it into GitHub webhook settings:</div>
+              <div className="flex gap-2"><code className="min-w-0 flex-1 break-all text-[11px] text-cream">{webhookSecret}</code><button onClick={() => navigator.clipboard?.writeText(webhookSecret)} className="rounded border border-white/10 px-2 py-1 text-[11px]">copy</button></div>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="mt-4 rounded-xl border border-white/10 bg-black/15 p-3">
