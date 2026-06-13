@@ -27,6 +27,18 @@ body {
   background: transparent;
 }
 
+
+/* скрытый скроллбар: прокрутка остаётся, полоса не рисуется */
+.hide-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.hide-scrollbar::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
 /* ---- Markdown ---- */
 .md > *:first-child {
   margin-top: 0;

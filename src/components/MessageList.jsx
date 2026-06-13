@@ -606,7 +606,7 @@ export default function MessageList({ messages, aiWorking, onEdit, onRegenerate,
   }
 
   return (
-    <div ref={scrollRef} className="thin-scroll relative flex-1 overflow-y-auto">
+    <div ref={scrollRef} className="hide-scrollbar relative flex-1 overflow-y-auto">
       {/* Pull-to-refresh indicator */}
       {(pullDistance > 0 || refreshing) && (
         <div
