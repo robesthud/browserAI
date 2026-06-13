@@ -18,6 +18,54 @@ function has(text, re) { return re.test(String(text || '')) }
 
 const ACTIONS = [
   {
+    id: 'list_files',
+    tool: 'list_files',
+    reason: 'list-files-command',
+    priority: 80,
+    match(text) {
+      if (!has(text, /(покажи|показать|список|посмотри|открой).{0,30}(файл|файлы|папк|workspace)|^(ls|dir)\b/i)) return null
+      return {
+        args: { path: '' },
+        successReason: 'list-files-shortcut',
+        errorReason: 'list-files-error',
+        successText: (r) => {
+          const root = r?.result || {}
+          const names = Array.isArray(root.children) ? root.children.slice(0, 30).map((x) => `${x.type === 'directory' ? '📁' : '📄'} ${x.name}`).join('\n') : ''
+          return `✅ Файлы в workspace:\n\n${names || '(пусто)'}`
+        },
+        errorText: (r) => `❌ Не смог показать файлы: ${r?.error || 'unknown error'}`,
+      }
+    },
+  },
+  {
+    id: 'read_file',
+    tool: 'read_file',
+    reason: 'read-file-command',
+    priority: 85,
+    match(text) {
+      if (!has(text, /(прочитай|покажи|открой|read|cat)/i)) return null
+      const candidates = [
+        'README.md', 'AGENTS.md', 'package.json', '.env.example',
+      ]
+      let path = candidates.find((p) => new RegExp(p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text))
+      if (!path) {
+        const m = String(text || '').match(/[`"']?([A-Za-z0-9._/-]+\.(?:md|json|js|jsx|ts|tsx|css|html|yml|yaml|txt|env))[`"']?/i)
+        path = m?.[1] || ''
+      }
+      if (!path) return null
+      return {
+        args: { path },
+        successReason: 'read-file-shortcut',
+        errorReason: 'read-file-error',
+        successText: (r) => {
+          const content = String(r?.result?.content || '').slice(0, 6000)
+          return `✅ Прочитал \`${path}\`:\n\n\`\`\`\n${content}\n\`\`\``
+        },
+        errorText: (r) => `❌ Не смог прочитать \`${path}\`: ${r?.error || 'unknown error'}`,
+      }
+    },
+  },
+  {
     id: 'repo_download',
     tool: 'git_clone',
     reason: 'github-download-command',

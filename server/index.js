@@ -90,6 +90,7 @@ import {
 } from './deepseekTokenRefresher.js'
 import { startTelegramBot } from './telegramBot.js'
 import { runAgent } from './agentLoop.js'
+import { listDeterministicActions } from './deterministicActionRouter.js'
 import {
   callLLM, callLLMStream, isAnthropicOfficialUrl, isGoogleGenerativeNativeUrl,
   getProviderCapabilities, normalizeProviderError, fetchViaProxy,
@@ -2890,6 +2891,10 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
   }
 })
 
+
+app.get('/api/agent/actions', requireAuth, (_req, res) => {
+  res.json({ actions: listDeterministicActions() })
+})
 
 // Provider adapter metadata. Lets UI/self-tests understand which protocol
 // the selected model will use before starting an agent run.

@@ -18,6 +18,7 @@ const VERBS = {
   git_push:        { action: 'Пушу изменения', icon: '⎇' },
   git_pull:        { action: 'Обновляю репозиторий', icon: '⎇' },
   git_clone:       { action: 'Клонирую репозиторий', icon: '⎇' },
+  zip_files:       { action: 'Создаю ZIP-архив', icon: '🗜️' },
   github_pr_create:{ action: 'Создаю GitHub PR', icon: '🔀' },
   web_search:      { action: 'Ищу в интернете', icon: '🌐' },
   web_fetch:       { action: 'Открываю страницу', icon: '📥' },
@@ -164,6 +165,8 @@ function resultSummary(name, result, ok, error) {
     case 'web_fetch':
     case 'fetch_page': return result.title ? `Загружено: ${result.title}` : 'Страница загружена'
     case 'download_url': return result.extracted ? `Архив распакован · файлов: ${result.files?.length || 0}` : `Скачано: ${result.filename || result.files?.[0] || ''}`
+    case 'zip_files': return `Архив готов: ${result.file_path || result.path || 'workspace.zip'}${result.bytes ? ` · ${Math.round(result.bytes / 1024)} KB` : ''}`
+    case 'git_clone': return `Скачано в папку: ${result.path || ''}`
     case 'bash': return `Команда завершилась с кодом ${result.exitCode ?? '—'}`
     case 'verify_code': return result.allPassed ? 'Проверка прошла' : 'Проверка нашла проблемы'
     case 'run_tests': return result.passed ? 'Тесты прошли' : 'Тесты завершились с ошибками'
@@ -233,6 +236,13 @@ export default function AgentToolBlock({
     ? (typeof result.dataUrl === 'string' && result.dataUrl.startsWith('data:image/') ? result.dataUrl : '')
     : ''
 
+  const downloadUrl = status === 'done' && ok && result && typeof result === 'object'
+    ? (result.download_url || result.downloadUrl || '')
+    : ''
+  const downloadName = status === 'done' && ok && result && typeof result === 'object'
+    ? (result.file_path || result.path || result.filename || 'download')
+    : ''
+
   let highlightedHtml = null
   if (status === 'done' && ok && rawBody && isDev) {
     let lang = ''
@@ -292,6 +302,16 @@ export default function AgentToolBlock({
                 </button>
               )}
             </div>
+          )}
+
+          {downloadUrl && (
+            <a
+              href={downloadUrl}
+              download
+              className="mb-2 inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-1.5 text-[12px] font-medium text-emerald-100 hover:bg-emerald-500/20"
+            >
+              ⬇ Скачать {String(downloadName).split('/').pop()}
+            </a>
           )}
 
           {isDev && ok === false && error && (

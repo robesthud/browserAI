@@ -428,7 +428,7 @@ export const TOOLS = {
       source_path: { type: 'string', optional: true, description: 'File/folder to archive, relative to workspace root. Empty = whole chat workspace.' },
       output_path: { type: 'string', optional: true, description: 'ZIP file path to create, relative to workspace root. Default: workspace.zip.' },
     },
-    handler: async ({ source_path = '', output_path = 'workspace.zip' } = {}) => {
+    handler: async ({ source_path = '', output_path = 'workspace.zip', _chatId = '' } = {}) => {
       try {
         const out = String(output_path || 'workspace.zip').toLowerCase().endsWith('.zip') ? String(output_path || 'workspace.zip') : `${output_path}.zip`
         const sourceAbs = safePath(String(source_path || '').replace(/^\/+/, ''))
@@ -440,7 +440,7 @@ export const TOOLS = {
         await addPathToZip(zip, sourceAbs, rootRel, outputAbs)
         const buffer = zip.toBuffer()
         await fsWriteFile(outputAbs, buffer)
-        return ok({ file_path: out, source_path: source_path || '.', bytes: buffer.length, entries: zip.getEntries().length })
+        return ok({ file_path: out, path: out, source_path: source_path || '.', bytes: buffer.length, entries: zip.getEntries().length, download_url: `/api/workspace/download?path=${encodeURIComponent(out)}${_chatId ? `&chatId=${encodeURIComponent(_chatId)}` : ''}`, visible_in_files: true })
       } catch (e) { return err(e.message) }
     },
   },

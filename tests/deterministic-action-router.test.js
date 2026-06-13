@@ -25,7 +25,14 @@ describe('deterministic action router', () => {
     expect(routeDeterministicAction([{ role: 'user', content: 'проанализируй проект и найди баги' }])).toBeNull()
   })
 
+  it('routes basic list/read file commands', () => {
+    expect(routeDeterministicAction([{ role: 'user', content: 'покажи файлы' }])?.tool).toBe('list_files')
+    const readme = routeDeterministicAction([{ role: 'user', content: 'прочитай README.md' }])
+    expect(readme?.tool).toBe('read_file')
+    expect(readme?.args.path).toBe('README.md')
+  })
+
   it('exposes declarative action metadata', () => {
-    expect(listDeterministicActions().map(a => a.id)).toEqual(['repo_download', 'archive_zip'])
+    expect(listDeterministicActions().map(a => a.id)).toEqual(['list_files', 'read_file', 'repo_download', 'archive_zip'])
   })
 })
