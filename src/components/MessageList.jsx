@@ -9,7 +9,7 @@ import AgentPlanCard from './AgentPlanCard.jsx'
 import AgentExtendedThinking from './AgentExtendedThinking.jsx'
 import AgentAskUser from './AgentAskUser.jsx'
 import JobCard from './JobCard.jsx'
-import usePullToRefresh from '../lib/usePullToRefresh.js'
+// import usePullToRefresh from '../lib/usePullToRefresh.js'
 import useSwipeActions from '../lib/useSwipeActions.js'
 
 function devtoolsEnabled() {
@@ -241,7 +241,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
         </div>
 
         {isUser ? (
-          <p className="whitespace-pre-wrap break-words text-[14px] leading-relaxed text-cream-soft">
+          <p className="whitespace-pre-wrap break-words text-[14px] leading-relaxed text-cream-soft" style={{ overflowWrap: "anywhere" }}>
             {m.content}
           </p>
         ) : m.error && !hasAgentActivity ? (
@@ -257,7 +257,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
             )}
           </div>
         ) : (
-          <div className="text-[14px] leading-relaxed text-cream-soft">
+          <div className="text-[14px] leading-relaxed text-cream-soft" style={{ overflowWrap: "anywhere" }}>
             {/* Provider-side extended thinking (Claude 3.7+, OpenAI o1/o3,
                 DeepSeek R1). Auto-opens while streaming, folds when done.
                 Distinct from the per-step `thoughts` narrative below. */}
@@ -486,7 +486,9 @@ export default function MessageList({ messages, aiWorking, onEdit, onRegenerate,
   // While true, streamed tokens/tool updates MUST NOT pull the viewport down.
   const userScrolledUpRef = useRef(false)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
-  const { pullDistance, refreshing, threshold } = usePullToRefresh(scrollRef, onRefresh)
+  // pull-to-refresh disabled to prevent accidental page reload on mobile scroll
+  // const { pullDistance, refreshing, threshold } = usePullToRefresh(scrollRef, onRefresh)
+  const pullDistance = 0; const refreshing = false; const threshold = 999
 
   const scheduleScrollToBottom = (behavior = 'auto') => {
     cancelAnimationFrame(rafScrollRef.current)
