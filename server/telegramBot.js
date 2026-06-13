@@ -178,9 +178,14 @@ function fmtDeepSeek(s = getDeepSeekState()) {
   ].filter(Boolean).join('\n')
 }
 
+function limitString(str, max = 3800) {
+  const s = String(str || '')
+  return s.length > max ? s.slice(0, max) + '\n...[truncated]' : s
+}
+
 function fmtOpsResult(title, r) {
-  const out = r?.stdout || ''
-  const err = r?.stderr || ''
+  const out = limitString(r?.stdout || '', 3000)
+  const err = limitString(r?.stderr || '', 800)
   return [
     title,
     `exitCode: ${r?.exitCode ?? '—'}`,

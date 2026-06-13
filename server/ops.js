@@ -499,14 +499,14 @@ if [ "$LOCAL" = "$REMOTE" ]; then echo "in_sync: yes"; else echo "in_sync: NO (d
 DIRTY=$(git status --short); if [ -n "$DIRTY" ]; then echo "dirty_files:"; echo "$DIRTY"; else echo "dirty_files: none"; fi
 echo -n "health: "; curl -fsS http://localhost:${process.env.PORT || 8080}/api/health && echo || echo "UNHEALTHY"
 [ "$LOCAL" = "$REMOTE" ]`,
-    deploy: `set -e; cd ${shQuote(APP_DIR)}; git fetch --quiet origin main; git reset --hard origin/main; git log -1 --oneline; docker compose build; echo '== deploy helper =='; docker run -d --rm --name deploy-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc ${shQuote('docker compose up -d && sleep 20 && curl -fsS http://127.0.0.1:80/api/health && echo DEPLOY_OK || echo DEPLOY_FAIL')}; echo 'Deploy helper started'`,
+    deploy: `set -e; cd ${shQuote(APP_DIR)}; git fetch --quiet origin main; git reset --hard origin/main; git log -1 --oneline; docker compose build > /tmp/deploy-build.log 2>&1 && echo 'Build OK' || { echo 'Build FAIL, tail:'; tail -n 40 /tmp/deploy-build.log; exit 1; }; echo '== deploy helper =='; docker run -d --rm --name deploy-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc ${shQuote('docker compose up -d && sleep 20 && curl -fsS http://127.0.0.1:80/api/health && echo DEPLOY_OK || echo DEPLOY_FAIL')}; echo 'Deploy helper started'`,
     deploy_safe: `cd ${shQuote(APP_DIR)} && cat > .deploy-safe.sh << 'EOF'
 #!/bin/sh
 set +e
 cd ${shQuote(APP_DIR)}
 PREV=$(git rev-parse HEAD); echo "== prev commit == $PREV"
 git fetch --quiet origin main; git reset --hard origin/main; NEW=$(git rev-parse HEAD); echo "== new commit == $NEW"; git log -1 --oneline
-echo "== build =="; docker compose build; BUILD=$?
+echo "== build =="; docker compose build > /tmp/deploy-safe-build.log 2>&1; BUILD=$?; if [ $BUILD -ne 0 ]; then echo 'Build FAIL, tail:'; tail -n 40 /tmp/deploy-safe-build.log; fi
 echo "== up =="; docker compose up -d; UP=$?
 sleep 20
 echo "== health =="; curl -fsS http://127.0.0.1:80/api/health; H1=$?; echo
@@ -517,7 +517,7 @@ if [ $BUILD -eq 0 ] && [ $UP -eq 0 ] && [ $H1 -eq 0 ]; then
 fi
 echo "!! DEPLOY FAILED (build:$BUILD up:$UP health:$H1) — ROLLING BACK to $PREV"
 git reset --hard "$PREV"; git log -1 --oneline
-echo "== rollback build =="; docker compose build; RB_BUILD=$?
+echo "== rollback build =="; docker compose build > /tmp/rollback-build.log 2>&1; RB_BUILD=$?; if [ $RB_BUILD -ne 0 ]; then echo 'Rollback build FAIL, tail:'; tail -n 40 /tmp/rollback-build.log; fi
 echo "== rollback up =="; docker compose up -d; RB_UP=$?
 sleep 20
 curl -fsS http://127.0.0.1:80/api/health; RB_H=$?; echo
@@ -539,7 +539,7 @@ cd ${shQuote(APP_DIR)}
 echo '== pre git =='; git log -1 --oneline; git status --short
 echo '== pre containers =='; docker compose ps
 echo '== fetch/reset =='; git fetch origin main; FETCH=$?; git reset --hard origin/main; RESET=$?; git log -1 --oneline
-echo '== build =='; docker compose build; BUILD=$?
+echo '== build =='; docker compose build > /tmp/repair-build.log 2>&1; BUILD=$?; if [ $BUILD -ne 0 ]; then echo 'Build FAIL, tail:'; tail -n 40 /tmp/repair-build.log; fi
 echo '== up =='; docker compose up -d; UP=$?
 sleep 8
 echo '== health =='; curl -fsS http://127.0.0.1:80/api/health; H1=$?; echo
