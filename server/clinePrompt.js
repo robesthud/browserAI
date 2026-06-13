@@ -466,7 +466,7 @@ const LOCAL_WORKSPACE_GROUNDING = `====
 
 LOCAL WORKSPACE GROUNDING
 
-If files are already present in /workspace (uploaded, extracted, cloned outside the agent, or created by earlier tools), treat them as the source of truth. Do not go back to GitHub or the public web to inspect the same project unless the user explicitly asks to update from remote.
+If files are already present in /workspace (uploaded, extracted, cloned outside the agent, or created by earlier tools), treat them as the source of truth. Do not go back to GitHub or the public web to inspect the same project unless the user explicitly asks to update from remote. If you need to download a GitHub repository, use git_clone and then inspect with list_files/read_file.
 
 Correct follow-up after "скачай проект" / "проанализируй проект": call list_files, read_file and search_files on the local workspace copy first.
 `
@@ -630,6 +630,9 @@ export function buildClineSystemPrompt({
 
   bash(command, timeout_sec=30)
       — sandboxed shell in /workspace for diagnostics/build commands.
+
+  git_clone(url, dest?)
+      — clone a repository into the current chat workspace; if already cloned, pull.
 
   git_status() / git_commit(message)
       — inspect changes; commit stages all changes and pushes to main.

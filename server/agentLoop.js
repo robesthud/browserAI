@@ -61,7 +61,7 @@ const TOOL_PROFILES = {
     'write_file', 'edit_file', 'delete_file',
     'bash', 'verify_code',
     'web_search', 'web_fetch',
-    'git_status',
+    'git_status', 'git_clone',
     'generate_image', 'edit_image', 'generate_video', 'analyze_image', 'text_to_speech', 'transcribe_audio',
   ],
   code: [
@@ -69,7 +69,7 @@ const TOOL_PROFILES = {
     'list_files', 'read_file', 'search_files',
     'write_file', 'edit_file', 'delete_file',
     'bash', 'npm_install', 'npm_test', 'verify_code',
-    'git_status', 'git_commit',
+    'git_status', 'git_clone', 'git_commit',
   ],
   ops: [
     ...COMMON_AGENT_TOOLS,
@@ -77,7 +77,7 @@ const TOOL_PROFILES = {
     'docker_ps', 'docker_logs',
     'bash', 'npm_test', 'verify_code',
     'web_search', 'web_fetch',
-    'git_status', 'git_commit',
+    'git_status', 'git_clone', 'git_commit',
     'list_files', 'read_file', 'search_files', 'edit_file', 'write_file',
   ],
   research: [

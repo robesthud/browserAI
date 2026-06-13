@@ -11,6 +11,8 @@ import {
   writeFileContent,
   deleteItem,
   searchWorkspaceContent,
+  getContainerWorkspaceRoot,
+  safePath,
 } from './workspace.js'
 import { searchWeb, fetchWebPage } from './web.js'
 import { runSandboxCommand } from './agentSandbox.js'
@@ -24,6 +26,32 @@ import { computerScreenshot, computerClick, computerType, computerOpenApp, compu
 import { listOpsServices, runOpsAction } from './ops.js'
 
 function safeJsonParse(text) { try { return JSON.parse(text) } catch { return null } }
+
+
+function shQuote(value) {
+  return `'${String(value).replace(/'/g, `'\''`)}'`
+}
+
+function scopedContainerRoot() {
+  return getContainerWorkspaceRoot().replace(/\/+$/, '') || '/workspace'
+}
+
+function rewriteWorkspacePaths(command = '') {
+  const root = scopedContainerRoot()
+  if (root === '/workspace') return String(command)
+  return String(command).replace(/\/workspace(?=\/|\s|&&|;|\)|$)/g, root)
+}
+
+async function runWorkspaceCommand(command, { timeoutMs = 120_000, signal, onStdout, onStderr } = {}) {
+  const root = scopedContainerRoot()
+  const prepared = `mkdir -p ${shQuote(root)} && cd ${shQuote(root)} && ${rewriteWorkspacePaths(command)}`
+  return runSandboxCommand({ command: prepared, cwd: '/', timeoutMs, signal, onStdout, onStderr })
+}
+
+function defaultCloneDir(url = '') {
+  const tail = String(url).replace(/\/+$/, '').split('/').pop() || 'repo'
+  return tail.replace(/\.git$/i, '').replace(/[^a-zA-Z0-9._-]+/g, '-') || 'repo'
+}
 
 function truncate(str, max = 8000) {
   const s = String(str ?? '')
@@ -301,8 +329,7 @@ export const TOOLS = {
     handler: async ({ command, timeout_sec = 30 } = {}) => {
       if (!command) return err('command is required')
       try {
-        const r = await runSandboxCommand({
-          command: String(command),
+        const r = await runWorkspaceCommand(String(command), {
           timeoutMs: Math.min(120_000, Math.max(1_000, Number(timeout_sec) * 1000 || 30_000)),
         })
         return ok({
@@ -326,10 +353,7 @@ export const TOOLS = {
       if (!pkg) return err('package is required')
       try {
         const flag = dev ? '--save-dev' : '--save'
-        const r = await runSandboxCommand({
-          command: `cd /workspace && npm install ${flag} ${String(pkg)}`,
-          timeoutMs: 120_000,
-        })
+        const r = await runWorkspaceCommand(`npm install ${flag} ${String(pkg)}`, { timeoutMs: 120_000 })
         return ok({
           stdout: truncate(r.stdout, 6000),
           stderr: truncate(r.stderr, 3000),
@@ -348,10 +372,10 @@ export const TOOLS = {
     },
     handler: async ({ path, watch = false } = {}) => {
       try {
-        let cmd = 'cd /workspace && npm test'
+        let cmd = 'npm test'
         if (path) cmd += ` -- ${String(path)}`
         if (watch) cmd += ' -- --watch'
-        const r = await runSandboxCommand({ command: cmd, timeoutMs: 120_000 })
+        const r = await runWorkspaceCommand(cmd, { timeoutMs: 120_000 })
         return ok({
           stdout: truncate(r.stdout, 6000),
           stderr: truncate(r.stderr, 3000),
@@ -368,8 +392,27 @@ export const TOOLS = {
     params: {},
     handler: async () => {
       try {
-        const r = await runSandboxCommand({ command: 'cd /workspace && git status --short', timeoutMs: 30_000 })
+        const r = await runWorkspaceCommand('git status --short', { timeoutMs: 30_000 })
         return ok({ status: truncate(r.stdout, 2000), exitCode: r.exitCode })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  git_clone: {
+    description: 'Clone a Git repository into the current chat workspace. If the destination already exists and is a git repo, fetch/pull instead of failing.',
+    params: {
+      url: { type: 'string', required: true, description: 'Repository URL, e.g. https://github.com/owner/repo.git' },
+      dest: { type: 'string', optional: true, description: 'Destination folder name. Default: repo name from URL.' },
+    },
+    handler: async ({ url, dest } = {}) => {
+      if (!url) return err('url is required')
+      const target = String(dest || defaultCloneDir(url)).replace(/^\/+|\/+$|\.\./g, '') || defaultCloneDir(url)
+      try {
+        const qUrl = shQuote(String(url))
+        const qTarget = shQuote(target)
+        const r = await runWorkspaceCommand(`if [ -d ${qTarget}/.git ]; then cd ${qTarget} && git fetch --all --prune && git pull --ff-only; elif [ -e ${qTarget} ]; then echo "Destination exists but is not a git repository: ${target}" >&2; exit 2; else git clone ${qUrl} ${qTarget}; fi`, { timeoutMs: 120_000 })
+        if (r.exitCode !== 0) return err(`git clone failed (${r.exitCode}): ${truncate(r.stderr || r.stdout, 3000)}`)
+        return ok({ path: target, containerPath: `${scopedContainerRoot()}/${target}`, stdout: truncate(r.stdout, 4000), stderr: truncate(r.stderr, 1000), updated: /Already up to date|Updating |Fast-forward|From /i.test(r.stdout + r.stderr) })
       } catch (e) { return err(e.message) }
     },
   },
@@ -382,13 +425,13 @@ export const TOOLS = {
     handler: async ({ message } = {}) => {
       if (!message) return err('message is required')
       try {
-        const r1 = await runSandboxCommand({ command: 'cd /workspace && git add -A', timeoutMs: 30_000 })
+        const r1 = await runWorkspaceCommand('git add -A', { timeoutMs: 30_000 })
         if (r1.exitCode !== 0) return ok({ warning: 'git add failed', stderr: r1.stderr })
-        const r2 = await runSandboxCommand({ command: `cd /workspace && git commit -m "${message.replace(/"/g, '\\"')}"`, timeoutMs: 30_000 })
+        const r2 = await runWorkspaceCommand(`git commit -m "${message.replace(/"/g, '\\"')}"`, { timeoutMs: 30_000 })
         if (r2.exitCode !== 0 && !r2.stdout?.includes('nothing to commit')) {
           return ok({ committed: false, stderr: truncate(r2.stderr, 2000) })
         }
-        const r3 = await runSandboxCommand({ command: 'cd /workspace && git push origin main', timeoutMs: 60_000 })
+        const r3 = await runWorkspaceCommand('git push origin main', { timeoutMs: 60_000 })
         return ok({
           add: r1.stdout,
           commit: r2.stdout,
@@ -442,15 +485,15 @@ export const TOOLS = {
         const ext = String(path).toLowerCase().split('.').pop()
         let cmd = ''
         if (['js', 'mjs', 'cjs'].includes(ext)) {
-          cmd = `node --check /workspace/${path}`
+          cmd = `node --check ${shQuote(safePath(path))}`
         } else if (ext === 'json') {
-          cmd = `node -e "JSON.parse(require('fs').readFileSync('/workspace/${path}', 'utf8'))"`
+          cmd = `node -e "JSON.parse(require('fs').readFileSync(${JSON.stringify(safePath(path))}, 'utf8'))"`
         } else if (['ts', 'tsx'].includes(ext)) {
           return ok({ path, valid: null, result: 'TypeScript syntax check requires tsc. Run bash: "npx tsc --noEmit" if needed.', skipped: true })
         } else {
           return ok({ path, valid: null, result: 'No built-in syntax checker for this extension. Skipped.', skipped: true })
         }
-        const r = await runSandboxCommand({ command: cmd, timeoutMs: 10_000 })
+        const r = await runWorkspaceCommand(cmd, { timeoutMs: 10_000 })
         if (r.exitCode === 0) {
           return ok({ path, valid: true, checker: ext === 'json' ? 'JSON.parse' : 'node --check' })
         }
@@ -570,9 +613,9 @@ export const TOOLS = {
         const pathParts = String(finalPath).split('/').filter(Boolean)
         const name = pathParts.pop()
         const parent = pathParts.join('/')
-        const parentFull = parent ? `/workspace/${parent}` : '/workspace'
-        await fsMkdir(parentFull, { recursive: true })
-        await fsWriteFile(`/workspace/${finalPath}`, imageBuffer)
+        const outFull = safePath(finalPath)
+        await fsMkdir(path.dirname(outFull), { recursive: true })
+        await fsWriteFile(outFull, imageBuffer)
 
         return ok({ file_path: finalPath, mimeType, bytes: imageBuffer.length, prompt: String(prompt) })
       } catch (e) {
@@ -612,7 +655,7 @@ export const TOOLS = {
       const proxySecret = process.env.CF_PROXY_SECRET || ''
 
       try {
-        const imagePath = `/workspace/${String(file_path).replace(/^\/+/, '')}`
+        const imagePath = safePath(String(file_path).replace(/^\/+/, ''))
         const imageBuffer = await fsReadFile(imagePath)
         const base64Image = imageBuffer.toString('base64')
         const mimeType = String(file_path).toLowerCase().endsWith('.png') ? 'image/png' :
@@ -681,9 +724,9 @@ export const TOOLS = {
         const pathParts = String(finalPath).split('/').filter(Boolean)
         const name = pathParts.pop()
         const parent = pathParts.join('/')
-        const parentFull = parent ? `/workspace/${parent}` : '/workspace'
-        await fsMkdir(parentFull, { recursive: true })
-        await fsWriteFile(`/workspace/${finalPath}`, outBuffer)
+        const outFull = safePath(finalPath)
+        await fsMkdir(path.dirname(outFull), { recursive: true })
+        await fsWriteFile(outFull, outBuffer)
 
         return ok({ file_path: finalPath, mimeType: outMimeType, bytes: outBuffer.length, prompt: String(prompt) })
       } catch (e) {
@@ -729,7 +772,7 @@ export const TOOLS = {
         const videoRes = await fetch(videoUrl, { signal: AbortSignal.timeout(120_000) })
         if (!videoRes.ok) return err(`Failed to download video: ${videoRes.status}`)
         const videoBuffer = Buffer.from(await videoRes.arrayBuffer())
-        const outFull = `/workspace/${String(file_path).replace(/^\/+/, '')}`
+        const outFull = safePath(String(file_path).replace(/^\/+/, ''))
         await fsMkdir(path.dirname(outFull), { recursive: true })
         await fsWriteFile(outFull, videoBuffer)
         return ok({ file_path, bytes: videoBuffer.length, prompt: String(prompt), luma_id: genId })
@@ -751,7 +794,7 @@ export const TOOLS = {
       } else if (process.env.GEMINI_API_KEY) { apiKey = process.env.GEMINI_API_KEY }
       else { return err('No Gemini API key available.') }
       try {
-        const imagePath = `/workspace/${String(file_path).replace(/^\/+/, '')}`
+        const imagePath = safePath(String(file_path).replace(/^\/+/, ''))
         const imageBuffer = await fsReadFile(imagePath)
         const base64Image = imageBuffer.toString('base64')
         const mimeType = String(file_path).toLowerCase().endsWith('.png') ? 'image/png' :
@@ -804,7 +847,7 @@ export const TOOLS = {
         })
         if (!r.ok) { const raw = await r.text(); return err(`TTS failed: HTTP ${r.status} ${raw.slice(0, 300)}`) }
         const audioBuffer = Buffer.from(await r.arrayBuffer())
-        const outFull = `/workspace/${String(file_path).replace(/^\/+/, '')}`
+        const outFull = safePath(String(file_path).replace(/^\/+/, ''))
         await fsMkdir(path.dirname(outFull), { recursive: true })
         await fsWriteFile(outFull, audioBuffer)
         return ok({ file_path, bytes: audioBuffer.length, voice_id, text: String(text).slice(0, 200) })
@@ -826,7 +869,7 @@ export const TOOLS = {
       } else if (process.env.GEMINI_API_KEY) { apiKey = process.env.GEMINI_API_KEY }
       else { return err('No Gemini API key available.') }
       try {
-        const audioPath = `/workspace/${String(file_path).replace(/^\/+/, '')}`
+        const audioPath = safePath(String(file_path).replace(/^\/+/, ''))
         const audioBuffer = await fsReadFile(audioPath)
         const base64Audio = audioBuffer.toString('base64')
         const ext = String(file_path).toLowerCase().split('.').pop()
