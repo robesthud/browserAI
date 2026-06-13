@@ -149,10 +149,10 @@ export function buildAgentContext({ provider = {}, history = [], extraSystem = '
 }
 
 function resultTypeForTool(name = '') {
-  if (['read_file', 'list_files', 'search_files', 'find_projects', 'file_history'].includes(name)) return 'workspace_read'
-  if (['write_file', 'edit_file', 'delete_file', 'restore_file', 'replace_across_files'].includes(name)) return 'workspace_write'
-  if (['bash', 'bash_reset', 'bash_bg', 'bash_logs', 'bash_stop', 'bash_list', 'verify_code', 'run_tests'].includes(name)) return 'command_result'
-  if (['web_search', 'web_fetch', 'fetch_page'].includes(name)) return 'web_result'
+  if (['read_file', 'list_files', 'search_files', 'read_project_rules'].includes(name)) return 'workspace_read'
+  if (['write_file', 'edit_file', 'delete_file'].includes(name)) return 'workspace_write'
+  if (['bash', 'npm_test', 'npm_install', 'docker_logs', 'docker_ps', 'verify_code'].includes(name)) return 'command_result'
+  if (['web_search', 'web_fetch'].includes(name)) return 'web_result'
   if (['ask_user'].includes(name)) return 'user_interaction'
   if (name.startsWith('browser_') || name.startsWith('computer_')) return 'browser_computer_result'
   if (name.startsWith('git_') || name === 'github_pr_create') return 'git_result'
@@ -238,7 +238,7 @@ export function buildPlanningDirective(agentContext = {}) {
     'Use remember_fact for stable user preferences and kb_add for important documents.',
     'Keep the user-visible final answer honest: mention only actions that actually happened in tool results.',
     'If you need a decision or missing credential, call ask_user, but ONLY if you cannot find the answer by exploring the workspace.',
-    'For code changes: read before edit, edit via tools, then verify_code or run_tests before claiming success.',
+    'For code changes: read before edit, edit via tools, then verify_code or npm_test before claiming success.',
     '[/agent_runtime_directive]',
   ].join('\n')
 }
@@ -315,7 +315,7 @@ export function updateAgentStateFromTool(state, toolName, rawResult, args = {}) 
   }
 
   const path = args?.path || args?.file || args?.file_path
-  if (path && ['write_file', 'edit_file', 'delete_file', 'restore_file', 'replace_across_files'].includes(toolName)) {
+  if (path && ['write_file', 'edit_file', 'delete_file'].includes(toolName)) {
     pushUnique(state.touchedFiles, path, 50)
   }
   if (Array.isArray(result?.touched)) {
@@ -325,7 +325,7 @@ export function updateAgentStateFromTool(state, toolName, rawResult, args = {}) 
     for (const f of result.files) if (f?.path) pushUnique(state.touchedFiles, f.path, 50)
   }
 
-  if (toolName === 'verify_code' || toolName === 'run_tests') {
+  if (toolName === 'verify_code' || toolName === 'npm_test') {
     const passed = Boolean(result?.allPassed ?? result?.passed)
     pushUnique(state.completedSteps, `${toolName}: ${passed ? 'passed' : 'completed with failures'}`, 50)
     state.currentStep = passed ? 'Verification passed; prepare final answer' : 'Fix verification failures'

@@ -11,7 +11,7 @@
  *   about to do:
  *     - "planning" turn  → bash/list_files/read_file/search_files/web_search
  *                          (gathering context)  → keep current model
- *     - "executing" turn → edit_file/write_file/replace_across_files
+ *     - "executing" turn → edit_file/write_file
  *                          (mechanical changes) → downgrade to cheap sibling
  *
  * We never change the model for the FIRST turn (model still needs to
@@ -42,10 +42,9 @@ function userMode(userId = '') {
 }
 
 const MECHANICAL_TOOLS = new Set([
-  'edit_file', 'write_file', 'replace_across_files',
-  'delete_file', 'restore_file',
+  'edit_file', 'write_file', 'delete_file',
   // pure mechanical git wrappers — no planning needed:
-  'git_status', 'git_diff',
+  'git_status',
 ])
 
 const PLANNING_TOOLS = new Set([

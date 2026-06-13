@@ -128,7 +128,7 @@ function cleanupExpiredQuestions() {
   let evicted = 0
   for (const [id, q] of PENDING) {
     if (now - (q.createdAt || 0) > PENDING_TTL_MS) {
-      try { q.reject?.(new Error('Question expired after 30 min')) } catch {}
+      try { q.reject?.(new Error('Question expired after 30 min')) } catch { /* best-effort: question may already be settled */ }
       PENDING.delete(id)
       evicted++
     }

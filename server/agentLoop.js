@@ -42,47 +42,53 @@ import {
 const DEFAULT_MAX_STEPS = 15
 const DEFAULT_DEADLINE_MS = 5 * 60 * 1000
 const IDLE_NOTICE_MS = 75 * 1000
-const LLM_HARD_IDLE_MS = 10 * 60 * 1000
+const LLM_HARD_IDLE_MS = 2 * 60 * 1000
 const activeRunsByChat = new Map()
 
 const COMMON_AGENT_TOOLS = [
-  'plan_set', 'plan_check', 'ask_user',
-  'recall_facts', 'remember_fact', 'kb_search', 'kb_list',
+  'plan_set', 'plan_check', 'ask_user', 'read_project_rules',
+  'recall_facts', 'remember_fact', 'forget_fact', 'kb_search', 'kb_list', 'kb_add', 'kb_delete',
 ]
+
+// Keep these profiles in sync with the real registry in agentTools.js.
+// Listing non-existent tools in the prompt was a major cause of the
+// "thinking forever / no actions" failure: models tried to call tools that
+// the runner then ignored or rejected.
 const TOOL_PROFILES = {
   general: [
     ...COMMON_AGENT_TOOLS,
-    'web_search', 'web_fetch', 'fetch_page', 'download_url',
     'list_files', 'read_file', 'search_files',
-    'write_file', 'edit_file', 'delete_file', 'file_history',
-    'bash', 'bash_list', 'bash_logs',
-    'git_status', 'git_diff', 'git_clone', 'generate_image',
+    'write_file', 'edit_file', 'delete_file',
+    'bash', 'verify_code',
+    'web_search', 'web_fetch',
+    'git_status',
+    'generate_image', 'edit_image', 'generate_video', 'analyze_image', 'text_to_speech', 'transcribe_audio',
   ],
   code: [
     ...COMMON_AGENT_TOOLS,
-    'list_files', 'find_projects', 'build_repo_map', 'read_file', 'search_files',
-    'write_file', 'edit_file', 'delete_file', 'replace_across_files', 'file_history', 'restore_file',
-    'bash', 'bash_reset', 'bash_bg', 'bash_logs', 'bash_stop', 'bash_list',
-    'verify_code', 'run_tests', 'git_status', 'git_diff',
+    'list_files', 'read_file', 'search_files',
+    'write_file', 'edit_file', 'delete_file',
+    'bash', 'npm_install', 'npm_test', 'verify_code',
+    'git_status', 'git_commit',
   ],
   ops: [
     ...COMMON_AGENT_TOOLS,
     'ops_list_services', 'ops_run_action',
-    'github_actions_status', 'github_actions_wait', 'deploy_timeweb_wait', 'app_health_check', 'docker_logs_recent',
-    'bash', 'bash_reset', 'bash_bg', 'bash_logs', 'bash_stop', 'bash_list',
-    'web_search', 'web_fetch', 'fetch_page',
-    'git_status', 'git_diff', 'git_pull', 'git_commit', 'git_push',
+    'docker_ps', 'docker_logs',
+    'bash', 'npm_test', 'verify_code',
+    'web_search', 'web_fetch',
+    'git_status', 'git_commit',
     'list_files', 'read_file', 'search_files', 'edit_file', 'write_file',
   ],
   research: [
     ...COMMON_AGENT_TOOLS,
-    'web_search', 'web_fetch', 'fetch_page', 'scrape_url',
+    'web_search', 'web_fetch',
     'list_files', 'read_file', 'search_files',
   ],
   browser: [
     ...COMMON_AGENT_TOOLS,
     'browser_open', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_close',
-    'web_search', 'web_fetch', 'fetch_page',
+    'web_search', 'web_fetch',
   ],
 }
 
@@ -226,7 +232,7 @@ function makeReadBackForEdits(calls) {
 }
 
 function violatesPreDeployVerify(call, recentToolHistory) {
-  if (call.tool !== 'git_push' && call.tool !== 'git_commit') return false
+  if (call.tool !== 'git_commit') return false
   let sawOk = false
   for (let i = recentToolHistory.length - 1; i >= Math.max(0, recentToolHistory.length - 10); i -= 1) {
     const h = recentToolHistory[i]
@@ -361,6 +367,9 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
   const CLOSE_RE = /<\/(?:x?ai:function_call|tool_use|function_call|thinking|thought)>/i
   let scanBuf = '', visibleTextBuf = '', insideXml = false, xmlTagName = '', xmlOpenAttrs = ''
   const preParsedCalls = []
+  const nativePreviewed = new Set()
+
+  function safeJson(text) { try { return JSON.parse(text) } catch { return {} } }
 
   function parseXmlBody(body, tagName, openAttrs) {
     if (tagName === 'thinking' || tagName === 'thought') return { kind: 'thinking', text: body.trim() }
@@ -434,6 +443,15 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
     onTextDelta: (chunk, meta) => {
       if (meta?.kind === 'thinking') sse(res, 'thinking_delta', { step, chunk: String(chunk || '') })
       else consumeChunk(String(chunk || ''))
+    },
+    onToolCallDelta: (tc = {}) => {
+      const idx = Number.isInteger(tc.idx) ? tc.idx : 0
+      const name = String(tc.name || '').trim()
+      if (!name) return
+      const key = `${idx}:${name}`
+      if (nativePreviewed.has(key)) return
+      nativePreviewed.add(key)
+      sse(res, 'tool_preview', { step, sub: idx, name, args: safeJson(tc.argsBuf || '{}') })
     },
     onUsage: (u) => hooks.onUsage?.(u),
   })
@@ -660,7 +678,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   // v2.26: High-Intelligence Directive for High Complexity tasks.
   // Encourages deeper reasoning and more robust verification.
   if (agentContext?.task?.complexity === 'high') {
-    convo.push({ role: 'user', content: `[high_complexity_directive]\nThis is a COMPLEX task. Do not rush. \n1. Explore the codebase thoroughly using build_repo_map, search_files and list_files.\n2. Read all relevant files before making a plan.\n3. Create a detailed plan with plan_set.\n4. Apply changes using edit_file (preferred) or write_file.\n5. MANDATORY: Verify every change with verify_code or run_tests.\n6. If you hit an error, read the file again to check for drift before retrying.\n[/high_complexity_directive]` })
+    convo.push({ role: 'user', content: `[high_complexity_directive]\nThis is a COMPLEX task. Do not rush. \n1. Explore the codebase thoroughly using read_project_rules, search_files and list_files.\n2. Read all relevant files before making a plan.\n3. Create a detailed plan with plan_set.\n4. Apply changes using edit_file (preferred) or write_file.\n5. MANDATORY: Verify every change with verify_code or npm_test.\n6. If you hit an error, read the file again to check for drift before retrying.\n[/high_complexity_directive]` })
   }
 
   if (planningDirective) convo.push({ role: 'user', content: planningDirective })
@@ -699,10 +717,6 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
     try {
       const lessons = await withWorkspaceScope(chatId, () => readWorkspaceFile('.browserai/lessons.md').catch(() => null))
       if (lessons?.text) convo.push({ role: 'user', content: `<arena-system-message>\nLessons Learned (from .browserai/lessons.md):\n${lessons.text}\n</arena-system-message>` })
-    } catch { /* ignore */ }
-    try {
-      // build_repo_map removed — not registered in TOOLS. Skipping workspace scan.
-      if (r.ok) convo.push({ role: 'user', content: `<arena-system-message>\nInitial Repo Map (ground truth):\n${r.result}\n</arena-system-message>` })
     } catch { /* ignore */ }
   }
 
@@ -843,7 +857,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
                 new Promise((_, rej) => setTimeout(() => rej(new Error('lesson-extract timeout')), 30_000)),
               ])
               const lesson = String(learnReply?.text || '').trim()
-              if (lesson && lesson.length < 200) await invokeTool('save_lesson', { lesson, _chatId: chatId })
+              if (lesson && lesson.length < 200) await invokeTool('remember_fact', { key: `lesson_${Date.now()}`, value: lesson }, { userId, chatId })
             } catch { /* best-effort: ignore */ }
           })()
         }

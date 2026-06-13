@@ -407,11 +407,21 @@ async function callAnthropicOfficial({
   const data = safeJsonParse(raw)
   if (!data) throw new Error(`Anthropic returned non-JSON: ${raw.slice(0, 400)}`)
   const text = Array.isArray(data.content)
-    ? data.content.map((b) => b?.text || '').join('')
+    ? data.content.map((b) => b?.type === 'text' ? (b.text || '') : '').join('')
     : ''
+  const nativeToolCalls = Array.isArray(data.content)
+    ? data.content
+        .filter((b) => b?.type === 'tool_use' && b?.name)
+        .map((b) => ({
+          id: b.id || `${b.name}-${Math.random().toString(36).slice(2)}`,
+          name: b.name,
+          args: b.input || {},
+          raw: { id: b.id || `${b.name}-${Math.random().toString(36).slice(2)}`, type: 'function', function: { name: b.name, arguments: JSON.stringify(b.input || {}) } },
+        }))
+    : []
   return {
     text,
-    toolCalls: [],
+    toolCalls: nativeToolCalls,
     usage: data?.usage ? {
       prompt: Number(data.usage.input_tokens || 0),
       completion: Number(data.usage.output_tokens || 0),
@@ -475,11 +485,11 @@ async function callAnthropicOfficialStream({
         name: evt.content_block.name,
         inputArgs: ''
       }
-      onToolCallDelta?.()
+      onToolCallDelta?.({ idx: nativeToolCalls.length, id: currentTool.id, name: currentTool.name, argsBuf: currentTool.inputArgs })
     } else if (evt.type === 'content_block_delta' && delta.type === 'input_json_delta') {
       if (currentTool) {
         currentTool.inputArgs += (delta.partial_json || '')
-        onToolCallDelta?.()
+        onToolCallDelta?.({ idx: nativeToolCalls.length, id: currentTool.id, name: currentTool.name, argsBuf: currentTool.inputArgs })
       }
     } else if (evt.type === 'content_block_stop' && currentTool) {
       let args = {}
@@ -746,7 +756,7 @@ async function callGeminiOfficialStream({
   if (usage) {
     try { onUsage?.(usage) } catch { /* ignore */ }
   }
-  return { text, toolCalls: [], usage }
+  return { text, toolCalls: nativeToolCalls, usage }
 }
 
 // ── OpenAI-compatible STREAMING transport ────────────────────────────────────

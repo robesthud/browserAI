@@ -46,6 +46,107 @@ async function ensureParentDirs(relPath) {
 
 export const TOOLS = {
 
+
+  plan_set: {
+    description: 'Publish or replace the visible task plan. Use for multi-step work.',
+    params: {
+      plan: { type: 'string', required: true, description: 'Markdown checklist, one step per line.' },
+    },
+    handler: async ({ plan } = {}) => {
+      const lines = String(plan || '').split('\n').map(l => l.trim()).filter(Boolean)
+      const steps = lines.map((line, i) => ({ idx: i + 1, text: line.replace(/^[-*]\s*\[[ x]\]\s*/i, '').replace(/^[-*]\s*/, ''), done: false }))
+      return ok({ title: 'Plan', steps })
+    },
+  },
+
+  plan_check: {
+    description: 'Mark one or more visible plan steps as done.',
+    params: {
+      steps: { type: 'array', optional: true, description: 'Step indexes to mark done.' },
+      step: { type: 'number', optional: true, description: 'Single step index to mark done.' },
+    },
+    handler: async ({ steps, step } = {}) => {
+      const checked = Array.isArray(steps) ? steps : (step ? [step] : [])
+      return ok({ checked: checked.map(Number).filter(Boolean) })
+    },
+  },
+
+  ask_user: {
+    description: 'Ask the user a focused question in the UI. Use only when blocked or before risky/destructive operations.',
+    params: {
+      question: { type: 'string', optional: true, description: 'Single question text.' },
+      options: { type: 'array', optional: true, description: 'Options for single-question mode.' },
+      questions: { type: 'array', optional: true, description: 'Array of question cards.' },
+    },
+    handler: async () => ok({ queued: true }),
+  },
+
+  recall_facts: {
+    description: 'List remembered cross-session facts for this user.',
+    params: {},
+    handler: async ({ _userId } = {}) => {
+      try { return ok({ facts: listFacts(_userId || '') }) } catch (e) { return err(e.message) }
+    },
+  },
+
+  remember_fact: {
+    description: 'Remember a stable key/value fact about the user or project for future chats.',
+    params: {
+      key: { type: 'string', required: true, description: 'Short stable key.' },
+      value: { type: 'string', required: true, description: 'Fact value, max 1KB.' },
+    },
+    handler: async ({ key, value, _userId } = {}) => {
+      try { return ok(upsertFact(_userId || '', key, value)) } catch (e) { return err(e.message) }
+    },
+  },
+
+  forget_fact: {
+    description: 'Forget a remembered fact by key.',
+    params: { key: { type: 'string', required: true, description: 'Fact key to delete.' } },
+    handler: async ({ key, _userId } = {}) => {
+      try { return ok(forgetFact(_userId || '', key)) } catch (e) { return err(e.message) }
+    },
+  },
+
+  kb_search: {
+    description: 'Search the personal knowledge base.',
+    params: {
+      query: { type: 'string', required: true, description: 'Search query.' },
+      topK: { type: 'number', optional: true, description: 'Max passages, default 5.' },
+    },
+    handler: async ({ query, topK = 5, _userId } = {}) => {
+      try { return ok({ results: searchKnowledge(_userId || '', query, { topK }) }) } catch (e) { return err(e.message) }
+    },
+  },
+
+  kb_list: {
+    description: 'List documents in the personal knowledge base.',
+    params: {},
+    handler: async ({ _userId } = {}) => {
+      try { return ok({ documents: listDocuments(_userId || '') }) } catch (e) { return err(e.message) }
+    },
+  },
+
+  kb_add: {
+    description: 'Add a document to the personal knowledge base.',
+    params: {
+      title: { type: 'string', required: true, description: 'Document title.' },
+      text: { type: 'string', required: true, description: 'Document text.' },
+      source: { type: 'string', optional: true, description: 'Optional source URL/path.' },
+    },
+    handler: async ({ title, text, source = '', _userId } = {}) => {
+      try { return ok(addDocument(_userId || '', { title, text, source })) } catch (e) { return err(e.message) }
+    },
+  },
+
+  kb_delete: {
+    description: 'Delete a document from the personal knowledge base by id.',
+    params: { id: { type: 'string', required: true, description: 'Document id.' } },
+    handler: async ({ id, _userId } = {}) => {
+      try { return ok(deleteDocument(_userId || '', id)) } catch (e) { return err(e.message) }
+    },
+  },
+
   list_files: {
     description: 'List files and folders in the workspace as a tree. Use this first to discover what is available.',
     params: {
@@ -360,11 +461,11 @@ export const TOOLS = {
 
   // ── NEW: project context ─────────────────────────────────────────────────
   read_project_rules: {
-    description: 'Read AGENTS.md and PROJECT_CONTEXT.md from the workspace root. Call this BEFORE starting work on a new task to learn the project rules, stack, and conventions.',
+    description: 'Read AGENTS.md, README.md and package.json from the workspace root. Call this before substantial work to learn project rules, stack and conventions.',
     params: {},
     handler: async () => {
       try {
-        const files = ['AGENTS.md', 'PROJECT_CONTEXT.md', 'README.md', 'package.json']
+        const files = ['AGENTS.md', 'README.md', 'package.json']
         const results = {}
         for (const f of files) {
           try {
@@ -886,9 +987,18 @@ export const LITE_TOOL_NAMES = [
   'edit_image', 'analyze_image', 'transcribe_audio',
 ]
 
-export function renderToolsForPrompt() {
+export function renderToolsForPrompt(extraTools = null, { lite = false, toolNames = null } = {}) {
+  let combined = extraTools && typeof extraTools === 'object' ? { ...TOOLS, ...extraTools } : TOOLS
+  if (Array.isArray(toolNames) && toolNames.length > 0) {
+    const allowed = new Set(toolNames)
+    combined = Object.fromEntries(Object.entries(combined).filter(([name]) => allowed.has(name)))
+  } else if (lite) {
+    const allowed = new Set(LITE_TOOL_NAMES)
+    combined = Object.fromEntries(Object.entries(combined).filter(([name]) => allowed.has(name)))
+  }
+
   const lines = []
-  for (const [name, def] of Object.entries(TOOLS)) {
+  for (const [name, def] of Object.entries(combined)) {
     lines.push(`### ${name}`)
     lines.push(def.description)
     const params = Object.entries(def.params || {})
