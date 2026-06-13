@@ -243,6 +243,45 @@ export function buildPlanningDirective(agentContext = {}) {
   ].join('\n')
 }
 
+export function buildDoneCriteriaDirective(agentContext = {}) {
+  const type = agentContext?.task?.type || 'general_agent_task'
+  const criteria = {
+    coding_change: [
+      'read the relevant files before editing',
+      'apply changes with write_file/edit_file',
+      'run verify_code and/or npm_test after the last code/config edit',
+      'final answer lists changed files and verification result',
+    ],
+    repo_analysis: [
+      'inspect the real local tree with list_files',
+      'read README/package/entry files relevant to the project',
+      'base findings only on files successfully read/searched',
+      'final answer includes concrete paths and no invented files',
+    ],
+    deploy_ops: [
+      'inspect current repo/service state before changing deployment',
+      'after deploy/restart/commit/pull, run a health/log check (bash curl/docker logs or ops action)',
+      'final answer reports deploy status and any failing logs/errors',
+    ],
+    browser_task: [
+      'open/navigate the target page',
+      'use screenshot/observable result to verify the UI state',
+      'final answer states what was verified visually',
+    ],
+    research: [
+      'use web_search/web_fetch for current external facts',
+      'final answer cites/mentions real sources or says if none were fetched',
+    ],
+  }[type]
+  if (!criteria) return ''
+  return [
+    '[done_criteria]',
+    `Task type: ${type}. Do not final-answer until these are satisfied or explicitly impossible:`,
+    ...criteria.map((c, i) => `${i + 1}. ${c}`),
+    '[/done_criteria]',
+  ].join('\n')
+}
+
 function pushUnique(arr, value, limit = 30) {
   const v = String(value || '').trim()
   if (!v) return

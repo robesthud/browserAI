@@ -36,7 +36,7 @@ import { shouldUseCheapEditor, wrapProviderForEditor, routingLabel } from './arc
 import { requiresApproval, categoryOf } from './approvalGate.js'
 import {
   buildAgentContext, normalizeToolResult, createAgentState,
-  buildPlanningDirective, updateAgentStateFromTool,
+  buildPlanningDirective, buildDoneCriteriaDirective, updateAgentStateFromTool,
   validateToolCall, makeToolErrorResult,
 } from './agentCore.js'
 
@@ -254,6 +254,35 @@ function needsVerificationSinceLastEdit(recentToolHistory = []) {
   }
   if (lastEdit < 0) return false
   return !recentToolHistory.slice(lastEdit + 1).some((h) => h?.ok && ['verify_code', 'npm_test'].includes(h.tool))
+}
+
+function commandLooksLikeHealthCheck(argsText = '') {
+  return /(curl|wget|http|health|docker logs|docker ps|compose ps|journalctl|logs)/i.test(String(argsText || ''))
+}
+
+function unmetDoneCriteria(taskType = '', recentToolHistory = []) {
+  const okTools = recentToolHistory.filter((h) => h?.ok).map((h) => h.tool)
+  const has = (...tools) => tools.some((t) => okTools.includes(t))
+  if (taskType === 'repo_analysis') {
+    if (!has('list_files')) return 'Нужно сначала посмотреть дерево проекта через list_files.'
+    if (!has('read_file', 'search_files')) return 'Нужно прочитать/поискать реальные файлы проекта перед анализом.'
+  }
+  if (taskType === 'research') {
+    if (!has('web_search', 'web_fetch')) return 'Нужно использовать web_search/web_fetch для research-задачи.'
+  }
+  if (taskType === 'browser_task') {
+    if (has('browser_open') && !has('browser_screenshot')) return 'После открытия страницы нужен browser_screenshot/визуальная проверка.'
+  }
+  if (taskType === 'deploy_ops') {
+    const changedDeploy = recentToolHistory.some((h) => h?.ok && ['ops_run_action', 'git_commit'].includes(h.tool))
+      || recentToolHistory.some((h) => h?.ok && h.tool === 'bash' && /(deploy|docker compose up|restart|systemctl|git pull|git reset)/i.test(String(h.args || '')))
+    if (changedDeploy) {
+      const checked = recentToolHistory.some((h) => h?.ok && ['docker_logs', 'docker_ps', 'ops_list_services'].includes(h.tool))
+        || recentToolHistory.some((h) => h?.ok && h.tool === 'bash' && commandLooksLikeHealthCheck(h.args))
+      if (!checked) return 'После deploy/restart/git изменения нужен health/log check (curl/docker logs/docker ps).'
+    }
+  }
+  return ''
 }
 
 function summarizeToolOutcome(tool, r) {
@@ -750,6 +779,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   res.on('close', () => clearInterval(idleWatchdog))
 
   const planningDirective = buildPlanningDirective(agentContext)
+  const doneCriteriaDirective = buildDoneCriteriaDirective(agentContext)
   
   // v2.26: High-Intelligence Directive for High Complexity tasks.
   // Encourages deeper reasoning and more robust verification.
@@ -758,6 +788,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   }
 
   if (planningDirective) convo.push({ role: 'user', content: planningDirective })
+  if (doneCriteriaDirective) convo.push({ role: 'user', content: doneCriteriaDirective })
   
   sse(res, 'agent_context', { ...agentContext, toolProfile, toolNames: activeToolNames }); sse(res, 'agent_state', agentState)
   if (res.flushHeaders) res.flushHeaders()
@@ -903,6 +934,13 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
           verificationPushback = true
           sse(res, 'thought', { step, text: 'Самопроверка: после изменения кода не было verify_code/npm_test. Запускаю проверку перед финальным ответом.' })
           convo.push({ role: 'user', content: `[verification_required]\nYou changed code/config files but have not verified them after the last edit. Call verify_code on touched files or npm_test now. Do not final-answer until verification is done or explicitly explain a skipped verifier via tool result.` })
+          continue
+        }
+
+        const doneCriteriaGap = unmetDoneCriteria(agentContext?.task?.type, recentToolHistory)
+        if (doneCriteriaGap && !aborted) {
+          sse(res, 'thought', { step, text: `Критерии завершения ещё не выполнены: ${doneCriteriaGap}` })
+          convo.push({ role: 'user', content: `[done_criteria_enforcement]\n${doneCriteriaGap}\nContinue with the required tool call(s). Do not final-answer yet.` })
           continue
         }
 
