@@ -270,7 +270,7 @@ export function updateAgentStateFromTool(state, toolName, rawResult, args = {}) 
   const result = rawResult?.result
 
   if (toolName === 'plan_set') {
-    const plan = Array.isArray(result?.plan) ? result.plan : []
+    const plan = Array.isArray(result?.steps) ? result.steps : (Array.isArray(result?.plan) ? result.plan : [])
     state.status = 'running'
     state.plan = {
       title: result?.title || state.goal.slice(0, 120),

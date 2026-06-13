@@ -219,6 +219,22 @@ function isStuckLoop(recentCalls, currentFingerprint) {
   return totalInWindow + 1 >= STUCK_THRESHOLD
 }
 
+function summarizeCallArgsForDigest(args = {}) {
+  if (!args || typeof args !== 'object') return ''
+  const pick = {}
+  for (const k of ['path', 'file_path', 'source_path', 'output_path', 'url', 'query', 'command', 'message']) {
+    if (args[k] != null) pick[k] = String(args[k]).slice(0, 160)
+  }
+  try { return JSON.stringify(pick) } catch { return '' }
+}
+
+function incompletePlanSteps(agentState = {}) {
+  const steps = Array.isArray(agentState.plan?.steps) ? agentState.plan.steps : []
+  if (!steps.length) return []
+  const done = new Set([...(agentState.plan?.done || [])].map(Number))
+  return steps.filter((s) => !(s.done || done.has(Number(s.idx))))
+}
+
 function makeReadBackForEdits(calls) {
   const out = []
   const seen = new Set()
@@ -847,6 +863,17 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
             convo.push({ role: 'user', content: `[reflection] Gaps identified:\n${verdict.reason}` }); continue
           }
         }
+        const unfinishedPlan = incompletePlanSteps(agentState)
+        if (unfinishedPlan.length > 0 && !aborted) {
+          sse(res, 'thought', { step, text: `План ещё не закрыт: осталось ${unfinishedPlan.length} шаг(ов). Продолжаю выполнение.` })
+          convo.push({ role: 'user', content: `[plan_enforcement]
+You created a plan but have not completed it. Remaining steps:
+${unfinishedPlan.map((s) => `- ${s.idx}. ${s.text}`).join('\n')}
+
+Continue with tool calls. If a step is actually done, call plan_check for it first. Do not final-answer until all applicable plan steps are checked or explicitly revised with plan_set.` })
+          continue
+        }
+
         if (streamedFinalAnswer) sse(res, 'assistant', { text: reply.text || '' })
         else await streamFinalAnswer(res, reply.text || '')
 
@@ -982,7 +1009,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       }
 
       let sawPushBack = false
-      for (const res of results) { if (res?.pushedBack) sawPushBack = true; if (res?.call && res?.r) { recentToolHistory.push({ tool: res.call.tool, ok: !!res.r.ok, at: Date.now() }); if (res.call.tool === 'read_file' && res.call.args?.path) { (res.r.ok ? okReadPaths : failedReadPaths).add(String(res.call.args.path)) } if (res.call.tool === 'plan_set' && res.r.ok) planState.done = new Set(); else if (res.call.tool === 'plan_check' && res.r.ok) (res.r.result?.checked || []).forEach(idx => planState.done.add(Number(idx))) } }
+      for (const res of results) { if (res?.pushedBack) sawPushBack = true; if (res?.call && res?.r) { recentToolHistory.push({ tool: res.call.tool, ok: !!res.r.ok, at: Date.now(), args: summarizeCallArgsForDigest(res.call.args || {}) }); if (res.call.tool === 'read_file' && res.call.args?.path) { (res.r.ok ? okReadPaths : failedReadPaths).add(String(res.call.args.path)) } if (res.call.tool === 'plan_set' && res.r.ok) planState.done = new Set(); else if (res.call.tool === 'plan_check' && res.r.ok) (res.r.result?.checked || []).forEach(idx => planState.done.add(Number(idx))) } }
       if (sawPushBack) continue
 
       for (const { call, r } of results) {

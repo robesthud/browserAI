@@ -274,7 +274,10 @@ export function renderAgentStateDigest(agentState = {}, recentToolHistory = []) 
     const idx = Number(s.idx)
     return `${done.has(idx) || s.done ? '[x]' : '[ ]'} ${idx || '?'} ${String(s.text || '').slice(0, 180)}`
   })
-  const tools = (recentToolHistory || []).slice(-15).map((h) => `${h.ok ? '✓' : '✗'} ${h.tool}`).join(', ')
+  const tools = (recentToolHistory || []).slice(-15).map((h) => {
+    const args = h.args ? `(${String(h.args).slice(0, 120)})` : ''
+    return `${h.ok ? '✓' : '✗'} ${h.tool}${args}`
+  }).join(', ')
   const lines = [
     '<arena-system-message>\nAuthoritative task-level memory (agent_state_digest):',
     `status: ${agentState.status || 'unknown'}`,
