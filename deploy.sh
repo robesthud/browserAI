@@ -5,6 +5,7 @@ echo "=== BrowserAI Deploy ==="
 cd /opt/browserai
 
 echo "Pulling latest code..."
+rm -f .git/index.lock .git/refs/remotes/origin/main.lock 2>/dev/null || true
 git fetch origin main
 git reset --hard origin/main
 git log -1 --oneline

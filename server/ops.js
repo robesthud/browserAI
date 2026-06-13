@@ -485,6 +485,7 @@ export async function runOpsAction({ service, action, params = {}, confirm = fal
   const healthTimeout = Math.min(60, Math.max(2, Number(params.timeout_sec || params.timeoutSec) || 10))
   const waitTimeout = Math.min(3600, Math.max(10, Number(params.timeout_sec || params.timeoutSec) || 600))
   const waitInterval = Math.min(60, Math.max(3, Number(params.interval_sec || params.intervalSec) || 10))
+  const cleanupGitLocks = "rm -f .git/index.lock .git/refs/remotes/origin/main.lock 2>/dev/null || true; "
   const cleanupStaleCompose = "docker ps -a --format '{{.Names}}' | grep -E '^[0-9a-f]+_browserai$' | xargs -r docker rm -f 2>/dev/null || true; "
 
   const commands = {
@@ -515,6 +516,7 @@ exit 124`,
     git_status: `cd ${shQuote(APP_DIR)} && git log -1 --oneline && git status --short`,
     sync_check: `cd ${shQuote(APP_DIR)}
 set +e
+rm -f .git/index.lock .git/refs/remotes/origin/main.lock 2>/dev/null || true
 git fetch --quiet origin main
 LOCAL=$(git rev-parse HEAD)
 REMOTE=$(git rev-parse origin/main)
@@ -524,11 +526,12 @@ if [ "$LOCAL" = "$REMOTE" ]; then echo "in_sync: yes"; else echo "in_sync: NO (d
 DIRTY=$(git status --short); if [ -n "$DIRTY" ]; then echo "dirty_files:"; echo "$DIRTY"; else echo "dirty_files: none"; fi
 echo -n "health: "; curl -fsS http://127.0.0.1/api/health && echo || echo "UNHEALTHY"
 [ "$LOCAL" = "$REMOTE" ]`,
-    deploy: `set -e; cd ${shQuote(APP_DIR)}; git fetch --quiet origin main; git reset --hard origin/main; git log -1 --oneline; docker compose build > /tmp/deploy-build.log 2>&1 && echo 'Build OK' || { echo 'Build FAIL, tail:'; tail -n 40 /tmp/deploy-build.log; exit 1; }; echo '== deploy helper =='; docker rm -f deploy-helper 2>/dev/null || true; docker run -d --rm --name deploy-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc ${shQuote(cleanupStaleCompose + 'docker compose up -d --remove-orphans && sleep 20 && curl -fsS http://127.0.0.1:80/api/health && echo DEPLOY_OK || echo DEPLOY_FAIL')}; echo 'Deploy helper started'`,
+    deploy: `set -e; cd ${shQuote(APP_DIR)}; ${cleanupGitLocks}git fetch --quiet origin main; git reset --hard origin/main; git log -1 --oneline; docker compose build > /tmp/deploy-build.log 2>&1 && echo 'Build OK' || { echo 'Build FAIL, tail:'; tail -n 40 /tmp/deploy-build.log; exit 1; }; echo '== deploy helper =='; docker rm -f deploy-helper 2>/dev/null || true; docker run -d --rm --name deploy-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc ${shQuote(cleanupStaleCompose + 'docker compose up -d --remove-orphans && sleep 20 && curl -fsS http://127.0.0.1:80/api/health && echo DEPLOY_OK || echo DEPLOY_FAIL')}; echo 'Deploy helper started'`,
     deploy_safe: `cd ${shQuote(APP_DIR)} && cat > .deploy-safe.sh << 'EOF'
 #!/bin/sh
 set +e
 cd ${shQuote(APP_DIR)}
+rm -f .git/index.lock .git/refs/remotes/origin/main.lock 2>/dev/null || true
 PREV=$(git rev-parse HEAD); echo "== prev commit == $PREV"
 git fetch --quiet origin main; git reset --hard origin/main; NEW=$(git rev-parse HEAD); echo "== new commit == $NEW"; git log -1 --oneline
 echo "== build =="; docker compose build > /tmp/deploy-safe-build.log 2>&1; BUILD=$?; if [ $BUILD -ne 0 ]; then echo 'Build FAIL, tail:'; tail -n 40 /tmp/deploy-safe-build.log; fi
@@ -566,7 +569,7 @@ set +e
 cd ${shQuote(APP_DIR)}
 echo '== pre git =='; git log -1 --oneline; git status --short
 echo '== pre containers =='; docker compose ps
-echo '== fetch/reset =='; git fetch origin main; FETCH=$?; git reset --hard origin/main; RESET=$?; git log -1 --oneline
+echo '== fetch/reset =='; rm -f .git/index.lock .git/refs/remotes/origin/main.lock 2>/dev/null || true; git fetch origin main; FETCH=$?; git reset --hard origin/main; RESET=$?; git log -1 --oneline
 echo '== build =='; docker compose build > /tmp/repair-build.log 2>&1; BUILD=$?; if [ $BUILD -ne 0 ]; then echo 'Build FAIL, tail:'; tail -n 40 /tmp/repair-build.log; fi
 echo '== up =='; docker ps -a --format '{{.Names}}' | grep -E '^[0-9a-f]+_browserai$' | xargs -r docker rm -f 2>/dev/null || true
 docker compose up -d --remove-orphans; UP=$?
