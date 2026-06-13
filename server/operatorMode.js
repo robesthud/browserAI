@@ -11,6 +11,31 @@ function now() { return Date.now() }
 function id(prefix = 'op') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }
 function parse(raw, fallback) { try { return JSON.parse(raw || '') } catch { return fallback } }
 
+function defaultProjectMeta() {
+  return {
+    role: 'primary-self-project',
+    operatorMode: true,
+    global: true,
+    commands: {
+      install: 'npm ci --include=dev',
+      test: 'npm test',
+      build: 'npm run build',
+      lint: 'npm run lint',
+    },
+    deploy: {
+      recipe: 'browserai_deploy_safe',
+      healthUrl: 'http://127.0.0.1/api/health',
+      productionPath: process.env.OPS_APP_DIR || '/opt/browserai',
+    },
+    git: {
+      defaultBranch: 'main',
+      branchPrefix: 'operator',
+      prBase: 'main',
+    },
+    runbooks: ['deploy.md', 'ci.md', 'incidents.md'],
+  }
+}
+
 export const OPERATOR_MISSION_TYPES = [
   {
     id: 'universal_dev_task',
@@ -176,8 +201,11 @@ function ensureDefaultProject() {
   initOperatorMode()
   const existing = db.prepare(`SELECT * FROM operator_projects WHERE id='browserai'`).get()
   if (existing) {
-    if (existing.user_id !== '') {
-      db.prepare(`UPDATE operator_projects SET user_id='', updated_at=? WHERE id='browserai'`).run(now())
+    const currentMeta = parse(existing.meta_json, {}) || {}
+    const defaults = defaultProjectMeta()
+    const mergedMeta = { ...defaults, ...currentMeta, commands: { ...defaults.commands, ...(currentMeta.commands || {}) }, deploy: { ...defaults.deploy, ...(currentMeta.deploy || {}) }, git: { ...defaults.git, ...(currentMeta.git || {}) } }
+    if (existing.user_id !== '' || !currentMeta.commands || !currentMeta.deploy) {
+      db.prepare(`UPDATE operator_projects SET user_id='', meta_json=?, updated_at=? WHERE id='browserai'`).run(JSON.stringify(mergedMeta), now())
       return rowToProject(db.prepare(`SELECT * FROM operator_projects WHERE id='browserai'`).get())
     }
     return rowToProject(existing)
@@ -190,7 +218,7 @@ function ensureDefaultProject() {
     '/workspace/projects/browserAI',
     process.env.OPS_APP_DIR || '/opt/browserai',
     'main',
-    JSON.stringify({ role: 'primary-self-project', operatorMode: true, global: true }),
+    JSON.stringify(defaultProjectMeta()),
     ts,
     ts,
   )
@@ -211,7 +239,7 @@ export function upsertOperatorProject({ userId = '', id: projectId = '', name = 
     VALUES (?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(id) DO UPDATE SET name=excluded.name, repo=excluded.repo, local_path=excluded.local_path,
       production_path=excluded.production_path, default_branch=excluded.default_branch, meta_json=excluded.meta_json, updated_at=excluded.updated_at`).run(
-    projectKey, String(userId || ''), String(name || projectKey), String(repo || ''), String(localPath || ''), String(productionPath || ''), String(defaultBranch || 'main'), JSON.stringify(meta || {}), ts, ts,
+    projectKey, String(userId || ''), String(name || projectKey), String(repo || ''), String(localPath || ''), String(productionPath || ''), String(defaultBranch || 'main'), JSON.stringify(projectKey === 'browserai' ? { ...defaultProjectMeta(), ...(meta || {}), commands: { ...defaultProjectMeta().commands, ...((meta || {}).commands || {}) }, deploy: { ...defaultProjectMeta().deploy, ...((meta || {}).deploy || {}) }, git: { ...defaultProjectMeta().git, ...((meta || {}).git || {}) } } : (meta || {})), ts, ts,
   )
   return rowToProject(db.prepare('SELECT * FROM operator_projects WHERE id=?').get(projectKey))
 }

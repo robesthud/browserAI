@@ -7,7 +7,10 @@ describe('operator mode', () => {
     const userId = `op-${Date.now()}-${Math.random().toString(36).slice(2)}`
     const projects = listOperatorProjects({ userId })
     expect(projects.some((p) => p.id === 'browserai')).toBe(true)
-    expect(projects.find((p) => p.id === 'browserai')?.productionPath).toBeTruthy()
+    const browserai = projects.find((p) => p.id === 'browserai')
+    expect(browserai?.productionPath).toBeTruthy()
+    expect(browserai?.meta?.commands?.test).toBeTruthy()
+    expect(browserai?.meta?.deploy?.healthUrl).toContain('/api/health')
     expect(OPERATOR_MISSION_TYPES.map((m) => m.id)).toContain('universal_dev_task')
     expect(OPERATOR_MISSION_TYPES.map((m) => m.id)).toContain('code_task')
     expect(OPERATOR_MISSION_TYPES.map((m) => m.id)).toContain('custom_agent')

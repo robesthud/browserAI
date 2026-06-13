@@ -201,6 +201,16 @@ function repoToDir(repo = '') {
   return tail.replace(/[^a-zA-Z0-9._-]/g, '-') || 'project'
 }
 
+function projectMetaFromTask(task = {}) {
+  return task.result?.project?.meta || {}
+}
+function commandFromProject(task = {}, name, fallback = '') {
+  const meta = projectMetaFromTask(task)
+  const cmd = meta?.commands?.[name]
+  if (cmd === false || cmd === null) return ''
+  return String(cmd || fallback || '').trim()
+}
+
 async function prepareCheckout(task) {
   const repo = task.repo || ''
   const workdir = task.workdir || path.join(PROJECTS_ROOT, repoToDir(repo))
@@ -220,7 +230,7 @@ async function prepareCheckout(task) {
 
 function buildAgentPrompt(task, project = {}) {
   const rel = path.relative(WORKSPACE_ROOT, task.workdir || '').replace(/\\/g, '/') || 'projects/browserAI'
-  return `You are BrowserAI Code Operator. Complete this development task in the local repository folder: ${rel}\n\nGoal:\n${task.goal}\n\nHard requirements:\n- Start by reading project rules/package/README and relevant files.\n- Use paths under ${rel}.\n- Make concrete file changes with edit_file/write_file.\n- After code edits run verify_code or verify_task.\n- Run tests/build when practical.\n- Do not touch production directly. If deploy is needed, state it as a separate approval-gated step.\n- Final response must include changed files and verification evidence.\n\nProject metadata:\n${JSON.stringify(project, null, 2)}`
+  return `You are BrowserAI Code Operator. Complete this development task in the local repository folder: ${rel}\n\nGoal:\n${task.goal}\n\nHard requirements:\n- Start by reading project rules/package/README and relevant files.\n- Use paths under ${rel}.\n- Make concrete file changes with edit_file/write_file.\n- After code edits run verify_code or verify_task.\n- Run tests/build when practical.\n- Do not touch production directly. If deploy is needed, state it as a separate approval-gated step.\n- Final response must include changed files and verification evidence.\n\nProject metadata and commands:\n${JSON.stringify(project, null, 2)}`
 }
 
 export function startOperatorCodeTask({ userId = '', missionId = '', project = {}, goal = '', mode = 'code_task', autostart = true } = {}) {
@@ -229,9 +239,10 @@ export function startOperatorCodeTask({ userId = '', missionId = '', project = {
   const ts = now()
   const repo = project?.repo || process.env.GITHUB_REPO || 'robesthud/browserAI'
   const workdir = project?.localPath && project.localPath.startsWith('/workspace') ? project.localPath : path.join(PROJECTS_ROOT, repoToDir(repo))
-  const branch = `operator/${mode}-${Date.now().toString(36)}-${taskId.slice(-6)}`
+  const branchPrefix = String(project?.meta?.git?.branchPrefix || 'operator').replace(/[^a-zA-Z0-9/_-]/g, '-') || 'operator'
+  const branch = `${branchPrefix}/${mode}-${Date.now().toString(36)}-${taskId.slice(-6)}`
   db.prepare(`INSERT INTO operator_code_tasks (id,user_id,mission_id,project_id,status,goal,repo,workdir,branch,verify_json,result_json,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,'{}','{}',?,?)`).run(taskId, String(userId || ''), String(missionId || ''), project?.id || 'browserai', 'queued', String(goal || '').slice(0, 4000), repo, workdir, branch, ts, ts)
+    VALUES (?,?,?,?,?,?,?,?,?,'{}',?, ?,?)`).run(taskId, String(userId || ''), String(missionId || ''), project?.id || 'browserai', 'queued', String(goal || '').slice(0, 4000), repo, workdir, branch, JSON.stringify({ project }), ts, ts)
   if (autostart !== false) setTimeout(() => monitorCodeTask(taskId), 10).unref?.()
   return getOperatorCodeTask(taskId)
 }
@@ -240,16 +251,19 @@ async function verifyCodeTask(task) {
   const results = []
   const cwd = task.workdir
   const hasPkg = existsSync(path.join(cwd, 'package.json'))
-  if (hasPkg && !existsSync(path.join(cwd, 'node_modules'))) {
-    const r = await run('npm ci --include=dev', { cwd, timeoutMs: 8 * 60_000 })
-    results.push({ name: 'npm ci', ok: r.exitCode === 0, ...r })
+  const installCmd = commandFromProject(task, 'install', hasPkg ? 'npm ci --include=dev' : '')
+  const testCmd = commandFromProject(task, 'test', hasPkg ? 'npm test' : '')
+  const buildCmd = commandFromProject(task, 'build', hasPkg ? 'npm run build' : '')
+  const lintCmd = commandFromProject(task, 'lint', '')
+  if (installCmd && hasPkg && !existsSync(path.join(cwd, 'node_modules'))) {
+    const r = await run(installCmd, { cwd, timeoutMs: 8 * 60_000 })
+    results.push({ name: installCmd, ok: r.exitCode === 0, ...r })
     if (r.exitCode !== 0) return { passed: false, results }
   }
-  if (hasPkg) {
-    const test = await run('npm test', { cwd, timeoutMs: 5 * 60_000 })
-    results.push({ name: 'npm test', ok: test.exitCode === 0, ...test })
-    const build = await run('npm run build', { cwd, timeoutMs: 8 * 60_000 })
-    results.push({ name: 'npm run build', ok: build.exitCode === 0, ...build })
+  for (const [name, cmd, timeoutMs] of [['test', testCmd, 5 * 60_000], ['build', buildCmd, 8 * 60_000], ['lint', lintCmd, 4 * 60_000]]) {
+    if (!cmd) continue
+    const r = await run(cmd, { cwd, timeoutMs })
+    results.push({ name: cmd || name, ok: r.exitCode === 0, ...r })
   }
   const status = await run('git status --short', { cwd, timeoutMs: 30_000 })
   const diff = await run('git diff --stat && git diff --name-only', { cwd, timeoutMs: 30_000 })
