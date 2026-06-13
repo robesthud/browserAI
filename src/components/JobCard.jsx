@@ -180,6 +180,7 @@ export default function JobCard({ job: initial, onJobDone }) {
     generate_docx:          '📝 Документ',
     generate_xlsx:          '📊 Таблица',
     generate_presentation:  '🎯 Презентация',
+    agent_run:              '🤖 Фоновый агент',
   }
   const friendlyTitle = JOB_TYPE_LABEL[job.type] || job.title || job.type
 
@@ -278,6 +279,21 @@ export default function JobCard({ job: initial, onJobDone }) {
           <summary>Логи</summary>
           <div className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap">
             {job.logs.slice(-12).map((l, i) => <div key={i}>• {l.message}</div>)}
+          </div>
+        </details>
+      )}
+
+      {job.trace?.length > 0 && (
+        <details className="mt-2 text-[11px] text-cream-faint">
+          <summary>Structured trace ({job.trace.length})</summary>
+          <div className="mt-1 max-h-52 overflow-auto rounded bg-black/20 p-2 font-mono text-[10px] whitespace-pre-wrap">
+            {job.trace.slice(-25).map((e, i) => (
+              <div key={i} className="mb-1 border-b border-white/5 pb-1 last:border-0">
+                <span className="text-amber-200">{e.event}</span> {e.iso || (e.ts ? new Date(e.ts).toISOString() : '')}
+
+                {JSON.stringify(e.payload || {}, null, 2).slice(0, 1200)}
+              </div>
+            ))}
           </div>
         </details>
       )}

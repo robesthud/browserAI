@@ -39,9 +39,38 @@ export function initJobs() {
     CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
     CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
   `)
-  // On boot, mark any job that was 'running'/'queued' as failed — the worker
-  // that owned it died with the previous process, so it'll never finish.
-  // Without this users see ghost "Выполняется" cards forever after a deploy.
+  // Lightweight schema migration for structured background traces.
+  try { db.prepare(`ALTER TABLE jobs ADD COLUMN trace_json TEXT NOT NULL DEFAULT '[]'`).run() } catch { /* already exists */ }
+
+  const bootTs = Date.now()
+  // On boot, most in-memory workers are gone and cannot continue. Background
+  // agent jobs are special: their input is persisted and can be resumed using
+  // the currently active provider key, so keep them queued instead of turning
+  // them into ghost failures after a deploy/restart.
+  const resumable = db.prepare(`
+    SELECT id, logs, trace_json
+      FROM jobs
+     WHERE type = 'agent_run' AND status IN ('running', 'queued')
+     ORDER BY created_at ASC
+  `).all()
+  for (const row of resumable) {
+    const logs = safeJsonParse(row.logs, []) || []
+    logs.push({ ts: new Date(bootTs).toISOString(), message: 'Сервер перезапущен — фоновый агент поставлен на resume.' })
+    const trace = safeJsonParse(row.trace_json, []) || []
+    trace.push({ ts: bootTs, event: 'job_resume_after_restart', payload: { status: 'queued' } })
+    db.prepare(`
+      UPDATE jobs
+         SET status = 'queued',
+             error = '',
+             progress = CASE WHEN progress >= 100 THEN 5 ELSE MAX(progress, 5) END,
+             logs = ?,
+             trace_json = ?,
+             updated_at = ?,
+             finished_at = NULL
+       WHERE id = ?
+    `).run(JSON.stringify(logs.slice(-200)), JSON.stringify(trace.slice(-500)), bootTs, row.id)
+  }
+
   const orphaned = db.prepare(`
     UPDATE jobs
        SET status = 'failed',
@@ -49,12 +78,18 @@ export function initJobs() {
            progress = 100,
            updated_at = ?,
            finished_at = COALESCE(finished_at, ?)
-     WHERE status IN ('running', 'queued')
-  `).run(Date.now(), Date.now())
+     WHERE status IN ('running', 'queued') AND type <> 'agent_run'
+  `).run(bootTs, bootTs)
   if (orphaned.changes > 0) {
-    console.log(`[jobs] marked ${orphaned.changes} orphaned job(s) as failed on boot`)
+    console.log(`[jobs] marked ${orphaned.changes} orphaned non-agent job(s) as failed on boot`)
   }
   initialized = true
+  if (resumable.length > 0) {
+    console.log(`[jobs] resuming ${resumable.length} background agent job(s) after restart`)
+    setTimeout(() => {
+      for (const row of resumable) startJob(row.id)
+    }, 1500).unref?.()
+  }
 }
 
 // Treat any job that hasn't been touched for > ORPHAN_TIMEOUT_MS as dead
@@ -93,6 +128,7 @@ function rowToJob(row) {
     error: row.error || '',
     progress: row.progress || 0,
     logs: safeJsonParse(row.logs, []),
+    trace: safeJsonParse(row.trace_json, []),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     finishedAt: row.finished_at,
@@ -121,8 +157,8 @@ export function createJob({ userId = '', chatId = '', type, title = '', input = 
   const id = uid('job')
   const ts = now()
   db.prepare(`
-    INSERT INTO jobs (id, user_id, chat_id, type, status, title, input_json, result_json, logs, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 'queued', ?, ?, '{}', '[]', ?, ?)
+    INSERT INTO jobs (id, user_id, chat_id, type, status, title, input_json, result_json, logs, trace_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'queued', ?, ?, '{}', '[]', '[]', ?, ?)
   `).run(id, userId || '', chatId || '', type, title || type, JSON.stringify(input || {}), ts, ts)
   return getJob(id)
 }
@@ -137,7 +173,7 @@ function setJobPatch(id, patch = {}) {
   const next = { ...current, ...patch, updatedAt: now() }
   db.prepare(`
     UPDATE jobs
-    SET status = ?, result_json = ?, error = ?, progress = ?, logs = ?, updated_at = ?, finished_at = ?
+    SET status = ?, result_json = ?, error = ?, progress = ?, logs = ?, trace_json = ?, updated_at = ?, finished_at = ?
     WHERE id = ?
   `).run(
     next.status,
@@ -145,6 +181,7 @@ function setJobPatch(id, patch = {}) {
     next.error || '',
     Math.max(0, Math.min(100, Number(next.progress) || 0)),
     JSON.stringify(next.logs || []),
+    JSON.stringify(next.trace || current.trace || []),
     next.updatedAt,
     next.finishedAt || null,
     id,
@@ -171,6 +208,30 @@ export function appendJobLog(id, message) {
   if (!job) return null
   const logs = [...(job.logs || []), { ts: new Date().toISOString(), message: String(message || '') }].slice(-200)
   return setJobPatch(id, { logs })
+}
+
+function clipTraceValue(value, max = 2400) {
+  if (typeof value === 'string') return value.length > max ? `${value.slice(0, max)}…[truncated]` : value
+  if (Array.isArray(value)) return value.slice(0, 40).map((v) => clipTraceValue(v, Math.floor(max / 2)))
+  if (value && typeof value === 'object') {
+    const out = {}
+    for (const [k, v] of Object.entries(value).slice(0, 40)) {
+      if (/api[_-]?key|token|password|secret|authorization|cookie/i.test(k)) out[k] = '[redacted]'
+      else out[k] = clipTraceValue(v, max)
+    }
+    return out
+  }
+  return value
+}
+
+export function appendJobTrace(id, event, payload = {}) {
+  const job = getJob(id)
+  if (!job) return null
+  const trace = [
+    ...(job.trace || []),
+    { ts: Date.now(), iso: new Date().toISOString(), event: String(event || 'event'), payload: clipTraceValue(payload || {}) },
+  ].slice(-500)
+  return setJobPatch(id, { trace })
 }
 
 
@@ -215,6 +276,7 @@ function createJobSseRes(job) {
   const emitter = new EventEmitter()
   let buffer = ''
   let assistant = ''
+  let deltaSeq = 0
   return {
     setHeader() {},
     flushHeaders() {},
@@ -228,6 +290,12 @@ function createJobSseRes(job) {
         if (!block.trim() || block.startsWith(':')) continue
         const evt = parseSseBlock(block)
         const payload = evt.data?.payload || evt.data || {}
+        if (evt.event === 'assistant_delta') {
+          deltaSeq += 1
+          if (deltaSeq % 25 === 0) appendJobTrace(job.id, evt.event, { chunkLength: String(payload.chunk || '').length, deltaSeq })
+        } else {
+          appendJobTrace(job.id, evt.event, payload)
+        }
         if (evt.event === 'assistant_delta') assistant += String(payload.chunk || '')
         else if (evt.event === 'assistant') assistant = String(payload.text || assistant || '')
         else if (evt.event === 'tool_start') appendJobLog(job.id, `tool_start: ${payload.name || ''}`)
@@ -247,7 +315,14 @@ function createJobSseRes(job) {
 async function runAgentJob(job) {
   const runtime = runtimeInputs.get(job.id) || {}
   const input = job.input || {}
-  const provider = runtime.provider || input.provider || getActiveKeyDecrypted(null)
+  const savedProvider = input.provider || {}
+  const activeProvider = getActiveKeyDecrypted(null) || {}
+  const runtimeProvider = runtime.provider || {}
+  const provider = runtimeProvider?.apiKey
+    ? runtimeProvider
+    : (savedProvider?.baseUrl && savedProvider?.model && activeProvider?.apiKey
+        ? { ...activeProvider, ...savedProvider, apiKey: activeProvider.apiKey }
+        : activeProvider)
   if (!provider?.baseUrl || !provider?.apiKey || !provider?.model) throw new Error('No provider available for background agent job')
   setJobPatch(job.id, { status: 'running', progress: 5 })
   appendJobLog(job.id, 'Запускаю фонового агента')
@@ -256,7 +331,7 @@ async function runAgentJob(job) {
   await runAgent({
     provider: { ...provider, forceAgent: true },
     history: input.history || [{ role: 'user', content: input.prompt || 'continue' }],
-    extraSystem: input.extraSystem || '[background-agent-job] Run as a background task. If blocked by approval or user input, stop and report what is needed.',
+    extraSystem: input.extraSystem || '[background-agent-job] Run as a background task. Persist progress in the job trace. If this is a resumed job after restart, continue from the persisted history/summary and avoid repeating completed destructive actions when possible. If blocked by approval or user input, stop and report what is needed.',
     workspaceScope: job.chatId,
     userId: job.userId,
     res,

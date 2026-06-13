@@ -38,7 +38,7 @@ function typeLabel(type) {
   }[type] || type
 }
 
-export default function JobsTray() {
+export default function JobsTray({ onOpenChat } = {}) {
   const [jobs, setJobs] = useState([])
 
   const refresh = async () => {
@@ -81,12 +81,26 @@ export default function JobsTray() {
               {!term && (
                 <span className="ml-auto shrink-0 font-mono text-[10px] text-cream-faint">{j.progress || 0}%</span>
               )}
+              {!term && j.chatId && (
+                <button
+                  onClick={() => onOpenChat?.(j.chatId, j.id)}
+                  className="ml-1 rounded bg-emerald-500/15 px-1 py-0.5 text-[10px] text-emerald-200 hover:bg-emerald-500/25"
+                  title="Открыть job в чате"
+                >↗</button>
+              )}
               {!term && (
                 <button
                   onClick={async () => { try { await cancelJob(j.id); await refresh() } catch { /* ignore */ } }}
                   className="ml-1 rounded bg-rose-500/15 px-1 py-0.5 text-[10px] text-rose-200 hover:bg-rose-500/25"
                   title="Отменить задачу"
                 >×</button>
+              )}
+              {term && j.chatId && (
+                <button
+                  onClick={() => onOpenChat?.(j.chatId, j.id)}
+                  className="ml-auto shrink-0 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-200 hover:bg-emerald-500/25"
+                  title="Открыть результат job в чате"
+                >в чат</button>
               )}
               {term && j.status === 'failed' && (
                 <button

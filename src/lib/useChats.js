@@ -13,7 +13,7 @@ import { sendChat, summarizeConversation } from './api.js'
 import { resolveActive } from './settings.js'
 import haptics from './haptics.js'
 import { workspaceApi } from './workspace.js'
-import { createJob, detectLongJobType, cancelJob } from './jobs.js'
+import { createJob, createAgentJob, detectLongJobType, cancelJob } from './jobs.js'
 
 const SUMMARY_TRIGGER_MESSAGES = 14
 const SUMMARY_KEEP_RECENT = 8
@@ -969,6 +969,96 @@ export function useChats(settings) {
     [activeId, newChat, settings],
   )
 
+
+  // Start the same autonomous agent as a persisted background job. The user
+  // message + job card are written into chat immediately; the actual worker
+  // continues on the server and survives tab closes and server restarts.
+  const sendBackgroundAgentMessage = useCallback(
+    async (text, attachments = [], overrideProvider = null) => {
+      const trimmed = (text || '').trim()
+      if (!trimmed && attachments.length === 0) return
+
+      let chatId = activeId
+      if (!chatId) chatId = newChat()
+
+      const userMsg = { id: uid(), role: 'user', content: trimmed, attachments, background: true }
+      const assistantMsg = {
+        id: uid(),
+        role: 'assistant',
+        content: '',
+        pending: false,
+        agent: true,
+        background: true,
+      }
+
+      let capturedHistory = []
+      let chatSummary = ''
+      setChats((prev) =>
+        prev.map((c) => {
+          if (c.id !== chatId) return c
+          const isFirst = c.messages.length === 0
+          capturedHistory = [...c.messages, userMsg]
+          chatSummary = c.summary || ''
+          return {
+            ...c,
+            title: isFirst ? deriveTitle(trimmed) : c.title,
+            updatedAt: Date.now(),
+            messages: [...c.messages, userMsg, assistantMsg],
+          }
+        }),
+      )
+
+      const history = capturedHistory.length > 0 ? capturedHistory : [userMsg]
+      const llmHistory = history.map(messageToHistoryEntry)
+      const active = overrideProvider && typeof overrideProvider === 'object'
+        ? { ...resolveActive(settings), ...overrideProvider }
+        : (resolveActive(settings) || {})
+
+      const extraSystemParts = [
+        '[background-agent-job] The user explicitly clicked “запустить в фоне”. Run autonomously, keep outputs concise, and finish with a result that can be opened from the job card.',
+      ]
+      if (chatSummary) extraSystemParts.push(`# Earlier conversation summary\n\n${chatSummary}`)
+      if (history.length <= 2) extraSystemParts.push('[browserai-first-turn]')
+
+      try {
+        const data = await createAgentJob({
+          chatId,
+          history: llmHistory,
+          prompt: trimmed,
+          title: deriveTitle(trimmed) || 'Фоновый агент',
+          extraSystem: extraSystemParts.join('\n\n'),
+          baseUrl:      active.baseUrl,
+          apiKey:       active.apiKey,
+          authType:     active.authType || 'bearer',
+          authHeader:   active.authHeader || '',
+          extraHeaders: active.extraHeaders || {},
+          model:        active.model,
+          temperature:  Number(active.temperature ?? 0.3),
+        })
+        const job = data?.job
+        setChats((prev) => prev.map((c) => c.id !== chatId ? c : {
+          ...c,
+          updatedAt: Date.now(),
+          messages: c.messages.map((m) => m.id === assistantMsg.id
+            ? { ...m, job, content: 'Запущено в фоне. Можно закрыть вкладку — результат появится в этой карточке.' }
+            : m),
+        }))
+        if (job?.id) setActiveJobs((prev) => prev.includes(job.id) ? prev : [...prev, job.id])
+        haptics.success()
+      } catch (e) {
+        setChats((prev) => prev.map((c) => c.id !== chatId ? c : {
+          ...c,
+          updatedAt: Date.now(),
+          messages: c.messages.map((m) => m.id === assistantMsg.id
+            ? { ...m, pending: false, error: e?.message || 'Не удалось запустить фонового агента' }
+            : m),
+        }))
+        haptics.error()
+      }
+    },
+    [activeId, newChat, settings],
+  )
+
   // Submit an answer to an `ask_user` question the agent posed earlier.
   // Resolves the server-side promise so the agent loop continues. We also
   // mark the question card as answered locally so the user sees feedback.
@@ -1041,6 +1131,7 @@ export function useChats(settings) {
     updateChat,
     sendMessage,
     sendAgentMessage,
+    sendBackgroundAgentMessage,
     answerAgentQuestion,
     cancelAgentQuestion,
     stop,

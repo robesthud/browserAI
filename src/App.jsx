@@ -64,7 +64,7 @@ function BrowserApp({ user, reloadAuth }) {
   const {
     chats, activeChat, workspaceRevision, activeId, isStreaming, jobBusy,
     markJobDone, newChat, selectChat, deleteChat, branchFromMessage,
-    updateChat, sendMessage, sendAgentMessage, answerAgentQuestion,
+    updateChat, sendMessage, sendAgentMessage, sendBackgroundAgentMessage, answerAgentQuestion,
     cancelAgentQuestion, stop,
   } = useChats(settings)
 
@@ -203,6 +203,24 @@ function BrowserApp({ user, reloadAuth }) {
     return sendMessage(text, attachments, mergeOverride({ useWebAI: false }))
   }, [aiWorking, autoMode, availableModels, selectedModel, providerOverrideForModel, effectiveAgentMode, sendAgentMessage, sendMessage, setActiveModel])
 
+
+
+  const handleSendBackground = useCallback(async (text, attachments = []) => {
+    if (aiWorking) return
+    const key = findKeyForModel(settings, selectedModel) || activeKey
+    const override = key ? {
+      baseUrl: key.baseUrl,
+      apiKey: key.apiKey,
+      model: selectedModel || key.model,
+      authType: key.authType || 'bearer',
+      authHeader: key.authHeader || '',
+      extraHeaders: key.extraHeaders || {},
+      temperature: settings.temperature,
+    } : null
+    setFlash({ kind: 'info', text: 'Фоновый агент запущен. Результат появится в карточке job.' })
+    return sendBackgroundAgentMessage(text, attachments, override)
+  }, [aiWorking, settings, selectedModel, activeKey, sendBackgroundAgentMessage])
+
   const handleRegenerate = useCallback((m) => {
     if (aiWorking || !activeChat) return
     const curMsgs = activeChat.messages || []
@@ -261,6 +279,7 @@ function BrowserApp({ user, reloadAuth }) {
         agentMode={effectiveAgentMode} onToggleAgentMode={setAgentMode}
         useWebAI={settings.useWebAI} onToggleWebAI={(next) => setParams({ useWebAI: next })}
         onResumeAgentTask={() => handleSendMessage('продолжай')} onFlash={setFlash}
+        onOpenJobChat={(chatId) => { if (chatId) selectChat(chatId); if (window.innerWidth < 768) setCollapsed(true) }}
       />
       {!collapsed && <button className="fixed inset-0 z-30 bg-black/45 md:hidden" onClick={() => setCollapsed(true)} />}
       <main className="relative flex min-w-0 flex-1 flex-col h-[100dvh] overflow-hidden">
@@ -293,11 +312,11 @@ function BrowserApp({ user, reloadAuth }) {
             />
             </div>
             <div className="shrink-0">
-            <Composer hasMessages isStreaming={aiWorking} onSend={handleSendMessage} onStop={stop} chatId={activeChat?.id || ''} {...composerSlashHooks} />
+            <Composer hasMessages isStreaming={aiWorking} onSend={handleSendMessage} onSendBackground={handleSendBackground} onStop={stop} chatId={activeChat?.id || ''} {...composerSlashHooks} />
             </div>
           </>
         ) : (
-          <Composer hasMessages={false} isStreaming={aiWorking} onSend={handleSendMessage} onStop={stop} chatId={activeChat?.id || ''} {...composerSlashHooks} />
+          <Composer hasMessages={false} isStreaming={aiWorking} onSend={handleSendMessage} onSendBackground={handleSendBackground} onStop={stop} chatId={activeChat?.id || ''} {...composerSlashHooks} />
         )}
         </div>
       </main>

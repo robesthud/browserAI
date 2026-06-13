@@ -28,6 +28,7 @@ export default function Sidebar({
   onToggleWebAI,
   onResumeAgentTask,
   onFlash,
+  onOpenJobChat,
 }) {
   return (
     <aside
@@ -175,7 +176,7 @@ export default function Sidebar({
             shown here so they stay visible even when the user switches
             to a different chat. */}
         <AgentTasksTray chatId={activeId || ''} onResume={onResumeAgentTask} onFlash={onFlash} />
-        <JobsTray />
+        <JobsTray onOpenChat={onOpenJobChat || onSelect} />
 
         {/* Web Push subscription toggle — invisible on browsers without
             ServiceWorker / PushManager support. */}

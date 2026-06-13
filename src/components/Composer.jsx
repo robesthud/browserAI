@@ -127,6 +127,7 @@ export default function Composer({
   hasMessages,
   isStreaming,
   onSend,
+  onSendBackground,
   onStop,
   chatId = '',
   // Slash-command hooks — wired by App.jsx
@@ -243,7 +244,7 @@ export default function Composer({
   const [isSubmitting, setIsSubmitting] = useState(false)
   const submittingRef = useRef(false)
 
-  const submit = async () => {
+  const submit = async ({ background = false } = {}) => {
     // State updates are async; the ref prevents a rapid double tap / double
     // key event from launching two agent runs before React re-renders.
     if (isStreaming || isSubmitting || submittingRef.current) return
@@ -342,7 +343,7 @@ export default function Composer({
       })
 
       try {
-        await onSend(sentText, sentAttachments)
+        await (background && onSendBackground ? onSendBackground(sentText, sentAttachments) : onSend(sentText, sentAttachments))
       } catch (e) {
         setText(sentText)
         setAttachments(sentAttachments)
@@ -560,6 +561,25 @@ export default function Composer({
               />
 
               <div className="flex items-center gap-2">
+                {!isStreaming && onSendBackground && (
+                  <button
+                    onClick={() => submit({ background: true })}
+                    disabled={!text.trim() && attachments.length === 0}
+                    className="hidden items-center gap-1.5 rounded-full border border-amber-300/30 bg-amber-400/10 px-3 py-2 text-[12px] text-amber-100 transition-colors hover:bg-amber-400/20 disabled:opacity-40 md:flex"
+                    title="Запустить агентскую задачу в фоне"
+                  >
+                    <span>↗</span>
+                    <span>В фоне</span>
+                  </button>
+                )}
+                {!isStreaming && onSendBackground && (
+                  <button
+                    onClick={() => submit({ background: true })}
+                    disabled={!text.trim() && attachments.length === 0}
+                    className="grid h-9 w-9 place-items-center rounded-full border border-amber-300/30 bg-amber-400/10 text-amber-100 transition-colors hover:bg-amber-400/20 disabled:opacity-40 md:hidden"
+                    title="Запустить в фоне"
+                  >↗</button>
+                )}
                 {isStreaming ? (
                   <button
                     onClick={onStop}
