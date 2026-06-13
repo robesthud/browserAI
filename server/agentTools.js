@@ -1255,6 +1255,27 @@ export const TOOLS = {
       } catch (e) { return err(e.message) }
     },
   },
+  operator_get_report: {
+    description: 'Generate a Markdown report for an Operator mission, code task, deploy session, or incident.',
+    params: {
+      kind: { type: 'string', required: true, description: 'mission, code-task, deploy, or incident.' },
+      id: { type: 'string', required: true, description: 'Entity id.' },
+    },
+    handler: async ({ kind, id } = {}) => {
+      try { const { getOperatorReport } = await import('./operatorReports.js'); return ok(getOperatorReport({ kind, id })) } catch (e) { return err(e.message) }
+    },
+  },
+  operator_send_report: {
+    description: 'Send a Markdown operator report to Telegram admin. Use after important missions/deploys/incidents.',
+    params: {
+      kind: { type: 'string', required: true, description: 'mission, code-task, deploy, or incident.' },
+      id: { type: 'string', required: true, description: 'Entity id.' },
+    },
+    handler: async ({ kind, id } = {}) => {
+      try { const { sendOperatorReportTelegram } = await import('./operatorReports.js'); return ok(await sendOperatorReportTelegram({ kind, id })) } catch (e) { return err(e.message) }
+    },
+  },
+
   operator_list_missions: {
     description: 'List recent Operator Mode missions for this user.',
     params: { limit: { type: 'number', optional: true, description: 'Max missions, default 10.' } },

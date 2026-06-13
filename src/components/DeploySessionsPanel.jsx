@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import OperatorReportModal from './OperatorReportModal.jsx'
 
 async function api(path, options = {}) {
   const r = await fetch(path, { credentials: 'include', headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }, ...options })
@@ -23,6 +24,7 @@ export default function DeploySessionsPanel() {
   const [sessions, setSessions] = useState([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [reportTarget, setReportTarget] = useState(null)
 
   const refresh = async () => {
     try {
@@ -83,9 +85,11 @@ export default function DeploySessionsPanel() {
               ))}
             </div>
             {s.result?.report && <pre className="mt-3 max-h-52 overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 text-[11px] text-cream-soft">{s.result.report}</pre>}
+            <button onClick={() => setReportTarget({ kind: 'deploy', id: s.id })} className="mt-2 rounded border border-white/10 px-2 py-1 text-[11px] text-cream-soft hover:bg-white/5">report</button>
           </details>
         ))}
       </div>
+      <OperatorReportModal open={Boolean(reportTarget)} kind={reportTarget?.kind} id={reportTarget?.id} onClose={() => setReportTarget(null)} />
     </section>
   )
 }

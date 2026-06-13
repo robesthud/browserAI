@@ -4,7 +4,7 @@ import { buildClineSystemPrompt } from '../server/clinePrompt.js'
 
 describe('agent tool registry and prompt', () => {
   it('exposes planning, user question and memory tools used by the agent loop', () => {
-    for (const name of ['plan_set', 'plan_check', 'ask_user', 'recall_facts', 'remember_fact', 'kb_search', 'kb_list', 'read_project_rules', 'project_profile', 'npm_test', 'verify_task', 'secret_scan', 'workspace_snapshot_create', 'workspace_snapshot_restore', 'git_clone', 'zip_files', 'create_folder', 'rename_item', 'operator_status', 'operator_start_mission', 'operator_project_profile', 'operator_analyze_project', 'operator_list_runbooks', 'operator_read_runbook', 'operator_append_lesson', 'operator_finalize_code_task', 'operator_wait_code_task_ci', 'operator_auto_fix_code_task_ci', 'operator_merge_code_task_pr']) {
+    for (const name of ['plan_set', 'plan_check', 'ask_user', 'recall_facts', 'remember_fact', 'kb_search', 'kb_list', 'read_project_rules', 'project_profile', 'npm_test', 'verify_task', 'secret_scan', 'workspace_snapshot_create', 'workspace_snapshot_restore', 'git_clone', 'zip_files', 'create_folder', 'rename_item', 'operator_status', 'operator_start_mission', 'operator_project_profile', 'operator_get_report', 'operator_send_report', 'operator_analyze_project', 'operator_list_runbooks', 'operator_read_runbook', 'operator_append_lesson', 'operator_finalize_code_task', 'operator_wait_code_task_ci', 'operator_auto_fix_code_task_ci', 'operator_merge_code_task_pr']) {
       expect(TOOLS[name]).toBeTruthy()
     }
   })

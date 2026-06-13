@@ -83,6 +83,7 @@ import { initOperatorMode, getOperatorStatus, listOperatorProjects, upsertOperat
 import { initDeploySessions, createDeploySession, getDeploySession, listDeploySessions, startDeploySession } from './deploySessions.js'
 import { listRunbooks, readRunbook, writeRunbook, appendLesson } from './operatorRunbooks.js'
 import { analyzeOperatorProject } from './operatorProjectOnboarding.js'
+import { getOperatorReport, saveOperatorReport, sendOperatorReportTelegram } from './operatorReports.js'
 import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr, reviewOperatorCodeTask } from './operatorCode.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
@@ -3090,6 +3091,21 @@ app.get('/api/agent/control-plane', requireAuth, (req, res) => {
 
 app.get('/api/operator/status', requireAuth, async (req, res) => {
   res.json({ operator: await getOperatorStatus({ userId: req.user?.id || '' }) })
+})
+
+app.get('/api/operator/reports/:kind/:id', requireAuth, (req, res) => {
+  try { res.json({ report: getOperatorReport({ kind: req.params.kind, id: req.params.id }) }) }
+  catch (e) { res.status(400).json({ error: e?.message || String(e) }) }
+})
+
+app.post('/api/operator/reports/:kind/:id/save', requireAuth, async (req, res) => {
+  try { res.json({ ok: true, report: await saveOperatorReport({ kind: req.params.kind, id: req.params.id }) }) }
+  catch (e) { res.status(400).json({ error: e?.message || String(e) }) }
+})
+
+app.post('/api/operator/reports/:kind/:id/send-telegram', requireAuth, async (req, res) => {
+  try { res.json({ ok: true, report: await sendOperatorReportTelegram({ kind: req.params.kind, id: req.params.id }) }) }
+  catch (e) { res.status(400).json({ error: e?.message || String(e) }) }
 })
 
 app.get('/api/operator/deploy-sessions', requireAuth, (req, res) => {

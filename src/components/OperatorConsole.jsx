@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import OperatorReportModal from './OperatorReportModal.jsx'
 import OperatorMissionTimeline from './OperatorMissionTimeline.jsx'
 
 async function api(path, options = {}) {
@@ -28,6 +29,7 @@ export default function OperatorConsole() {
   const [goal, setGoal] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [reportTarget, setReportTarget] = useState(null)
 
   const refresh = async () => {
     try {
@@ -197,6 +199,7 @@ export default function OperatorConsole() {
               )}
               {m.codeTask?.result?.merge?.ok && <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-200">merged</span>}
               {m.codeTask?.result?.deployWorkflowId && <span className="font-mono text-[10px] text-amber-200">deploy {m.codeTask.result.deployWorkflowId.slice(-8)}</span>}
+              <button onClick={() => setReportTarget({ kind: 'mission', id: m.id })} className="rounded border border-white/10 px-2 py-0.5 text-[10px] text-cream-soft hover:bg-white/5">report</button>
               {m.error && <span className="text-red-200">{m.error}</span>}
               {m.events?.length > 0 && (
                 <details className="basis-full">
@@ -208,6 +211,7 @@ export default function OperatorConsole() {
           ))}
         </div>
       </div>
+      <OperatorReportModal open={Boolean(reportTarget)} kind={reportTarget?.kind} id={reportTarget?.id} onClose={() => setReportTarget(null)} />
     </section>
   )
 }
