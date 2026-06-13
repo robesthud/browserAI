@@ -84,6 +84,7 @@ import { initDeploySessions, createDeploySession, getDeploySession, listDeploySe
 import { listRunbooks, readRunbook, writeRunbook, appendLesson } from './operatorRunbooks.js'
 import { analyzeOperatorProject } from './operatorProjectOnboarding.js'
 import { getOperatorReport, saveOperatorReport, sendOperatorReportTelegram } from './operatorReports.js'
+import { initNotifications, listNotifications, notificationSummary, markNotificationRead, markAllNotificationsRead } from './notifications.js'
 import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr, reviewOperatorCodeTask } from './operatorCode.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
@@ -2557,6 +2558,7 @@ try {
   initIncidents();
   initOperatorMode();
   initDeploySessions();
+  initNotifications();
 } catch (err) {
   console.error('FATAL: Failed to initialize workspace:', err.message);
   process.exit(1);
@@ -2758,6 +2760,23 @@ app.post('/api/checkpoints/:chatId/restore', requireAuth, async (req, res) => {
 })
 
 // ── Web Push ───────────────────────────────────────────────────────────────
+// ── Notifications ─────────────────────────────────────────────────────────
+app.get('/api/notifications', requireAuth, (req, res) => {
+  res.json({ notifications: listNotifications({ userId: req.user?.id || '', status: String(req.query.status || ''), limit: req.query.limit || 50 }), summary: notificationSummary({ userId: req.user?.id || '' }) })
+})
+
+app.get('/api/notifications/summary', requireAuth, (req, res) => {
+  res.json({ summary: notificationSummary({ userId: req.user?.id || '' }) })
+})
+
+app.post('/api/notifications/:id/read', requireAuth, (req, res) => {
+  res.json({ ok: true, ...markNotificationRead({ userId: req.user?.id || '', id: req.params.id }) })
+})
+
+app.post('/api/notifications/read-all', requireAuth, (req, res) => {
+  res.json({ ok: true, ...markAllNotificationsRead({ userId: req.user?.id || '' }) })
+})
+
 app.get('/api/push/vapid', async (_req, res) => {
   try {
     const { getPublicVapidKey } = await import('./push.js')

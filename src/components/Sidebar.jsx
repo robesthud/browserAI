@@ -9,6 +9,7 @@ import SidebarUserPrefs from './SidebarUserPrefs.jsx'
 import JobsTray from './JobsTray.jsx'
 import AgentTasksTray from './AgentTasksTray.jsx'
 import PushToggle from './PushToggle.jsx'
+import NotificationBadge from './NotificationBadge.jsx'
 
 export default function Sidebar({
   collapsed,
@@ -175,6 +176,7 @@ export default function Sidebar({
         {/* Live background jobs (video / image / document generation) —
             shown here so they stay visible even when the user switches
             to a different chat. */}
+        <NotificationBadge />
         <AgentTasksTray chatId={activeId || ''} onResume={onResumeAgentTask} onFlash={onFlash} />
         <JobsTray onOpenChat={onOpenJobChat || onSelect} />
 

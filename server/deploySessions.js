@@ -1,5 +1,6 @@
 import db from './db.js'
 import { runOpsAction } from './ops.js'
+import { notifyDeploySession } from './notifications.js'
 
 let initialized = false
 const running = new Set()
@@ -176,9 +177,11 @@ export function startDeploySession(sessionId) {
       let done = patchSession(sessionId, { status: 'succeeded', progress: 100, result, finishedAt: now() })
       done = patchSession(sessionId, { result: { ...result, report: renderDeploySessionReport(done) } })
       addDeployEvent(sessionId, { type: 'success', phase: 'done', message: 'Deploy session completed successfully', data: { report: done.result?.report } })
+      try { notifyDeploySession(done) } catch { /* best-effort */ }
     } catch (e) {
       const failed = patchSession(sessionId, { status: 'failed', progress: 100, error: e?.message || String(e), finishedAt: now() })
       addDeployEvent(sessionId, { type: 'error', phase: 'failed', message: e?.message || String(e), data: { report: renderDeploySessionReport(failed) } })
+      try { notifyDeploySession(failed) } catch { /* best-effort */ }
     } finally {
       running.delete(sessionId)
     }

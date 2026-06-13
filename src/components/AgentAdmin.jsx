@@ -8,6 +8,7 @@ import AgentAskUser from './AgentAskUser.jsx'
 import AutomationCenter from './AutomationCenter.jsx'
 import AgentInbox from './AgentInbox.jsx'
 import AgentControlPlanePanel from './AgentControlPlanePanel.jsx'
+import NotificationCenter from './NotificationCenter.jsx'
 import OperatorConsole from './OperatorConsole.jsx'
 import OperatorProjectsPanel from './OperatorProjectsPanel.jsx'
 import OperatorRunbooks from './OperatorRunbooks.jsx'
@@ -133,6 +134,8 @@ export default function AgentAdmin() {
 
       <main className="mx-auto max-w-5xl space-y-4 px-4 py-5">
         <AgentControlPlanePanel />
+
+        <NotificationCenter />
 
         <OperatorConsole />
 

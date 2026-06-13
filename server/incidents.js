@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import db from './db.js'
 import { createWorkflow, startWorkflow } from './agentWorkflows.js'
+import { notifyIncident } from './notifications.js'
 
 let initialized = false
 
@@ -83,7 +84,9 @@ export function createIncident({ userId = '', source = '', severity = 'medium', 
     incidentId, String(userId || ''), String(source || ''), String(severity || 'medium'), 'open', String(title || 'Incident').slice(0, 240), fp,
     JSON.stringify({ ...(details || {}), firstSeen: new Date(ts).toISOString() }), '', ts, ts,
   )
-  return getIncident(incidentId)
+  const created = getIncident(incidentId)
+  try { notifyIncident(created) } catch { /* best-effort */ }
+  return created
 }
 
 export function updateIncident(incidentId, patch = {}) {

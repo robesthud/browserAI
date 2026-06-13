@@ -272,6 +272,7 @@ async function attachIncidentRcaIfNeeded(workflow) {
 async function notifyWorkflowIfNeeded(workflow) {
   if (!workflow) return
   await attachIncidentRcaIfNeeded(workflow)
+  if (['succeeded', 'failed'].includes(workflow.status)) { try { notifyWorkflow(workflow) } catch { /* best-effort */ } }
   const recipe = getAutomationRecipe(workflow.recipeId)
   const shouldNotify = workflow.status === 'failed' || recipe?.risk === 'production-write' || workflow.input?.notifyTelegram === true
   if (!shouldNotify) return
