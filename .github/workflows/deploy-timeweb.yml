@@ -80,10 +80,8 @@ jobs:
                echo \"── verify required files ──\"
                test -f server/telegramBot.js
                test -f server/index.js
-               echo \"── docker compose build ──\"
-               docker compose build browserai
-               echo \"── docker compose up -d ──\"
-               docker compose up -d
+               echo \"── docker compose up -d --build --force-recreate --remove-orphans ──\"
+               docker compose up -d --build --force-recreate --remove-orphans browserai
                echo \"── prune dangling images ──\"
                docker image prune -f
                echo \"── health ──\"
