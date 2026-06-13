@@ -76,8 +76,6 @@ export async function runBackup() {
   const outRel = path.relative(path.dirname(DATA_DIR), out).replace(/\\/g, '/')
   const args = [
     'czf', out,
-    '--warning=no-file-changed',
-    '--ignore-failed-read',
     '--exclude=node_modules',
     '--exclude=.history',
     `--exclude=${backupRel}`,
