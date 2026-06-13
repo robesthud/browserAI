@@ -80,6 +80,7 @@ import { getAutomationPolicy, listAutomationPolicyEvents } from './automationPol
 import { initIncidents, listIncidents, getIncident, resolveIncident, createIncident, createIncidentWorkflow } from './incidents.js'
 import { getAgentControlPlane } from './agentControlPlane.js'
 import { initOperatorMode, getOperatorStatus, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorMission, listOperatorMissionEvents } from './operatorMode.js'
+import { initDeploySessions, createDeploySession, getDeploySession, listDeploySessions, startDeploySession } from './deploySessions.js'
 import { listRunbooks, readRunbook, writeRunbook, appendLesson } from './operatorRunbooks.js'
 import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr } from './operatorCode.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
@@ -2553,6 +2554,7 @@ try {
   initAgentWorkflows();
   initIncidents();
   initOperatorMode();
+  initDeploySessions();
 } catch (err) {
   console.error('FATAL: Failed to initialize workspace:', err.message);
   process.exit(1);
@@ -3087,6 +3089,27 @@ app.get('/api/agent/control-plane', requireAuth, (req, res) => {
 
 app.get('/api/operator/status', requireAuth, async (req, res) => {
   res.json({ operator: await getOperatorStatus({ userId: req.user?.id || '' }) })
+})
+
+app.get('/api/operator/deploy-sessions', requireAuth, (req, res) => {
+  res.json({ sessions: listDeploySessions({ userId: req.user?.id || '', limit: req.query.limit || 30 }) })
+})
+
+app.post('/api/operator/deploy-sessions', requireAuth, (req, res) => {
+  const session = createDeploySession({ userId: req.user?.id || '', title: req.body?.title || 'Safe BrowserAI deploy', input: req.body?.input || {} })
+  res.json({ ok: true, session })
+})
+
+app.get('/api/operator/deploy-sessions/:id', requireAuth, (req, res) => {
+  const session = getDeploySession(req.params.id)
+  if (!session || (session.userId && session.userId !== req.user?.id)) return res.status(404).json({ error: 'deploy session not found' })
+  res.json({ session })
+})
+
+app.post('/api/operator/deploy-sessions/:id/start', requireAuth, (req, res) => {
+  const session = getDeploySession(req.params.id)
+  if (!session || (session.userId && session.userId !== req.user?.id)) return res.status(404).json({ error: 'deploy session not found' })
+  res.json({ ok: true, session: startDeploySession(req.params.id) })
 })
 
 app.get('/api/operator/runbooks', requireAuth, async (_req, res) => {

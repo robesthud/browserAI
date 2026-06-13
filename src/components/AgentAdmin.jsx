@@ -10,6 +10,7 @@ import AgentInbox from './AgentInbox.jsx'
 import AgentControlPlanePanel from './AgentControlPlanePanel.jsx'
 import OperatorConsole from './OperatorConsole.jsx'
 import OperatorRunbooks from './OperatorRunbooks.jsx'
+import DeploySessionsPanel from './DeploySessionsPanel.jsx'
 
 function JsonBlock({ data }) {
   if (!data) return null
@@ -135,6 +136,8 @@ export default function AgentAdmin() {
         <OperatorConsole />
 
         <OperatorRunbooks />
+
+        <DeploySessionsPanel />
 
         <AgentInbox />
 

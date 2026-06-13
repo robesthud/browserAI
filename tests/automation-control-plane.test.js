@@ -3,6 +3,7 @@ import { evaluateWorkflowStart } from '../server/automationPolicy.js'
 import { listAutomationRecipes } from '../server/agentWorkflows.js'
 import { createIncident, resolveIncident, generateIncidentRcaFromWorkflow } from '../server/incidents.js'
 import { nextRunFromSchedule, upsertCronJob, deleteCronJob } from '../server/cron.js'
+import { createDeploySession, getDeploySession, renderDeploySessionReport } from '../server/deploySessions.js'
 
 describe('agent automation control plane', () => {
   it('exposes production-grade automation recipes', () => {
@@ -48,5 +49,13 @@ describe('agent automation control plane', () => {
     expect(rca.primaryCategory).toBe('health_check_failure')
     expect(rca.recommendedActions.length).toBeGreaterThan(0)
     expect(resolveIncident(a.id, { note: 'test' })?.status).toBe('resolved')
+  })
+
+  it('creates deploy sessions and renders reports', () => {
+    const userId = `dep-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const session = createDeploySession({ userId, title: 'Test deploy', input: { test: true }, autostart: false })
+    expect(session.id).toMatch(/^dep-/)
+    expect(getDeploySession(session.id)?.events.length).toBeGreaterThan(0)
+    expect(renderDeploySessionReport(getDeploySession(session.id))).toContain('Test deploy')
   })
 })
