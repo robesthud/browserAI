@@ -66,15 +66,25 @@ export async function runBackup() {
   const outName = `browserai-${stamp()}.tar.gz`
   const out = path.join(BACKUP_DIR, outName)
 
-  // Build the tarball. We exclude workspace .history/ (revisions can be
-  // huge and are redundant for a disaster-recovery snapshot — we keep
-  // current files only) and node_modules anywhere we encounter it.
+  // Build the tarball. Important: never include BACKUP_DIR itself.
+  // Otherwise /data/backups/browserai-YYYYMMDD.tar.gz gets archived into the
+  // next backup (or even into itself while tar is writing it), causing huge
+  // exponential backups and deployment/disk-pressure failures.
+  const dataBase = path.basename(DATA_DIR)
+  const workspaceBase = path.basename(WORKSPACE_DIR)
+  const backupRel = path.relative(path.dirname(DATA_DIR), BACKUP_DIR).replace(/\\/g, '/')
+  const outRel = path.relative(path.dirname(DATA_DIR), out).replace(/\\/g, '/')
   const args = [
     'czf', out,
+    '--warning=no-file-changed',
+    '--ignore-failed-read',
     '--exclude=node_modules',
     '--exclude=.history',
-    '-C', path.dirname(DATA_DIR), path.basename(DATA_DIR),
-    '-C', path.dirname(WORKSPACE_DIR), path.basename(WORKSPACE_DIR),
+    `--exclude=${backupRel}`,
+    `--exclude=${backupRel}/*`,
+    `--exclude=${outRel}`,
+    '-C', path.dirname(DATA_DIR), dataBase,
+    '-C', path.dirname(WORKSPACE_DIR), workspaceBase,
   ]
   const r = await run('tar', args)
   if (r.code !== 0) {
@@ -123,9 +133,10 @@ export function startBackupScheduler() {
   setTimeout(() => {
     runBackup().catch((e) => console.warn('[backup] failed:', e.message))
   }, 90_000)
-  const backupTimer = setInterval(() => {
+  timer = setInterval(() => {
     runBackup().catch((e) => console.warn('[backup] failed:', e.message))
   }, 24 * 60 * 60 * 1000)
+  timer.unref?.()
   console.log('[backup] scheduler started (daily, kept-last=' + KEEP_LAST + ')')
 }
 

@@ -24,6 +24,8 @@ for i in $(seq 1 30); do
   if curl -fsS http://127.0.0.1/api/health >/dev/null 2>&1; then
     echo "Health OK"
     docker ps --format '{{.Names}} {{.Status}} {{.Ports}}' | grep -E 'browserai|agent-sandbox'
+    echo "Pruning old Docker build cache..."
+    docker builder prune -af --filter 'until=24h' >/dev/null 2>&1 || true
     echo "=== Deploy completed ==="
     exit 0
   fi
