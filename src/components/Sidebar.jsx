@@ -7,6 +7,7 @@ import {
 } from '../icons.jsx'
 import SidebarUserPrefs from './SidebarUserPrefs.jsx'
 import JobsTray from './JobsTray.jsx'
+import AgentTasksTray from './AgentTasksTray.jsx'
 import PushToggle from './PushToggle.jsx'
 
 export default function Sidebar({
@@ -25,6 +26,8 @@ export default function Sidebar({
   onToggleAgentMode,
   useWebAI,
   onToggleWebAI,
+  onResumeAgentTask,
+  onFlash,
 }) {
   return (
     <aside
@@ -171,6 +174,7 @@ export default function Sidebar({
         {/* Live background jobs (video / image / document generation) —
             shown here so they stay visible even when the user switches
             to a different chat. */}
+        <AgentTasksTray chatId={activeId || ''} onResume={onResumeAgentTask} onFlash={onFlash} />
         <JobsTray />
 
         {/* Web Push subscription toggle — invisible on browsers without

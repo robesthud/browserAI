@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { listJobs } from '../lib/jobs.js'
+import { cancelJob, listJobs, retryJob } from '../lib/jobs.js'
 
 /**
  * Lightweight tray that polls /api/jobs and shows the user every job
@@ -31,26 +31,30 @@ function typeLabel(type) {
     generate_docx: 'Документ',
     generate_xlsx: 'Таблица',
     generate_presentation: 'Презентация',
+    tool_verify_task: 'Проверка',
+    tool_secret_scan: 'Секреты',
+    tool_zip_files: 'ZIP',
   }[type] || type
 }
 
 export default function JobsTray() {
   const [jobs, setJobs] = useState([])
 
+  const refresh = async () => {
+    const data = await listJobs('')
+    const now = Date.now()
+    const filtered = (data?.jobs || []).filter((j) => {
+      if (!TERMINAL.includes(j.status)) return true
+      const t = j.finishedAt || j.updatedAt
+      return t && now - t < RECENT_MS
+    })
+    setJobs(filtered.slice(0, 5))
+  }
+
   useEffect(() => {
     let cancelled = false
     const tick = async () => {
-      try {
-        const data = await listJobs('')
-        if (cancelled) return
-        const now = Date.now()
-        const filtered = (data?.jobs || []).filter((j) => {
-          if (!TERMINAL.includes(j.status)) return true        // running/queued
-          const t = j.finishedAt || j.updatedAt
-          return t && now - t < RECENT_MS
-        })
-        setJobs(filtered.slice(0, 5))
-      } catch { /* ignore — try next tick */ }
+      try { if (!cancelled) await refresh() } catch { /* ignore — try next tick */ }
     }
     tick()
     const id = setInterval(tick, 4000)
@@ -76,10 +80,19 @@ export default function JobsTray() {
               {!term && (
                 <span className="ml-auto shrink-0 font-mono text-[10px] text-cream-faint">{j.progress || 0}%</span>
               )}
+              {!term && (
+                <button
+                  onClick={async () => { try { await cancelJob(j.id); await refresh() } catch { /* ignore */ } }}
+                  className="ml-1 rounded bg-rose-500/15 px-1 py-0.5 text-[10px] text-rose-200 hover:bg-rose-500/25"
+                  title="Отменить задачу"
+                >×</button>
+              )}
               {term && j.status === 'failed' && (
-                <span className="ml-auto shrink-0 truncate text-[10px] text-rose-300" title={j.error}>
-                  ошибка
-                </span>
+                <button
+                  onClick={async () => { try { await retryJob(j.id); await refresh() } catch { /* ignore */ } }}
+                  className="ml-auto shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] text-violet-200 hover:bg-violet-500/25"
+                  title={j.error}
+                >retry</button>
               )}
             </div>
           )

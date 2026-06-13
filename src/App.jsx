@@ -260,6 +260,7 @@ function BrowserApp({ user, reloadAuth }) {
         onDelete={deleteChat} onOpenSettings={() => setSettingsOpen(true)}
         agentMode={effectiveAgentMode} onToggleAgentMode={setAgentMode}
         useWebAI={settings.useWebAI} onToggleWebAI={(next) => setParams({ useWebAI: next })}
+        onResumeAgentTask={() => handleSendMessage('продолжай')} onFlash={setFlash}
       />
       {!collapsed && <button className="fixed inset-0 z-30 bg-black/45 md:hidden" onClick={() => setCollapsed(true)} />}
       <main className="relative flex min-w-0 flex-1 flex-col h-[100dvh] overflow-hidden">
