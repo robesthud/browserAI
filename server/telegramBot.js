@@ -202,7 +202,7 @@ async function menu(chatId, messageId = null) {
     '',
     'Напишите обычное сообщение — я отправлю его в тот же AI/Agent pipeline, что и сайт.',
   ].join('\n')
-  if (messageId) return editMessage(chatId, messageId, text, { reply_markup: mainKeyboard() })
+  // Always send NEW message for fresh data (do not edit old message to avoid stale data confusion)
   return sendMessage(chatId, text, { reply_markup: mainKeyboard() })
 }
 
@@ -495,7 +495,7 @@ async function handleCallback(cb) {
   if (!chatId) return
   if (!isAdmin(chatId)) return editMessage(chatId, messageId, '⛔ Access denied')
 
-  if (data === 'menu:main') return menu(chatId, messageId)
+  if (data === 'menu:main') return menu(chatId)
   if (data === 'menu:agent') return editMessage(chatId, messageId, '🤖 Просто напишите задачу текстом. Я сам выберу chat/web/agent режим.\n\nПример: “Проверь логи и скажи, почему сервер тормозит”.', { reply_markup: mainKeyboard() })
   if (data === 'run:stop') {
     const run = activeRuns.get(String(chatId))
@@ -521,16 +521,16 @@ async function handleCallback(cb) {
     return editMessage(chatId, messageId, ok ? '✅ Answered' : 'Question expired')
   }
 
-  if (data === 'ds:status') return editMessage(chatId, messageId, fmtDeepSeek(), { reply_markup: deepSeekKeyboard() })
+  if (data === 'ds:status') return sendMessage(chatId, fmtDeepSeek(), { reply_markup: deepSeekKeyboard() })
   if (data === 'ds:refresh') {
-    await editMessage(chatId, messageId, '🔄 Refreshing DeepSeek…')
+    await sendMessage(chatId, '🔄 Refreshing DeepSeek…')
     await refreshDeepSeekNow({ source: 'telegram-v2' }).catch(() => null)
-    return editMessage(chatId, messageId, fmtDeepSeek(), { reply_markup: deepSeekKeyboard() })
+    return sendMessage(chatId, fmtDeepSeek(), { reply_markup: deepSeekKeyboard() })
   }
 
   if (data === 'ops:health') {
     const h = await localHealthCheck()
-    return editMessage(chatId, messageId, `🩺 BrowserAI health\nstatus: ${h.ok ? 'OK ✅' : 'FAIL ❌'}\nurl: ${h.url}\n${h.text || ''}`, { reply_markup: mainKeyboard() })
+    return sendMessage(chatId, `🩺 BrowserAI health\nstatus: ${h.ok ? 'OK ✅' : 'FAIL ❌'}\nurl: ${h.url}\n${h.text || ''}`, { reply_markup: mainKeyboard() })
   }
   if (data === 'ops:docker') return runOpsAndReply(chatId, messageId, 'Docker', 'browserai', 'docker_ps', {}, true, mainKeyboard())
   if (data === 'ops:logs') return runOpsAndReply(chatId, messageId, 'Logs', 'browserai', 'docker_logs_recent', { service: 'browserai', tail: 160 }, true, mainKeyboard())
