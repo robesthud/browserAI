@@ -79,6 +79,7 @@ import { initAgentWorkflows, listAutomationRecipes, createWorkflow, startWorkflo
 import { getAutomationPolicy, listAutomationPolicyEvents } from './automationPolicy.js'
 import { initIncidents, listIncidents, getIncident, resolveIncident, createIncident, createIncidentWorkflow } from './incidents.js'
 import { getAgentControlPlane } from './agentControlPlane.js'
+import { initOperatorMode, getOperatorStatus, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorMission } from './operatorMode.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
@@ -2549,6 +2550,7 @@ try {
   initJobs();
   initAgentWorkflows();
   initIncidents();
+  initOperatorMode();
 } catch (err) {
   console.error('FATAL: Failed to initialize workspace:', err.message);
   process.exit(1);
@@ -3079,6 +3081,42 @@ app.get('/api/agent/policy', requireAuth, (req, res) => {
 
 app.get('/api/agent/control-plane', requireAuth, (req, res) => {
   res.json({ controlPlane: getAgentControlPlane({ userId: req.user?.id || '' }) })
+})
+
+app.get('/api/operator/status', requireAuth, async (req, res) => {
+  res.json({ operator: await getOperatorStatus({ userId: req.user?.id || '' }) })
+})
+
+app.get('/api/operator/projects', requireAuth, (req, res) => {
+  res.json({ projects: listOperatorProjects({ userId: req.user?.id || '' }) })
+})
+
+app.post('/api/operator/projects', requireAuth, (req, res) => {
+  try { res.json({ ok: true, project: upsertOperatorProject({ userId: req.user?.id || '', ...(req.body || {}) }) }) }
+  catch (e) { res.status(400).json({ ok: false, error: e?.message || String(e) }) }
+})
+
+app.get('/api/operator/missions', requireAuth, (req, res) => {
+  res.json({ missions: listOperatorMissions({ userId: req.user?.id || '', limit: req.query.limit || 30 }) })
+})
+
+app.get('/api/operator/missions/:id', requireAuth, (req, res) => {
+  const mission = getOperatorMission(req.params.id)
+  if (!mission || (mission.userId && mission.userId !== req.user?.id)) return res.status(404).json({ error: 'mission not found' })
+  res.json({ mission })
+})
+
+app.post('/api/operator/missions', requireAuth, (req, res) => {
+  try {
+    const mission = startOperatorMission({
+      userId: req.user?.id || '',
+      projectId: String(req.body?.projectId || 'browserai'),
+      type: String(req.body?.type || 'full_diagnostic'),
+      goal: String(req.body?.goal || ''),
+      confirm: req.body?.confirm === true,
+    })
+    res.json({ ok: true, mission })
+  } catch (e) { res.status(e?.code === 'CONFIRM_REQUIRED' ? 409 : 400).json({ ok: false, error: e?.message || String(e), code: e?.code || 'ERROR' }) }
 })
 
 app.get('/api/agent/workflows', requireAuth, (req, res) => {
