@@ -1202,6 +1202,14 @@ export const TOOLS = {
     },
   },
 
+  operator_list_runtime_adapters: {
+    description: 'List runtime adapter packs that define verify/fix/release behavior for Node, Python, Go, Rust, Docker, static projects.',
+    params: {},
+    handler: async () => {
+      try { const { RUNTIME_ADAPTERS } = await import('./operatorRuntimeAdapters.js'); return ok({ adapters: RUNTIME_ADAPTERS }) } catch (e) { return err(e.message) }
+    },
+  },
+
   operator_analyze_project: {
     description: 'Onboard/analyze any GitHub repository for Operator Mode: clone/fetch, detect stack, infer commands, save project config, generate project runbook.',
     params: {

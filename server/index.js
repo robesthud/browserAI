@@ -84,6 +84,7 @@ import { initDeploySessions, createDeploySession, getDeploySession, listDeploySe
 import { listRunbooks, readRunbook, writeRunbook, appendLesson } from './operatorRunbooks.js'
 import { analyzeOperatorProject } from './operatorProjectOnboarding.js'
 import { PROJECT_TEMPLATES } from './operatorProjectTemplates.js'
+import { RUNTIME_ADAPTERS } from './operatorRuntimeAdapters.js'
 import { getOperatorReport, saveOperatorReport, sendOperatorReportTelegram } from './operatorReports.js'
 import { initNotifications, listNotifications, notificationSummary, markNotificationRead, markAllNotificationsRead } from './notifications.js'
 import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr, reviewOperatorCodeTask, cancelOperatorCodeTask, resumeOperatorCodeTask } from './operatorCode.js'
@@ -3186,6 +3187,10 @@ app.get('/api/operator/projects', requireAuth, (req, res) => {
 
 app.get('/api/operator/project-templates', requireAuth, (_req, res) => {
   res.json({ templates: PROJECT_TEMPLATES })
+})
+
+app.get('/api/operator/runtime-adapters', requireAuth, (_req, res) => {
+  res.json({ adapters: RUNTIME_ADAPTERS })
 })
 
 app.post('/api/operator/projects', requireAuth, (req, res) => {

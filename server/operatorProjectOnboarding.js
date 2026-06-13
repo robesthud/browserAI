@@ -7,6 +7,7 @@ import { withWorkspaceScope } from './workspace.js'
 import { upsertOperatorProject } from './operatorMode.js'
 import { writeRunbook } from './operatorRunbooks.js'
 import { bestProjectTemplate, matchProjectTemplates, mergeTemplateCommands } from './operatorProjectTemplates.js'
+import { bestRuntimeAdapter, matchRuntimeAdapters, buildAdapterRunbook } from './operatorRuntimeAdapters.js'
 
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || (fsSync.existsSync('/workspace') ? '/workspace' : path.join(process.cwd(), 'workspace'))
 const PROJECTS_ROOT = path.join(WORKSPACE_ROOT, 'projects')
@@ -139,13 +140,22 @@ export async function analyzeOperatorProject({ userId = '', repo = '', id = '', 
   const inferredCommands = inferCommands({ profile, rootAbs })
   const matchedTemplates = matchProjectTemplates(profile)
   const template = bestProjectTemplate(profile)
+  const adapter = bestRuntimeAdapter({ profile, template })
+  const matchedAdapters = matchRuntimeAdapters({ profile, template })
   const commands = mergeTemplateCommands(inferredCommands, template, profile.packageManager)
+  if (adapter?.commandHints) {
+    for (const [k, v] of Object.entries(adapter.commandHints)) {
+      if (!commands[k] && v) commands[k] = v
+    }
+  }
   const pkg = profile.packageJson ? await readJson(path.join(WORKSPACE_ROOT, profile.packageJson)) : null
   const healthUrl = 'http://127.0.0.1/api/health'
   const meta = {
     analyzedAt: new Date().toISOString(),
     profile,
     template: template ? { id: template.id, label: template.label, score: template.score, notes: template.notes || [] } : null,
+    runtimeAdapter: adapter ? { id: adapter.id, label: adapter.label, score: adapter.score, riskHints: adapter.riskHints || [], phases: adapter.phases || {} } : null,
+    matchedAdapters: matchedAdapters.map((a) => ({ id: a.id, label: a.label, score: a.score })),
     matchedTemplates: matchedTemplates.map((t) => ({ id: t.id, label: t.label, score: t.score })),
     package: pkg ? { name: pkg.name, version: pkg.version, scripts: pkg.scripts || {} } : null,
     commands,
@@ -156,9 +166,9 @@ export async function analyzeOperatorProject({ userId = '', repo = '', id = '', 
   const project = upsertOperatorProject({ userId, id: projectId, name: projectName, repo: repoSlug(repo), localPath: target, productionPath: productionPath || '', defaultBranch, meta })
   let runbook = null
   if (generateRunbook) {
-    runbook = await writeRunbook(`project-${projectId}.md`, generateProjectRunbook({ project, profile, commands }))
+    runbook = await writeRunbook(`project-${projectId}.md`, generateProjectRunbook({ project, profile, commands }) + (adapter ? `\n\n---\n\n${buildAdapterRunbook({ adapter, project, profile, commands })}` : ''))
   }
-  return { project, profile, commands, template: meta.template, matchedTemplates: meta.matchedTemplates, runbook }
+  return { project, profile, commands, template: meta.template, matchedTemplates: meta.matchedTemplates, runtimeAdapter: meta.runtimeAdapter, matchedAdapters: meta.matchedAdapters, runbook }
 }
 
 export default { analyzeOperatorProject, inferCommands, generateProjectRunbook }
