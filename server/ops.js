@@ -461,6 +461,7 @@ export async function runOpsAction({ service, action, params = {}, confirm = fal
   const healthTimeout = Math.min(60, Math.max(2, Number(params.timeout_sec || params.timeoutSec) || 10))
   const waitTimeout = Math.min(3600, Math.max(10, Number(params.timeout_sec || params.timeoutSec) || 600))
   const waitInterval = Math.min(60, Math.max(3, Number(params.interval_sec || params.intervalSec) || 10))
+  const cleanupStaleCompose = "docker ps -a --format '{{.Names}}' | grep -E '^[0-9a-f]+_browserai$' | xargs -r docker rm -f 2>/dev/null || true; "
 
   const commands = {
     health: `set -e; echo 'BrowserAI:'; curl -fsS http://localhost:${process.env.PORT || 8080}/api/health; echo; echo 'Gemini:'; curl -fsS http://172.17.0.1:8080/health || true; echo`,
@@ -499,7 +500,7 @@ if [ "$LOCAL" = "$REMOTE" ]; then echo "in_sync: yes"; else echo "in_sync: NO (d
 DIRTY=$(git status --short); if [ -n "$DIRTY" ]; then echo "dirty_files:"; echo "$DIRTY"; else echo "dirty_files: none"; fi
 echo -n "health: "; curl -fsS http://localhost:${process.env.PORT || 8080}/api/health && echo || echo "UNHEALTHY"
 [ "$LOCAL" = "$REMOTE" ]`,
-    deploy: `set -e; cd ${shQuote(APP_DIR)}; git fetch --quiet origin main; git reset --hard origin/main; git log -1 --oneline; docker compose build > /tmp/deploy-build.log 2>&1 && echo 'Build OK' || { echo 'Build FAIL, tail:'; tail -n 40 /tmp/deploy-build.log; exit 1; }; echo '== deploy helper =='; docker run -d --rm --name deploy-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc ${shQuote('docker compose up -d && sleep 20 && curl -fsS http://127.0.0.1:80/api/health && echo DEPLOY_OK || echo DEPLOY_FAIL')}; echo 'Deploy helper started'`,
+    deploy: `set -e; cd ${shQuote(APP_DIR)}; git fetch --quiet origin main; git reset --hard origin/main; git log -1 --oneline; docker compose build > /tmp/deploy-build.log 2>&1 && echo 'Build OK' || { echo 'Build FAIL, tail:'; tail -n 40 /tmp/deploy-build.log; exit 1; }; echo '== deploy helper =='; docker run -d --rm --name deploy-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc ${shQuote(cleanupStaleCompose + 'docker compose up -d --remove-orphans && sleep 20 && curl -fsS http://127.0.0.1:80/api/health && echo DEPLOY_OK || echo DEPLOY_FAIL')}; echo 'Deploy helper started'`,
     deploy_safe: `cd ${shQuote(APP_DIR)} && cat > .deploy-safe.sh << 'EOF'
 #!/bin/sh
 set +e
@@ -507,7 +508,8 @@ cd ${shQuote(APP_DIR)}
 PREV=$(git rev-parse HEAD); echo "== prev commit == $PREV"
 git fetch --quiet origin main; git reset --hard origin/main; NEW=$(git rev-parse HEAD); echo "== new commit == $NEW"; git log -1 --oneline
 echo "== build =="; docker compose build > /tmp/deploy-safe-build.log 2>&1; BUILD=$?; if [ $BUILD -ne 0 ]; then echo 'Build FAIL, tail:'; tail -n 40 /tmp/deploy-safe-build.log; fi
-echo "== up =="; docker compose up -d; UP=$?
+echo "== up =="; docker ps -a --format '{{.Names}}' | grep -E '^[0-9a-f]+_browserai$' | xargs -r docker rm -f 2>/dev/null || true
+docker compose up -d --remove-orphans; UP=$?
 sleep 20
 echo "== health =="; curl -fsS http://127.0.0.1:80/api/health; H1=$?; echo
 if [ $BUILD -eq 0 ] && [ $UP -eq 0 ] && [ $H1 -eq 0 ]; then
@@ -518,7 +520,8 @@ fi
 echo "!! DEPLOY FAILED (build:$BUILD up:$UP health:$H1) — ROLLING BACK to $PREV"
 git reset --hard "$PREV"; git log -1 --oneline
 echo "== rollback build =="; docker compose build > /tmp/rollback-build.log 2>&1; RB_BUILD=$?; if [ $RB_BUILD -ne 0 ]; then echo 'Rollback build FAIL, tail:'; tail -n 40 /tmp/rollback-build.log; fi
-echo "== rollback up =="; docker compose up -d; RB_UP=$?
+echo "== rollback up =="; docker ps -a --format '{{.Names}}' | grep -E '^[0-9a-f]+_browserai$' | xargs -r docker rm -f 2>/dev/null || true
+docker compose up -d --remove-orphans; RB_UP=$?
 sleep 20
 curl -fsS http://127.0.0.1:80/api/health; RB_H=$?; echo
 if [ $RB_BUILD -eq 0 ] && [ $RB_UP -eq 0 ] && [ $RB_H -eq 0 ]; then
@@ -540,7 +543,8 @@ echo '== pre git =='; git log -1 --oneline; git status --short
 echo '== pre containers =='; docker compose ps
 echo '== fetch/reset =='; git fetch origin main; FETCH=$?; git reset --hard origin/main; RESET=$?; git log -1 --oneline
 echo '== build =='; docker compose build > /tmp/repair-build.log 2>&1; BUILD=$?; if [ $BUILD -ne 0 ]; then echo 'Build FAIL, tail:'; tail -n 40 /tmp/repair-build.log; fi
-echo '== up =='; docker compose up -d; UP=$?
+echo '== up =='; docker ps -a --format '{{.Names}}' | grep -E '^[0-9a-f]+_browserai$' | xargs -r docker rm -f 2>/dev/null || true
+docker compose up -d --remove-orphans; UP=$?
 sleep 8
 echo '== health =='; curl -fsS http://127.0.0.1:80/api/health; H1=$?; echo
 echo '== containers =='; docker compose ps
@@ -553,7 +557,7 @@ chmod +x .repair-deploy.sh
 echo '== repair-deploy helper =='
 docker run -d --rm --name repair-deploy-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc /opt/browserai/.repair-deploy.sh
 echo 'Repair-deploy helper started'`,
-    restart: `cd ${shQuote(APP_DIR)} && echo '== restart helper ==' && docker run -d --rm --name restart-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc ${shQuote('docker compose restart browserai && sleep 5 && curl -fsS http://127.0.0.1:80/api/health && echo RESTART_OK || echo RESTART_FAIL')}; echo 'Restart helper started'`,
+    restart: `cd ${shQuote(APP_DIR)} && echo '== restart helper ==' && docker run -d --rm --name restart-helper --network host -v /var/run/docker.sock:/var/run/docker.sock -v ${shQuote(APP_DIR)}:${shQuote(APP_DIR)} -w ${shQuote(APP_DIR)} browserai:latest sh -lc ${shQuote(cleanupStaleCompose + 'docker compose up -d --remove-orphans browserai && sleep 5 && curl -fsS http://127.0.0.1:80/api/health && echo RESTART_OK || echo RESTART_FAIL')}; echo 'Restart helper started'`,
   }
   const command = commands[action]
   if (!command) throw new Error(`Action not implemented: ${service}.${action}`)

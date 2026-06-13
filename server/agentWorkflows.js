@@ -17,6 +17,15 @@ function clip(value, max = 24000) {
   const s = typeof value === 'string' ? value : JSON.stringify(value ?? null, null, 2)
   return s.length > max ? s.slice(0, max) + `\n…[truncated ${s.length - max} chars]` : s
 }
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0))) }
+function retryPolicyForStep(spec = {}) {
+  const r = spec.retry || {}
+  return {
+    attempts: Math.max(1, Math.min(5, Number(r.attempts || spec.attempts || 1))),
+    delayMs: Math.max(0, Math.min(60_000, Number(r.delayMs || r.delay_ms || 0))),
+    backoff: Math.max(1, Math.min(5, Number(r.backoff || 1))),
+  }
+}
 
 export const AUTOMATION_RECIPES = [
   {
@@ -27,7 +36,7 @@ export const AUTOMATION_RECIPES = [
     risk: 'safe',
     tags: ['ops', 'monitoring'],
     steps: [
-      { title: 'Check app health', kind: 'ops', service: 'browserai', action: 'health', safe: true },
+      { title: 'Check app health', kind: 'ops', service: 'browserai', action: 'health', safe: true, retry: { attempts: 2, delayMs: 5000 } },
       { title: 'Docker compose status', kind: 'ops', service: 'browserai', action: 'docker_ps', safe: true },
       { title: 'Git/deploy sync status', kind: 'ops', service: 'browserai', action: 'sync_check', safe: true },
     ],
@@ -43,7 +52,7 @@ export const AUTOMATION_RECIPES = [
     steps: [
       { title: 'Pre-deploy sync check', kind: 'ops', service: 'browserai', action: 'sync_check', safe: true },
       { title: 'Deploy with rollback', kind: 'ops', service: 'browserai', action: 'deploy_safe', confirm: true, nonIdempotent: true },
-      { title: 'Wait for healthy app', kind: 'ops', service: 'browserai', action: 'deploy_wait', safe: true, params: { timeout_sec: 90, interval_sec: 5 } },
+      { title: 'Wait for healthy app', kind: 'ops', service: 'browserai', action: 'deploy_wait', safe: true, params: { timeout_sec: 90, interval_sec: 5 }, retry: { attempts: 2, delayMs: 8000 } },
       { title: 'Post-deploy sync check', kind: 'ops', service: 'browserai', action: 'sync_check', safe: true },
     ],
   },
@@ -59,7 +68,7 @@ export const AUTOMATION_RECIPES = [
       { title: 'Initial health', kind: 'ops', service: 'browserai', action: 'health', safe: true },
       { title: 'Recent logs', kind: 'ops', service: 'browserai', action: 'docker_logs_recent', safe: true, params: { service: 'browserai', tail: 120 } },
       { title: 'Restart app container', kind: 'ops', service: 'browserai', action: 'restart', confirm: true, nonIdempotent: true },
-      { title: 'Wait for healthy app', kind: 'ops', service: 'browserai', action: 'deploy_wait', safe: true, params: { timeout_sec: 60, interval_sec: 5 } },
+      { title: 'Wait for healthy app', kind: 'ops', service: 'browserai', action: 'deploy_wait', safe: true, params: { timeout_sec: 60, interval_sec: 5 }, retry: { attempts: 2, delayMs: 8000 } },
       { title: 'Final docker status', kind: 'ops', service: 'browserai', action: 'docker_ps', safe: true },
     ],
   },
@@ -86,7 +95,7 @@ export const AUTOMATION_RECIPES = [
     steps: [
       { title: 'Repository status', kind: 'ops', service: 'github', action: 'repo_status', safe: true },
       { title: 'Recent Actions runs', kind: 'ops', service: 'github', action: 'actions_runs', safe: true, params: { limit: 8 } },
-      { title: 'Actions status', kind: 'ops', service: 'github', action: 'actions_status', safe: true, params: { limit: 8 } },
+      { title: 'Actions status', kind: 'ops', service: 'github', action: 'actions_status', safe: true, params: { limit: 8 }, retry: { attempts: 2, delayMs: 5000 } },
     ],
   },
   {
@@ -97,7 +106,7 @@ export const AUTOMATION_RECIPES = [
     risk: 'safe',
     tags: ['ops', 'diagnostic', 'github'],
     steps: [
-      { title: 'App health', kind: 'ops', service: 'browserai', action: 'health', safe: true },
+      { title: 'App health', kind: 'ops', service: 'browserai', action: 'health', safe: true, retry: { attempts: 2, delayMs: 5000 } },
       { title: 'Docker compose status', kind: 'ops', service: 'browserai', action: 'docker_ps', safe: true },
       { title: 'Recent app logs', kind: 'ops', service: 'browserai', action: 'docker_logs_recent', safe: true, params: { service: 'browserai', tail: 100 } },
       { title: 'Git/deploy sync status', kind: 'ops', service: 'browserai', action: 'sync_check', safe: true },
@@ -168,7 +177,7 @@ function recipePublic(r) {
   return {
     id: r.id, title: r.title, icon: r.icon, description: r.description,
     risk: r.risk, requiresConfirmation: Boolean(r.requiresConfirmation), tags: r.tags || [],
-    steps: (r.steps || []).map((s, i) => ({ idx: i + 1, title: s.title, kind: s.kind, tool: s.tool, service: s.service, action: s.action, safe: Boolean(s.safe) })),
+    steps: (r.steps || []).map((s, i) => ({ idx: i + 1, title: s.title, kind: s.kind, tool: s.tool, service: s.service, action: s.action, safe: Boolean(s.safe), retry: s.retry || null })),
   }
 }
 export function listAutomationRecipes() { return AUTOMATION_RECIPES.map(recipePublic) }
@@ -335,12 +344,24 @@ export function startWorkflow(workflowId) {
       for (const step of steps) {
         if (cancelled.has(workflowId)) break
         if (step.status === 'succeeded') continue
-        patchStep(step.id, { status: 'running', attempts: Number(step.attempts || 0) + 1, startedAt: step.startedAt || now(), error: '' })
-        workflow = getWorkflow(workflowId)
-        const out = await executeStep({ workflow, step: { ...step, status: 'running' } })
-        if (!out.ok) {
-          patchStep(step.id, { status: 'failed', result: out.result || {}, error: out.error || 'step failed', finishedAt: now() })
-          let failed = patchWorkflow(workflowId, { status: 'failed', error: `${step.title}: ${out.error || 'failed'}`, progress: Math.round(((step.idx - 1) / Math.max(steps.length, 1)) * 100), finishedAt: now() })
+        const spec = step.input || {}
+        const retry = retryPolicyForStep(spec)
+        let out = null
+        for (let attempt = Number(step.attempts || 0) + 1; attempt <= retry.attempts; attempt += 1) {
+          if (cancelled.has(workflowId)) break
+          patchStep(step.id, { status: 'running', attempts: attempt, startedAt: step.startedAt || now(), error: attempt > 1 ? `retry ${attempt}/${retry.attempts}` : '' })
+          workflow = getWorkflow(workflowId)
+          out = await executeStep({ workflow, step: { ...step, status: 'running' } })
+          if (out.ok) break
+          if (attempt < retry.attempts) {
+            const delay = Math.round(retry.delayMs * Math.pow(retry.backoff, attempt - 1))
+            patchStep(step.id, { status: 'running', result: { ...(out.result || {}), lastError: out.error, retrying: true, nextRetryInMs: delay }, error: `Retrying after error: ${out.error || 'step failed'}` })
+            if (delay) await sleep(delay)
+          }
+        }
+        if (!out?.ok) {
+          patchStep(step.id, { status: 'failed', result: out?.result || {}, error: out?.error || 'step failed', finishedAt: now() })
+          let failed = patchWorkflow(workflowId, { status: 'failed', error: `${step.title}: ${out?.error || 'failed'}`, progress: Math.round(((step.idx - 1) / Math.max(steps.length, 1)) * 100), finishedAt: now() })
           const report = renderWorkflowReport(failed)
           failed = patchWorkflow(workflowId, { result: { ...(failed?.result || {}), report } })
           await notifyWorkflowIfNeeded(failed)
@@ -375,7 +396,7 @@ export function retryWorkflow(workflowId) {
   const wf = getWorkflow(workflowId)
   if (!wf) return null
   if (!['failed', 'cancelled'].includes(wf.status)) return startWorkflow(workflowId)
-  db.prepare(`UPDATE agent_workflow_steps SET status='queued', error='', finished_at=NULL, updated_at=? WHERE workflow_id=? AND status IN ('failed','cancelled')`).run(now(), workflowId)
+  db.prepare(`UPDATE agent_workflow_steps SET status='queued', error='', attempts=0, finished_at=NULL, updated_at=? WHERE workflow_id=? AND status IN ('failed','cancelled')`).run(now(), workflowId)
   patchWorkflow(workflowId, { status: 'queued', error: '', finishedAt: null })
   return startWorkflow(workflowId)
 }

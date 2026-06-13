@@ -3057,6 +3057,16 @@ app.post('/api/incidents/:id/resolve', requireAuth, (req, res) => {
   res.json({ ok: true, incident: resolveIncident(req.params.id, { note: String(req.body?.note || '') }) })
 })
 
+app.post('/api/incidents/:id/diagnose', requireAuth, (req, res) => {
+  try {
+    const incident = getIncident(req.params.id)
+    if (!incident || (incident.userId && incident.userId !== req.user?.id)) return res.status(404).json({ error: 'incident not found' })
+    const recipeId = String(req.body?.recipeId || 'browserai_full_diagnostic')
+    const workflow = createIncidentWorkflow({ incident: { ...incident, userId: incident.userId || req.user?.id || '' }, recipeId, userId: req.user?.id || '', input: { manualDiagnose: true } })
+    res.json({ ok: true, incident: getIncident(req.params.id), workflow })
+  } catch (e) { res.status(400).json({ ok: false, error: e?.message || String(e), code: e?.code || 'ERROR' }) }
+})
+
 // ── Agent Automation Workflows ─────────────────────────────────────────────
 app.get('/api/agent/recipes', requireAuth, (_req, res) => {
   res.json({ recipes: listAutomationRecipes() })

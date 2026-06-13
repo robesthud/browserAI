@@ -75,6 +75,7 @@ export default function AgentInbox() {
     await refresh()
   }
   const resolveIncident = async (id) => { await api(`/api/incidents/${id}/resolve`, { method: 'POST', body: JSON.stringify({ note: 'resolved from Agent Inbox' }) }); await refresh() }
+  const diagnoseIncident = async (id) => { await api(`/api/incidents/${id}/diagnose`, { method: 'POST', body: JSON.stringify({ recipeId: 'browserai_full_diagnostic' }) }); await refresh() }
   const retryWorkflow = async (id) => { await api(`/api/agent/workflows/${id}/retry`, { method: 'POST' }); await refresh() }
   const cancelWorkflow = async (id) => { await api(`/api/agent/workflows/${id}/cancel`, { method: 'POST' }); await refresh() }
 
@@ -101,7 +102,10 @@ export default function AgentInbox() {
                 <div className="flex items-center justify-between gap-2"><span className="truncate text-cream-soft">{i.title}</span><Pill tone={i.severity === 'high' ? 'red' : i.severity === 'low' ? 'zinc' : 'amber'}>{i.severity}</Pill></div>
                 <div className="mt-1 text-[10px] text-cream-faint">{i.source} · {i.status}</div>
                 {i.workflowId && <div className="mt-1 truncate font-mono text-[10px] text-violet-200">wf: {i.workflowId}</div>}
-                <button onClick={() => void resolveIncident(i.id)} className="mt-2 rounded bg-emerald-500/15 px-2 py-1 text-[11px] text-emerald-100">resolve</button>
+                <div className="mt-2 flex gap-1.5">
+                  <button onClick={() => void diagnoseIncident(i.id)} className="rounded bg-violet-500/15 px-2 py-1 text-[11px] text-violet-100">diagnose</button>
+                  <button onClick={() => void resolveIncident(i.id)} className="rounded bg-emerald-500/15 px-2 py-1 text-[11px] text-emerald-100">resolve</button>
+                </div>
               </div>
             ))}
           </div>
