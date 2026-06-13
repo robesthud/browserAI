@@ -12,6 +12,13 @@ function parse(raw, fallback) { try { return JSON.parse(raw || '') } catch { ret
 
 export const OPERATOR_MISSION_TYPES = [
   {
+    id: 'universal_dev_task',
+    title: 'Universal developer task',
+    icon: '🧠',
+    description: 'Одна кнопка для любой задачи разработки: агент сам выбирает путь — кодинг, диагностика, деплой, CI, исследование.',
+    risk: 'agent',
+  },
+  {
     id: 'full_diagnostic',
     title: 'Full diagnostic',
     icon: '🔎',
@@ -130,30 +137,35 @@ function rowToMission(r) {
   return mission
 }
 
-function ensureDefaultProject(userId = '') {
+function ensureDefaultProject() {
   initOperatorMode()
-  const existing = db.prepare(`SELECT * FROM operator_projects WHERE user_id=? AND id='browserai'`).get(String(userId || ''))
-  if (existing) return rowToProject(existing)
+  const existing = db.prepare(`SELECT * FROM operator_projects WHERE id='browserai'`).get()
+  if (existing) {
+    if (existing.user_id !== '') {
+      db.prepare(`UPDATE operator_projects SET user_id='', updated_at=? WHERE id='browserai'`).run(now())
+      return rowToProject(db.prepare(`SELECT * FROM operator_projects WHERE id='browserai'`).get())
+    }
+    return rowToProject(existing)
+  }
   const ts = now()
   db.prepare(`INSERT OR IGNORE INTO operator_projects (id,user_id,name,repo,local_path,production_path,default_branch,meta_json,created_at,updated_at)
-    VALUES ('browserai',?,?,?,?,?,?,?, ?, ?)`).run(
-    String(userId || ''),
+    VALUES ('browserai','',?,?,?,?,?,?,?,?)`).run(
     'BrowserAI',
     process.env.GITHUB_REPO || 'robesthud/browserAI',
     '/workspace/projects/browserAI',
     process.env.OPS_APP_DIR || '/opt/browserai',
     'main',
-    JSON.stringify({ role: 'primary-self-project', operatorMode: true }),
+    JSON.stringify({ role: 'primary-self-project', operatorMode: true, global: true }),
     ts,
     ts,
   )
-  return rowToProject(db.prepare(`SELECT * FROM operator_projects WHERE user_id=? AND id='browserai'`).get(String(userId || '')))
+  return rowToProject(db.prepare(`SELECT * FROM operator_projects WHERE id='browserai'`).get())
 }
 
 export function listOperatorProjects({ userId = '' } = {}) {
   initOperatorMode()
   ensureDefaultProject(userId)
-  return db.prepare('SELECT * FROM operator_projects WHERE user_id=? ORDER BY updated_at DESC').all(String(userId || '')).map(rowToProject)
+  return db.prepare(`SELECT * FROM operator_projects WHERE user_id=? OR user_id='' ORDER BY updated_at DESC`).all(String(userId || '')).map(rowToProject)
 }
 
 export function upsertOperatorProject({ userId = '', id: projectId = '', name = '', repo = '', localPath = '', productionPath = '', defaultBranch = 'main', meta = {} } = {}) {
@@ -197,17 +209,41 @@ export function listOperatorMissions({ userId = '', limit = 30 } = {}) {
   return db.prepare('SELECT * FROM operator_missions WHERE user_id=? ORDER BY updated_at DESC LIMIT ?').all(String(userId || ''), max).map(rowToMission)
 }
 
+
+export function classifyOperatorGoal(goal = '') {
+  const text = String(goal || '').toLowerCase()
+  const has = (...words) => words.some((w) => text.includes(w))
+  const wantsDeploy = has('деплой', 'депол', 'deploy', 'разверни', 'задеплой', 'production')
+  const wantsFixDeploy = wantsDeploy && has('ошиб', 'слом', 'падает', 'почини', 'fix', 'error', 'failed', 'логи', 'logs')
+  const wantsRestart = has('restart', 'перезапусти', 'self-heal', 'self heal')
+  const wantsCi = has('ci', 'github actions', 'workflow failed', 'actions failed')
+  const wantsDiagnostic = has('диагност', 'проверь', 'health', 'логи', 'logs', 'статус', 'status', 'почему')
+  const wantsProdWrite = wantsDeploy && !wantsFixDeploy && has('задеплой', 'deploy', 'разверни')
+  if (wantsRestart) return { route: 'self_heal_restart', reason: 'restart/self-heal requested', requiresConfirmation: true }
+  if (wantsProdWrite) return { route: 'safe_deploy', reason: 'production deploy requested', requiresConfirmation: true }
+  if (wantsFixDeploy) return { route: 'fix_deploy', reason: 'deploy failure investigation requested' }
+  if (wantsCi) return { route: 'full_diagnostic', reason: 'CI/GitHub status requested' }
+  if (wantsDiagnostic) return { route: 'full_diagnostic', reason: 'diagnostic/status requested' }
+  return { route: 'custom_agent', reason: 'general development/operator task' }
+}
+
 function operatorSystemPrompt(project, missionType) {
   return [
     '[operator-mode]',
-    'You are BrowserAI Operator Mode: act like a senior developer/operator agent.',
-    'Work until the task is actually done, not merely described.',
-    'Mandatory loop: inspect → plan → change via tools → verify → deploy/follow logs when requested → report.',
-    'Never claim success without tool evidence. Use workflows/ops tools for production actions and ask for approval when policy requires it.',
+    'You are BrowserAI Operator Mode: act like a senior developer/operator agent similar to Arena Agent Mode.',
+    'Your job is to complete software engineering and DevOps tasks end-to-end, not just advise.',
+    'Mandatory loop: inspect → understand architecture → plan → act with tools → verify → deploy/follow logs if requested → fix failures → final report.',
+    'For coding: read before edit, apply patches with tools, run verify_code/verify_task/npm_test/build, run secret_scan before commit/deploy.',
+    'For deploy/production: prefer ops workflows, read logs, wait for health, use rollback-safe actions, and require approval when policy requires it.',
+    'For unknown tasks: discover first; do not ask user unless blocked by missing credentials/decision/risky production action.',
+    'Never claim success without tool evidence. If a tool fails, diagnose and retry with a different safe approach.',
     `Project: ${project?.name || 'BrowserAI'} (${project?.repo || ''})`,
+    `Repository: ${project?.repo || ''}`,
+    `Workspace/project path: ${project?.localPath || '/workspace/projects/browserAI'}`,
     `Production path: ${project?.productionPath || '/opt/browserai'}`,
+    `Default branch: ${project?.defaultBranch || 'main'}`,
     `Mission type: ${missionType}`,
-    'If blocked, produce a precise blocker and next action instead of hallucinating completion.',
+    'Final answer must include: what changed/checked, commands/tools run, verification result, deploy/log status, and any next actions.',
     '[/operator-mode]',
   ].join('\n')
 }
@@ -215,7 +251,13 @@ function operatorSystemPrompt(project, missionType) {
 export function startOperatorMission({ userId = '', projectId = 'browserai', type = 'full_diagnostic', goal = '', confirm = false } = {}) {
   initOperatorMode()
   const project = listOperatorProjects({ userId }).find((p) => p.id === projectId) || ensureDefaultProject(userId)
-  const missionType = OPERATOR_MISSION_TYPES.find((m) => m.id === type) || OPERATOR_MISSION_TYPES[0]
+  let effectiveType = String(type || 'universal_dev_task')
+  let routeInfo = null
+  if (effectiveType === 'universal_dev_task') {
+    routeInfo = classifyOperatorGoal(goal)
+    effectiveType = routeInfo.route
+  }
+  const missionType = OPERATOR_MISSION_TYPES.find((m) => m.id === effectiveType) || OPERATOR_MISSION_TYPES[0]
   if (missionType.requiresConfirmation && confirm !== true) {
     const err = new Error(`Mission ${type} requires confirmation`)
     err.code = 'CONFIRM_REQUIRED'
@@ -234,12 +276,12 @@ export function startOperatorMission({ userId = '', projectId = 'browserai', typ
         userId,
         chatId: '',
         recipeId: missionType.recipeId,
-        input: { operatorMissionId: missionId, project, goal, notifyTelegram: missionType.risk === 'production-write' },
+        input: { operatorMissionId: missionId, project, goal, routeInfo, notifyTelegram: missionType.risk === 'production-write' },
         confirm,
         source: 'operator',
       })
       startWorkflow(wf.id)
-      return patchMission(missionId, { status: 'running', workflowId: wf.id, result: { workflowId: wf.id } })
+      return patchMission(missionId, { status: 'running', workflowId: wf.id, result: { workflowId: wf.id, routeInfo } })
     }
 
     const provider = getActiveKeyDecrypted(null)
@@ -253,12 +295,12 @@ export function startOperatorMission({ userId = '', projectId = 'browserai', typ
       input: {
         prompt,
         history: [{ role: 'user', content: prompt }],
-        extraSystem: operatorSystemPrompt(project, missionType.id),
+        extraSystem: [operatorSystemPrompt(project, missionType.id), routeInfo ? `\n[operator-route] ${JSON.stringify(routeInfo)} [/operator-route]` : ''].filter(Boolean).join('\n'),
         provider: { baseUrl: provider.baseUrl, model: provider.model, authType: provider.authType, authHeader: provider.authHeader, extraHeaders: provider.extraHeaders, temperature: 0.2 },
       },
     })
     startJob(job.id)
-    return patchMission(missionId, { status: 'running', jobId: job.id, result: { jobId: job.id } })
+    return patchMission(missionId, { status: 'running', jobId: job.id, result: { jobId: job.id, routeInfo } })
   } catch (e) {
     return patchMission(missionId, { status: 'failed', error: e?.message || String(e), finishedAt: now() })
   }
@@ -283,4 +325,4 @@ export async function getOperatorStatus({ userId = '' } = {}) {
   }
 }
 
-export default { initOperatorMode, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorStatus }
+export default { initOperatorMode, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorStatus, classifyOperatorGoal }
