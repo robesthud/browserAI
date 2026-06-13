@@ -7,6 +7,7 @@ import AgentThought from './AgentThought.jsx'
 import AgentAskUser from './AgentAskUser.jsx'
 import AutomationCenter from './AutomationCenter.jsx'
 import AgentInbox from './AgentInbox.jsx'
+import AgentControlPlanePanel from './AgentControlPlanePanel.jsx'
 
 function JsonBlock({ data }) {
   if (!data) return null
@@ -127,6 +128,8 @@ export default function AgentAdmin() {
       </header>
 
       <main className="mx-auto max-w-5xl space-y-4 px-4 py-5">
+        <AgentControlPlanePanel />
+
         <AgentInbox />
 
         <AutomationCenter />

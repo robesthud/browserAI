@@ -78,6 +78,7 @@ import { createJob, getJob, initJobs, listJobs, startJob, cancelJob, retryJob, r
 import { initAgentWorkflows, listAutomationRecipes, createWorkflow, startWorkflow, getWorkflow, listWorkflows, cancelWorkflow, retryWorkflow } from './agentWorkflows.js'
 import { getAutomationPolicy, listAutomationPolicyEvents } from './automationPolicy.js'
 import { initIncidents, listIncidents, getIncident, resolveIncident, createIncident, createIncidentWorkflow } from './incidents.js'
+import { getAgentControlPlane } from './agentControlPlane.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
@@ -3074,6 +3075,10 @@ app.get('/api/agent/recipes', requireAuth, (_req, res) => {
 
 app.get('/api/agent/policy', requireAuth, (req, res) => {
   res.json({ policy: getAutomationPolicy(), events: listAutomationPolicyEvents({ userId: req.user?.id || '', limit: Number(req.query.limit || 50) }) })
+})
+
+app.get('/api/agent/control-plane', requireAuth, (req, res) => {
+  res.json({ controlPlane: getAgentControlPlane({ userId: req.user?.id || '' }) })
 })
 
 app.get('/api/agent/workflows', requireAuth, (req, res) => {
