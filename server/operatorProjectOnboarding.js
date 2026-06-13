@@ -6,6 +6,7 @@ import { buildProjectProfile } from './projectProfiler.js'
 import { withWorkspaceScope } from './workspace.js'
 import { upsertOperatorProject } from './operatorMode.js'
 import { writeRunbook } from './operatorRunbooks.js'
+import { bestProjectTemplate, matchProjectTemplates, mergeTemplateCommands } from './operatorProjectTemplates.js'
 
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || (fsSync.existsSync('/workspace') ? '/workspace' : path.join(process.cwd(), 'workspace'))
 const PROJECTS_ROOT = path.join(WORKSPACE_ROOT, 'projects')
@@ -90,6 +91,10 @@ Generated: ${new Date().toISOString()}
 - Production path: \`${project.productionPath || ''}\`
 - Default branch: \`${project.defaultBranch || 'main'}\`
 
+## Template
+
+- Template: ${project.meta?.template?.label || project.meta?.template?.id || 'auto'}
+
 ## Detected stack
 
 - Stack: ${(profile.stack || []).join(', ') || 'unknown'}
@@ -131,12 +136,17 @@ export async function analyzeOperatorProject({ userId = '', repo = '', id = '', 
   const relRoot = path.relative(WORKSPACE_ROOT, target).replace(/\\/g, '/')
   const profile = await withWorkspaceScope('', () => buildProjectProfile({ preferredRoot: relRoot }))
   const rootAbs = path.join(WORKSPACE_ROOT, profile.root || relRoot)
-  const commands = inferCommands({ profile, rootAbs })
+  const inferredCommands = inferCommands({ profile, rootAbs })
+  const matchedTemplates = matchProjectTemplates(profile)
+  const template = bestProjectTemplate(profile)
+  const commands = mergeTemplateCommands(inferredCommands, template, profile.packageManager)
   const pkg = profile.packageJson ? await readJson(path.join(WORKSPACE_ROOT, profile.packageJson)) : null
   const healthUrl = 'http://127.0.0.1/api/health'
   const meta = {
     analyzedAt: new Date().toISOString(),
     profile,
+    template: template ? { id: template.id, label: template.label, score: template.score, notes: template.notes || [] } : null,
+    matchedTemplates: matchedTemplates.map((t) => ({ id: t.id, label: t.label, score: t.score })),
     package: pkg ? { name: pkg.name, version: pkg.version, scripts: pkg.scripts || {} } : null,
     commands,
     deploy: { recipe: 'browserai_deploy_safe', healthUrl, productionPath: productionPath || '' },
@@ -148,7 +158,7 @@ export async function analyzeOperatorProject({ userId = '', repo = '', id = '', 
   if (generateRunbook) {
     runbook = await writeRunbook(`project-${projectId}.md`, generateProjectRunbook({ project, profile, commands }))
   }
-  return { project, profile, commands, runbook }
+  return { project, profile, commands, template: meta.template, matchedTemplates: meta.matchedTemplates, runbook }
 }
 
 export default { analyzeOperatorProject, inferCommands, generateProjectRunbook }

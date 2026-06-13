@@ -83,6 +83,7 @@ import { initOperatorMode, getOperatorStatus, listOperatorProjects, upsertOperat
 import { initDeploySessions, createDeploySession, getDeploySession, listDeploySessions, startDeploySession, cancelDeploySession, resumeDeploySession } from './deploySessions.js'
 import { listRunbooks, readRunbook, writeRunbook, appendLesson } from './operatorRunbooks.js'
 import { analyzeOperatorProject } from './operatorProjectOnboarding.js'
+import { PROJECT_TEMPLATES } from './operatorProjectTemplates.js'
 import { getOperatorReport, saveOperatorReport, sendOperatorReportTelegram } from './operatorReports.js'
 import { initNotifications, listNotifications, notificationSummary, markNotificationRead, markAllNotificationsRead } from './notifications.js'
 import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr, reviewOperatorCodeTask, cancelOperatorCodeTask, resumeOperatorCodeTask } from './operatorCode.js'
@@ -3181,6 +3182,10 @@ app.post('/api/operator/lessons', requireAuth, async (req, res) => {
 
 app.get('/api/operator/projects', requireAuth, (req, res) => {
   res.json({ projects: listOperatorProjects({ userId: req.user?.id || '' }) })
+})
+
+app.get('/api/operator/project-templates', requireAuth, (_req, res) => {
+  res.json({ templates: PROJECT_TEMPLATES })
 })
 
 app.post('/api/operator/projects', requireAuth, (req, res) => {

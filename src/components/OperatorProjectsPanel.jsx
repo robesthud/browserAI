@@ -32,14 +32,16 @@ function formFromProject(p = {}) {
 
 export default function OperatorProjectsPanel() {
   const [projects, setProjects] = useState([])
+  const [templates, setTemplates] = useState([])
   const [form, setForm] = useState(empty)
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(false)
 
   const refresh = async () => {
     try {
-      const data = await api('/api/operator/projects')
+      const [data, tpl] = await Promise.all([api('/api/operator/projects'), api('/api/operator/project-templates').catch(() => ({ templates: [] }))])
       setProjects(data.projects || [])
+      setTemplates(tpl.templates || [])
       if ((data.projects || []).length) setForm(formFromProject(data.projects[0]))
       setError('')
     } catch (e) { setError(e.message || String(e)) }
@@ -87,6 +89,18 @@ export default function OperatorProjectsPanel() {
       <div className="mb-3 flex flex-wrap gap-2">
         {projects.map((p) => <button key={p.id} onClick={() => setForm(formFromProject(p))} className="rounded border border-white/10 px-2 py-1 text-[11px] text-cream-soft hover:bg-white/5">{p.name}</button>)}
       </div>
+      <div className="mb-3 rounded-xl border border-white/10 bg-black/15 p-3">
+        <div className="mb-2 text-[12px] font-medium text-cream">Templates / presets</div>
+        <div className="flex flex-wrap gap-1.5">
+          {templates.map((t) => <button key={t.id} type="button" onClick={() => {
+            set('installCommand', t.commands?.install || '')
+            set('testCommand', t.commands?.test || '')
+            set('buildCommand', t.commands?.build || '')
+            set('lintCommand', t.commands?.lint || '')
+          }} className="rounded border border-white/10 px-2 py-1 text-[11px] text-cream-soft hover:bg-white/5" title={(t.notes || []).join(' | ')}>{t.label}</button>)}
+        </div>
+      </div>
+
       <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
         {[['id','ID'],['name','Name'],['repo','GitHub repo / URL'],['localPath','Workspace path'],['productionPath','Production path'],['defaultBranch','Default branch'],['branchPrefix','Branch prefix'],['healthUrl','Health URL'],['deployRecipe','Deploy recipe'],['installCommand','Install command'],['testCommand','Test command'],['buildCommand','Build command'],['lintCommand','Lint command']].map(([key,label]) => (
           <label key={key} className="text-[11px] text-cream-faint">{label}

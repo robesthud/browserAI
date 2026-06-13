@@ -1194,6 +1194,14 @@ export const TOOLS = {
     },
   },
 
+  operator_list_project_templates: {
+    description: 'List built-in Operator project templates/presets for Node, Python, Go, Rust, Docker Compose, static sites, etc.',
+    params: {},
+    handler: async () => {
+      try { const { PROJECT_TEMPLATES } = await import('./operatorProjectTemplates.js'); return ok({ templates: PROJECT_TEMPLATES }) } catch (e) { return err(e.message) }
+    },
+  },
+
   operator_analyze_project: {
     description: 'Onboard/analyze any GitHub repository for Operator Mode: clone/fetch, detect stack, infer commands, save project config, generate project runbook.',
     params: {

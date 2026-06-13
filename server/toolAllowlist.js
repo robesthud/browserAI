@@ -1,7 +1,7 @@
 const COMMON_AGENT_TOOLS = [
   'plan_set', 'plan_check', 'ask_user', 'read_project_rules', 'project_profile', 'secret_scan', 'workspace_snapshot_list',
   'recall_facts', 'remember_fact', 'forget_fact', 'kb_search', 'kb_list', 'kb_add', 'kb_delete',
-  'operator_status', 'operator_project_profile', 'operator_analyze_project', 'operator_list_runbooks', 'operator_read_runbook', 'operator_update_runbook', 'operator_append_lesson', 'operator_start_mission', 'operator_get_report', 'operator_send_report', 'operator_list_missions', 'operator_get_mission', 'operator_review_code_task', 'operator_finalize_code_task', 'operator_wait_code_task_ci', 'operator_auto_fix_code_task_ci', 'operator_merge_code_task_pr',
+  'operator_status', 'operator_project_profile', 'operator_list_project_templates', 'operator_analyze_project', 'operator_list_runbooks', 'operator_read_runbook', 'operator_update_runbook', 'operator_append_lesson', 'operator_start_mission', 'operator_get_report', 'operator_send_report', 'operator_list_missions', 'operator_get_mission', 'operator_review_code_task', 'operator_finalize_code_task', 'operator_wait_code_task_ci', 'operator_auto_fix_code_task_ci', 'operator_merge_code_task_pr',
 ]
 
 export const TOOL_PROFILES = {
