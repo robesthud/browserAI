@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
+import AdmZip from 'adm-zip'
 import db from './db.js'
 import { createJob, getJob, startJob } from './jobs.js'
 import { getActiveKeyDecrypted } from './db.js'
@@ -44,19 +45,62 @@ async function githubJson(path, { method = 'GET', body = null } = {}) {
   return data
 }
 
+async function githubFetch(path, { method = 'GET', body = null, accept = 'application/vnd.github+json' } = {}) {
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || ''
+  if (!token) throw new Error('GITHUB_TOKEN is not configured')
+  const r = await fetch(`https://api.github.com${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: accept,
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+    signal: AbortSignal.timeout(90_000),
+  })
+  if (!r.ok) {
+    const text = await r.text().catch(() => '')
+    throw new Error(`GitHub ${r.status}: ${clip(text, 1000)}`)
+  }
+  return r
+}
+
+async function summarizeWorkflowLogs(repo, runId, maxChars = 18000) {
+  try {
+    const r = await githubFetch(`/repos/${repo}/actions/runs/${runId}/logs`, { accept: 'application/zip' })
+    const buf = Buffer.from(await r.arrayBuffer())
+    const zip = new AdmZip(buf)
+    const chunks = []
+    for (const entry of zip.getEntries().slice(0, 25)) {
+      if (entry.isDirectory) continue
+      const text = entry.getData().toString('utf8')
+      const interesting = text.split('\n').filter((line) => /error|failed|failure|exception|fatal|✖|ERR!/i.test(line)).slice(-120).join('\n')
+      chunks.push(`===== ${entry.entryName} =====\n${clip(interesting || text, 3500)}`)
+    }
+    return clip(chunks.join('\n\n'), maxChars)
+  } catch (e) {
+    return `Unable to fetch workflow logs: ${e.message}`
+  }
+}
+
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || '/workspace'
 const PROJECTS_ROOT = path.join(WORKSPACE_ROOT, 'projects')
 
 function run(command, { cwd = WORKSPACE_ROOT, timeoutMs = 10 * 60_000 } = {}) {
   return new Promise((resolve) => {
-    const p = spawn('sh', ['-lc', command], { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
-    const out = []; const err = []
+    const proc = spawn('sh', ['-lc', command], { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    const out = []
+    const err = []
     let killed = false
-    const t = setTimeout(() => { killed = true; try { p.kill('SIGKILL') } catch { /* already exited */ } }, timeoutMs)
-    p.stdout.on('data', (c) => out.push(c))
-    p.stderr.on('data', (c) => err.push(c))
-    p.on('close', (code) => { clearTimeout(t); resolve({ exitCode: killed ? 124 : (code ?? 1), stdout: clip(Buffer.concat(out).toString()), stderr: clip(Buffer.concat(err).toString()) + (killed ? '\n[killed by timeout]' : '') }) })
-    p.on('error', (e) => { clearTimeout(t); resolve({ exitCode: 1, stdout: '', stderr: e.message }) })
+    const timer = setTimeout(() => { killed = true; try { proc.kill('SIGKILL') } catch { /* already exited */ } }, timeoutMs)
+    proc.stdout.on('data', (c) => out.push(c))
+    proc.stderr.on('data', (c) => err.push(c))
+    proc.on('close', (code) => {
+      clearTimeout(timer)
+      resolve({ exitCode: killed ? 124 : (code ?? 1), stdout: clip(Buffer.concat(out).toString()), stderr: clip(Buffer.concat(err).toString()) + (killed ? '\n[killed by timeout]' : '') })
+    })
+    proc.on('error', (e) => { clearTimeout(timer); resolve({ exitCode: 1, stdout: '', stderr: e.message }) })
   })
 }
 
@@ -289,6 +333,61 @@ export function renderCodeTaskReport(task, verify = task?.verify || {}) {
 }
 
 
+
+export async function waitOperatorCodeTaskCi({ taskId = '', timeoutSec = 900, intervalSec = 15 } = {}) {
+  initOperatorCode()
+  let task = getOperatorCodeTask(taskId)
+  if (!task) throw new Error('code task not found')
+  const repo = repoSlug(task.repo)
+  const branch = task.result?.finalize?.branch || task.branch
+  const commit = task.result?.finalize?.commit || ''
+  if (!repo || !branch) throw new Error('code task has no repo/branch to watch')
+  const deadline = Date.now() + Math.max(30, Number(timeoutSec) || 900) * 1000
+  const interval = Math.max(5, Math.min(60, Number(intervalSec) || 15)) * 1000
+  let lastRuns = []
+  let iterations = 0
+  patchTask(task.id, { result: { ...(task.result || {}), ci: { status: 'waiting', branch, commit, startedAt: new Date().toISOString() } } })
+
+  while (Date.now() < deadline) {
+    iterations += 1
+    const qs = new URLSearchParams({ branch, per_page: '20' })
+    const data = await githubJson(`/repos/${repo}/actions/runs?${qs}`)
+    lastRuns = (data.workflow_runs || []).filter((r) => !commit || String(r.head_sha || '').startsWith(commit.slice(0, 12)) || r.head_branch === branch)
+    if (lastRuns.length > 0 && lastRuns.every((r) => r.status === 'completed')) {
+      const ok = lastRuns.every((r) => r.conclusion === 'success' || r.conclusion === 'skipped')
+      const failed = lastRuns.filter((r) => !(r.conclusion === 'success' || r.conclusion === 'skipped'))
+      const logs = failed[0] ? await summarizeWorkflowLogs(repo, failed[0].id) : ''
+      const ci = {
+        status: ok ? 'succeeded' : 'failed', ok, branch, commit, iterations,
+        runs: lastRuns.map((r) => ({ id: r.id, name: r.name, status: r.status, conclusion: r.conclusion, url: r.html_url, sha: r.head_sha?.slice(0, 12), branch: r.head_branch })),
+        failedLogs: logs,
+        finishedAt: new Date().toISOString(),
+      }
+      const result = { ...(getOperatorCodeTask(task.id)?.result || {}), ci }
+      patchTask(task.id, { status: ok ? 'succeeded' : 'failed', result, error: ok ? '' : 'CI failed', finishedAt: ok ? (getOperatorCodeTask(task.id)?.finishedAt || now()) : now() })
+      if (!ok) {
+        try {
+          const { createIncident } = await import('./incidents.js')
+          createIncident({
+            userId: task.userId,
+            source: 'operator.ci',
+            severity: 'high',
+            title: `Operator PR CI failed: ${task.goal.slice(0, 120)}`,
+            fingerprint: `operator-ci-${repo}-${branch}-${commit || 'latest'}`,
+            details: { codeTaskId: task.id, repo, branch, commit, ci },
+          })
+        } catch { /* best-effort */ }
+      }
+      return getOperatorCodeTask(task.id)
+    }
+    patchTask(task.id, { result: { ...(getOperatorCodeTask(task.id)?.result || {}), ci: { status: 'waiting', branch, commit, iterations, runsSeen: lastRuns.length, updatedAt: new Date().toISOString() } } })
+    await new Promise((r) => setTimeout(r, interval))
+  }
+  const ci = { status: 'timeout', ok: false, branch, commit, iterations, runs: lastRuns.map((r) => ({ id: r.id, name: r.name, status: r.status, conclusion: r.conclusion, url: r.html_url })), finishedAt: new Date().toISOString() }
+  patchTask(task.id, { status: 'failed', result: { ...(getOperatorCodeTask(task.id)?.result || {}), ci }, error: 'CI wait timed out', finishedAt: now() })
+  return getOperatorCodeTask(task.id)
+}
+
 export async function finalizeOperatorCodeTask({ taskId = '', commitMessage = '', push = true, createPr = true, prTitle = '', prBody = '' } = {}) {
   initOperatorCode()
   let task = getOperatorCodeTask(taskId)
@@ -366,4 +465,4 @@ export async function finalizeOperatorCodeTask({ taskId = '', commitMessage = ''
   return getOperatorCodeTask(task.id)
 }
 
-export default { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask }
+export default { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi }

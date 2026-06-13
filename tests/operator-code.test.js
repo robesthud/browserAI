@@ -24,5 +24,6 @@ describe('operator code pipeline', () => {
     const report = renderCodeTaskReport({ id: 'code-1', goal: 'add button', repo: 'owner/repo', branch: 'operator/x', workdir: '/workspace/projects/repo' }, { passed: true, results: [{ name: 'npm test', ok: true, exitCode: 0 }] })
     expect(report).toContain('Code Operator task verified')
     expect(report).toContain('npm test')
+    expect(report).toContain('Branch: operator/x')
   })
 })

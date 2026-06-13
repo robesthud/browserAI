@@ -1248,6 +1248,21 @@ export const TOOLS = {
     },
   },
 
+  operator_wait_code_task_ci: {
+    description: 'Wait for GitHub Actions CI for an Operator Code Task branch/PR. On failure, fetches summarized workflow logs and creates an incident.',
+    params: {
+      id: { type: 'string', required: true, description: 'Operator code task id.' },
+      timeout_sec: { type: 'number', optional: true, description: 'Max wait seconds. Default 900.' },
+      interval_sec: { type: 'number', optional: true, description: 'Polling interval seconds. Default 15.' },
+    },
+    handler: async ({ id, timeout_sec = 900, interval_sec = 15 } = {}) => {
+      try {
+        const { waitOperatorCodeTaskCi } = await import('./operatorCode.js')
+        return ok(await waitOperatorCodeTaskCi({ taskId: id, timeoutSec: timeout_sec, intervalSec: interval_sec }))
+      } catch (e) { return err(e.message) }
+    },
+  },
+
   // ── Ops tools ─────────────────────────────────────────────────────────────
   ops_list_services: {
     description: 'List available deployment / ops services (GitHub, Timeweb, etc).',
