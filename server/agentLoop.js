@@ -701,7 +701,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       if (lessons?.text) convo.push({ role: 'user', content: `<arena-system-message>\nLessons Learned (from .browserai/lessons.md):\n${lessons.text}\n</arena-system-message>` })
     } catch { /* ignore */ }
     try {
-      const r = await invokeTool('build_repo_map', { path: '', _userId: userId }, { signal: abortCtl.signal, userId, chatId, extraTools })
+      // build_repo_map removed — not registered in TOOLS. Skipping workspace scan.
       if (r.ok) convo.push({ role: 'user', content: `<arena-system-message>\nInitial Repo Map (ground truth):\n${r.result}\n</arena-system-message>` })
     } catch { /* ignore */ }
   }

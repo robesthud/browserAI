@@ -19,6 +19,9 @@ import { addDocument, deleteDocument, listDocuments, searchKnowledge } from './k
 import { fetchViaProxy, isGoogleGenerativeNativeUrl } from './llmClient.js'
 import { writeFile as fsWriteFile, readFile as fsReadFile, mkdir as fsMkdir } from 'node:fs/promises'
 import path from 'node:path'
+import { browserOpen, browserScreenshot, browserClick, browserType, browserClose } from './browserTools.js'
+import { computerScreenshot, computerClick, computerType, computerOpenApp, computerStatus } from './computerUse.js'
+import { listOpsServices, runOpsAction } from './ops.js'
 
 function safeJsonParse(text) { try { return JSON.parse(text) } catch { return null } }
 
@@ -753,12 +756,135 @@ export const TOOLS = {
 
 }
 
+
+  // ── Browser tools (headless Playwright) ───────────────────────────────────
+  browser_open: {
+    description: 'Open a URL in a headless browser and return page summary + screenshot. Use for scraping or verifying deployed pages.',
+    params: {
+      url: { type: 'string', required: true, description: 'Full URL starting with http:// or https://' },
+      waitMs: { type: 'number', optional: true, description: 'Wait after page load (ms), default 1500.' },
+      screenshot: { type: 'boolean', optional: true, description: 'Take screenshot, default true.' },
+    },
+    handler: async ({ url, waitMs = 1500, screenshot = true }) => {
+      try { return ok(await browserOpen({ url, waitMs, screenshot })) } catch (e) { return err(e.message) }
+    },
+  },
+  browser_screenshot: {
+    description: 'Take a screenshot of an existing browser session.',
+    params: {
+      sessionId: { type: 'string', required: true, description: 'Session ID returned by browser_open.' },
+      path: { type: 'string', optional: true, description: 'Optional workspace path to save the screenshot.' },
+    },
+    handler: async ({ sessionId, path: relPath = '' }) => {
+      try { return ok(await browserScreenshot({ sessionId, path: relPath })) } catch (e) { return err(e.message) }
+    },
+  },
+  browser_click: {
+    description: 'Click an element in the browser (by CSS selector or text).',
+    params: {
+      sessionId: { type: 'string', required: true, description: 'Session ID.' },
+      selector: { type: 'string', optional: true, description: 'CSS selector.' },
+      text: { type: 'string', optional: true, description: 'Text to find and click.' },
+      waitMs: { type: 'number', optional: true, description: 'Wait after click (ms).' },
+    },
+    handler: async ({ sessionId, selector = '', text = '', waitMs = 1000 }) => {
+      try { return ok(await browserClick({ sessionId, selector, text, waitMs })) } catch (e) { return err(e.message) }
+    },
+  },
+  browser_type: {
+    description: 'Type text into a form field in the browser.',
+    params: {
+      sessionId: { type: 'string', required: true, description: 'Session ID.' },
+      selector: { type: 'string', required: true, description: 'CSS selector of input.' },
+      text: { type: 'string', required: true, description: 'Text to type.' },
+      pressEnter: { type: 'boolean', optional: true, description: 'Press Enter after typing.' },
+      waitMs: { type: 'number', optional: true, description: 'Wait after type (ms).' },
+    },
+    handler: async ({ sessionId, selector, text, pressEnter = false, waitMs = 1000 }) => {
+      try { return ok(await browserType({ sessionId, selector, text, pressEnter, waitMs })) } catch (e) { return err(e.message) }
+    },
+  },
+  browser_close: {
+    description: 'Close a browser session.',
+    params: {
+      sessionId: { type: 'string', required: true, description: 'Session ID.' },
+    },
+    handler: async ({ sessionId }) => {
+      try { return ok(await browserClose({ sessionId })) } catch (e) { return err(e.message) }
+    },
+  },
+
+  // ── Computer Use tools (VNC desktop) ──────────────────────────────────────
+  computer_screenshot: {
+    description: 'Take a screenshot of the virtual X11 desktop (computer-sandbox).',
+    params: {},
+    handler: async () => {
+      try { return ok(await computerScreenshot()) } catch (e) { return err(e.message) }
+    },
+  },
+  computer_click: {
+    description: 'Click at coordinates (x, y) on the virtual desktop.',
+    params: {
+      x: { type: 'number', required: true },
+      y: { type: 'number', required: true },
+      button: { type: 'string', optional: true, description: 'left|middle|right, default left.' },
+    },
+    handler: async ({ x, y, button = 'left' }) => {
+      try { return ok(await computerClick({ x, y, button })) } catch (e) { return err(e.message) }
+    },
+  },
+  computer_type: {
+    description: 'Type text on the virtual desktop.',
+    params: { text: { type: 'string', required: true } },
+    handler: async ({ text }) => {
+      try { return ok(await computerType({ text })) } catch (e) { return err(e.message) }
+    },
+  },
+  computer_open_app: {
+    description: 'Open an app (firefox, terminal) on the virtual desktop.',
+    params: {
+      name: { type: 'string', required: true, description: 'firefox or terminal.' },
+      url: { type: 'string', optional: true, description: 'URL for firefox.' },
+    },
+    handler: async ({ name, url }) => {
+      try { return ok(await computerOpenApp({ name, url })) } catch (e) { return err(e.message) }
+    },
+  },
+  computer_status: {
+    description: 'Check virtual desktop status.',
+    params: {},
+    handler: async () => {
+      try { return ok(await computerStatus()) } catch (e) { return err(e.message) }
+    },
+  },
+
+  // ── Ops tools ─────────────────────────────────────────────────────────────
+  ops_list_services: {
+    description: 'List available deployment / ops services (GitHub, Timeweb, etc).',
+    params: {},
+    handler: async () => {
+      try { return ok(listOpsServices()) } catch (e) { return err(e.message) }
+    },
+  },
+  ops_run_action: {
+    description: 'Run an ops action (build, deploy, restart). Potentially destructive — requires confirmation.',
+    params: {
+      service: { type: 'string', required: true, description: 'Service id, e.g. github, timeweb.' },
+      action: { type: 'string', required: true, description: 'Action name.' },
+      params: { type: 'object', optional: true, description: 'Action parameters.' },
+      confirm: { type: 'boolean', optional: true, description: 'Set true after user confirmation.' },
+    },
+    handler: async ({ service, action, params = {}, confirm = false }) => {
+      try { return ok(await runOpsAction({ service, action, params, confirm })) } catch (e) { return err(e.message) }
+    },
+  },
+
 // Minimal tool set for low-complexity runs (must match agentLoop.js lite filter)
 export const LITE_TOOL_NAMES = [
   'list_files', 'read_file', 'write_file', 'edit_file', 'search_files',
   'bash', 'web_search', 'web_fetch', 'ask_user',
   'delete_file', 'verify_code', 'read_project_rules', 'generate_image',
-  'edit_image', 'generate_video', 'analyze_image', 'text_to_speech', 'transcribe_audio',
+  'edit_image', 'analyze_image', 'transcribe_audio',
 ]
 
 export function renderToolsForPrompt() {

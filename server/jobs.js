@@ -375,15 +375,7 @@ export function startJob(id) {
   ;(async () => {
     try {
       if (job.type.startsWith('generate_')) await runLocalDocumentJob(job)
-      else if (job.type.startsWith('gemini_')) {
-        // gemini_image / gemini_video были у нас завязаны на снесённый
-        // gemini-web-proxy. Возвращаемся честно: видишь — провайдер удалён,
-        // используй tool generate_image (через настоящий API ключ).
-        throw new Error(
-          `Тип "${job.type}" больше не поддерживается: gemini-web-proxy удалён. ` +
-          `Подключи прямой Gemini API key (aistudio.google.com/apikey) или используй другой провайдер.`
-        )
-      }
+
       else throw new Error(`Unknown job type: ${job.type}`)
     } catch (e) {
       appendJobLog(id, `Ошибка: ${e.message || String(e)}`)
