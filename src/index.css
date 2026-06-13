@@ -227,4 +227,9 @@ html { font-size: var(--browserai-base-fz, 16px); }
 
 
 /* Prevent pull-to-refresh on mobile when scrolling chat */
-html, body { overscroll-behavior-y: none; }
+html, body {
+  overscroll-behavior-y: none;
+  overflow: hidden;
+  height: 100%;
+  touch-action: pan-x; /* Allow horizontal swipe, block vertical overscroll on body */
+}

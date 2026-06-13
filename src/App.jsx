@@ -283,7 +283,7 @@ function BrowserApp({ user, reloadAuth }) {
         <div className="flex flex-col h-full overflow-hidden">
         {hasMessages ? (
           <>
-            <div className="flex-1 overflow-y-auto min-h-0" style={{ overscrollBehaviorY: "contain" }}>
+            <div className="flex-1 overflow-y-auto min-h-0" style={{ overscrollBehaviorY: "contain", WebkitOverflowScrolling: "touch" }}>
             <MessageList
               messages={messages} aiWorking={aiWorking} onEdit={(m) => { const ta = document.querySelector('textarea'); if (ta) { ta.value = m.content; ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 220) + 'px'; ta.focus() } }}
               onRegenerate={handleRegenerate} onRefresh={() => location.reload()} onJobDone={markJobDone} onBranch={(messageId) => activeChat && branchFromMessage(activeChat.id, messageId)}

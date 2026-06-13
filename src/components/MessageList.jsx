@@ -241,7 +241,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
         </div>
 
         {isUser ? (
-          <p className="whitespace-pre-wrap break-words text-[14px] leading-relaxed text-cream-soft" style={{ overflowWrap: "anywhere" }}>
+          <p className="whitespace-pre-wrap break-words text-[14px] leading-relaxed text-cream-soft" style={{ overflowWrap: "anywhere", wordBreak: "break-word" }}>
             {m.content}
           </p>
         ) : m.error && !hasAgentActivity ? (
@@ -257,7 +257,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
             )}
           </div>
         ) : (
-          <div className="text-[14px] leading-relaxed text-cream-soft" style={{ overflowWrap: "anywhere" }}>
+          <div className="text-[14px] leading-relaxed text-cream-soft" style={{ overflowWrap: "anywhere", wordBreak: "break-word" }}>
             {/* Provider-side extended thinking (Claude 3.7+, OpenAI o1/o3,
                 DeepSeek R1). Auto-opens while streaming, folds when done.
                 Distinct from the per-step `thoughts` narrative below. */}
