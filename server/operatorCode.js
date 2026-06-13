@@ -334,6 +334,99 @@ export function renderCodeTaskReport(task, verify = task?.verify || {}) {
 
 
 
+
+async function waitJobTerminal(jobId, { timeoutMs = 20 * 60_000 } = {}) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const job = getJob(jobId)
+    if (job && ['succeeded', 'failed', 'cancelled'].includes(job.status)) return job
+    await new Promise((r) => setTimeout(r, 2500))
+  }
+  return getJob(jobId) || { status: 'failed', error: 'job wait timeout' }
+}
+
+function latestCiFailureContext(task = {}) {
+  const ci = task.result?.ci || {}
+  const failedRuns = (ci.runs || []).filter((r) => r.conclusion && !['success', 'skipped'].includes(r.conclusion))
+  return [
+    `CI status: ${ci.status || 'unknown'}`,
+    `Branch: ${ci.branch || task.branch}`,
+    `Commit: ${ci.commit || task.result?.finalize?.commit || ''}`,
+    failedRuns.length ? `Failed runs: ${failedRuns.map((r) => `${r.name || r.id}=${r.conclusion}`).join(', ')}` : '',
+    ci.failedLogs ? `\nFailed logs excerpt:\n${ci.failedLogs}` : '',
+  ].filter(Boolean).join('\n')
+}
+
+export function startOperatorCodeCiAutoFix({ taskId = '', maxAttempts = 2 } = {}) {
+  initOperatorCode()
+  const start = getOperatorCodeTask(taskId)
+  if (!start) throw new Error('code task not found')
+  const key = `ci-fix:${taskId}`
+  if (monitors.has(key)) return start
+  monitors.set(key, true)
+  ;(async () => {
+    try {
+      let task = getOperatorCodeTask(taskId)
+      const attemptsLimit = Math.max(1, Math.min(5, Number(maxAttempts) || 2))
+      let ciFix = { ...(task.result?.ciFix || {}), status: 'running', attempts: task.result?.ciFix?.attempts || [], startedAt: new Date().toISOString(), maxAttempts: attemptsLimit }
+      patchTask(taskId, { status: 'ci_fixing', result: { ...(task.result || {}), ciFix } })
+
+      for (let attempt = ciFix.attempts.length + 1; attempt <= attemptsLimit; attempt += 1) {
+        task = getOperatorCodeTask(taskId)
+        const provider = getActiveKeyDecrypted(null)
+        if (!provider?.baseUrl || !provider?.model) throw new Error('No active provider configured for CI auto-fix')
+        const failureContext = latestCiFailureContext(task)
+        if (!failureContext.trim()) throw new Error('No CI failure context found. Run wait CI first.')
+        const rel = path.relative(WORKSPACE_ROOT, task.workdir || '').replace(/\\/g, '/') || task.workdir
+        const prompt = `You are BrowserAI Code Operator CI Auto-Fix. Fix the failing CI on the existing branch without creating a new branch.\n\nRepository folder: ${rel}\nBranch: ${task.branch}\nOriginal goal: ${task.goal}\n\nCI failure context:\n${failureContext}\n\nInstructions:\n- Inspect the failing files/tests/logs.\n- Patch the repository using edit_file/write_file.\n- Run focused verification, then npm_test/build when practical.\n- Do NOT touch production.\n- Final answer must summarize the root cause, changed files, and verification evidence.`
+        const job = createJob({
+          userId: task.userId,
+          chatId: '',
+          type: 'agent_run',
+          title: `ci-auto-fix ${attempt}: ${task.goal.slice(0, 60)}`,
+          input: {
+            prompt,
+            history: [{ role: 'user', content: prompt }],
+            extraSystem: '[ci-auto-fix] You are fixing a failed GitHub Actions run on an existing operator branch. Work with tools and verify before final answer.',
+            provider: { baseUrl: provider.baseUrl, model: provider.model, authType: provider.authType, authHeader: provider.authHeader, extraHeaders: provider.extraHeaders, temperature: 0.2 },
+          },
+        })
+        ciFix = { ...(getOperatorCodeTask(taskId).result?.ciFix || ciFix), status: 'agent_running', currentAttempt: attempt, lastJobId: job.id, attempts: [...(ciFix.attempts || []), { attempt, jobId: job.id, status: 'agent_running', startedAt: new Date().toISOString() }] }
+        patchTask(taskId, { status: 'ci_fixing', jobId: job.id, result: { ...(getOperatorCodeTask(taskId).result || {}), ciFix } })
+        startJob(job.id)
+        const jobDone = await waitJobTerminal(job.id)
+        if (jobDone.status !== 'succeeded') {
+          ciFix.attempts[ciFix.attempts.length - 1] = { ...ciFix.attempts[ciFix.attempts.length - 1], status: jobDone.status, error: jobDone.error || 'agent failed', finishedAt: new Date().toISOString() }
+          patchTask(taskId, { status: 'failed', error: `CI auto-fix agent ${jobDone.status}: ${jobDone.error || ''}`, result: { ...(getOperatorCodeTask(taskId).result || {}), ciFix }, finishedAt: now() })
+          return
+        }
+
+        patchTask(taskId, { status: 'verifying' })
+        const verify = await verifyCodeTask(getOperatorCodeTask(taskId))
+        if (!verify.passed) {
+          ciFix.attempts[ciFix.attempts.length - 1] = { ...ciFix.attempts[ciFix.attempts.length - 1], status: 'verification_failed', verify, finishedAt: new Date().toISOString() }
+          patchTask(taskId, { status: 'failed', verify, error: 'CI auto-fix verification failed', result: { ...(getOperatorCodeTask(taskId).result || {}), ciFix }, finishedAt: now() })
+          return
+        }
+
+        const finalized = await finalizeOperatorCodeTask({ taskId, commitMessage: `operator: fix CI for ${task.goal.slice(0, 60)}`, push: true, createPr: false })
+        const waited = await waitOperatorCodeTaskCi({ taskId, timeoutSec: 900, intervalSec: 15 })
+        const ciOk = waited.result?.ci?.ok === true
+        ciFix = { ...(waited.result?.ciFix || ciFix), status: ciOk ? 'succeeded' : (attempt >= attemptsLimit ? 'failed' : 'retrying') }
+        ciFix.attempts[ciFix.attempts.length - 1] = { ...ciFix.attempts[ciFix.attempts.length - 1], status: ciOk ? 'succeeded' : 'ci_failed', commit: finalized.result?.finalize?.commit, ci: waited.result?.ci, finishedAt: new Date().toISOString() }
+        patchTask(taskId, { status: ciOk ? 'succeeded' : (attempt >= attemptsLimit ? 'failed' : 'ci_fixing'), error: ciOk ? '' : (attempt >= attemptsLimit ? 'CI still failing after auto-fix attempts' : ''), result: { ...(waited.result || {}), ciFix }, finishedAt: ciOk || attempt >= attemptsLimit ? now() : null })
+        if (ciOk) return
+      }
+    } catch (e) {
+      const task = getOperatorCodeTask(taskId)
+      patchTask(taskId, { status: 'failed', error: e?.message || String(e), result: { ...(task?.result || {}), ciFix: { ...(task?.result?.ciFix || {}), status: 'failed', error: e?.message || String(e), finishedAt: new Date().toISOString() } }, finishedAt: now() })
+    } finally {
+      monitors.delete(key)
+    }
+  })()
+  return getOperatorCodeTask(taskId)
+}
+
 export async function waitOperatorCodeTaskCi({ taskId = '', timeoutSec = 900, intervalSec = 15 } = {}) {
   initOperatorCode()
   let task = getOperatorCodeTask(taskId)
@@ -465,4 +558,4 @@ export async function finalizeOperatorCodeTask({ taskId = '', commitMessage = ''
   return getOperatorCodeTask(task.id)
 }
 
-export default { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi }
+export default { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix }

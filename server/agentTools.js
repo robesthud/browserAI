@@ -1263,6 +1263,20 @@ export const TOOLS = {
     },
   },
 
+  operator_auto_fix_code_task_ci: {
+    description: 'Start a background auto-fix loop for a Code Operator task whose PR/branch CI failed. It uses CI logs, runs another code agent pass on the same branch, verifies, commits, pushes, and waits CI again up to max_attempts.',
+    params: {
+      id: { type: 'string', required: true, description: 'Operator code task id.' },
+      max_attempts: { type: 'number', optional: true, description: 'Max auto-fix attempts. Default 2.' },
+    },
+    handler: async ({ id, max_attempts = 2 } = {}) => {
+      try {
+        const { startOperatorCodeCiAutoFix } = await import('./operatorCode.js')
+        return ok(startOperatorCodeCiAutoFix({ taskId: id, maxAttempts: max_attempts }))
+      } catch (e) { return err(e.message) }
+    },
+  },
+
   // ── Ops tools ─────────────────────────────────────────────────────────────
   ops_list_services: {
     description: 'List available deployment / ops services (GitHub, Timeweb, etc).',

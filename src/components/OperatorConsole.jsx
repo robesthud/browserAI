@@ -83,6 +83,18 @@ export default function OperatorConsole() {
     finally { setBusy(false) }
   }
 
+  const autoFixCi = async (taskId) => {
+    const ok = window.confirm('Start CI auto-fix loop? The agent will patch the same branch, verify, commit, push and wait CI again.')
+    if (!ok) return
+    setBusy(true)
+    setError('')
+    try {
+      await api(`/api/operator/code-tasks/${encodeURIComponent(taskId)}/auto-fix-ci`, { method: 'POST', body: JSON.stringify({ maxAttempts: 2 }) })
+      await refresh()
+    } catch (e) { setError(e.message || String(e)) }
+    finally { setBusy(false) }
+  }
+
   const missions = operator?.missions || []
   const types = operator?.missionTypes || []
   return (
@@ -148,6 +160,8 @@ export default function OperatorConsole() {
               {m.codeTask?.result?.finalize?.pullRequest?.url && <a href={m.codeTask.result.finalize.pullRequest.url} target="_blank" rel="noreferrer" className="text-[10px] text-emerald-200 underline">PR #{m.codeTask.result.finalize.pullRequest.number}</a>}
               {m.codeTask?.result?.finalize?.pushed && !m.codeTask?.result?.ci?.status && <button onClick={() => void waitCi(m.result.codeTaskId)} className="rounded border border-violet-400/25 bg-violet-500/10 px-2 py-0.5 text-[10px] text-violet-100 hover:bg-violet-500/20">wait CI</button>}
               {m.codeTask?.result?.ci?.status && <span className={`rounded px-1.5 py-0.5 text-[10px] ${m.codeTask.result.ci.ok ? 'bg-emerald-500/15 text-emerald-200' : 'bg-red-500/15 text-red-200'}`}>CI {m.codeTask.result.ci.status}</span>}
+              {m.codeTask?.result?.ci?.status === 'failed' && <button onClick={() => void autoFixCi(m.result.codeTaskId)} className="rounded border border-amber-400/25 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-100 hover:bg-amber-500/20">auto-fix CI</button>}
+              {m.codeTask?.result?.ciFix?.status && <span className={`rounded px-1.5 py-0.5 text-[10px] ${m.codeTask.result.ciFix.status === 'succeeded' ? 'bg-emerald-500/15 text-emerald-200' : 'bg-amber-500/15 text-amber-200'}`}>fix {m.codeTask.result.ciFix.status}</span>}
               {m.error && <span className="text-red-200">{m.error}</span>}
             </div>
           ))}
