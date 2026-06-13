@@ -8,6 +8,7 @@ import { getActiveKeyDecrypted } from './db.js'
 import { scanSecrets } from './secretScan.js'
 import { withWorkspaceScope } from './workspace.js'
 import { createWorkflow, startWorkflow } from './agentWorkflows.js'
+import { addOperatorMissionEvent } from './operatorMode.js'
 
 let initialized = false
 const monitors = new Map()
@@ -135,6 +136,12 @@ export function initOperatorCode() {
   for (const r of running) setTimeout(() => monitorCodeTask(r.id), 1000).unref?.()
 }
 
+
+function emitTaskEvent(task, type, title, message = '', data = {}) {
+  if (!task?.missionId) return
+  try { addOperatorMissionEvent({ missionId: task.missionId, userId: task.userId, type, title, message, data: { codeTaskId: task.id, ...data } }) } catch { /* best-effort */ }
+}
+
 function rowToTask(r) {
   if (!r) return null
   const task = {
@@ -173,6 +180,7 @@ function patchTask(taskId, patch = {}) {
     taskId,
   )
   if (cur.missionId) {
+    if ((next.status || cur.status) !== cur.status) emitTaskEvent({ ...cur, id: taskId, missionId: cur.mission_id, userId: cur.user_id }, ['failed'].includes(next.status) ? 'error' : ['succeeded'].includes(next.status) ? 'success' : 'info', `Code task ${next.status || cur.status}`, next.error || '', { status: next.status || cur.status })
     const terminal = ['succeeded', 'failed', 'cancelled'].includes(next.status)
     db.prepare(`UPDATE operator_missions SET status=?, job_id=?, result_json=?, error=?, updated_at=?, finished_at=? WHERE id=?`).run(
       next.status || cur.status,
@@ -279,6 +287,7 @@ export function monitorCodeTask(taskId) {
             provider: { baseUrl: provider.baseUrl, model: provider.model, authType: provider.authType, authHeader: provider.authHeader, extraHeaders: provider.extraHeaders, temperature: 0.2 },
           },
         })
+        emitTaskEvent(task, 'info', 'Coding agent started', job.id, { jobId: job.id })
         patchTask(taskId, { status: 'agent_running', jobId: job.id, result: { checkout: { workdir: task.workdir, branch: task.branch }, jobId: job.id } })
         startJob(job.id)
       }
@@ -440,6 +449,7 @@ export async function waitOperatorCodeTaskCi({ taskId = '', timeoutSec = 900, in
   const interval = Math.max(5, Math.min(60, Number(intervalSec) || 15)) * 1000
   let lastRuns = []
   let iterations = 0
+  emitTaskEvent(task, 'info', 'Waiting for CI', branch, { branch, commit })
   patchTask(task.id, { result: { ...(task.result || {}), ci: { status: 'waiting', branch, commit, startedAt: new Date().toISOString() } } })
 
   while (Date.now() < deadline) {
@@ -458,6 +468,7 @@ export async function waitOperatorCodeTaskCi({ taskId = '', timeoutSec = 900, in
         finishedAt: new Date().toISOString(),
       }
       const result = { ...(getOperatorCodeTask(task.id)?.result || {}), ci }
+      emitTaskEvent(task, ok ? 'success' : 'error', ok ? 'CI passed' : 'CI failed', failed[0]?.html_url || '', { ci })
       patchTask(task.id, { status: ok ? 'succeeded' : 'failed', result, error: ok ? '' : 'CI failed', finishedAt: ok ? (getOperatorCodeTask(task.id)?.finishedAt || now()) : now() })
       if (!ok) {
         try {
@@ -487,6 +498,7 @@ export async function finalizeOperatorCodeTask({ taskId = '', commitMessage = ''
   let task = getOperatorCodeTask(taskId)
   if (!task) throw new Error('code task not found')
   if (!task.workdir || !existsSync(path.join(task.workdir, '.git'))) throw new Error('code task checkout not found')
+  emitTaskEvent(task, 'info', 'Finalizing code task', 'verify → secret scan → commit/push/PR')
   patchTask(task.id, { status: 'finalizing' })
   task = getOperatorCodeTask(task.id)
   const verify = task.verify?.results?.length ? task.verify : await verifyCodeTask(task)
@@ -555,6 +567,7 @@ export async function finalizeOperatorCodeTask({ taskId = '', commitMessage = ''
     finalize: { committed: true, pushed: Boolean(pushResult), commit: sha, branch: task.branch, push: pushResult, pullRequest, message: msg },
     report: renderCodeTaskReport(task, verify) + `\n\nCommit: ${sha}\nBranch: ${task.branch}${pullRequest?.url ? `\nPR: ${pullRequest.url}` : ''}`,
   }
+  emitTaskEvent(task, 'success', 'Code task finalized', pullRequest?.url || sha, { commit: sha, branch: task.branch, pullRequest })
   patchTask(task.id, { status: 'succeeded', verify, result: final, error: '', finishedAt: now() })
   return getOperatorCodeTask(task.id)
 }
@@ -602,6 +615,7 @@ export async function mergeOperatorCodeTaskPr({ taskId = '', mergeMethod = 'squa
     startWorkflow(wf.id)
     result = { ...result, deployWorkflowId: wf.id }
   }
+  emitTaskEvent(task, 'success', deploy ? 'PR merged, deploy started' : 'PR merged', merge.url || '', { merge, deployWorkflowId: result.deployWorkflowId })
   patchTask(task.id, { status: 'succeeded', result, error: '', finishedAt: task.finishedAt || now() })
   return getOperatorCodeTask(task.id)
 }

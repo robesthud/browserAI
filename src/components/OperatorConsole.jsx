@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import OperatorMissionTimeline from './OperatorMissionTimeline.jsx'
 
 async function api(path, options = {}) {
   const r = await fetch(path, {
@@ -183,6 +184,12 @@ export default function OperatorConsole() {
               {m.codeTask?.result?.merge?.ok && <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-200">merged</span>}
               {m.codeTask?.result?.deployWorkflowId && <span className="font-mono text-[10px] text-amber-200">deploy {m.codeTask.result.deployWorkflowId.slice(-8)}</span>}
               {m.error && <span className="text-red-200">{m.error}</span>}
+              {m.events?.length > 0 && (
+                <details className="basis-full">
+                  <summary className="cursor-pointer text-[10px] text-cream-faint">timeline ({m.events.length})</summary>
+                  <div className="mt-2"><OperatorMissionTimeline events={m.events} /></div>
+                </details>
+              )}
             </div>
           ))}
         </div>

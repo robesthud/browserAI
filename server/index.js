@@ -79,7 +79,7 @@ import { initAgentWorkflows, listAutomationRecipes, createWorkflow, startWorkflo
 import { getAutomationPolicy, listAutomationPolicyEvents } from './automationPolicy.js'
 import { initIncidents, listIncidents, getIncident, resolveIncident, createIncident, createIncidentWorkflow } from './incidents.js'
 import { getAgentControlPlane } from './agentControlPlane.js'
-import { initOperatorMode, getOperatorStatus, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorMission } from './operatorMode.js'
+import { initOperatorMode, getOperatorStatus, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorMission, listOperatorMissionEvents } from './operatorMode.js'
 import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr } from './operatorCode.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
@@ -3105,6 +3105,12 @@ app.get('/api/operator/missions/:id', requireAuth, (req, res) => {
   const mission = getOperatorMission(req.params.id)
   if (!mission || (mission.userId && mission.userId !== req.user?.id)) return res.status(404).json({ error: 'mission not found' })
   res.json({ mission })
+})
+
+app.get('/api/operator/missions/:id/events', requireAuth, (req, res) => {
+  const mission = getOperatorMission(req.params.id)
+  if (!mission || (mission.userId && mission.userId !== req.user?.id)) return res.status(404).json({ error: 'mission not found' })
+  res.json({ events: listOperatorMissionEvents({ missionId: req.params.id, userId: req.user?.id || '', limit: req.query.limit || 200 }) })
 })
 
 app.get('/api/operator/code-tasks', requireAuth, (req, res) => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { initOperatorMode, listOperatorProjects, OPERATOR_MISSION_TYPES, classifyOperatorGoal } from '../server/operatorMode.js'
+import { initOperatorMode, listOperatorProjects, OPERATOR_MISSION_TYPES, classifyOperatorGoal, addOperatorMissionEvent, listOperatorMissionEvents } from '../server/operatorMode.js'
 
 describe('operator mode', () => {
   it('initializes default personal BrowserAI project and mission catalog', () => {
@@ -21,4 +21,12 @@ describe('operator mode', () => {
     expect(classifyOperatorGoal('перезапусти сервис и проверь health').route).toBe('self_heal_restart')
   })
 
+
+  it('records mission timeline events', () => {
+    const missionId = `op-test-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    addOperatorMissionEvent({ missionId, userId: 'u1', type: 'info', title: 'Started', message: 'hello', data: { ok: true } })
+    const events = listOperatorMissionEvents({ missionId, userId: 'u1' })
+    expect(events.length).toBeGreaterThan(0)
+    expect(events[0].title).toBe('Started')
+  })
 })

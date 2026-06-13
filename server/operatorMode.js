@@ -109,6 +109,18 @@ export function initOperatorMode() {
       finished_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_operator_missions_user ON operator_missions(user_id, updated_at);
+    CREATE TABLE IF NOT EXISTS operator_mission_events (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL DEFAULT '',
+      user_id TEXT NOT NULL DEFAULT '',
+      type TEXT NOT NULL DEFAULT 'info',
+      title TEXT NOT NULL DEFAULT '',
+      message TEXT NOT NULL DEFAULT '',
+      data_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_operator_events_mission ON operator_mission_events(mission_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_operator_events_user ON operator_mission_events(user_id, created_at);
   `)
   initOperatorCode()
   initialized = true
@@ -148,6 +160,7 @@ function rowToMission(r) {
     updatedAt: r.updated_at,
     finishedAt: r.finished_at,
   }
+  mission.events = listOperatorMissionEvents({ missionId: mission.id, userId: mission.userId, limit: 200 })
   if (mission.workflowId) mission.workflow = getWorkflow(mission.workflowId)
   if (mission.jobId) mission.job = getJob(mission.jobId)
   if (mission.result?.codeTaskId) mission.codeTask = getOperatorCodeTask(mission.result.codeTaskId)
@@ -201,6 +214,25 @@ export function upsertOperatorProject({ userId = '', id: projectId = '', name = 
     projectKey, String(userId || ''), String(name || projectKey), String(repo || ''), String(localPath || ''), String(productionPath || ''), String(defaultBranch || 'main'), JSON.stringify(meta || {}), ts, ts,
   )
   return rowToProject(db.prepare('SELECT * FROM operator_projects WHERE id=?').get(projectKey))
+}
+
+
+export function addOperatorMissionEvent({ missionId = '', userId = '', type = 'info', title = '', message = '', data = {} } = {}) {
+  initOperatorMode()
+  const eventId = id('evt')
+  db.prepare(`INSERT INTO operator_mission_events (id,mission_id,user_id,type,title,message,data_json,created_at) VALUES (?,?,?,?,?,?,?,?)`).run(
+    eventId, String(missionId || ''), String(userId || ''), String(type || 'info'), String(title || '').slice(0, 200), String(message || '').slice(0, 4000), JSON.stringify(data || {}), now(),
+  )
+  return eventId
+}
+
+export function listOperatorMissionEvents({ missionId = '', userId = '', limit = 100 } = {}) {
+  initOperatorMode()
+  const max = Math.max(1, Math.min(500, Number(limit) || 100))
+  const rows = missionId
+    ? db.prepare('SELECT * FROM operator_mission_events WHERE mission_id=? ORDER BY created_at ASC LIMIT ?').all(String(missionId), max)
+    : db.prepare('SELECT * FROM operator_mission_events WHERE user_id=? ORDER BY created_at DESC LIMIT ?').all(String(userId || ''), max)
+  return rows.map((r) => ({ id: r.id, missionId: r.mission_id, userId: r.user_id, type: r.type, title: r.title, message: r.message, data: parse(r.data_json, {}), createdAt: r.created_at }))
 }
 
 function patchMission(missionId, patch = {}) {
@@ -320,9 +352,12 @@ export function startOperatorMission({ userId = '', projectId = 'browserai', typ
     missionId, String(userId || ''), project.id, missionType.id, missionType.title, String(goal || missionType.description || '').slice(0, 4000), ts, ts,
   )
 
+  addOperatorMissionEvent({ missionId, userId, type: 'info', title: 'Mission created', message: `${missionType.title}: ${goal || missionType.description}`, data: { type: missionType.id, routeInfo } })
+
   try {
     if (['code_task', 'fix_tests'].includes(missionType.id)) {
       const codeTask = startOperatorCodeTask({ userId, missionId, project, goal: goal || missionType.description, mode: missionType.id })
+      addOperatorMissionEvent({ missionId, userId, type: 'info', title: 'Code task started', message: codeTask.id, data: { codeTaskId: codeTask.id, branch: codeTask.branch } })
       return patchMission(missionId, { status: 'running', jobId: codeTask.jobId || '', result: { codeTaskId: codeTask.id, routeInfo } })
     }
     if (missionType.recipeId) {
@@ -335,6 +370,7 @@ export function startOperatorMission({ userId = '', projectId = 'browserai', typ
         source: 'operator',
       })
       startWorkflow(wf.id)
+      addOperatorMissionEvent({ missionId, userId, type: 'info', title: 'Workflow started', message: wf.id, data: { workflowId: wf.id, recipeId: missionType.recipeId } })
       return patchMission(missionId, { status: 'running', workflowId: wf.id, result: { workflowId: wf.id, routeInfo } })
     }
 
@@ -354,6 +390,7 @@ export function startOperatorMission({ userId = '', projectId = 'browserai', typ
       },
     })
     startJob(job.id)
+    addOperatorMissionEvent({ missionId, userId, type: 'info', title: 'Agent job started', message: job.id, data: { jobId: job.id } })
     return patchMission(missionId, { status: 'running', jobId: job.id, result: { jobId: job.id, routeInfo } })
   } catch (e) {
     return patchMission(missionId, { status: 'failed', error: e?.message || String(e), finishedAt: now() })
@@ -379,4 +416,4 @@ export async function getOperatorStatus({ userId = '' } = {}) {
   }
 }
 
-export default { initOperatorMode, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorStatus, classifyOperatorGoal }
+export default { initOperatorMode, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorStatus, classifyOperatorGoal, addOperatorMissionEvent, listOperatorMissionEvents }
