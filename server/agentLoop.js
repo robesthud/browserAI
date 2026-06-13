@@ -30,7 +30,7 @@ import {
   clipToolOutput, manageContext, applyAnthropicCacheHints,
   upsertAgentStateDigest,
 } from './contextManager.js'
-import { buildClineSystemPrompt } from './clinePrompt.js'
+import { buildAgentSystemPrompt } from './agentPrompt.js'
 import { recordSpend, checkCap } from './costTracker.js'
 import { shouldUseCheapEditor, wrapProviderForEditor, routingLabel } from './architectEditor.js'
 import { requiresApproval, categoryOf } from './approvalGate.js'
@@ -113,7 +113,7 @@ async function buildSystemPrompt({ extraSystem = '', native = false, extraTools 
   // Lite profile: skip workspace scans and MCP discovery entirely —
   // a greeting doesn't need project rules or the repo activity feed.
   if (lite) {
-    return buildClineSystemPrompt({ extraSystem, native, extraTools, cwd: '/workspace', lite: true, toolNames })
+    return buildAgentSystemPrompt({ extraSystem, native, extraTools, cwd: '/workspace', lite: true, toolNames })
   }
 
   const [projectRules, recentActivity] = await Promise.all([
@@ -145,7 +145,7 @@ async function buildSystemPrompt({ extraSystem = '', native = false, extraTools 
     }
   } catch { /* optional */ }
 
-  return buildClineSystemPrompt({
+  return buildAgentSystemPrompt({
     extraSystem,
     native,
     extraTools,
@@ -233,6 +233,41 @@ function incompletePlanSteps(agentState = {}) {
   if (!steps.length) return []
   const done = new Set([...(agentState.plan?.done || [])].map(Number))
   return steps.filter((s) => !(s.done || done.has(Number(s.idx))))
+}
+
+function parseDigestArgs(s = '') {
+  try { return JSON.parse(String(s || '{}')) } catch { return {} }
+}
+
+function isCodeLikePath(path = '') {
+  return /\.(js|mjs|cjs|jsx|ts|tsx|json|css|html|yml|yaml)$/i.test(String(path || ''))
+}
+
+function needsVerificationSinceLastEdit(recentToolHistory = []) {
+  let lastEdit = -1
+  for (let i = 0; i < recentToolHistory.length; i += 1) {
+    const h = recentToolHistory[i]
+    if (!h?.ok || !['write_file', 'edit_file'].includes(h.tool)) continue
+    const args = parseDigestArgs(h.args)
+    const p = args.path || args.file_path || ''
+    if (isCodeLikePath(p)) lastEdit = i
+  }
+  if (lastEdit < 0) return false
+  return !recentToolHistory.slice(lastEdit + 1).some((h) => h?.ok && ['verify_code', 'npm_test'].includes(h.tool))
+}
+
+function summarizeToolOutcome(tool, r) {
+  if (!r?.ok) return String(r?.error || 'failed').slice(0, 180)
+  const result = r.result
+  if (tool === 'read_file') return `${result?.content?.length || 0} chars`
+  if (tool === 'write_file') return `${result?.bytes || 0} bytes written`
+  if (tool === 'edit_file') return `replaced=${result?.replaced ?? 1}`
+  if (tool === 'verify_code') return result?.valid === false ? 'invalid' : 'valid/skipped'
+  if (tool === 'npm_test') return result?.passed ? 'passed' : `exit=${result?.exitCode ?? '?'}`
+  if (tool === 'git_clone') return `path=${result?.path || ''}`
+  if (tool === 'zip_files') return `path=${result?.file_path || ''} entries=${result?.entries || 0}`
+  if (tool === 'bash') return `exit=${result?.exitCode ?? '?'}`
+  return String(result?.message || result?.path || result?.file_path || 'ok').slice(0, 180)
 }
 
 function makeReadBackForEdits(calls) {
@@ -754,6 +789,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   // never successfully opened (observed: invented *.py files in a JS repo).
   const okReadPaths = new Set(), failedReadPaths = new Set()
   let fabricationPushback = false
+  let verificationPushback = false
   let pushedBackThisTurn = false
 
   try {
@@ -863,6 +899,13 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
             convo.push({ role: 'user', content: `[reflection] Gaps identified:\n${verdict.reason}` }); continue
           }
         }
+        if (!verificationPushback && needsVerificationSinceLastEdit(recentToolHistory) && !aborted) {
+          verificationPushback = true
+          sse(res, 'thought', { step, text: 'Самопроверка: после изменения кода не было verify_code/npm_test. Запускаю проверку перед финальным ответом.' })
+          convo.push({ role: 'user', content: `[verification_required]\nYou changed code/config files but have not verified them after the last edit. Call verify_code on touched files or npm_test now. Do not final-answer until verification is done or explicitly explain a skipped verifier via tool result.` })
+          continue
+        }
+
         const unfinishedPlan = incompletePlanSteps(agentState)
         if (unfinishedPlan.length > 0 && !aborted) {
           sse(res, 'thought', { step, text: `План ещё не закрыт: осталось ${unfinishedPlan.length} шаг(ов). Продолжаю выполнение.` })
@@ -1009,7 +1052,7 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
       }
 
       let sawPushBack = false
-      for (const res of results) { if (res?.pushedBack) sawPushBack = true; if (res?.call && res?.r) { recentToolHistory.push({ tool: res.call.tool, ok: !!res.r.ok, at: Date.now(), args: summarizeCallArgsForDigest(res.call.args || {}) }); if (res.call.tool === 'read_file' && res.call.args?.path) { (res.r.ok ? okReadPaths : failedReadPaths).add(String(res.call.args.path)) } if (res.call.tool === 'plan_set' && res.r.ok) planState.done = new Set(); else if (res.call.tool === 'plan_check' && res.r.ok) (res.r.result?.checked || []).forEach(idx => planState.done.add(Number(idx))) } }
+      for (const res of results) { if (res?.pushedBack) sawPushBack = true; if (res?.call && res?.r) { recentToolHistory.push({ tool: res.call.tool, ok: !!res.r.ok, at: Date.now(), args: summarizeCallArgsForDigest(res.call.args || {}), outcome: summarizeToolOutcome(res.call.tool, res.r) }); if (res.call.tool === 'read_file' && res.call.args?.path) { (res.r.ok ? okReadPaths : failedReadPaths).add(String(res.call.args.path)) } if (res.call.tool === 'plan_set' && res.r.ok) planState.done = new Set(); else if (res.call.tool === 'plan_check' && res.r.ok) (res.r.result?.checked || []).forEach(idx => planState.done.add(Number(idx))) } }
       if (sawPushBack) continue
 
       for (const { call, r } of results) {

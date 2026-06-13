@@ -276,7 +276,8 @@ export function renderAgentStateDigest(agentState = {}, recentToolHistory = []) 
   })
   const tools = (recentToolHistory || []).slice(-15).map((h) => {
     const args = h.args ? `(${String(h.args).slice(0, 120)})` : ''
-    return `${h.ok ? '✓' : '✗'} ${h.tool}${args}`
+    const outcome = h.outcome ? ` → ${String(h.outcome).slice(0, 120)}` : ''
+    return `${h.ok ? '✓' : '✗'} ${h.tool}${args}${outcome}`
   }).join(', ')
   const lines = [
     '<arena-system-message>\nAuthoritative task-level memory (agent_state_digest):',
