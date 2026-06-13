@@ -31,6 +31,7 @@ function typeLabel(type) {
     generate_docx: 'Документ',
     generate_xlsx: 'Таблица',
     generate_presentation: 'Презентация',
+    agent_run: 'Фоновый агент',
     tool_verify_task: 'Проверка',
     tool_secret_scan: 'Секреты',
     tool_zip_files: 'ZIP',

@@ -2,13 +2,15 @@ import PDFDocument from 'pdfkit'
 import pptxgen from 'pptxgenjs'
 import ExcelJS from 'exceljs'
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx'
-import db from './db.js'
+import { EventEmitter } from 'node:events'
+import db, { getActiveKeyDecrypted } from './db.js'
 import { withWorkspaceScope, uploadFiles } from './workspace.js'
 import { callLLM } from './llmClient.js'
 
 let initialized = false
 const running = new Set()
 const cancelled = new Set()  // job ids the user asked to cancel
+const runtimeInputs = new Map() // non-persisted sensitive job data (provider api keys)
 
 function now() { return Date.now() }
 function uid(prefix = 'job') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}` }
@@ -125,6 +127,10 @@ export function createJob({ userId = '', chatId = '', type, title = '', input = 
   return getJob(id)
 }
 
+export function registerRuntimeInput(id, data = {}) {
+  if (id) runtimeInputs.set(id, data || {})
+}
+
 function setJobPatch(id, patch = {}) {
   const current = getJob(id)
   if (!current) throw new Error('job not found')
@@ -192,6 +198,71 @@ function uploadFileFromBuffer(name, mime, buffer) {
 async function saveGeneratedFile(chatId, file) {
   await withWorkspaceScope(chatId, async () => uploadFiles('generated', [file]))
   return `generated/${file.name}`
+}
+
+function parseSseBlock(block = '') {
+  let event = 'message'
+  const data = []
+  for (const line of String(block || '').split('\n')) {
+    if (line.startsWith('event:')) event = line.slice(6).trim()
+    else if (line.startsWith('data:')) data.push(line.slice(5).trim())
+  }
+  const raw = data.join('\n')
+  try { return { event, data: JSON.parse(raw) } } catch { return { event, data: raw } }
+}
+
+function createJobSseRes(job) {
+  const emitter = new EventEmitter()
+  let buffer = ''
+  let assistant = ''
+  return {
+    setHeader() {},
+    flushHeaders() {},
+    on: (...args) => emitter.on(...args),
+    emitClose: () => emitter.emit('close'),
+    write(chunk) {
+      buffer += String(chunk || '')
+      const blocks = buffer.split('\n\n')
+      buffer = blocks.pop() || ''
+      for (const block of blocks) {
+        if (!block.trim() || block.startsWith(':')) continue
+        const evt = parseSseBlock(block)
+        const payload = evt.data?.payload || evt.data || {}
+        if (evt.event === 'assistant_delta') assistant += String(payload.chunk || '')
+        else if (evt.event === 'assistant') assistant = String(payload.text || assistant || '')
+        else if (evt.event === 'tool_start') appendJobLog(job.id, `tool_start: ${payload.name || ''}`)
+        else if (evt.event === 'tool_result') appendJobLog(job.id, `tool_result: ${payload.name || ''} ${payload.ok ? 'ok' : 'fail'}`)
+        else if (evt.event === 'thought') appendJobLog(job.id, `thought: ${String(payload.text || '').slice(0, 180)}`)
+        else if (evt.event === 'error') appendJobLog(job.id, `error: ${payload.message || ''}`)
+        else if (evt.event === 'done') setJobPatch(job.id, { progress: 95, result: { ...(getJob(job.id)?.result || {}), done: payload } })
+      }
+    },
+    end() { emitter.emit('close') },
+    status() { return this },
+    json(obj) { this.write(`event: json\ndata: ${JSON.stringify(obj)}\n\n`); this.end(); return this },
+    getAssistantText: () => assistant,
+  }
+}
+
+async function runAgentJob(job) {
+  const runtime = runtimeInputs.get(job.id) || {}
+  const input = job.input || {}
+  const provider = runtime.provider || input.provider || getActiveKeyDecrypted(null)
+  if (!provider?.baseUrl || !provider?.apiKey || !provider?.model) throw new Error('No provider available for background agent job')
+  setJobPatch(job.id, { status: 'running', progress: 5 })
+  appendJobLog(job.id, 'Запускаю фонового агента')
+  const { runAgent } = await import('./agentLoop.js')
+  const res = createJobSseRes(job)
+  await runAgent({
+    provider: { ...provider, forceAgent: true },
+    history: input.history || [{ role: 'user', content: input.prompt || 'continue' }],
+    extraSystem: input.extraSystem || '[background-agent-job] Run as a background task. If blocked by approval or user input, stop and report what is needed.',
+    workspaceScope: job.chatId,
+    userId: job.userId,
+    res,
+  })
+  const text = res.getAssistantText()
+  setJobPatch(job.id, { status: 'succeeded', progress: 100, result: { content: text || 'Agent job completed' }, finishedAt: now() })
 }
 
 async function runToolJob(job) {
@@ -402,6 +473,7 @@ export function startJob(id) {
   ;(async () => {
     try {
       if (job.type.startsWith('generate_')) await runLocalDocumentJob(job)
+      else if (job.type === 'agent_run') await runAgentJob(job)
       else if (job.type.startsWith('tool_')) await runToolJob(job)
       else throw new Error(`Unknown job type: ${job.type}`)
     } catch (e) {
@@ -410,6 +482,7 @@ export function startJob(id) {
     } finally {
       running.delete(id)
       cancelled.delete(id)
+      runtimeInputs.delete(id)
     }
   })()
   return getJob(id)

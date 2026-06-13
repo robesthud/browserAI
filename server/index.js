@@ -74,7 +74,7 @@ import {
 import { searchWeb, fetchWebPage } from './web.js'
 // gateway.js (free-gateway routing) удалён вместе с gemini-web-proxy.
 // retryVideoJob удалён вместе с gemini_video runner.
-import { createJob, getJob, initJobs, listJobs, startJob, cancelJob, retryJob } from './jobs.js'
+import { createJob, getJob, initJobs, listJobs, startJob, cancelJob, retryJob, registerRuntimeInput } from './jobs.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
@@ -1901,6 +1901,28 @@ app.post('/api/jobs/tool', requireAuth, (req, res) => {
     res.json({ ok: true, job: getJob(job.id) })
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message || 'Не удалось создать tool-задачу' })
+  }
+})
+
+app.post('/api/jobs/agent', requireAuth, (req, res) => {
+  try {
+    const {
+      chatId = '', history = [], prompt = '', extraSystem = '', title = 'Agent background task',
+      baseUrl = '', apiKey = '', authType = 'bearer', authHeader = '', extraHeaders = {}, model = '', temperature = 0.3,
+    } = req.body || {}
+    const safeHistory = Array.isArray(history) && history.length ? history.map((m) => ({ role: m.role, content: m.content })) : [{ role: 'user', content: String(prompt || 'continue') }]
+    const job = createJob({
+      userId: req.user?.id || '',
+      chatId,
+      type: 'agent_run',
+      title,
+      input: { history: safeHistory, prompt, extraSystem, provider: { baseUrl, model, authType, authHeader, extraHeaders, temperature } },
+    })
+    registerRuntimeInput(job.id, { provider: { baseUrl, apiKey, authType, authHeader, extraHeaders, model, temperature } })
+    startJob(job.id)
+    res.json({ ok: true, job: getJob(job.id) })
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message || 'Не удалось создать agent-задачу' })
   }
 })
 

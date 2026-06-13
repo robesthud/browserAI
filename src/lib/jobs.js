@@ -28,6 +28,10 @@ export function createToolJob({ tool, args = {}, chatId = '', title = '' }) {
   return req('/tool', { method: 'POST', body: JSON.stringify({ tool, args, chatId, title }) })
 }
 
+export function createAgentJob(payload = {}) {
+  return req('/agent', { method: 'POST', body: JSON.stringify(payload) })
+}
+
 export function retryVideoJob(id) {
   return req(`/${encodeURIComponent(id)}/retry-video`, { method: 'POST' })
 }
@@ -46,6 +50,7 @@ export function detectLongJobType(text = '', attachments = []) {
   if (/(pdf|пдф|отч[её]т|документ)/i.test(lower) && /(создай|сделай|сгенерируй|подготовь)/i.test(lower)) return 'generate_pdf'
   if (/(docx|word|документ)/i.test(lower) && /(создай|сделай|сгенерируй|подготовь)/i.test(lower)) return 'generate_docx'
   if (/(xlsx|excel|таблиц)/i.test(lower) && /(создай|сделай|сгенерируй|подготовь)/i.test(lower)) return 'generate_xlsx'
+  if (/(запусти агента в фоне|фоновый агент|background agent)/i.test(lower)) return 'agent_run'
   if (/(проверь проект|полная проверка|verify task|верифицируй)/i.test(lower)) return 'tool_verify_task'
   if (/(scan secrets|секрет|токен).*?(проверь|найди|scan)/i.test(lower)) return 'tool_secret_scan'
   return null
