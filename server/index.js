@@ -80,6 +80,7 @@ import { getAutomationPolicy, listAutomationPolicyEvents } from './automationPol
 import { initIncidents, listIncidents, getIncident, resolveIncident, createIncident, createIncidentWorkflow } from './incidents.js'
 import { getAgentControlPlane } from './agentControlPlane.js'
 import { initOperatorMode, getOperatorStatus, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorMission } from './operatorMode.js'
+import { getOperatorCodeTask, listOperatorCodeTasks } from './operatorCode.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
@@ -3104,6 +3105,16 @@ app.get('/api/operator/missions/:id', requireAuth, (req, res) => {
   const mission = getOperatorMission(req.params.id)
   if (!mission || (mission.userId && mission.userId !== req.user?.id)) return res.status(404).json({ error: 'mission not found' })
   res.json({ mission })
+})
+
+app.get('/api/operator/code-tasks', requireAuth, (req, res) => {
+  res.json({ tasks: listOperatorCodeTasks({ userId: req.user?.id || '', limit: req.query.limit || 30 }) })
+})
+
+app.get('/api/operator/code-tasks/:id', requireAuth, (req, res) => {
+  const task = getOperatorCodeTask(req.params.id)
+  if (!task || (task.userId && task.userId !== req.user?.id)) return res.status(404).json({ error: 'code task not found' })
+  res.json({ task })
 })
 
 app.post('/api/operator/missions', requireAuth, (req, res) => {

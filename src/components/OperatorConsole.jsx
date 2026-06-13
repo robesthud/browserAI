@@ -116,9 +116,10 @@ export default function OperatorConsole() {
           {missions.length === 0 ? <div className="text-[12px] text-cream-faint">No missions yet.</div> : missions.map((m) => (
             <div key={m.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-graphite-900/60 px-2 py-1.5 text-[12px]">
               <span className="min-w-0 flex-1 truncate text-cream-soft">{m.title}</span>
-              <span className={`rounded-full px-2 py-0.5 text-[10px] ${pill(m.workflow?.status || m.job?.status || m.status)}`}>{m.workflow?.status || m.job?.status || m.status}</span>
+              <span className={`rounded-full px-2 py-0.5 text-[10px] ${pill(m.workflow?.status || m.job?.status || m.codeTask?.status || m.status)}`}>{m.workflow?.status || m.job?.status || m.codeTask?.status || m.status}</span>
               {m.workflowId && <span className="font-mono text-[10px] text-violet-200">wf {m.workflowId.slice(-8)}</span>}
               {m.jobId && <span className="font-mono text-[10px] text-violet-200">job {m.jobId.slice(-8)}</span>}
+              {m.result?.codeTaskId && <span className="font-mono text-[10px] text-violet-200">code {m.result.codeTaskId.slice(-8)}</span>}
               {m.error && <span className="text-red-200">{m.error}</span>}
             </div>
           ))}

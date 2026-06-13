@@ -3,6 +3,7 @@ import { createWorkflow, getWorkflow, startWorkflow } from './agentWorkflows.js'
 import { createJob, getJob, startJob } from './jobs.js'
 import { getActiveKeyDecrypted } from './db.js'
 import { runOpsAction } from './ops.js'
+import { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask } from './operatorCode.js'
 
 let initialized = false
 
@@ -109,6 +110,7 @@ export function initOperatorMode() {
     );
     CREATE INDEX IF NOT EXISTS idx_operator_missions_user ON operator_missions(user_id, updated_at);
   `)
+  initOperatorCode()
   initialized = true
 }
 
@@ -148,10 +150,11 @@ function rowToMission(r) {
   }
   if (mission.workflowId) mission.workflow = getWorkflow(mission.workflowId)
   if (mission.jobId) mission.job = getJob(mission.jobId)
-  const linkedStatus = mission.workflow?.status || mission.job?.status || ''
+  if (mission.result?.codeTaskId) mission.codeTask = getOperatorCodeTask(mission.result.codeTaskId)
+  const linkedStatus = mission.workflow?.status || mission.job?.status || mission.codeTask?.status || ''
   if (linkedStatus && mission.status === 'running' && ['succeeded', 'failed', 'cancelled'].includes(linkedStatus)) {
     mission.status = linkedStatus
-    mission.finishedAt = mission.workflow?.finishedAt || mission.job?.finishedAt || mission.finishedAt
+    mission.finishedAt = mission.workflow?.finishedAt || mission.job?.finishedAt || mission.codeTask?.finishedAt || mission.finishedAt
   }
   return mission
 }
@@ -318,6 +321,10 @@ export function startOperatorMission({ userId = '', projectId = 'browserai', typ
   )
 
   try {
+    if (['code_task', 'fix_tests'].includes(missionType.id)) {
+      const codeTask = startOperatorCodeTask({ userId, missionId, project, goal: goal || missionType.description, mode: missionType.id })
+      return patchMission(missionId, { status: 'running', jobId: codeTask.jobId || '', result: { codeTaskId: codeTask.id, routeInfo } })
+    }
     if (missionType.recipeId) {
       const wf = createWorkflow({
         userId,
