@@ -58,6 +58,7 @@ services:
       - ${WORKSPACE_DIR:-./workspace}:/workspace
       # Allows `docker exec agent-sandbox ...` from inside this container.
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./.git:/app/.git
     depends_on:
       - agent-sandbox
 
