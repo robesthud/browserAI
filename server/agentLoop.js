@@ -25,6 +25,7 @@ import {
 import { registerQuestion } from './askUserRegistry.js'
 import { searchWeb, fetchWebPage } from './web.js'
 import { routeHistory } from './smartRouter.js'
+import { routeDeterministicAction } from './deterministicActionRouter.js'
 import {
   clipToolOutput, manageContext, applyAnthropicCacheHints,
   upsertAgentStateDigest,
@@ -532,68 +533,16 @@ async function runLightweightChat({ res, provider, history, userId, chatId, mode
 }
 
 
-function lastUserText(history = []) {
-  return String([...history].reverse().find((m) => m?.role === 'user')?.content || '')
-}
-
-function extractGithubRepoUrl(text = '') {
-  const m = String(text || '').match(/https?:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?(?:\/)?/i)
-  if (!m) return ''
-  return m[0].replace(/\/$/, '').replace(/\.git$/i, '') + '.git'
-}
-
-function isRepoDownloadRequest(history = []) {
-  const text = lastUserText(history)
-  if (!extractGithubRepoUrl(text)) return false
-  return /(скачай|скачать|загрузи|загрузить|клонир|clone|download|pull|обнови)/i.test(text)
-}
-
-async function runRepoDownloadShortcut({ res, userId, chatId, history }) {
+async function runDeterministicAction({ action, res, userId, chatId }) {
   const tokens = { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: 0 }
-  const url = extractGithubRepoUrl(lastUserText(history))
-  sse(res, 'agent_context', { shortcut: 'git_clone', task: { type: 'repo_download', complexity: 'low' } })
+  sse(res, 'agent_context', { deterministicAction: { id: action.id, tool: action.tool, reason: action.reason }, task: { type: action.id, complexity: 'low' } })
   sse(res, 'thinking', { step: 0 })
-  sse(res, 'tool_start', { step: 0, sub: 0, name: 'git_clone', args: { url } })
-  const r = await invokeTool('git_clone', { url }, { userId, chatId })
-  sse(res, 'tool_result', { step: 0, sub: 0, name: 'git_clone', ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult('git_clone', r, { step: 0, sub: 0 }) })
-  if (!r.ok) {
-    await streamFinalAnswer(res, `❌ Не смог скачать репозиторий: ${r.error}`)
-    sseDone(res, { steps: 0, reason: 'repo-download-error' }, tokens)
-    res.end()
-    return
-  }
-  const path = r.result?.path || 'repo'
-  await streamFinalAnswer(res, `✅ Файлы скачаны в \`${path}\`.
-
-Я только клонировал репозиторий — без анализа, установки зависимостей, сборки и тестов.`)
-  sseDone(res, { steps: 0, reason: 'repo-download-shortcut' }, tokens)
-  res.end()
-}
-
-function isArchiveRequest(history = []) {
-  const last = [...history].reverse().find((m) => m?.role === 'user')
-  const text = String(last?.content || '').toLowerCase()
-  return /(zip|archive|архив|заархив|запак|упак|сжать)/i.test(text)
-}
-
-async function runArchiveShortcut({ res, userId, chatId, history }) {
-  const tokens = { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: 0 }
-  sse(res, 'agent_context', { shortcut: 'zip_files', task: { type: 'archive', complexity: 'low' } })
-  sse(res, 'thinking', { step: 0 })
-  sse(res, 'tool_start', { step: 0, sub: 0, name: 'zip_files', args: { source_path: '', output_path: 'workspace.zip' } })
-  const r = await invokeTool('zip_files', { source_path: '', output_path: 'workspace.zip' }, { userId, chatId })
-  sse(res, 'tool_result', { step: 0, sub: 0, name: 'zip_files', ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult('zip_files', r, { step: 0, sub: 0 }) })
-  if (!r.ok) {
-    await streamFinalAnswer(res, `❌ Не смог создать ZIP: ${r.error}`)
-    sseDone(res, { steps: 0, reason: 'archive-error' }, tokens)
-    res.end()
-    return
-  }
-  const info = r.result || {}
-  await streamFinalAnswer(res, `✅ Архив готов: \`${info.file_path}\` (${info.entries || 0} файлов, ${info.bytes || 0} байт).
-
-Он появился в панели «Файлы» справа — можно скачать оттуда.`)
-  sseDone(res, { steps: 0, reason: 'archive-shortcut' }, tokens)
+  sse(res, 'tool_start', { step: 0, sub: 0, name: action.tool, args: action.args || {} })
+  const r = await invokeTool(action.tool, action.args || {}, { userId, chatId })
+  sse(res, 'tool_result', { step: 0, sub: 0, name: action.tool, ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult(action.tool, r, { step: 0, sub: 0 }) })
+  const text = r.ok ? action.successText?.(r) : action.errorText?.(r)
+  await streamFinalAnswer(res, text || (r.ok ? '✅ Готово.' : `❌ Ошибка: ${r.error || 'unknown error'}`))
+  sseDone(res, { steps: 0, reason: r.ok ? (action.successReason || `${action.id}-done`) : (action.errorReason || `${action.id}-error`) }, tokens)
   res.end()
 }
 
@@ -663,18 +612,10 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
     sse(res, 'error', { message: 'Provider not configured' }); sseDone(res, { steps: 0, reason: 'no-provider' }, tokens); res.end(); if (chatId) activeRunsByChat.delete(chatId); return
   }
 
-  if (isRepoDownloadRequest(history)) {
+  const deterministicAction = routeDeterministicAction(history)
+  if (deterministicAction) {
     try {
-      await runRepoDownloadShortcut({ res, userId, chatId, history })
-    } finally {
-      if (chatId) activeRunsByChat.delete(chatId)
-    }
-    return
-  }
-
-  if (isArchiveRequest(history)) {
-    try {
-      await runArchiveShortcut({ res, userId, chatId, history })
+      await runDeterministicAction({ action: deterministicAction, res, userId, chatId })
     } finally {
       if (chatId) activeRunsByChat.delete(chatId)
     }

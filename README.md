@@ -88,6 +88,15 @@ WORKSPACE_ROOT=/workspace
 - `src/lib/agentStream.js` — клиент SSE.
 - `src/lib/useChats.js` — обновление сообщений, tool cards, pending/done state.
 
+### Deterministic action router
+
+Простые команды не должны идти в LLM. `server/deterministicActionRouter.js` распознаёт безопасные одношаговые действия и сразу запускает нужный tool:
+
+- `repo_download` → `git_clone` для «скачай/клонируй GitHub repo»;
+- `archive_zip` → `zip_files` для «запакуй/заархивируй/zip».
+
+Новые простые операции добавляются декларативно в этот router: matcher + tool + args + success/error text. Сложные задачи продолжают идти в обычный agent loop.
+
 ### Зарегистрированные базовые инструменты
 
 - План/вопросы: `plan_set`, `plan_check`, `ask_user`.

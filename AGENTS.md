@@ -25,6 +25,12 @@ npm test
 npm run build
 ```
 
+## Deterministic router
+
+Простые одношаговые команды не отправлять в LLM. Для них есть `server/deterministicActionRouter.js`.
+
+Если добавляется новая простая операция (скачать, архивировать, переименовать, показать список и т.п.), сначала добавь declarative action в router и тест в `tests/deterministic-action-router.test.js`. В agent loop не плодить отдельные `if (...)` под каждую фразу.
+
 ## Агентный prompt
 
 `server/clinePrompt.js` должен быть синхронизирован с `server/agentTools.js`:
