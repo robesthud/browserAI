@@ -28,6 +28,7 @@ import { routeHistory } from './smartRouter.js'
 import { routeDeterministicAction } from './deterministicActionRouter.js'
 import { toolProfileForTask, profileToolNames, isToolAllowed } from './toolAllowlist.js'
 import { getRecoveryAction, getRecoveryHint as recoveryHint } from './recoveryEngine.js'
+import { buildToolStrategyDirective } from './failurePlaybooks.js'
 import { createWorkspaceSnapshot } from './workspaceSnapshots.js'
 import { deriveTaskPhase, allowedToolsForPhase } from './taskStateMachine.js'
 import { createAgentTask, updateAgentTask, finishAgentTask } from './agentTasks.js'
@@ -869,6 +870,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   const planningDirective = buildPlanningDirective(agentContext)
   const autonomousDirective = buildAutonomousRuntimeDirective(agentContext)
   const guidedRailsDirective = buildGuidedRailsDirective(agentContext)
+  const toolStrategyDirective = buildToolStrategyDirective(agentContext)
   const doneCriteriaDirective = buildDoneCriteriaDirective(agentContext)
   
   // v2.26: High-Intelligence Directive for High Complexity tasks.
@@ -880,6 +882,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   if (planningDirective) convo.push({ role: 'user', content: planningDirective })
   if (autonomousDirective) convo.push({ role: 'user', content: autonomousDirective })
   if (guidedRailsDirective) convo.push({ role: 'user', content: guidedRailsDirective })
+  if (toolStrategyDirective) convo.push({ role: 'user', content: toolStrategyDirective })
   if (doneCriteriaDirective) convo.push({ role: 'user', content: doneCriteriaDirective })
   
   sse(res, 'agent_context', { ...agentContext, toolProfile, toolNames: activeToolNames }); sse(res, 'agent_state', agentState)
@@ -1166,7 +1169,7 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
             sse(res, 'thought', { step, sub: idx, text: `Не удалось создать snapshot перед ${call.tool}: ${e.message}` })
           }
         }
-        if (call.tool !== 'ask_user' && requiresApproval(call.tool, userId)) {
+        if (call.tool !== 'ask_user' && requiresApproval(call.tool, userId, call.args || {})) {
           const { id: aqId, promise: aqPromise, expiresAt } = registerQuestion({ kind: 'tool_approval', userId, chatId, step, sub: idx, tool: call.tool, category: categoryOf(call.tool), question: `Approve ${call.tool}?`, options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }] })
           sse(res, 'tool_approval', { step, sub: idx, question_id: aqId, expiresAt, tool: call.tool, args: call.args })
           let approved = false; try { const ans = await aqPromise; const pick = Array.isArray(ans?.selected) ? String(ans.selected[0]) : String(ans?.text || ans); approved = ['approve', 'yes', 'ok', 'allow', 'true'].includes(pick.toLowerCase().trim()) } catch { /* best-effort: ignore */ }

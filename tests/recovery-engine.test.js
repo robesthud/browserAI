@@ -19,7 +19,9 @@ describe('recovery engine', () => {
     expect(r?.action?.tool).toBe('ask_user')
   })
 
-  it('provides concise hints', () => {
-    expect(getRecoveryHint({ tool: 'bash', error: 'timeout' })).toContain('timed out')
+  it('provides recovery playbook hints', () => {
+    const hint = getRecoveryHint({ tool: 'bash', error: 'timeout' })
+    expect(hint).toContain('[failure_playbook]')
+    expect(hint).toContain('Timeout/long command')
   })
 })

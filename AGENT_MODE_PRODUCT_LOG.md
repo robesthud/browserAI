@@ -1146,6 +1146,51 @@ BrowserAI becomes a real Operator Console product instead of a single admin lab 
 
 ---
 
+## Package Runtime-5 — Failure Playbooks + Tool Strategy + Safety Rails
+
+Goal: make Agent Mode recover from common failures more like a senior developer and avoid dangerous shell actions without approval.
+
+Status: implemented in this package.
+
+Blocks:
+
+1. Added `server/failurePlaybooks.js`:
+   - classifies tool/command failures;
+   - builds recovery playbooks;
+   - provides a tool strategy directive for non-trivial tasks.
+2. Failure categories include:
+   - missing module/import;
+   - syntax/type error;
+   - test failure;
+   - build failure;
+   - lint failure;
+   - git failure;
+   - credentials/permissions;
+   - deploy/runtime failure;
+   - timeout/long command;
+   - path not found.
+3. Recovery engine now returns structured playbook instructions for bash/npm/shell failures, timeout, and classified recoverable errors.
+4. Agent loop injects `[tool_strategy]` guidance:
+   - project_profile/read_project_rules/list_files/search_files before broad edits;
+   - shell_session_run for stateful terminal work;
+   - focused checks then broader verification;
+   - git status/diff + secret_scan before commit/push/deploy;
+   - health/logs after ops.
+5. Approval safety rails now categorize persistent/background shell tools as bash and force approval for dangerous shell commands even if bash policy is relaxed.
+6. Tests cover failure classification, recovery playbooks, tool strategy and dangerous command approval.
+
+Runbook notes:
+
+- On failed tests/builds, the model should inspect stderr/stdout, locate referenced files/symbols, fix, and rerun verification.
+- Long commands should be moved to shell background sessions when they timeout/block.
+- Dangerous shell commands such as git push, deploy, docker compose up, rm -rf and system restarts require approval.
+
+Result:
+
+BrowserAI now has a stronger recovery and safety layer: failures produce actionable next steps, and risky shell operations are gated.
+
+---
+
 ## Package UX-2 — Minimal Agent Chat Output
 
 Goal: keep the main chat as minimal and readable as Arena-style Agent Mode while preserving access to all technical evidence.
@@ -1374,6 +1419,7 @@ The main interface is again a pleasant task-first Agent Mode: chat + workspace, 
 0.3. Package Runtime-3 — Persistent Shell Sessions + Command Autopilot. **Done**
 0.4. Package Runtime-4 — Guided Git/PR/Deploy Rails + Runtime Report Builder. **Done**
 0.5. Package UX-2 — Minimal Agent Chat Output. **Done**
+0.6. Package Runtime-5 — Failure Playbooks + Tool Strategy + Safety Rails. **Done**
 1. Package A — Super Operator Workflow v1.
 2. Package B — Mission Detail Pages + Timeline UX.
 3. Package D — Reviewer Agent v2 + Semantic Diff Review.

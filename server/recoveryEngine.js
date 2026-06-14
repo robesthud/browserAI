@@ -1,13 +1,17 @@
+import { classifyToolFailure, buildFailurePlaybook } from './failurePlaybooks.js'
+
 function parentDir(path = '') {
   const parts = String(path || '').split('/').filter(Boolean)
   parts.pop()
   return parts.join('/')
 }
 
-export function getRecoveryAction({ tool, error, args = {}, recentToolHistory = [] } = {}) {
+export function getRecoveryAction({ tool, error, result = null, args = {}, recentToolHistory = [] } = {}) {
   const err = String(error || '').toLowerCase()
   const path = args.path || args.file || args.file_path
   const recent = (recentToolHistory || []).slice(-6).map((h) => `${h.tool}:${h.ok ? 'ok' : 'fail'}`).join('|')
+  const classification = classifyToolFailure({ tool, error, result, args })
+  const playbook = buildFailurePlaybook(classification)
 
   if (tool === 'edit_file' && (err.includes('old_text not found') || err.includes('not found in')) && path) {
     if (!recent.includes('read_file:ok')) {
@@ -38,11 +42,13 @@ export function getRecoveryAction({ tool, error, args = {}, recentToolHistory = 
     }
   }
 
-  if ((tool === 'npm_test' || tool === 'bash') && /(test failed|failed tests|npm err|exit code|exit=1|command failed)/i.test(String(error || ''))) {
+  if ((tool === 'npm_test' || tool === 'bash' || tool === 'shell_session_run') && /(test failed|failed tests|npm err|exit code|exit=1|command failed|syntaxerror|cannot find module|failed to compile|build failed)/i.test(String(error || '') + ' ' + String(result?.stderr || '') + ' ' + String(result?.stdout || ''))) {
     return {
       recoverable: true,
-      message: 'Command/test failed. Inspect the stderr/stdout and fix the relevant files before retrying.',
-      action: null,
+      message: playbook.instruction,
+      action: playbook.steps?.[0] || null,
+      classification,
+      playbook,
     }
   }
 
@@ -57,9 +63,15 @@ export function getRecoveryAction({ tool, error, args = {}, recentToolHistory = 
   if (/timeout|timed out|killed after/.test(err)) {
     return {
       recoverable: true,
-      message: 'The action timed out. Retry with a narrower command or ask before running a long job.',
-      action: null,
+      message: playbook.instruction,
+      action: playbook.steps?.[0] || null,
+      classification,
+      playbook,
     }
+  }
+
+  if (classification.primary?.id && classification.primary.id !== 'generic_failure') {
+    return { recoverable: true, message: playbook.instruction, action: playbook.steps?.[0] || null, classification, playbook }
   }
 
   return null

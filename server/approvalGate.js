@@ -86,6 +86,12 @@ const TOOL_CATEGORY = {
 
   // shell
   bash: 'bash',
+  shell_session_run: 'bash',
+  shell_session_reset: 'bash',
+  shell_background_start: 'bash',
+  shell_background_read: 'bash',
+  shell_background_stop: 'bash',
+  shell_background_list: 'bash',
   bash_reset: 'bash',
   bash_bg: 'bash',
   bash_logs: 'bash',
@@ -161,18 +167,26 @@ export function categoryOf(toolName = '') {
   return TOOL_CATEGORY[name] || 'net'
 }
 
+function commandLooksDangerous(command = '') {
+  const c = String(command || '').toLowerCase()
+  return /\brm\s+-rf\b|\bdd\s+if=|mkfs\.|chmod\s+-r\s+777|chown\s+-r\b|docker\s+compose\s+up|docker-compose\s+up|docker\s+rm\b|docker\s+restart\b|systemctl\s+(restart|stop|start)|service\s+\w+\s+(restart|stop|start)|kubectl\s+(apply|delete|rollout)|deploy\.sh|\bdeploy\b|git\s+push\b|git\s+reset\s+--hard|git\s+clean\s+-fd|curl\s+.*\|\s*(sh|bash)|wget\s+.*\|\s*(sh|bash)/i.test(c)
+}
+
 /**
  * Checks if a tool call requires explicit user confirmation according to the
  * current user's policy. Unknown tools default to net policy (safe-ish but
- * visible in strict mode).
+ * visible in strict mode). Dangerous shell commands always require approval.
  */
-export function requiresApproval(toolName, userId = '') {
+export function requiresApproval(toolName, userId = '', args = {}) {
   // ask_user is itself the approval/question mechanism; never require approval
   // to ask for approval.
   if (toolName === 'ask_user') return false
+  if (['bash', 'shell_session_run', 'shell_background_start'].includes(String(toolName || '')) && commandLooksDangerous(args?.command || '')) return true
   const policy = loadPolicy(userId)
   const cat = categoryOf(toolName)
   return policy[cat] === 'ask'
 }
+
+export { commandLooksDangerous }
 
 export default { requiresApproval, categoryOf, loadPolicy, savePolicy, normalizePolicy }
