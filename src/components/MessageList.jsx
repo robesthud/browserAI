@@ -115,6 +115,27 @@ function splitRuntimeEvidence(content = '') {
   }
 }
 
+function compactToolPreview(tool = null) {
+  if (!tool) return null
+  const name = String(tool.name || '')
+  const args = tool.args || {}
+  const isCommand = ['bash', 'shell_session_run', 'shell_background_start', 'shell_background_read'].includes(name)
+  const command = args.command || args.task_id || args.taskId || args.path || ''
+  const result = tool.result || {}
+  let output = tool.stream || result.stdout || result.stderr || tool.error || ''
+  if (typeof output !== 'string') {
+    try { output = JSON.stringify(output) } catch { output = String(output || '') }
+  }
+  output = output.split('\n').filter(Boolean).slice(-3).join(' · ')
+  return {
+    label: isCommand ? (name === 'bash' ? 'bash' : name.replace(/^shell_/, 'shell ')) : name,
+    command: String(command || '').replace(/\s+/g, ' ').slice(0, 180),
+    output: String(output || '').replace(/\s+/g, ' ').slice(0, 220),
+    running: tool.status !== 'done',
+    ok: tool.ok !== false,
+  }
+}
+
 function AgentActivityFold({ message, children }) {
   const tools = (message.toolCalls || []).filter((tc) => tc.name !== 'plan_set' && tc.name !== 'plan_check')
   const thoughts = message.thoughts || []
@@ -131,14 +152,27 @@ function AgentActivityFold({ message, children }) {
         ? `выполнено действий: ${done}/${tools.length}`
         : 'планирую'
   const hint = activeTool?.args?.command || activeTool?.args?.path || lastTool?.args?.command || lastTool?.args?.path || lastThought
+  const preview = compactToolPreview(activeTool || lastTool)
   return (
     <details className="mb-2 rounded-xl border border-white/10 bg-graphite-800/35 text-[13px]" open={false}>
       <summary className="cursor-pointer list-none px-3 py-2 text-cream-soft hover:bg-white/5">
-        <span className="mr-2 inline-block h-2 w-2 rounded-full bg-emerald-300 align-middle" />
-        <span className="font-medium">Ход работы агента</span>
-        <span className="ml-2 text-cream-faint">{statusText}</span>
-        {hint ? <span className="ml-2 hidden max-w-[360px] truncate align-bottom text-cream-faint/70 md:inline-block">{String(hint).replace(/\s+/g, ' ').slice(0, 160)}</span> : null}
-        <span className="float-right text-cream-faint">раскрыть</span>
+        <div className="flex items-center gap-2">
+          <span className={`inline-block h-2 w-2 rounded-full align-middle ${activeTool ? 'animate-pulse bg-amber-300' : failed ? 'bg-red-300' : 'bg-emerald-300'}`} />
+          <span className="font-medium">Ход работы агента</span>
+          <span className="text-cream-faint">{statusText}</span>
+          {hint ? <span className="hidden min-w-0 max-w-[360px] truncate align-bottom text-cream-faint/70 md:inline-block">{String(hint).replace(/\s+/g, ' ').slice(0, 160)}</span> : null}
+          <span className="ml-auto shrink-0 text-cream-faint">раскрыть</span>
+        </div>
+        {preview && (preview.command || preview.output) ? (
+          <div className="mt-1.5 rounded-lg border border-white/5 bg-black/15 px-2 py-1 font-mono text-[11px] leading-relaxed text-cream-faint">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className={preview.running ? 'text-amber-300' : preview.ok ? 'text-emerald-300' : 'text-red-300'}>{preview.running ? '●' : preview.ok ? '✓' : '✗'}</span>
+              <span className="shrink-0 text-cream-soft">{preview.label}</span>
+              {preview.command ? <span className="min-w-0 truncate">{preview.command}</span> : null}
+            </div>
+            {preview.output ? <div className="mt-0.5 truncate text-cream-faint/80">{preview.output}{preview.running ? ' ▌' : ''}</div> : null}
+          </div>
+        ) : null}
       </summary>
       <div className="space-y-1 border-t border-white/5 px-2.5 py-2">
         {children}
