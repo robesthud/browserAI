@@ -4,6 +4,9 @@ import './index.css'
 import App from './App.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 import { registerServiceWorker } from './lib/pwa.js'
+import { setupMobileViewport } from './lib/mobileViewport.js'
+
+setupMobileViewport()
 
 // Register the PWA service worker as early as possible — installable app
 // + offline shell + Web Push entry point. Fully optional: silently noops

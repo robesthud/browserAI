@@ -1146,6 +1146,43 @@ BrowserAI becomes a real Operator Console product instead of a single admin lab 
 
 ---
 
+## Package Mobile-1 — iPhone/iOS Chat App Optimization
+
+Goal: make BrowserAI feel like a native chat app on iPhone/iOS and other phones: stable viewport, no pinch/double-tap zoom, keyboard-aware height, safe-area support and readable inputs.
+
+Status: implemented in this package.
+
+Blocks:
+
+1. Viewport meta hardened:
+   - `maximum-scale=1`;
+   - `minimum-scale=1`;
+   - `user-scalable=no`;
+   - `viewport-fit=cover` preserved.
+2. Added `src/lib/mobileViewport.js`:
+   - maintains `--app-height`, `--app-width`, `--keyboard-height` from `visualViewport`;
+   - prevents iOS `gesturestart/change/end` pinch zoom;
+   - prevents multi-touch pinch and double-tap zoom;
+   - prevents ctrl-wheel zoom.
+3. Bootstrapped mobile viewport setup in `src/main.jsx`.
+4. CSS root/layout uses `--app-height` with `100dvh` fallback.
+5. Main app shell now uses `var(--app-height, 100dvh)` instead of plain `h-screen`/`100dvh` only.
+6. Mobile input/textarea/select controls are forced to 16px to prevent iOS focus zoom.
+7. Mobile scroll containers use contained overscroll and momentum scrolling where appropriate.
+8. Tests verify viewport lock, boot installation and CSS safeguards.
+
+Runbook notes:
+
+- Main chat should no longer pinch-zoom with two fingers on iPhone.
+- iOS keyboard/address-bar changes should not break the chat height; `visualViewport` updates CSS variables.
+- If debugging mobile UI, test Safari and Chrome on iOS because both use WebKit but differ in toolbar behavior.
+
+Result:
+
+BrowserAI is tuned for phone usage like a native mobile chat: no unwanted scaling, stable height, safe-area compatibility and better keyboard behavior.
+
+---
+
 ## Package Runtime-5 — Failure Playbooks + Tool Strategy + Safety Rails
 
 Goal: make Agent Mode recover from common failures more like a senior developer and avoid dangerous shell actions without approval.
@@ -1421,6 +1458,7 @@ The main interface is again a pleasant task-first Agent Mode: chat + workspace, 
 0.4. Package Runtime-4 — Guided Git/PR/Deploy Rails + Runtime Report Builder. **Done**
 0.5. Package UX-2 — Minimal Agent Chat Output. **Done**
 0.6. Package Runtime-5 — Failure Playbooks + Tool Strategy + Safety Rails. **Done**
+0.7. Package Mobile-1 — iPhone/iOS Chat App Optimization. **Done**
 1. Package A — Super Operator Workflow v1.
 2. Package B — Mission Detail Pages + Timeline UX.
 3. Package D — Reviewer Agent v2 + Semantic Diff Review.

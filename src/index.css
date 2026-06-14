@@ -6,6 +6,13 @@ html,
 body,
 #root {
   height: 100%;
+  width: 100%;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  touch-action: manipulation;
 }
 
 body {
@@ -13,6 +20,7 @@ body {
   background-color: #24262b;
   color: #e6e8ec;
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* тонкий скроллбар в сайдбаре */
@@ -149,11 +157,14 @@ ol.md-list {
   --safe-right:  env(safe-area-inset-right, 0px);
 }
 
-/* Корневой контейнер — используем dvh (dynamic viewport height) чтобы
-   учитывать появление клавиатуры на мобильных */
+/* Корневой контейнер: iOS Safari/Chrome can misreport 100vh/100dvh when
+   address bars or keyboard are visible. JS maintains --app-height via
+   visualViewport; dvh remains the standards fallback. */
 html, body, #root {
-  height: 100%;
-  height: 100dvh;
+  min-height: 100%;
+  height: var(--app-height, 100dvh);
+  max-height: var(--app-height, 100dvh);
+  overflow: hidden;
 }
 
 /* Дополнительный отступ снизу для жестовой навигации */
@@ -179,9 +190,12 @@ button, [role="button"] {
 }
 
 /* Текст в textarea и input — можно выделять */
-input, textarea {
+input, textarea, select {
   -webkit-user-select: text;
   user-select: text;
+  /* iOS auto-zooms focused inputs below 16px. Keep controls at 16px while
+     surrounding UI can remain visually compact. */
+  font-size: 16px;
 }
 
 /* ── Syntax highlighting tokens (lib/syntaxHighlight.js) ───────────────── */
@@ -240,8 +254,41 @@ html { font-size: var(--browserai-base-fz, 16px); }
 
 /* Prevent pull-to-refresh on mobile when scrolling chat */
 html, body {
-  overscroll-behavior-y: none;
+  overscroll-behavior: none;
   overflow: hidden;
-  height: 100%;
-  touch-action: pan-x; /* Allow horizontal swipe, block vertical overscroll on body */
+  height: var(--app-height, 100dvh);
+  max-height: var(--app-height, 100dvh);
+  touch-action: manipulation;
+}
+
+#root {
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* iOS/mobile chat-app tuning */
+@media (max-width: 767px), (pointer: coarse) {
+  html, body, #root {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: var(--app-height, 100dvh);
+    max-height: var(--app-height, 100dvh);
+  }
+
+  body {
+    overscroll-behavior: none;
+    -webkit-overflow-scrolling: auto;
+  }
+
+  textarea {
+    max-height: min(38vh, 220px);
+  }
+
+  .mobile-scroll,
+  .hide-scrollbar,
+  .thin-scroll {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
 }

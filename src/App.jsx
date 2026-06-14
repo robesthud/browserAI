@@ -277,7 +277,7 @@ function BrowserApp({ user, reloadAuth }) {
   }
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-graphite-900 text-cream">
+    <div className="flex w-full overflow-hidden bg-graphite-900 text-cream" style={{ height: 'var(--app-height, 100dvh)' }}>
       <CloudSync settings={settings} chats={chats} />
       <Sidebar
         collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} onNewChat={() => { newChat(); if (window.innerWidth < 768) setCollapsed(true) }}
@@ -289,7 +289,7 @@ function BrowserApp({ user, reloadAuth }) {
         onOpenJobChat={(chatId) => { if (chatId) selectChat(chatId); if (window.innerWidth < 768) setCollapsed(true) }}
       />
       {!collapsed && <button className="fixed inset-0 z-30 bg-black/45 md:hidden" onClick={() => setCollapsed(true)} />}
-      <main className="relative flex min-w-0 flex-1 flex-col h-[100dvh] overflow-hidden">
+      <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden" style={{ height: 'var(--app-height, 100dvh)' }}>
         {collapsed && (
           <button onClick={() => setCollapsed(false)} className="absolute left-3 top-10 z-10 grid h-9 w-9 place-items-center rounded-lg text-cream-dim hover:bg-graphite-800 md:top-3.5">
             <IconExpand />
@@ -310,7 +310,7 @@ function BrowserApp({ user, reloadAuth }) {
         <div className="flex flex-col h-full overflow-hidden">
         {hasMessages ? (
           <>
-            <div className="flex-1 overflow-y-auto min-h-0" style={{ overscrollBehaviorY: "contain", WebkitOverflowScrolling: "touch" }}>
+            <div className="mobile-scroll flex-1 overflow-y-auto min-h-0" style={{ overscrollBehaviorY: "contain", WebkitOverflowScrolling: "touch" }}>
             <MessageList
               messages={messages} aiWorking={aiWorking} onEdit={(m) => { const ta = document.querySelector('textarea'); if (ta) { ta.value = m.content; ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 220) + 'px'; ta.focus() } }}
               onRegenerate={handleRegenerate} onRefresh={() => location.reload()} onJobDone={markJobDone} onBranch={(messageId) => activeChat && branchFromMessage(activeChat.id, messageId)}
