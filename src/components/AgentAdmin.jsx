@@ -45,6 +45,9 @@ export default function AgentAdmin() {
   const [providerDiag, setProviderDiag] = useState(null)
   const [loadingDiag, setLoadingDiag] = useState(false)
   const [replayTrace, setReplayTrace] = useState(null)
+  const [activeTab, setActiveTab] = useState(() => {
+    try { return localStorage.getItem('browserai.agentAdmin.tab') || 'overview' } catch { return 'overview' }
+  })
 
   const refreshMeta = async () => {
     setLoadingMeta(true)
@@ -118,10 +121,23 @@ export default function AgentAdmin() {
     }
   }
 
+  const tabs = [
+    { id: 'overview', label: 'Overview', icon: '📊' },
+    { id: 'operator', label: 'Operator', icon: '🛠️' },
+    { id: 'projects', label: 'Projects', icon: '🗂️' },
+    { id: 'deploys', label: 'Deploys', icon: '🚀' },
+    { id: 'automation', label: 'Automation', icon: '⚙️' },
+    { id: 'diagnostics', label: 'Diagnostics', icon: '🧪' },
+  ]
+  const switchTab = (id) => {
+    setActiveTab(id)
+    try { localStorage.setItem('browserai.agentAdmin.tab', id) } catch { /* ignore */ }
+  }
+
   return (
     <div className="min-h-screen bg-graphite-900 text-cream">
       <header className="sticky top-0 z-10 border-b border-white/10 bg-graphite-900/95 px-4 py-3 backdrop-blur">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-3">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
           <div>
             <h1 className="text-lg font-semibold">Agent Lab</h1>
             <p className="text-[12px] text-cream-faint">Developer diagnostics for BrowserAI Agent Mode</p>
@@ -132,29 +148,50 @@ export default function AgentAdmin() {
             className="rounded-lg border border-white/10 px-3 py-1.5 text-[12px] text-cream-soft hover:bg-graphite-750 hover:text-cream"
           >← В чат</button>
         </div>
+        <nav className="mx-auto mt-3 flex max-w-6xl gap-1 overflow-x-auto pb-1">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => switchTab(t.id)}
+              className={`shrink-0 rounded-lg border px-3 py-1.5 text-[12px] transition ${activeTab === t.id ? 'border-violet-400/40 bg-violet-500/20 text-violet-100' : 'border-white/10 text-cream-faint hover:bg-white/5 hover:text-cream-soft'}`}
+            >
+              <span className="mr-1">{t.icon}</span>{t.label}
+            </button>
+          ))}
+        </nav>
       </header>
 
-      <main className="mx-auto max-w-5xl space-y-4 px-4 py-5">
-        <AgentControlPlanePanel />
+      <main className="mx-auto max-w-6xl space-y-4 px-4 py-5">
+        {activeTab === 'overview' && (
+          <>
+            <AgentControlPlanePanel />
+            <NotificationCenter />
+            <AgentInbox />
+          </>
+        )}
 
-        <NotificationCenter />
+        {activeTab === 'operator' && (
+          <>
+            <FailureAdvisorPanel />
+            <AutoRecoveryPanel />
+            <OperatorConsole />
+          </>
+        )}
 
-        <FailureAdvisorPanel />
+        {activeTab === 'projects' && (
+          <>
+            <OperatorProjectsPanel />
+            <OperatorRunbooks />
+          </>
+        )}
 
-        <AutoRecoveryPanel />
+        {activeTab === 'deploys' && <DeploySessionsPanel />}
 
-        <OperatorConsole />
+        {activeTab === 'automation' && <AutomationCenter />}
 
-        <OperatorProjectsPanel />
-
-        <OperatorRunbooks />
-
-        <DeploySessionsPanel />
-
-        <AgentInbox />
-
-        <AutomationCenter />
-
+        {activeTab === 'diagnostics' && (
+          <>
         <section className="rounded-2xl border border-white/10 bg-graphite-800/45 p-4">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
@@ -408,6 +445,8 @@ export default function AgentAdmin() {
             </div>
           )}
         </section>
+          </>
+        )}
 
       </main>
     </div>
