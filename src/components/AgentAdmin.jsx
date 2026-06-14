@@ -12,6 +12,7 @@ import NotificationCenter from './NotificationCenter.jsx'
 import FailureAdvisorPanel from './FailureAdvisorPanel.jsx'
 import AutoRecoveryPanel from './AutoRecoveryPanel.jsx'
 import OperatorConsole from './OperatorConsole.jsx'
+import OperatorMissionDetail from './OperatorMissionDetail.jsx'
 import OperatorProjectsPanel from './OperatorProjectsPanel.jsx'
 import OperatorRunbooks from './OperatorRunbooks.jsx'
 import DeploySessionsPanel from './DeploySessionsPanel.jsx'
@@ -176,6 +177,7 @@ export default function AgentAdmin() {
             <FailureAdvisorPanel />
             <AutoRecoveryPanel />
             <OperatorConsole />
+            <OperatorMissionDetail />
           </>
         )}
 
