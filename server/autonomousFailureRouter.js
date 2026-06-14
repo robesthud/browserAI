@@ -1,5 +1,6 @@
 import { classifyFailure, recommendAutoFix, createIncidentFromFailure } from './failureClassifier.js'
 import { createNotification } from './notifications.js'
+import { maybeAutoRecoverFailure } from './autonomousRecovery.js'
 
 function severityRank(s = 'medium') {
   return ({ info: 1, low: 1, success: 1, medium: 2, warning: 2, high: 3, error: 3, critical: 4 })[s] || 2
@@ -33,7 +34,11 @@ export function routeFailure({ userId = '', source = '', title = '', error = '',
       })
     } catch { /* best-effort */ }
   }
-  return { classification, recommendation, incident: createdIncident, notification }
+  let recovery = null
+  try {
+    recovery = maybeAutoRecoverFailure({ userId, source, entityType, entityId, input: { ...input, title, error, data }, recommendation })
+  } catch { /* best-effort */ }
+  return { classification, recommendation, incident: createdIncident, notification, recovery }
 }
 
 export default { routeFailure }
