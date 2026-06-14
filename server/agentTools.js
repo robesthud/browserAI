@@ -1257,7 +1257,7 @@ export const TOOLS = {
     },
   },
   operator_start_mission: {
-    description: 'Start an Operator Mode mission. Use for broad end-to-end tasks: universal_dev_task, code_task, fix_tests, full_diagnostic, fix_deploy, safe_deploy, self_heal_restart. Production-write missions require confirm=true after user approval.',
+    description: 'Start an Operator Mode mission. Use for broad end-to-end tasks: universal_dev_task, full_dev_cycle, code_task, fix_tests, full_diagnostic, fix_deploy, safe_deploy, self_heal_restart. Production-write missions require confirm=true after user approval.',
     params: {
       type: { type: 'string', optional: true, description: 'Mission type. Default: universal_dev_task.' },
       goal: { type: 'string', required: true, description: 'User goal / task description.' },
@@ -1312,6 +1312,21 @@ export const TOOLS = {
     },
     handler: async ({ kind, id } = {}) => {
       try { const { sendOperatorReportTelegram } = await import('./operatorReports.js'); return ok(await sendOperatorReportTelegram({ kind, id })) } catch (e) { return err(e.message) }
+    },
+  },
+
+  operator_get_super_workflow: {
+    description: 'Get a Super Operator Workflow by id, including linked code task/deploy status.',
+    params: { id: { type: 'string', required: true, description: 'Super workflow id.' } },
+    handler: async ({ id } = {}) => {
+      try { const { getSuperWorkflow } = await import('./operatorSuperWorkflow.js'); const workflow = getSuperWorkflow(id); return workflow ? ok({ workflow }) : err('super workflow not found') } catch (e) { return err(e.message) }
+    },
+  },
+  operator_list_super_workflows: {
+    description: 'List recent Super Operator Workflows.',
+    params: { limit: { type: 'number', optional: true, description: 'Max workflows.' } },
+    handler: async ({ limit = 10, _userId } = {}) => {
+      try { const { listSuperWorkflows } = await import('./operatorSuperWorkflow.js'); return ok({ workflows: listSuperWorkflows({ userId: _userId || '', limit }) }) } catch (e) { return err(e.message) }
     },
   },
 

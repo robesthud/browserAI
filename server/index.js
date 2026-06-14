@@ -80,6 +80,7 @@ import { getAutomationPolicy, listAutomationPolicyEvents } from './automationPol
 import { initIncidents, listIncidents, getIncident, resolveIncident, createIncident, createIncidentWorkflow } from './incidents.js'
 import { getAgentControlPlane } from './agentControlPlane.js'
 import { initOperatorMode, getOperatorStatus, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorMission, listOperatorMissionEvents, cancelOperatorMission, resumeOperatorMission } from './operatorMode.js'
+import { getSuperWorkflow, listSuperWorkflows, cancelSuperWorkflow, resumeSuperWorkflow } from './operatorSuperWorkflow.js'
 import { initDeploySessions, createDeploySession, getDeploySession, listDeploySessions, startDeploySession, cancelDeploySession, resumeDeploySession } from './deploySessions.js'
 import { listRunbooks, readRunbook, writeRunbook, appendLesson } from './operatorRunbooks.js'
 import { analyzeOperatorProject } from './operatorProjectOnboarding.js'
@@ -3244,6 +3245,28 @@ app.post('/api/operator/projects/analyze', requireAuth, async (req, res) => {
 
 app.get('/api/operator/missions', requireAuth, (req, res) => {
   res.json({ missions: listOperatorMissions({ userId: req.user?.id || '', limit: req.query.limit || 30 }) })
+})
+
+app.get('/api/operator/super-workflows', requireAuth, (req, res) => {
+  res.json({ workflows: listSuperWorkflows({ userId: req.user?.id || '', limit: req.query.limit || 30 }) })
+})
+
+app.get('/api/operator/super-workflows/:id', requireAuth, (req, res) => {
+  const workflow = getSuperWorkflow(req.params.id)
+  if (!workflow || (workflow.userId && workflow.userId !== req.user?.id)) return res.status(404).json({ error: 'super workflow not found' })
+  res.json({ workflow })
+})
+
+app.post('/api/operator/super-workflows/:id/cancel', requireAuth, (req, res) => {
+  const workflow = getSuperWorkflow(req.params.id)
+  if (!workflow || (workflow.userId && workflow.userId !== req.user?.id)) return res.status(404).json({ error: 'super workflow not found' })
+  res.json({ ok: true, workflow: cancelSuperWorkflow(req.params.id) })
+})
+
+app.post('/api/operator/super-workflows/:id/resume', requireAuth, (req, res) => {
+  const workflow = getSuperWorkflow(req.params.id)
+  if (!workflow || (workflow.userId && workflow.userId !== req.user?.id)) return res.status(404).json({ error: 'super workflow not found' })
+  res.json({ ok: true, workflow: resumeSuperWorkflow(req.params.id) })
 })
 
 app.get('/api/operator/missions/:id', requireAuth, (req, res) => {

@@ -4,6 +4,7 @@ import { createJob, getJob, startJob, cancelJob } from './jobs.js'
 import { getActiveKeyDecrypted } from './db.js'
 import { runOpsAction } from './ops.js'
 import { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, cancelOperatorCodeTask, resumeOperatorCodeTask } from './operatorCode.js'
+import { initOperatorSuperWorkflows, startSuperOperatorWorkflow, getSuperWorkflow, cancelSuperWorkflow, resumeSuperWorkflow } from './operatorSuperWorkflow.js'
 
 let initialized = false
 
@@ -42,6 +43,13 @@ export const OPERATOR_MISSION_TYPES = [
     title: 'Universal developer task',
     icon: '🧠',
     description: 'Одна кнопка для любой задачи разработки: агент сам выбирает путь — кодинг, диагностика, деплой, CI, исследование.',
+    risk: 'agent',
+  },
+  {
+    id: 'full_dev_cycle',
+    title: 'Full dev cycle',
+    icon: '🏁',
+    description: 'End-to-end developer workflow: code task → review → PR → CI → auto-fix → optional merge/deploy.',
     risk: 'agent',
   },
   {
@@ -148,6 +156,7 @@ export function initOperatorMode() {
     CREATE INDEX IF NOT EXISTS idx_operator_events_user ON operator_mission_events(user_id, created_at);
   `)
   initOperatorCode()
+  initOperatorSuperWorkflows()
   initialized = true
 }
 
@@ -188,11 +197,12 @@ function rowToMission(r) {
   mission.events = listOperatorMissionEvents({ missionId: mission.id, userId: mission.userId, limit: 200 })
   if (mission.workflowId) mission.workflow = getWorkflow(mission.workflowId)
   if (mission.jobId) mission.job = getJob(mission.jobId)
+  if (mission.result?.superWorkflowId) mission.superWorkflow = getSuperWorkflow(mission.result.superWorkflowId)
   if (mission.result?.codeTaskId) mission.codeTask = getOperatorCodeTask(mission.result.codeTaskId)
-  const linkedStatus = mission.workflow?.status || mission.job?.status || mission.codeTask?.status || ''
+  const linkedStatus = mission.superWorkflow?.status || mission.workflow?.status || mission.job?.status || mission.codeTask?.status || ''
   if (linkedStatus && mission.status === 'running' && ['succeeded', 'failed', 'cancelled'].includes(linkedStatus)) {
     mission.status = linkedStatus
-    mission.finishedAt = mission.workflow?.finishedAt || mission.job?.finishedAt || mission.codeTask?.finishedAt || mission.finishedAt
+    mission.finishedAt = mission.superWorkflow?.finishedAt || mission.workflow?.finishedAt || mission.job?.finishedAt || mission.codeTask?.finishedAt || mission.finishedAt
   }
   return mission
 }
@@ -302,6 +312,7 @@ export function classifyOperatorGoal(goal = '') {
   const wantsDiagnostic = has('диагност', 'проверь', 'health', 'логи', 'logs', 'статус', 'status', 'почему')
   const wantsProdWrite = wantsDeploy && !wantsFixDeploy && has('задеплой', 'deploy', 'разверни')
   if (wantsRestart) return { route: 'self_heal_restart', reason: 'restart/self-heal requested', requiresConfirmation: true }
+  if (wantsDeploy && isCodingGoal(text)) return { route: 'full_dev_cycle', reason: 'development task with production deploy requested', requiresConfirmation: true }
   if (wantsProdWrite) return { route: 'safe_deploy', reason: 'production deploy requested', requiresConfirmation: true }
   if (wantsFixDeploy) return { route: 'fix_deploy', reason: 'deploy failure investigation requested' }
   if (wantsCi) return { route: 'full_diagnostic', reason: 'CI/GitHub status requested' }
@@ -384,6 +395,11 @@ export function startOperatorMission({ userId = '', projectId = 'browserai', typ
   addOperatorMissionEvent({ missionId, userId, type: 'info', title: 'Mission created', message: `${missionType.title}: ${goal || missionType.description}`, data: { type: missionType.id, routeInfo } })
 
   try {
+    if (missionType.id === 'full_dev_cycle') {
+      const sw = startSuperOperatorWorkflow({ userId, missionId, project, goal: goal || missionType.description, options: { autoFinalize: true, autoWaitCi: true, autoFixCi: true, autoMerge: confirm, autoDeploy: confirm, confirmMerge: confirm, confirmDeploy: confirm } })
+      addOperatorMissionEvent({ missionId, userId, type: 'info', title: 'Super workflow started', message: sw.id, data: { superWorkflowId: sw.id } })
+      return patchMission(missionId, { status: 'running', result: { superWorkflowId: sw.id, routeInfo } })
+    }
     if (['code_task', 'fix_tests'].includes(missionType.id)) {
       const codeTask = startOperatorCodeTask({ userId, missionId, project, goal: goal || missionType.description, mode: missionType.id })
       addOperatorMissionEvent({ missionId, userId, type: 'info', title: 'Code task started', message: codeTask.id, data: { codeTaskId: codeTask.id, branch: codeTask.branch } })
@@ -432,6 +448,7 @@ export function cancelOperatorMission(missionId) {
   const mission = getOperatorMission(missionId)
   if (!mission) return null
   if (['succeeded', 'failed', 'cancelled'].includes(mission.status)) return mission
+  try { if (mission.result?.superWorkflowId) cancelSuperWorkflow(mission.result.superWorkflowId) } catch { /* best-effort */ }
   try { if (mission.workflowId) cancelWorkflow(mission.workflowId) } catch { /* best-effort */ }
   try { if (mission.jobId) cancelJob(mission.jobId) } catch { /* best-effort */ }
   try { if (mission.result?.codeTaskId) cancelOperatorCodeTask(mission.result.codeTaskId) } catch { /* best-effort */ }
@@ -446,6 +463,10 @@ export function resumeOperatorMission(missionId) {
   if (!['failed', 'cancelled'].includes(mission.status)) return mission
   addOperatorMissionEvent({ missionId, userId: mission.userId, type: 'info', title: 'Mission resumed', message: 'Resume requested by user' })
   try {
+    if (mission.result?.superWorkflowId) {
+      resumeSuperWorkflow(mission.result.superWorkflowId)
+      return patchMission(missionId, { status: 'running', error: '', finishedAt: null })
+    }
     if (mission.result?.codeTaskId) {
       resumeOperatorCodeTask(mission.result.codeTaskId)
       return patchMission(missionId, { status: 'running', error: '', finishedAt: null })

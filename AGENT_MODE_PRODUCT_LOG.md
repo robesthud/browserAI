@@ -761,3 +761,328 @@ Env:
 Purpose:
 
 Prevent uncontrolled recovery loops while letting safe recoveries complete and update incidents/reports automatically.
+
+---
+
+# Grouped execution strategy from this point
+
+Правило разработки дальше: связанные блоки выполняются пакетами, чтобы каждый пакет давал законченный production-ready контур.
+
+## Package quality checklist
+
+Каждый пакет должен включать, когда применимо:
+
+1. Architecture/design note.
+2. Backend implementation.
+3. API endpoints.
+4. Agent tools.
+5. UI components.
+6. Tests.
+7. Documentation/runbook update.
+8. `npm test`.
+9. `npm run build`.
+10. Commit + push.
+11. Deploy.
+12. Production `/api/health` check.
+13. Docker logs check.
+14. Short user-facing report.
+
+## Package grouping rule
+
+Allowed:
+
+- 2–4 blocks if they are one domain and produce one end-to-end capability.
+- Backend + UI + tests + docs in one package.
+- Runtime + observability + report in one package.
+
+Avoid:
+
+- unrelated rewrites in one package;
+- multiple core runtime rewrites together;
+- production-risk changes without isolated deploy verification;
+- UI redesign mixed with auth/deploy core changes.
+
+---
+
+# Remaining roadmap grouped into execution packages
+
+## Package A — Super Operator Workflow v1
+
+Goal: one end-to-end mission that can take a development task from user goal to verified PR and optional deploy.
+
+Blocks:
+
+1. `operator_super_missions` / orchestration layer.
+2. `operator_full_dev_cycle` mission type.
+3. End-to-end state machine:
+   - classify goal;
+   - create code task;
+   - wait code task verification;
+   - review/risk gate;
+   - finalize commit/PR;
+   - wait CI;
+   - auto-fix CI if needed;
+   - request/require approval for merge/deploy;
+   - merge PR;
+   - deploy session;
+   - post-deploy health/log verification;
+   - unified report.
+4. UI controls in Operator Console.
+5. Tests for orchestration path with mocked/structural states.
+6. Documentation.
+
+Result:
+
+User can ask: “Сделай фичу X и доведи до продакшена”, and BrowserAI has one mission that coordinates the full lifecycle.
+
+---
+
+## Package B — Mission Detail Pages + Timeline UX
+
+Goal: make missions inspectable like a professional operator console.
+
+Blocks:
+
+1. Dedicated mission detail route/panel.
+2. Mission timeline with grouped events:
+   - workflow;
+   - code task;
+   - CI;
+   - deploy;
+   - notifications;
+   - incidents.
+3. Code task detail section:
+   - branch;
+   - PR;
+   - verification;
+   - review;
+   - CI;
+   - auto-fix attempts.
+4. Deploy detail section:
+   - deploy session events;
+   - logs;
+   - health checks;
+   - report.
+5. Incident/RCA detail section.
+6. Copy/save/send report actions.
+7. Tests for report/timeline data renderability.
+
+Result:
+
+Every autonomous task has a clear audit trail and UI surface.
+
+---
+
+## Package C — GitHub Issue/PR Comment Automation
+
+Goal: make BrowserAI react to GitHub like a real developer assistant.
+
+Blocks:
+
+1. Webhook support for:
+   - `issues.opened`;
+   - `issue_comment.created`;
+   - `pull_request_review_comment.created`;
+   - `pull_request` events.
+2. Command parser for comments:
+   - `/browserai fix`;
+   - `/browserai review`;
+   - `/browserai deploy`;
+   - `/browserai status`.
+3. Issue → operator mission mapping.
+4. PR comment → code task / CI auto-fix mapping.
+5. GitHub comment reporting.
+6. Policy gates for repo events.
+7. Tests for webhook event routing.
+
+Result:
+
+GitHub becomes a control surface for your personal agent.
+
+---
+
+## Package D — Reviewer Agent v2 + Semantic Diff Review
+
+Goal: improve code quality and safety before merge/deploy.
+
+Blocks:
+
+1. LLM reviewer agent for diffs.
+2. Deterministic + LLM combined risk score.
+3. Review dimensions:
+   - correctness;
+   - security;
+   - test coverage;
+   - architecture;
+   - UX/accessibility;
+   - deploy risk.
+4. Review summary stored in code task.
+5. Merge gate requires reviewer approval or human override for high risk.
+6. UI review panel.
+7. Tests for deterministic risk gates and review persistence.
+
+Result:
+
+The agent reviews its own work before merge.
+
+---
+
+## Package E — Project Policies v2
+
+Goal: support many projects safely, not only BrowserAI.
+
+Blocks:
+
+1. Per-project policy config:
+   - allowed tools;
+   - auto-fix allowed categories;
+   - auto-merge allowed;
+   - deploy allowed;
+   - required approvals;
+   - max runtime;
+   - max cost/budget.
+2. Project policy UI.
+3. Policy integration in:
+   - operator missions;
+   - code tasks;
+   - merge/deploy;
+   - autonomous recovery;
+   - scheduled automations.
+4. Tests for project-specific allow/deny behavior.
+
+Result:
+
+Each project can have a different safety posture.
+
+---
+
+## Package F — Long-running Shell / Command Sessions
+
+Goal: provide robust command execution like an operator terminal, with attach/detach.
+
+Blocks:
+
+1. Persistent command sessions table.
+2. Start/read/wait/kill session API.
+3. Live stdout/stderr storage.
+4. Tool wrappers:
+   - `operator_shell_start`;
+   - `operator_shell_read`;
+   - `operator_shell_wait`;
+   - `operator_shell_kill`.
+5. UI terminal/log panel.
+6. Integration with code/deploy sessions.
+7. Tests with short commands.
+
+Result:
+
+Agent can run and monitor long commands like builds, tests, migrations, deploys.
+
+---
+
+## Package G — Multi-project Workspace Manager
+
+Goal: make onboarding and worktree management robust across arbitrary repositories.
+
+Blocks:
+
+1. Project worktree table.
+2. Branch/worktree lifecycle:
+   - create;
+   - reuse;
+   - cleanup;
+   - lock;
+   - status.
+3. Repo credentials strategy:
+   - public clone;
+   - token clone;
+   - SSH clone later.
+4. Monorepo package detection.
+5. Project-specific runbooks and lessons namespacing.
+6. UI project/worktree management.
+7. Tests for path/branch generation.
+
+Result:
+
+Agent can work across multiple repositories safely.
+
+---
+
+## Package H — Security Hardening Package
+
+Goal: prepare for production-level personal agent use.
+
+Blocks:
+
+1. Rotate exposed credentials checklist.
+2. Token/secret upload scanner.
+3. Redaction audit across logs/reports/traces.
+4. SSH key workflow instead of root password.
+5. Vault-only credentials for GitHub/Timeweb.
+6. Approval policy UI for dangerous operations.
+7. Audit dashboard.
+8. Tests for redaction and secret scanning.
+
+Result:
+
+The agent becomes safer to operate with real production access.
+
+---
+
+## Package I — Model Routing / Multi-agent Roles
+
+Goal: improve quality and cost by using different model roles.
+
+Blocks:
+
+1. Planner model.
+2. Coder model.
+3. Reviewer model.
+4. Summarizer/report model.
+5. Project-specific preferred models.
+6. Fallback model on provider failure.
+7. Cost tracking per mission phase.
+8. UI for model routing.
+
+Result:
+
+Operator Mode becomes more reliable and cheaper for long tasks.
+
+---
+
+## Package J — Full Product Navigation
+
+Goal: move from `/admin/agent` lab to polished product sections.
+
+Blocks:
+
+1. `/operator` overview.
+2. `/operator/missions`.
+3. `/operator/projects`.
+4. `/operator/incidents`.
+5. `/operator/deploys`.
+6. `/operator/runbooks`.
+7. `/operator/settings`.
+8. Sidebar/global navigation.
+9. Mobile responsive layouts.
+
+Result:
+
+BrowserAI becomes a real Operator Console product instead of a single admin lab page.
+
+---
+
+# Recommended execution order
+
+1. Package A — Super Operator Workflow v1.
+2. Package B — Mission Detail Pages + Timeline UX.
+3. Package D — Reviewer Agent v2 + Semantic Diff Review.
+4. Package E — Project Policies v2.
+5. Package C — GitHub Issue/PR Comment Automation.
+6. Package F — Long-running Shell / Command Sessions.
+7. Package G — Multi-project Workspace Manager.
+8. Package H — Security Hardening Package.
+9. Package I — Model Routing / Multi-agent Roles.
+10. Package J — Full Product Navigation.
+
+This order prioritizes end-to-end operator capability first, then UX, safety, integrations, and scalability.

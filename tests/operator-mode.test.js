@@ -12,6 +12,7 @@ describe('operator mode', () => {
     expect(browserai?.meta?.commands?.test).toBeTruthy()
     expect(browserai?.meta?.deploy?.healthUrl).toContain('/api/health')
     expect(OPERATOR_MISSION_TYPES.map((m) => m.id)).toContain('universal_dev_task')
+    expect(OPERATOR_MISSION_TYPES.map((m) => m.id)).toContain('full_dev_cycle')
     expect(OPERATOR_MISSION_TYPES.map((m) => m.id)).toContain('code_task')
     expect(OPERATOR_MISSION_TYPES.map((m) => m.id)).toContain('custom_agent')
     expect(OPERATOR_MISSION_TYPES.map((m) => m.id)).toContain('safe_deploy')
@@ -21,6 +22,7 @@ describe('operator mode', () => {
     expect(classifyOperatorGoal('проверь почему деплой падает и логи').route).toBe('fix_deploy')
     expect(classifyOperatorGoal('задеплой новую версию').route).toBe('safe_deploy')
     expect(classifyOperatorGoal('добавь кнопку в интерфейс и протестируй').route).toBe('code_task')
+    expect(classifyOperatorGoal('добавь кнопку и задеплой в production').route).toBe('full_dev_cycle')
     expect(classifyOperatorGoal('перезапусти сервис и проверь health').route).toBe('self_heal_restart')
   })
 
