@@ -76,10 +76,10 @@ export function classifyAgentTask(text = '') {
   // We want to trigger Agent Mode for ANYTHING that looks like work,
   // not just high-complexity requests.
   
-  if (has('деплой', 'разверни', 'сервер', 'timeweb', 'docker', 'nginx', 'ssl', 'github', 'ci/cd', 'логи', 'logs')) {
+  if (has('деплой', 'разверни', 'сервер', 'timeweb', 'docker', 'nginx', 'ssl', 'ci/cd', 'github actions', 'workflow failed', 'логи', 'logs')) {
     return { type: 'deploy_ops', complexity: 'high', suggestedMaxSteps: 60 }
   }
-  if (has('исправ', 'почини', 'реализуй', 'добавь', 'перепиши', 'refactor', 'fix ', 'implement', 'bug', 'ошибк', 'код', 'скрипт', 'script', 'function', 'тест', 'test')) {
+  if (has('исправ', 'почини', 'реализуй', 'добавь', 'перепиши', 'refactor', 'fix ', 'implement', 'bug', 'баг', 'ошибк', 'код', 'скрипт', 'script', 'function', 'тест', 'test')) {
     return { type: 'coding_change', complexity: 'high', suggestedMaxSteps: 50 }
   }
   // NB: plain «файл»/«папка» removed — «создай файл hello.txt» is a simple
@@ -90,7 +90,7 @@ export function classifyAgentTask(text = '') {
   if (has('найди в интернете', 'актуальн', 'новост', 'документац', 'research', 'web search', 'поиск')) {
     return { type: 'research', complexity: 'medium', suggestedMaxSteps: 25 }
   }
-  if (has('браузер', 'открой сайт', 'скриншот', 'кликни', 'browser', 'url')) {
+  if (has('браузер', 'открой сайт', 'скриншот', 'кликни', 'url') || /(^|\s)browser(\s|$)/i.test(t) || /https?:\/\//i.test(t)) {
     return { type: 'browser_task', complexity: 'medium', suggestedMaxSteps: 35 }
   }
   // Action verbs that did not match a more specific bucket above

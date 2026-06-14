@@ -9,9 +9,15 @@ export function lastUserText(history = []) {
 }
 
 export function extractGithubRepoUrl(text = '') {
-  const m = String(text || '').match(/https?:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?(?:\/)?/i)
-  if (!m) return ''
-  return m[0].replace(/\/$/, '').replace(/\.git$/i, '') + '.git'
+  const raw = String(text || '')
+  const url = raw.match(/https?:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?(?:\/)?/i)
+  if (url) return url[0].replace(/\/$/, '').replace(/\.git$/i, '') + '.git'
+  // Natural language form: "скачай файлы с github robesthud/browserAI".
+  // Do not require a full URL; owner/repo is enough when GitHub is mentioned.
+  if (!/(github|гитхаб|гитхаба|гитхабе)/i.test(raw)) return ''
+  const slug = raw.match(/\b([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\b/)
+  if (!slug) return ''
+  return `https://github.com/${slug[1].replace(/\.git$/i, '')}.git`
 }
 
 function has(text, re) { return re.test(String(text || '')) }
