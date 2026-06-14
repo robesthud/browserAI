@@ -940,28 +940,66 @@ The agent reviews its own work before merge with deterministic + semantic checks
 
 Goal: support many projects safely, not only BrowserAI.
 
+Status: implemented in this package.
+
 Blocks:
 
-1. Per-project policy config:
-   - allowed tools;
-   - auto-fix allowed categories;
-   - auto-merge allowed;
-   - deploy allowed;
-   - required approvals;
-   - max runtime;
-   - max cost/budget.
-2. Project policy UI.
-3. Policy integration in:
-   - operator missions;
-   - code tasks;
+1. Per-project policy config stored in project `meta.policy`:
+   - allowed code/PR/CI auto-fix/merge/deploy/production-write actions;
+   - autonomy defaults for finalize, wait CI, auto-fix, auto-merge, auto-deploy;
+   - required approvals for merge/deploy/production/high-risk work;
+   - max runtime, CI auto-fix attempts, changed-file limit;
+   - protected paths and high-risk paths;
+   - CI/review risk requirements.
+2. Policy presets:
+   - Safe;
+   - Balanced;
+   - Autonomous;
+   - Production Critical.
+3. Backend policy engine:
+   - `server/operatorProjectPolicies.js`;
+   - normalization;
+   - allow/deny decisions;
+   - protected path checks;
+   - super-workflow option shaping.
+4. API endpoints:
+   - `GET /api/operator/project-policy-presets`;
+   - `POST /api/operator/project-policy/evaluate`;
+   - project upsert normalizes policy.
+5. Agent tool:
+   - `operator_evaluate_project_policy`.
+6. Policy integration in:
+   - operator mission routing;
+   - code task start;
+   - code task review gates;
+   - finalize/PR;
+   - wait CI;
+   - CI auto-fix;
    - merge/deploy;
-   - autonomous recovery;
-   - scheduled automations.
-4. Tests for project-specific allow/deny behavior.
+   - super workflow options.
+7. UI in Operator Projects:
+   - preset selector;
+   - action permission toggles;
+   - CI auto-fix attempts;
+   - changed-file limit.
+8. Tests:
+   - preset normalization;
+   - allow/deny behavior;
+   - approval requirements;
+   - protected path blocking;
+   - super-workflow policy shaping.
+
+Runbook notes:
+
+- Use **Safe** for newly onboarded or unknown repositories.
+- Use **Balanced** for BrowserAI/default projects: code + PR + CI + auto-fix are allowed, merge/deploy require explicit confirmation and green gates.
+- Use **Autonomous** only for trusted non-critical projects where low-risk auto-merge is acceptable.
+- Use **Production Critical** for services where high-risk changes and production writes must always remain approval-gated.
+- Protected path matches block review/merge gates before PR/deploy; high-risk path matches are surfaced as warnings.
 
 Result:
 
-Each project can have a different safety posture.
+Each project can now have a different safety posture, and Operator Mode respects it across missions, code tasks, PR/CI, merge and deploy.
 
 ---
 

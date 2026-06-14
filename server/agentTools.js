@@ -1352,6 +1352,23 @@ export const TOOLS = {
     },
   },
 
+  operator_evaluate_project_policy: {
+    description: 'Evaluate a project policy decision for an operator action such as code.finalize, code.merge, code.deploy, mission.full_dev_cycle.',
+    params: {
+      project_id: { type: 'string', optional: true, description: 'Project id, default browserai.' },
+      action: { type: 'string', required: true, description: 'Policy action to evaluate.' },
+      context: { type: 'object', optional: true, description: 'Decision context: files, risk, ciOk, confirm.' },
+    },
+    handler: async ({ project_id = 'browserai', action = '', context = {}, _userId } = {}) => {
+      try {
+        const { listOperatorProjects, evaluateProjectPolicy, normalizeProjectPolicy } = await import('./operatorMode.js')
+        const project = listOperatorProjects({ userId: _userId || '' }).find((p) => p.id === project_id)
+        const policy = normalizeProjectPolicy(project?.meta?.policy || {})
+        return ok({ decision: evaluateProjectPolicy(policy, action, context), project: project ? { id: project.id, name: project.name } : null })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
   operator_review_code_task: {
     description: 'Review an Operator Code Task diff, assign risk score, identify blockers/warnings, and decide whether merge/deploy gates are allowed.',
     params: { id: { type: 'string', required: true, description: 'Operator code task id.' } },

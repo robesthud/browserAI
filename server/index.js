@@ -79,7 +79,7 @@ import { initAgentWorkflows, listAutomationRecipes, createWorkflow, startWorkflo
 import { getAutomationPolicy, listAutomationPolicyEvents } from './automationPolicy.js'
 import { initIncidents, listIncidents, getIncident, resolveIncident, createIncident, createIncidentWorkflow } from './incidents.js'
 import { getAgentControlPlane } from './agentControlPlane.js'
-import { initOperatorMode, getOperatorStatus, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorMission, listOperatorMissionEvents, cancelOperatorMission, resumeOperatorMission } from './operatorMode.js'
+import { initOperatorMode, getOperatorStatus, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorMission, listOperatorMissionEvents, cancelOperatorMission, resumeOperatorMission, PROJECT_POLICY_PRESETS, normalizeProjectPolicy, evaluateProjectPolicy } from './operatorMode.js'
 import { getSuperWorkflow, listSuperWorkflows, cancelSuperWorkflow, resumeSuperWorkflow } from './operatorSuperWorkflow.js'
 import { initDeploySessions, createDeploySession, getDeploySession, listDeploySessions, startDeploySession, cancelDeploySession, resumeDeploySession } from './deploySessions.js'
 import { listRunbooks, readRunbook, writeRunbook, appendLesson } from './operatorRunbooks.js'
@@ -3227,6 +3227,18 @@ app.get('/api/operator/project-templates', requireAuth, (_req, res) => {
   res.json({ templates: PROJECT_TEMPLATES })
 })
 
+app.get('/api/operator/project-policy-presets', requireAuth, (_req, res) => {
+  res.json({ presets: Object.values(PROJECT_POLICY_PRESETS) })
+})
+
+app.post('/api/operator/project-policy/evaluate', requireAuth, (req, res) => {
+  try {
+    const project = listOperatorProjects({ userId: req.user?.id || '' }).find((p) => p.id === String(req.body?.projectId || 'browserai'))
+    const policy = normalizeProjectPolicy(req.body?.policy || project?.meta?.policy || {})
+    res.json({ ok: true, decision: evaluateProjectPolicy(policy, String(req.body?.action || 'mission.general'), req.body?.context || {}) })
+  } catch (e) { res.status(400).json({ ok: false, error: e?.message || String(e) }) }
+})
+
 app.get('/api/operator/runtime-adapters', requireAuth, (_req, res) => {
   res.json({ adapters: RUNTIME_ADAPTERS })
 })
@@ -3366,6 +3378,7 @@ app.post('/api/operator/code-tasks/:id/merge', requireAuth, async (req, res) => 
       taskId: req.params.id,
       mergeMethod: String(req.body?.mergeMethod || req.body?.merge_method || 'squash'),
       deploy: req.body?.deploy === true,
+      confirmMerge: req.body?.confirmMerge === true || req.body?.confirm_merge === true,
       confirmDeploy: req.body?.confirmDeploy === true || req.body?.confirm_deploy === true,
     })
     res.json({ ok: true, task: updated })

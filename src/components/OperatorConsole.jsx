@@ -114,7 +114,7 @@ export default function OperatorConsole() {
     setBusy(true)
     setError('')
     try {
-      await api(`/api/operator/code-tasks/${encodeURIComponent(taskId)}/merge`, { method: 'POST', body: JSON.stringify({ mergeMethod: 'squash', deploy, confirmDeploy: deploy }) })
+      await api(`/api/operator/code-tasks/${encodeURIComponent(taskId)}/merge`, { method: 'POST', body: JSON.stringify({ mergeMethod: 'squash', deploy, confirmMerge: true, confirmDeploy: deploy }) })
       await refresh()
     } catch (e) { setError(e.message || String(e)) }
     finally { setBusy(false) }

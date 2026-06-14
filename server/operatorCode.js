@@ -11,6 +11,7 @@ import { createWorkflow, startWorkflow } from './agentWorkflows.js'
 import { addOperatorMissionEvent } from './operatorMode.js'
 import { appendLesson } from './operatorRunbooks.js'
 import { callLLM } from './llmClient.js'
+import { normalizeProjectPolicy, policyForProject, evaluateProjectPolicy } from './operatorProjectPolicies.js'
 
 let initialized = false
 const monitors = new Map()
@@ -203,7 +204,10 @@ function repoToDir(repo = '') {
 }
 
 function projectMetaFromTask(task = {}) {
-  return task.result?.project?.meta || {}
+  return task.result?.project?.meta || task.verify?.project?.meta || {}
+}
+function projectPolicyFromTask(task = {}) {
+  return normalizeProjectPolicy(task.result?.policy || task.verify?.project?.meta?.policy || task.result?.project?.meta?.policy || {})
 }
 function commandFromProject(task = {}, name, fallback = '') {
   const meta = projectMetaFromTask(task)
@@ -242,8 +246,11 @@ export function startOperatorCodeTask({ userId = '', missionId = '', project = {
   const workdir = project?.localPath && project.localPath.startsWith('/workspace') ? project.localPath : path.join(PROJECTS_ROOT, repoToDir(repo))
   const branchPrefix = String(project?.meta?.git?.branchPrefix || 'operator').replace(/[^a-zA-Z0-9/_-]/g, '-') || 'operator'
   const branch = `${branchPrefix}/${mode}-${Date.now().toString(36)}-${taskId.slice(-6)}`
+  const policy = policyForProject(project)
+  const policyDecision = evaluateProjectPolicy(policy, 'code.start', { goal, mode })
+  if (!policyDecision.ok) throw new Error(`Project policy blocked code task: ${policyDecision.blockers.map((b) => b.message).join('; ')}`)
   db.prepare(`INSERT INTO operator_code_tasks (id,user_id,mission_id,project_id,status,goal,repo,workdir,branch,verify_json,result_json,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,'{}',?, ?,?)`).run(taskId, String(userId || ''), String(missionId || ''), project?.id || 'browserai', 'queued', String(goal || '').slice(0, 4000), repo, workdir, branch, JSON.stringify({ project }), ts, ts)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?, ?,?)`).run(taskId, String(userId || ''), String(missionId || ''), project?.id || 'browserai', 'queued', String(goal || '').slice(0, 4000), repo, workdir, branch, JSON.stringify({ project }), JSON.stringify({ project, policy }), ts, ts)
   if (autostart !== false) setTimeout(() => monitorCodeTask(taskId), 10).unref?.()
   return getOperatorCodeTask(taskId)
 }
@@ -414,6 +421,8 @@ export function startOperatorCodeCiAutoFix({ taskId = '', maxAttempts = 2 } = {}
   initOperatorCode()
   const start = getOperatorCodeTask(taskId)
   if (!start) throw new Error('code task not found')
+  const policyDecision = evaluateProjectPolicy(projectPolicyFromTask(start), 'code.auto_fix_ci', {})
+  if (!policyDecision.ok) throw new Error(`Project policy blocked CI auto-fix: ${policyDecision.blockers.map((b) => b.message).join('; ')}`)
   const key = `ci-fix:${taskId}`
   if (monitors.has(key)) return start
   monitors.set(key, true)
@@ -631,7 +640,13 @@ export async function reviewOperatorCodeTask({ taskId = '' } = {}) {
   }
   const git = { status: status.stdout, stat: stat.stdout, diffPreview: diffShort.stdout }
   const semantic = await semanticReview({ task, files, fileRisks, verification, git })
+  const policy = projectPolicyFromTask(task)
+  const policyDecision = evaluateProjectPolicy(policy, 'code.review_files', { files, risk: semantic?.available ? semantic.risk : undefined, ciOk: verification.ciOk })
   const gates = combineReviewGates({ files, fileRisks, verification, semantic })
+  if (!policyDecision.ok) gates.blockers.push(`Project policy: ${policyDecision.blockers.map((b) => b.message).join('; ')}`)
+  for (const w of policyDecision.warnings || []) gates.warnings.push(`Project policy: ${w}`)
+  gates.approvedForMerge = gates.approvedForMerge && policyDecision.ok
+  gates.approvedForDeploy = gates.approvedForDeploy && policyDecision.ok
   const review = {
     schema: 'browserai.operator_code_review.v2',
     generatedAt: new Date().toISOString(),
@@ -640,6 +655,7 @@ export async function reviewOperatorCodeTask({ taskId = '' } = {}) {
     files,
     fileRisks,
     semantic,
+    policy: { preset: policy.preset, decision: policyDecision },
     verification,
     git,
     summary: `${files.length} changed file(s), risk=${gates.risk}, semantic=${semantic?.available ? semantic.risk : 'unavailable'}, merge=${gates.approvedForMerge ? 'allowed' : 'blocked'}, deploy=${gates.approvedForDeploy ? 'allowed' : 'blocked'}`,
@@ -653,6 +669,8 @@ export async function waitOperatorCodeTaskCi({ taskId = '', timeoutSec = 900, in
   initOperatorCode()
   let task = getOperatorCodeTask(taskId)
   if (!task) throw new Error('code task not found')
+  const policyDecision = evaluateProjectPolicy(projectPolicyFromTask(task), 'code.wait_ci', {})
+  if (!policyDecision.ok) throw new Error(`Project policy blocked CI wait: ${policyDecision.blockers.map((b) => b.message).join('; ')}`)
   const repo = repoSlug(task.repo)
   const branch = task.result?.finalize?.branch || task.branch
   const commit = task.result?.finalize?.commit || ''
@@ -711,6 +729,8 @@ export async function finalizeOperatorCodeTask({ taskId = '', commitMessage = ''
   initOperatorCode()
   let task = getOperatorCodeTask(taskId)
   if (!task) throw new Error('code task not found')
+  const policyDecision = evaluateProjectPolicy(projectPolicyFromTask(task), 'code.finalize', {})
+  if (!policyDecision.ok) throw new Error(`Project policy blocked finalize: ${policyDecision.blockers.map((b) => b.message).join('; ')}`)
   if (!task.workdir || !existsSync(path.join(task.workdir, '.git'))) throw new Error('code task checkout not found')
   emitTaskEvent(task, 'info', 'Finalizing code task', 'verify → secret scan → commit/push/PR')
   patchTask(task.id, { status: 'finalizing' })
@@ -788,7 +808,7 @@ export async function finalizeOperatorCodeTask({ taskId = '', commitMessage = ''
 }
 
 
-export async function mergeOperatorCodeTaskPr({ taskId = '', mergeMethod = 'squash', deploy = false, confirmDeploy = false } = {}) {
+export async function mergeOperatorCodeTaskPr({ taskId = '', mergeMethod = 'squash', deploy = false, confirmMerge = false, confirmDeploy = false } = {}) {
   initOperatorCode()
   let task = getOperatorCodeTask(taskId)
   if (!task) throw new Error('code task not found')
@@ -801,6 +821,12 @@ export async function mergeOperatorCodeTaskPr({ taskId = '', mergeMethod = 'squa
   const review = task.result?.review
   if (!review?.approvedForMerge) throw new Error(`refusing to merge: review gate blocked (${(review?.blockers || []).join('; ') || 'not approved'})`)
   if (deploy && !review?.approvedForDeploy) throw new Error(`refusing deploy after merge: deploy review gate blocked (${(review?.warnings || []).join('; ') || 'risk too high or CI not green'})`)
+  const mergePolicy = evaluateProjectPolicy(projectPolicyFromTask(task), 'code.merge', { files: review.files || [], risk: review.risk, ciOk: ci?.ok === true, confirm: confirmMerge || confirmDeploy })
+  if (!mergePolicy.ok) throw new Error(`refusing to merge: project policy blocked (${mergePolicy.blockers.map((b) => b.message).join('; ')})`)
+  if (deploy) {
+    const deployPolicy = evaluateProjectPolicy(projectPolicyFromTask(task), 'code.deploy', { files: review.files || [], risk: review.risk, ciOk: ci?.ok === true, confirm: confirmDeploy })
+    if (!deployPolicy.ok) throw new Error(`refusing deploy after merge: project policy blocked (${deployPolicy.blockers.map((b) => b.message).join('; ')})`)
+  }
 
   const repo = repoSlug(task.repo)
   const prDetails = await githubJson(`/repos/${repo}/pulls/${pr.number}`)

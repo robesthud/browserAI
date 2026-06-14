@@ -10,6 +10,7 @@ async function api(path, options = {}) {
 const empty = {
   id: 'browserai', name: 'BrowserAI', repo: 'robesthud/browserAI', localPath: '/workspace/projects/browserAI', productionPath: '/opt/browserai', defaultBranch: 'main',
   installCommand: 'npm ci --include=dev', testCommand: 'npm test', buildCommand: 'npm run build', lintCommand: 'npm run lint', healthUrl: 'http://127.0.0.1/api/health', branchPrefix: 'operator', deployRecipe: 'browserai_deploy_safe',
+  policyPreset: 'balanced', allowCode: true, allowCreatePr: true, allowAutoFixCi: true, allowMerge: true, allowDeploy: true, allowProductionWrite: true, maxCiFixAttempts: 2, maxChangedFiles: 80,
 }
 
 function formFromProject(p = {}) {
@@ -27,6 +28,15 @@ function formFromProject(p = {}) {
     healthUrl: p.meta?.deploy?.healthUrl ?? empty.healthUrl,
     branchPrefix: p.meta?.git?.branchPrefix ?? empty.branchPrefix,
     deployRecipe: p.meta?.deploy?.recipe ?? empty.deployRecipe,
+    policyPreset: p.meta?.policy?.preset ?? empty.policyPreset,
+    allowCode: p.meta?.policy?.allowed?.code ?? empty.allowCode,
+    allowCreatePr: p.meta?.policy?.allowed?.createPr ?? empty.allowCreatePr,
+    allowAutoFixCi: p.meta?.policy?.allowed?.autoFixCi ?? empty.allowAutoFixCi,
+    allowMerge: p.meta?.policy?.allowed?.merge ?? empty.allowMerge,
+    allowDeploy: p.meta?.policy?.allowed?.deploy ?? empty.allowDeploy,
+    allowProductionWrite: p.meta?.policy?.allowed?.productionWrite ?? empty.allowProductionWrite,
+    maxCiFixAttempts: p.meta?.policy?.limits?.maxCiFixAttempts ?? empty.maxCiFixAttempts,
+    maxChangedFiles: p.meta?.policy?.limits?.maxChangedFiles ?? empty.maxChangedFiles,
   }
 }
 
@@ -34,16 +44,18 @@ export default function OperatorProjectsPanel() {
   const [projects, setProjects] = useState([])
   const [templates, setTemplates] = useState([])
   const [adapters, setAdapters] = useState([])
+  const [policyPresets, setPolicyPresets] = useState([])
   const [form, setForm] = useState(empty)
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(false)
 
   const refresh = async () => {
     try {
-      const [data, tpl, adp] = await Promise.all([api('/api/operator/projects'), api('/api/operator/project-templates').catch(() => ({ templates: [] })), api('/api/operator/runtime-adapters').catch(() => ({ adapters: [] }))])
+      const [data, tpl, adp, pol] = await Promise.all([api('/api/operator/projects'), api('/api/operator/project-templates').catch(() => ({ templates: [] })), api('/api/operator/runtime-adapters').catch(() => ({ adapters: [] })), api('/api/operator/project-policy-presets').catch(() => ({ presets: [] }))])
       setProjects(data.projects || [])
       setTemplates(tpl.templates || [])
       setAdapters(adp.adapters || [])
+      setPolicyPresets(pol.presets || [])
       if ((data.projects || []).length) setForm(formFromProject(data.projects[0]))
       setError('')
     } catch (e) { setError(e.message || String(e)) }
@@ -58,6 +70,11 @@ export default function OperatorProjectsPanel() {
           commands: { install: form.installCommand, test: form.testCommand, build: form.buildCommand, lint: form.lintCommand },
           deploy: { recipe: form.deployRecipe, healthUrl: form.healthUrl, productionPath: form.productionPath },
           git: { defaultBranch: form.defaultBranch, branchPrefix: form.branchPrefix, prBase: form.defaultBranch },
+          policy: {
+            preset: form.policyPreset,
+            allowed: { code: form.allowCode, createPr: form.allowCreatePr, autoFixCi: form.allowAutoFixCi, merge: form.allowMerge, deploy: form.allowDeploy, productionWrite: form.allowProductionWrite, shell: true, waitCi: true },
+            limits: { maxCiFixAttempts: Number(form.maxCiFixAttempts) || 2, maxChangedFiles: Number(form.maxChangedFiles) || 80 },
+          },
           runbooks: ['deploy.md', 'ci.md', 'incidents.md'],
         },
       }
@@ -111,6 +128,20 @@ export default function OperatorProjectsPanel() {
             set('buildCommand', a.commandHints?.build || form.buildCommand)
             set('lintCommand', a.commandHints?.lint || form.lintCommand)
           }} className="rounded border border-white/10 px-2 py-1 text-[11px] text-cream-soft hover:bg-white/5" title={(a.riskHints || []).join(' | ')}>{a.label}</button>)}
+        </div>
+      </div>
+
+      <div className="mb-3 rounded-xl border border-white/10 bg-black/15 p-3">
+        <div className="mb-2 text-[12px] font-medium text-cream">Project Policy v2</div>
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {policyPresets.map((p) => <button key={p.id} type="button" onClick={() => { set('policyPreset', p.id); if (p.allowed) { setForm((f) => ({ ...f, policyPreset: p.id, allowCode: p.allowed.code, allowCreatePr: p.allowed.createPr, allowAutoFixCi: p.allowed.autoFixCi, allowMerge: p.allowed.merge, allowDeploy: p.allowed.deploy, allowProductionWrite: p.allowed.productionWrite, maxCiFixAttempts: p.id === 'safe' ? 0 : f.maxCiFixAttempts })) } }} className={`rounded border px-2 py-1 text-[11px] ${form.policyPreset === p.id ? 'border-violet-400/30 bg-violet-500/15 text-violet-100' : 'border-white/10 text-cream-soft hover:bg-white/5'}`} title={p.description}>{p.label}</button>)}
+        </div>
+        <div className="grid gap-2 md:grid-cols-3 lg:grid-cols-6">
+          {[
+            ['allowCode', 'Code'], ['allowCreatePr', 'PR'], ['allowAutoFixCi', 'Auto-fix CI'], ['allowMerge', 'Merge'], ['allowDeploy', 'Deploy'], ['allowProductionWrite', 'Prod write'],
+          ].map(([key, label]) => <label key={key} className="flex items-center gap-2 rounded border border-white/10 px-2 py-1.5 text-[11px] text-cream-soft"><input type="checkbox" checked={Boolean(form[key])} onChange={(e) => set(key, e.target.checked)} /> {label}</label>)}
+          <label className="text-[11px] text-cream-faint">CI fix attempts<input type="number" min="0" max="5" value={form.maxCiFixAttempts} onChange={(e) => set('maxCiFixAttempts', e.target.value)} className="mt-1 w-full rounded-lg border border-white/10 bg-graphite-900 px-2 py-1.5 text-[12px] text-cream focus:outline-none" /></label>
+          <label className="text-[11px] text-cream-faint">Changed files limit<input type="number" min="1" max="500" value={form.maxChangedFiles} onChange={(e) => set('maxChangedFiles', e.target.value)} className="mt-1 w-full rounded-lg border border-white/10 bg-graphite-900 px-2 py-1.5 text-[12px] text-cream focus:outline-none" /></label>
         </div>
       </div>
 

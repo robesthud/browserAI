@@ -5,6 +5,7 @@ import { getActiveKeyDecrypted } from './db.js'
 import { runOpsAction } from './ops.js'
 import { initOperatorCode, startOperatorCodeTask, getOperatorCodeTask, cancelOperatorCodeTask, resumeOperatorCodeTask } from './operatorCode.js'
 import { initOperatorSuperWorkflows, startSuperOperatorWorkflow, getSuperWorkflow, cancelSuperWorkflow, resumeSuperWorkflow } from './operatorSuperWorkflow.js'
+import { PROJECT_POLICY_PRESETS, normalizeProjectPolicy, policyForProject, evaluateProjectPolicy } from './operatorProjectPolicies.js'
 
 let initialized = false
 
@@ -34,6 +35,7 @@ function defaultProjectMeta() {
       prBase: 'main',
     },
     runbooks: ['deploy.md', 'ci.md', 'incidents.md'],
+    policy: normalizeProjectPolicy({ preset: 'balanced' }),
   }
 }
 
@@ -213,7 +215,7 @@ function ensureDefaultProject() {
   if (existing) {
     const currentMeta = parse(existing.meta_json, {}) || {}
     const defaults = defaultProjectMeta()
-    const mergedMeta = { ...defaults, ...currentMeta, commands: { ...defaults.commands, ...(currentMeta.commands || {}) }, deploy: { ...defaults.deploy, ...(currentMeta.deploy || {}) }, git: { ...defaults.git, ...(currentMeta.git || {}) } }
+    const mergedMeta = { ...defaults, ...currentMeta, commands: { ...defaults.commands, ...(currentMeta.commands || {}) }, deploy: { ...defaults.deploy, ...(currentMeta.deploy || {}) }, git: { ...defaults.git, ...(currentMeta.git || {}) }, policy: normalizeProjectPolicy(currentMeta.policy || defaults.policy) }
     if (existing.user_id !== '' || !currentMeta.commands || !currentMeta.deploy) {
       db.prepare(`UPDATE operator_projects SET user_id='', meta_json=?, updated_at=? WHERE id='browserai'`).run(JSON.stringify(mergedMeta), now())
       return rowToProject(db.prepare(`SELECT * FROM operator_projects WHERE id='browserai'`).get())
@@ -245,11 +247,20 @@ export function upsertOperatorProject({ userId = '', id: projectId = '', name = 
   initOperatorMode()
   const projectKey = String(projectId || name || id('project')).replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 80)
   const ts = now()
+  const defaults = projectKey === 'browserai' ? defaultProjectMeta() : {}
+  const normalizedMeta = {
+    ...defaults,
+    ...(meta || {}),
+    commands: { ...(defaults.commands || {}), ...((meta || {}).commands || {}) },
+    deploy: { ...(defaults.deploy || {}), ...((meta || {}).deploy || {}) },
+    git: { ...(defaults.git || {}), ...((meta || {}).git || {}) },
+    policy: normalizeProjectPolicy((meta || {}).policy || defaults.policy || {}),
+  }
   db.prepare(`INSERT INTO operator_projects (id,user_id,name,repo,local_path,production_path,default_branch,meta_json,created_at,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(id) DO UPDATE SET name=excluded.name, repo=excluded.repo, local_path=excluded.local_path,
       production_path=excluded.production_path, default_branch=excluded.default_branch, meta_json=excluded.meta_json, updated_at=excluded.updated_at`).run(
-    projectKey, String(userId || ''), String(name || projectKey), String(repo || ''), String(localPath || ''), String(productionPath || ''), String(defaultBranch || 'main'), JSON.stringify(projectKey === 'browserai' ? { ...defaultProjectMeta(), ...(meta || {}), commands: { ...defaultProjectMeta().commands, ...((meta || {}).commands || {}) }, deploy: { ...defaultProjectMeta().deploy, ...((meta || {}).deploy || {}) }, git: { ...defaultProjectMeta().git, ...((meta || {}).git || {}) } } : (meta || {})), ts, ts,
+    projectKey, String(userId || ''), String(name || projectKey), String(repo || ''), String(localPath || ''), String(productionPath || ''), String(defaultBranch || 'main'), JSON.stringify(normalizedMeta), ts, ts,
   )
   return rowToProject(db.prepare('SELECT * FROM operator_projects WHERE id=?').get(projectKey))
 }
@@ -373,6 +384,7 @@ function operatorSystemPrompt(project, missionType) {
 export function startOperatorMission({ userId = '', projectId = 'browserai', type = 'full_diagnostic', goal = '', confirm = false } = {}) {
   initOperatorMode()
   const project = listOperatorProjects({ userId }).find((p) => p.id === projectId) || ensureDefaultProject(userId)
+  const policy = policyForProject(project)
   let effectiveType = String(type || 'universal_dev_task')
   let routeInfo = null
   if (effectiveType === 'universal_dev_task') {
@@ -380,6 +392,14 @@ export function startOperatorMission({ userId = '', projectId = 'browserai', typ
     effectiveType = routeInfo.route
   }
   const missionType = OPERATOR_MISSION_TYPES.find((m) => m.id === effectiveType) || OPERATOR_MISSION_TYPES[0]
+  const policyAction = ['code_task', 'fix_tests'].includes(missionType.id) ? 'mission.code_task' : missionType.id === 'full_dev_cycle' ? 'mission.full_dev_cycle' : ['safe_deploy', 'self_heal_restart'].includes(missionType.id) ? `mission.${missionType.id}` : 'mission.general'
+  const policyDecision = evaluateProjectPolicy(policy, policyAction, { confirm, goal })
+  if (!policyDecision.ok) {
+    const err = new Error(`Project policy blocked mission: ${policyDecision.blockers.map((b) => b.message).join('; ')}`)
+    err.code = policyDecision.blockers.some((b) => b.code === 'POLICY_APPROVAL_REQUIRED') ? 'CONFIRM_REQUIRED' : 'POLICY_DENIED'
+    err.policy = policyDecision
+    throw err
+  }
   if (missionType.requiresConfirmation && confirm !== true) {
     const err = new Error(`Mission ${type} requires confirmation`)
     err.code = 'CONFIRM_REQUIRED'
@@ -392,7 +412,7 @@ export function startOperatorMission({ userId = '', projectId = 'browserai', typ
     missionId, String(userId || ''), project.id, missionType.id, missionType.title, String(goal || missionType.description || '').slice(0, 4000), ts, ts,
   )
 
-  addOperatorMissionEvent({ missionId, userId, type: 'info', title: 'Mission created', message: `${missionType.title}: ${goal || missionType.description}`, data: { type: missionType.id, routeInfo } })
+  addOperatorMissionEvent({ missionId, userId, type: 'info', title: 'Mission created', message: `${missionType.title}: ${goal || missionType.description}`, data: { type: missionType.id, routeInfo, policy: { preset: policy.preset, warnings: policyDecision.warnings } } })
 
   try {
     if (missionType.id === 'full_dev_cycle') {
@@ -500,8 +520,11 @@ export async function getOperatorStatus({ userId = '' } = {}) {
     projects,
     missions,
     missionTypes: OPERATOR_MISSION_TYPES,
+    policyPresets: Object.values(PROJECT_POLICY_PRESETS),
     status,
   }
 }
 
-export default { initOperatorMode, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorStatus, classifyOperatorGoal, addOperatorMissionEvent, listOperatorMissionEvents, cancelOperatorMission, resumeOperatorMission }
+export { PROJECT_POLICY_PRESETS, normalizeProjectPolicy, evaluateProjectPolicy }
+
+export default { initOperatorMode, listOperatorProjects, upsertOperatorProject, startOperatorMission, listOperatorMissions, getOperatorStatus, classifyOperatorGoal, addOperatorMissionEvent, listOperatorMissionEvents, cancelOperatorMission, resumeOperatorMission, PROJECT_POLICY_PRESETS, normalizeProjectPolicy, evaluateProjectPolicy }

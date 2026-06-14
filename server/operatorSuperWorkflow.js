@@ -9,6 +9,7 @@ import {
   mergeOperatorCodeTaskPr,
 } from './operatorCode.js'
 import { createDeploySession, getDeploySession } from './deploySessions.js'
+import { policyForProject, applyPolicyToSuperOptions } from './operatorProjectPolicies.js'
 
 let initialized = false
 const running = new Set()
@@ -164,7 +165,8 @@ export function startSuperOperatorWorkflow({ userId = '', missionId = '', projec
   initOperatorSuperWorkflows()
   const swId = id('super')
   const ts = now()
-  const opts = {
+  const policy = policyForProject(project)
+  const opts = applyPolicyToSuperOptions({
     autoFinalize: options.autoFinalize !== false,
     autoWaitCi: options.autoWaitCi !== false,
     autoFixCi: options.autoFixCi !== false,
@@ -173,9 +175,9 @@ export function startSuperOperatorWorkflow({ userId = '', missionId = '', projec
     autoDeploy: options.autoDeploy === true,
     confirmMerge: options.confirmMerge === true,
     confirmDeploy: options.confirmDeploy === true,
-  }
+  }, policy)
   db.prepare(`INSERT INTO operator_super_workflows (id,user_id,mission_id,project_id,status,goal,options_json,state_json,result_json,created_at,updated_at)
-    VALUES (?,?,?,?,? ,?,?, '{}','{}',?,?)`).run(swId, String(userId || ''), String(missionId || ''), project?.id || 'browserai', 'queued', String(goal || '').slice(0, 4000), JSON.stringify(opts), ts, ts)
+    VALUES (?,?,?,?,? ,?,?, '{}',?,?,?)`).run(swId, String(userId || ''), String(missionId || ''), project?.id || 'browserai', 'queued', String(goal || '').slice(0, 4000), JSON.stringify(opts), JSON.stringify({ project, policy }), ts, ts)
   const sw = getSuperWorkflow(swId)
   emit(sw, 'info', 'Super workflow created', goal, { options: opts }).catch(() => {})
   if (autostart !== false) setTimeout(() => runSuperWorkflow(swId), 10).unref?.()
@@ -254,7 +256,7 @@ export function runSuperWorkflow(id) {
         if (!opts.confirmMerge && !opts.confirmDeploy) throw new Error('merge/deploy requires confirmation')
         current = patchSuper(id, { status: 'merging', state })
         await emit(current, 'info', opts.autoDeploy ? 'Merging PR and deploying' : 'Merging PR', codeTask.id)
-        codeTask = await mergeOperatorCodeTaskPr({ taskId: codeTask.id, mergeMethod: 'squash', deploy: Boolean(opts.autoDeploy), confirmDeploy: Boolean(opts.confirmDeploy) })
+        codeTask = await mergeOperatorCodeTaskPr({ taskId: codeTask.id, mergeMethod: 'squash', deploy: Boolean(opts.autoDeploy), confirmMerge: Boolean(opts.confirmMerge), confirmDeploy: Boolean(opts.confirmDeploy) })
         if (codeTask.result?.deployWorkflowId) {
           state = { ...state, deployWorkflowId: codeTask.result.deployWorkflowId }
         }
