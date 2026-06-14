@@ -29,6 +29,7 @@ import { buildProjectProfile } from './projectProfiler.js'
 import { buildVerificationPlan } from './verifyOrchestrator.js'
 import { scanSecrets } from './secretScan.js'
 import { createWorkspaceSnapshot, listWorkspaceSnapshots, restoreWorkspaceSnapshot } from './workspaceSnapshots.js'
+import { runInSession, resetSession, startBackgroundTask, readBackgroundLogs, stopBackgroundTask, listBackgroundTasks } from './shellSession.js'
 
 function safeJsonParse(text) { try { return JSON.parse(text) } catch { return null } }
 
@@ -385,9 +386,9 @@ export const TOOLS = {
   },
 
   bash: {
-    description: 'Run a shell command inside an isolated Linux sandbox that has the workspace mounted at /workspace. Useful for git, npm, node, curl, grep, build steps, etc. Output is returned. Timeout 30s default, max 120s.',
+    description: 'Run a shell command inside an isolated Linux sandbox that has the workspace mounted at /workspace. Useful for git, npm, node, curl, grep, build steps, etc. Output is returned. Timeout 30s default, max 120s. For commands that need persistent cwd/env or may run long, prefer shell_session_run or shell_background_start.',
     params: {
-      command: { type: 'string', required: true, description: 'Shell command, e.g. "ls -la /workspace" or "node -e \"console.log(1+1)\""' },
+      command: { type: 'string', required: true, description: `Shell command, e.g. "ls -la /workspace" or "node -e 'console.log(1+1)'"` },
       timeout_sec: { type: 'number', optional: true, description: 'Max seconds, default 30, max 120.' },
     },
     handler: async ({ command, timeout_sec = 30 } = {}) => {
@@ -404,6 +405,77 @@ export const TOOLS = {
         })
       } catch (e) { return err(e.message) }
     },
+  },
+
+  shell_session_run: {
+    description: 'Run a command in a persistent per-chat bash session. cwd/env/export/cd persist across calls. Use for multi-step development work, long installs/tests/builds, and commands where session state matters. Streams stdout/stderr while running.',
+    params: {
+      command: { type: 'string', required: true, description: 'Shell command to run in the persistent session.' },
+      timeout_sec: { type: 'number', optional: true, description: 'Max seconds, default 120, max 900.' },
+      cwd: { type: 'string', optional: true, description: 'Container cwd for new session. Default /workspace.' },
+    },
+    handler: async ({ command, timeout_sec = 120, cwd = '/workspace', _chatId = '', _signal, _onStdout, _onStderr } = {}) => {
+      if (!command) return err('command is required')
+      if (!_chatId) return err('chat session id is required for persistent shell')
+      try {
+        const r = await runInSession({
+          chatId: _chatId,
+          command: rewriteWorkspacePaths(String(command)),
+          cwd: rewriteWorkspacePaths(String(cwd || '/workspace')),
+          timeoutMs: Math.min(900_000, Math.max(1_000, Number(timeout_sec) * 1000 || 120_000)),
+          signal: _signal,
+          onStdout: _onStdout,
+          onStderr: _onStderr,
+        })
+        return ok({ stdout: truncate(r.stdout, 12000), stderr: truncate(r.stderr, 6000), exitCode: r.exitCode, durationMs: r.durationMs, sessionId: r.sessionId, killed: r.killed, cancelled: r.cancelled, persistent: true })
+      } catch (e) { return err(e.message) }
+    },
+  },
+
+  shell_session_reset: {
+    description: 'Reset/kill the persistent shell session for this chat. Use if the shell is stuck or polluted by bad cwd/env.',
+    params: {},
+    handler: async ({ _chatId = '' } = {}) => {
+      if (!_chatId) return err('chat session id is required')
+      return ok({ reset: resetSession(_chatId), sessionId: _chatId })
+    },
+  },
+
+  shell_background_start: {
+    description: 'Start a long-running command in the background and return immediately. Use for dev servers, watchers, tail -F logs, long builds, or commands you need to poll later.',
+    params: {
+      command: { type: 'string', required: true, description: 'Command to start in background.' },
+      name: { type: 'string', optional: true, description: 'Short task name.' },
+      cwd: { type: 'string', optional: true, description: 'Container cwd. Default /workspace.' },
+    },
+    handler: async ({ command, name = '', cwd = '/workspace', _chatId = '' } = {}) => {
+      if (!command) return err('command is required')
+      try { return ok(startBackgroundTask({ chatId: _chatId, command: rewriteWorkspacePaths(String(command)), name, cwd: rewriteWorkspacePaths(String(cwd || '/workspace')) })) } catch (e) { return err(e.message) }
+    },
+  },
+
+  shell_background_read: {
+    description: 'Read stdout/stderr and status from a background shell task.',
+    params: {
+      task_id: { type: 'string', required: true, description: 'Background task id from shell_background_start.' },
+      tail: { type: 'number', optional: true, description: 'Max chars per stream, default 4000.' },
+    },
+    handler: async ({ task_id, tail = 4000 } = {}) => {
+      const logs = readBackgroundLogs(task_id, { tail: Math.max(500, Math.min(32000, Number(tail) || 4000)) })
+      return logs ? ok(logs) : err('background task not found')
+    },
+  },
+
+  shell_background_stop: {
+    description: 'Stop a background shell task by id.',
+    params: { task_id: { type: 'string', required: true, description: 'Background task id.' } },
+    handler: async ({ task_id } = {}) => ok({ stopped: stopBackgroundTask(task_id), taskId: task_id }),
+  },
+
+  shell_background_list: {
+    description: 'List recent/running background shell tasks for this chat.',
+    params: { all: { type: 'boolean', optional: true, description: 'If true, list tasks for all chats.' } },
+    handler: async ({ all = false, _chatId = '' } = {}) => ok({ tasks: listBackgroundTasks(all ? null : (_chatId || null)) }),
   },
 
   // ── NEW: npm ─────────────────────────────────────────────────────────────
@@ -1525,6 +1597,9 @@ export async function invokeTool(name, args = {}, { signal, onStdout, onStderr, 
   const enrichedArgs = { ...(args || {}) }
   if (userId) enrichedArgs._userId = userId
   if (chatId) enrichedArgs._chatId = chatId
+  if (signal) enrichedArgs._signal = signal
+  if (onStdout) enrichedArgs._onStdout = onStdout
+  if (onStderr) enrichedArgs._onStderr = onStderr
   try {
     if (signal?.aborted) return err('cancelled')
     return await tool.handler(enrichedArgs)

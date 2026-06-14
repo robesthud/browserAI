@@ -1146,6 +1146,47 @@ BrowserAI becomes a real Operator Console product instead of a single admin lab 
 
 ---
 
+## Package Runtime-3 — Persistent Shell Sessions + Command Autopilot
+
+Goal: give Agent Mode a real terminal-like execution layer for long and stateful work, instead of only one-shot bash commands.
+
+Status: implemented in this package.
+
+Blocks:
+
+1. Existing `server/shellSession.js` persistent shell engine is now connected to Agent Mode tools.
+2. New agent tools:
+   - `shell_session_run` — persistent per-chat bash session; cwd/env/export/cd persist across calls;
+   - `shell_session_reset` — reset a stuck/polluted shell session;
+   - `shell_background_start` — start long-running commands without blocking the agent;
+   - `shell_background_read` — poll stdout/stderr/status;
+   - `shell_background_stop` — stop a background command;
+   - `shell_background_list` — list running/recent background tasks.
+3. Shell tools are allowed in general/code/ops tool profiles.
+4. Agent runtime directive now tells the model to prefer:
+   - `shell_session_run` for multi-step commands needing cwd/env persistence;
+   - `shell_background_start/read/stop` for dev servers, watchers, tail logs and long builds.
+5. Main UI tool cards understand shell-session/background tools and expose stdout/stderr like bash.
+6. API endpoints for Dev Lab/UI:
+   - `GET /api/agent/shell/background`;
+   - `GET /api/agent/shell/background/:id`;
+   - `POST /api/agent/shell/background/:id/stop`;
+   - `POST /api/agent/shell/sessions/:chatId/reset`.
+7. Tests cover tool registry exposure, prompt catalog, allowlist profiles and runtime guidance.
+
+Runbook notes:
+
+- Use `bash` for short stateless commands.
+- Use `shell_session_run` when the next command depends on `cd`, exported env, activated virtualenv, installed context, or terminal state.
+- Use `shell_background_start` for long commands that should not block the LLM loop; inspect them with `shell_background_read` and stop them with `shell_background_stop`.
+- Long-running shell is still subject to policy/approval gates for risky production actions.
+
+Result:
+
+Agent Mode now has a proper persistent command layer: it can run stateful terminal work, keep long commands alive, poll logs, and continue working more like a real developer/operator.
+
+---
+
 ## Package Runtime-2 — Mission Autopilot / One-Task Full Cycle
 
 Goal: make BrowserAI keep track of what the user actually asked for — verify, commit, push, PR, deploy, health/log checks — and prevent early final answers when those obligations are still unsatisfied.
@@ -1263,6 +1304,7 @@ The main interface is again a pleasant task-first Agent Mode: chat + workspace, 
 0. Package UX-Restore — Chat + Workspace Agent Mode. **Done**
 0.1. Package Runtime-Agent — Automated Bash Execution Loop. **Done**
 0.2. Package Runtime-2 — Mission Autopilot / One-Task Full Cycle. **Done**
+0.3. Package Runtime-3 — Persistent Shell Sessions + Command Autopilot. **Done**
 1. Package A — Super Operator Workflow v1.
 2. Package B — Mission Detail Pages + Timeline UX.
 3. Package D — Reviewer Agent v2 + Semantic Diff Review.

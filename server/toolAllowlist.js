@@ -1,3 +1,5 @@
+const SHELL_AGENT_TOOLS = ['shell_session_run', 'shell_session_reset', 'shell_background_start', 'shell_background_read', 'shell_background_stop', 'shell_background_list']
+
 const COMMON_AGENT_TOOLS = [
   'plan_set', 'plan_check', 'ask_user', 'read_project_rules', 'project_profile', 'secret_scan', 'workspace_snapshot_list',
   'recall_facts', 'remember_fact', 'forget_fact', 'kb_search', 'kb_list', 'kb_add', 'kb_delete',
@@ -9,7 +11,7 @@ export const TOOL_PROFILES = {
     ...COMMON_AGENT_TOOLS,
     'list_files', 'read_file', 'search_files',
     'write_file', 'edit_file', 'create_folder', 'rename_item', 'delete_file', 'zip_files', 'workspace_snapshot_create', 'workspace_snapshot_restore',
-    'bash', 'verify_code', 'verify_task',
+    'bash', ...SHELL_AGENT_TOOLS, 'verify_code', 'verify_task',
     'web_search', 'web_fetch',
     'git_status', 'git_clone',
     'generate_image', 'edit_image', 'generate_video', 'analyze_image', 'text_to_speech', 'transcribe_audio',
@@ -18,14 +20,14 @@ export const TOOL_PROFILES = {
     ...COMMON_AGENT_TOOLS,
     'list_files', 'read_file', 'search_files',
     'write_file', 'edit_file', 'create_folder', 'rename_item', 'delete_file', 'zip_files', 'workspace_snapshot_create', 'workspace_snapshot_restore',
-    'bash', 'npm_install', 'npm_test', 'verify_code', 'verify_task',
+    'bash', ...SHELL_AGENT_TOOLS, 'npm_install', 'npm_test', 'verify_code', 'verify_task',
     'git_status', 'git_clone', 'git_commit',
   ],
   ops: [
     ...COMMON_AGENT_TOOLS,
     'ops_list_services', 'ops_run_action',
     'docker_ps', 'docker_logs',
-    'bash', 'npm_test', 'verify_code', 'verify_task',
+    'bash', ...SHELL_AGENT_TOOLS, 'npm_test', 'verify_code', 'verify_task',
     'web_search', 'web_fetch',
     'git_status', 'git_clone', 'git_commit',
     'list_files', 'read_file', 'search_files', 'edit_file', 'write_file', 'create_folder', 'rename_item', 'zip_files', 'secret_scan', 'workspace_snapshot_create', 'workspace_snapshot_restore',

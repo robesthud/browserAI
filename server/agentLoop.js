@@ -217,7 +217,7 @@ function toolCommand(h = {}) {
 }
 
 function commandMatches(h = {}, re) {
-  return h?.tool === 'bash' && re.test(toolCommand(h))
+  return ['bash', 'shell_session_run', 'shell_background_start'].includes(h?.tool) && re.test(toolCommand(h))
 }
 
 function unmetDoneCriteria(taskType = '', recentToolHistory = []) {
@@ -259,7 +259,7 @@ function obligationCompletionStatus(obligations = {}, recentToolHistory = []) {
     push: ok.some((h) => h.tool === 'git_commit' && /pushed=true/i.test(String(h.outcome || ''))) || hasBash(/git\s+push\b/i),
     pr: hasTool('github_pr_create') || /pull request|\/pull\//i.test(ok.map((h) => h.outcome).join('\n')) || hasBash(/gh\s+pr\s+create/i),
     deploy: hasTool('ops_run_action') || hasBash(/(deploy\.sh|\bdeploy\b|docker\s+compose\s+up|docker-compose\s+up|systemctl\s+restart|kubectl\s+apply)/i),
-    healthCheck: ok.some((h) => h.tool === 'bash' && commandLooksLikeHealthCheck(h.args)) || hasTool('docker_ps', 'ops_list_services') || hasBash(/curl|wget|health/i),
+    healthCheck: ok.some((h) => ['bash', 'shell_session_run', 'shell_background_start'].includes(h.tool) && commandLooksLikeHealthCheck(h.args)) || hasTool('docker_ps', 'ops_list_services') || hasBash(/curl|wget|health/i),
     logsCheck: hasTool('docker_logs', 'docker_ps') || hasBash(/docker\s+logs|docker\s+ps|journalctl|tail\s+.*log/i),
     finalReport: true,
   }
@@ -290,6 +290,11 @@ function unmetGoalObligation(agentContext = {}, recentToolHistory = []) {
 
 function narrateToolCall(tool = '', args = {}, agentContext = {}) {
   const cmd = String(args?.command || '').trim()
+  if (tool === 'shell_session_run') return 'Выполняю команду в постоянной shell-сессии: так сохраняются cwd/env и удобнее вести длинную разработческую работу.'
+  if (tool === 'shell_background_start') return 'Запускаю долгую команду в фоне, чтобы можно было читать вывод и не блокировать Agent Mode.'
+  if (tool === 'shell_background_read') return 'Читаю текущий stdout/stderr фоновой команды.'
+  if (tool === 'shell_background_stop') return 'Останавливаю фоновую shell-команду.'
+  if (tool === 'shell_session_reset') return 'Сбрасываю постоянную shell-сессию, чтобы восстановить чистое состояние.'
   if (tool === 'bash') {
     if (/npm\s+(test|run test)|pnpm\s+test|yarn\s+test|vitest|jest/i.test(cmd)) return 'Запускаю тесты через bash, чтобы подтвердить изменения реальным выводом.'
     if (/npm\s+run\s+build|pnpm\s+build|yarn\s+build|vite build/i.test(cmd)) return 'Запускаю сборку через bash, чтобы проверить production-готовность.'
@@ -329,7 +334,10 @@ function summarizeToolOutcome(tool, r) {
   if (tool === 'secret_scan') return result?.ok ? `ok scanned=${result?.scannedFiles || 0}` : `findings high=${result?.high || 0} medium=${result?.medium || 0}`
   if (tool === 'workspace_snapshot_create') return `id=${result?.id || ''} entries=${result?.entries || 0}`
   if (tool === 'workspace_snapshot_restore') return `id=${result?.id || ''} restored=${Boolean(result?.restored)}`
-  if (tool === 'bash') return `exit=${result?.exitCode ?? '?'}`
+  if (tool === 'bash' || tool === 'shell_session_run') return `exit=${result?.exitCode ?? '?'} duration=${result?.durationMs || 0}ms`
+  if (tool === 'shell_background_start') return `task=${result?.taskId || ''}`
+  if (tool === 'shell_background_read') return `running=${Boolean(result?.running)} exit=${result?.exitCode ?? ''}`
+  if (tool === 'shell_background_stop') return `stopped=${Boolean(result?.stopped)}`
   return String(result?.message || result?.path || result?.file_path || 'ok').slice(0, 180)
 }
 

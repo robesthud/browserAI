@@ -179,7 +179,7 @@ export function buildAgentContext({ provider = {}, history = [], extraSystem = '
 function resultTypeForTool(name = '') {
   if (['read_file', 'list_files', 'search_files', 'read_project_rules', 'project_profile', 'secret_scan', 'workspace_snapshot_list'].includes(name)) return 'workspace_read'
   if (['write_file', 'edit_file', 'delete_file', 'create_folder', 'rename_item', 'workspace_snapshot_create', 'workspace_snapshot_restore'].includes(name)) return 'workspace_write'
-  if (['bash', 'npm_test', 'npm_install', 'docker_logs', 'docker_ps', 'verify_code', 'verify_task'].includes(name)) return 'command_result'
+  if (['bash', 'shell_session_run', 'shell_session_reset', 'shell_background_start', 'shell_background_read', 'shell_background_stop', 'shell_background_list', 'npm_test', 'npm_install', 'docker_logs', 'docker_ps', 'verify_code', 'verify_task'].includes(name)) return 'command_result'
   if (['web_search', 'web_fetch'].includes(name)) return 'web_result'
   if (['ask_user'].includes(name)) return 'user_interaction'
   if (name.startsWith('browser_') || name.startsWith('computer_')) return 'browser_computer_result'
@@ -290,6 +290,7 @@ export function buildAutonomousRuntimeDirective(agentContext = {}) {
     'If an inferred obligation cannot be completed (missing credentials/approval/tool failure), explicitly report it as a blocker with evidence instead of silently dropping it.',
     'Between actions, briefly explain in Russian what you are about to do and why. Keep explanations short and factual.',
     bashFirst ? 'Use bash naturally for inspection and verification when it is the fastest reliable path: pwd/ls/find/grep/cat, npm test/build, git status/diff, curl health checks, docker logs when allowed.' : '',
+    bashFirst ? 'For multi-step commands that need cwd/env persistence or commands that may run longer than regular bash, prefer shell_session_run. For dev servers/watchers/tail logs, use shell_background_start then shell_background_read/stop.' : '',
     'For development tasks, prefer this loop: inspect with list_files/read_file/bash → plan_set → edit/write → bash/verify_task → fix errors → final evidence report.',
     'For deploy/ops tasks, prefer this loop: inspect git/docker/health/logs → apply safe action only if allowed → verify health → inspect logs → final evidence report.',
     'Never ask the user to run commands for you. If a safe command is needed, call bash yourself.',

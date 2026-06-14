@@ -25,6 +25,12 @@ const VERBS = {
   fetch_page:      { action: 'Открываю страницу', icon: '📥' },
   generate_image:  { action: 'Генерирую изображение', icon: '🎨' },
   bash:            { action: 'Запускаю команду', icon: '>_' },
+  shell_session_run: { action: 'Команда в shell-сессии', icon: '>_' },
+  shell_session_reset: { action: 'Сбрасываю shell-сессию', icon: '↺' },
+  shell_background_start: { action: 'Запускаю фоновую команду', icon: '↻' },
+  shell_background_read: { action: 'Читаю фоновую команду', icon: '📜' },
+  shell_background_stop: { action: 'Останавливаю фоновую команду', icon: '◼' },
+  shell_background_list: { action: 'Смотрю фоновые команды', icon: '☰' },
   bash_bg:         { action: 'Запускаю фоновую задачу', icon: '↻' },
   bash_logs:       { action: 'Читаю логи задачи', icon: '📜' },
   bash_stop:       { action: 'Останавливаю задачу', icon: '◼' },
@@ -85,7 +91,11 @@ function summarizeArgs(name, args = {}) {
     case 'browser_close': return args.sessionId || args.session_id || ''
     case 'browser_click': return args.selector || args.text || ''
     case 'browser_type':  return args.selector || ''
-    case 'bash':        return args.command || ''
+    case 'bash':
+    case 'shell_session_run':
+    case 'shell_background_start': return args.command || ''
+    case 'shell_background_read':
+    case 'shell_background_stop': return args.task_id || args.taskId || ''
     case 'verify_code': return args.path || args.npm_script || args.node_check || args.command || 'проверка'
     case 'run_tests':   return args.path || 'tests'
     case 'git_commit':  return args.message || ''
@@ -112,7 +122,7 @@ function formatRawResult(name, result) {
   if (result == null) return ''
   if (typeof result === 'string') return result
   if (name === 'read_file' && result.content) return result.content
-  if (name === 'bash' && (result.stdout || result.stderr)) {
+  if (['bash', 'shell_session_run', 'shell_background_read'].includes(name) && (result.stdout || result.stderr)) {
     let out = ''
     if (result.stdout) out += result.stdout
     if (result.stderr) out += (out ? '\n— stderr —\n' : '') + result.stderr
@@ -168,6 +178,11 @@ function resultSummary(name, result, ok, error) {
     case 'zip_files': return `Архив готов: ${result.file_path || result.path || 'workspace.zip'}${result.bytes ? ` · ${Math.round(result.bytes / 1024)} KB` : ''}`
     case 'git_clone': return `Скачано в папку: ${result.path || ''}`
     case 'bash': return `Команда завершилась с кодом ${result.exitCode ?? '—'}`
+    case 'shell_session_run': return `Shell-сессия завершила команду с кодом ${result.exitCode ?? '—'}${result.durationMs ? ` · ${Math.round(result.durationMs / 1000)}с` : ''}`
+    case 'shell_background_start': return `Фоновая команда запущена: ${result.taskId || ''}`
+    case 'shell_background_read': return result.running ? 'Фоновая команда ещё выполняется' : `Фоновая команда завершилась с кодом ${result.exitCode ?? '—'}`
+    case 'shell_background_stop': return result.stopped ? 'Фоновая команда остановлена' : 'Фоновая команда не найдена'
+    case 'shell_background_list': return `Фоновых команд: ${result.tasks?.length ?? 0}`
     case 'verify_code': return result.allPassed ? 'Проверка прошла' : 'Проверка нашла проблемы'
     case 'run_tests': return result.passed ? 'Тесты прошли' : 'Тесты завершились с ошибками'
     case 'git_status':
@@ -243,13 +258,13 @@ export default function AgentToolBlock({
     ? (result.file_path || result.path || result.filename || 'download')
     : ''
 
-  const userVisibleOutput = ['bash', 'verify_code', 'verify_task', 'npm_test', 'run_tests'].includes(name)
+  const userVisibleOutput = ['bash', 'shell_session_run', 'shell_background_read', 'verify_code', 'verify_task', 'npm_test', 'run_tests'].includes(name)
   let highlightedHtml = null
   if (status === 'done' && ok && rawBody && (isDev || userVisibleOutput)) {
     let lang = ''
     if (name === 'write_file' || name === 'edit_file') lang = detectLangFromPath(args?.path || '')
     else if (name === 'read_file') lang = detectLangFromPath(args?.path || '')
-    else if (name === 'bash') lang = 'sh'
+    else if (['bash', 'shell_session_run', 'shell_background_read'].includes(name)) lang = 'sh'
     if (lang) highlightedHtml = highlight(rawBody, lang)
   }
 

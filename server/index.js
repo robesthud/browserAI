@@ -92,6 +92,7 @@ import { classifyFailure, recommendAutoFix, executeAutoFixRecommendation, create
 import { initAutonomousRecovery, listRecoveryActions, recoverySummary, recoveryGraph, superviseRecoveries } from './autonomousRecovery.js'
 import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr, reviewOperatorCodeTask, cancelOperatorCodeTask, resumeOperatorCodeTask } from './operatorCode.js'
 import { initGithubAutomation, listGithubAutomationEvents, handleGithubAutomationWebhook, commentGithubIssue } from './githubAutomation.js'
+import { resetSession, readBackgroundLogs, stopBackgroundTask, listBackgroundTasks } from './shellSession.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
@@ -3486,6 +3487,24 @@ app.post('/api/agent/tasks/:id/resume-note', requireAuth, (req, res) => {
 app.post('/api/agent/runs/:chatId/reset', requireAuth, (req, res) => {
   const cleared = clearActiveAgentRun(req.params.chatId || '')
   res.json({ ok: true, cleared })
+})
+
+app.get('/api/agent/shell/background', requireAuth, (req, res) => {
+  res.json({ tasks: listBackgroundTasks(req.query.all === '1' ? null : String(req.query.chatId || '')) })
+})
+
+app.get('/api/agent/shell/background/:id', requireAuth, (req, res) => {
+  const logs = readBackgroundLogs(req.params.id, { tail: Number(req.query.tail || 8000) })
+  if (!logs) return res.status(404).json({ error: 'background task not found' })
+  res.json({ task: logs })
+})
+
+app.post('/api/agent/shell/background/:id/stop', requireAuth, (req, res) => {
+  res.json({ ok: stopBackgroundTask(req.params.id), taskId: req.params.id })
+})
+
+app.post('/api/agent/shell/sessions/:chatId/reset', requireAuth, (req, res) => {
+  res.json({ ok: resetSession(req.params.chatId), chatId: req.params.chatId })
 })
 
 // Provider adapter metadata. Lets UI/self-tests understand which protocol
