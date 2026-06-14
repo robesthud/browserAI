@@ -88,6 +88,7 @@ import { RUNTIME_ADAPTERS } from './operatorRuntimeAdapters.js'
 import { getOperatorReport, saveOperatorReport, sendOperatorReportTelegram } from './operatorReports.js'
 import { initNotifications, listNotifications, notificationSummary, markNotificationRead, markAllNotificationsRead } from './notifications.js'
 import { classifyFailure, recommendAutoFix, executeAutoFixRecommendation, createIncidentFromFailure } from './failureClassifier.js'
+import { initAutonomousRecovery, listRecoveryActions, recoverySummary, recoveryGraph, superviseRecoveries } from './autonomousRecovery.js'
 import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr, reviewOperatorCodeTask, cancelOperatorCodeTask, resumeOperatorCodeTask } from './operatorCode.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
@@ -2562,6 +2563,7 @@ try {
   initOperatorMode();
   initDeploySessions();
   initNotifications();
+  initAutonomousRecovery();
 } catch (err) {
   console.error('FATAL: Failed to initialize workspace:', err.message);
   process.exit(1);
@@ -3137,6 +3139,18 @@ app.post('/api/operator/failure/execute', requireAuth, (req, res) => {
   } catch (e) { res.status(e?.code === 'CONFIRM_REQUIRED' ? 409 : 400).json({ ok: false, error: e?.message || String(e), code: e?.code || 'ERROR', recommendation: e?.recommendation || null }) }
 })
 
+app.get('/api/operator/recoveries', requireAuth, (req, res) => {
+  res.json({ recoveries: listRecoveryActions({ userId: req.user?.id || '', limit: req.query.limit || 50 }), summary: recoverySummary({ userId: req.user?.id || '' }) })
+})
+
+app.get('/api/operator/recoveries/graph', requireAuth, (req, res) => {
+  res.json({ graph: recoveryGraph({ userId: req.user?.id || '', limit: req.query.limit || 100 }), summary: recoverySummary({ userId: req.user?.id || '' }) })
+})
+
+app.post('/api/operator/recoveries/supervise', requireAuth, (_req, res) => {
+  res.json({ ok: true, recoveries: superviseRecoveries() })
+})
+
 app.get('/api/operator/reports/:kind/:id', requireAuth, (req, res) => {
   try { res.json({ report: getOperatorReport({ kind: req.params.kind, id: req.params.id }) }) }
   catch (e) { res.status(400).json({ error: e?.message || String(e) }) }
@@ -3644,6 +3658,14 @@ try {
   startProductionWatchdog()
 } catch (e) {
   console.warn('[watchdog] bootstrap failed:', e.message)
+}
+
+// Autonomous recovery supervisor — evaluates spawned recovery missions/sessions.
+try {
+  const { startRecoverySupervisor } = await import('./autonomousRecovery.js')
+  startRecoverySupervisor()
+} catch (e) {
+  console.warn('[recovery] bootstrap failed:', e.message)
 }
 
 // MCP hub — spawn any servers listed in /data/mcp.json (disabled by default).

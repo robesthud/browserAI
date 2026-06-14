@@ -728,3 +728,36 @@ From this point every new package should include:
 4. tests;
 5. docs/runbook updates;
 6. deploy + health/log verification.
+
+---
+
+## 23. Autonomous Recovery Supervision
+
+Добавлено:
+
+- recovery chain graph;
+- parent recovery id;
+- chain depth;
+- max chain depth guard;
+- recovery supervisor interval;
+- recovery outcome evaluation;
+- spawned mission/deploy/workflow monitoring;
+- auto-resolve incident when linked recovery succeeds;
+- UI graph summary and manual `supervise now` button.
+
+API:
+
+- `GET /api/operator/recoveries`
+- `GET /api/operator/recoveries/graph`
+- `POST /api/operator/recoveries/supervise`
+
+Env:
+
+- `AUTONOMOUS_RECOVERY_ENABLED`
+- `AUTONOMOUS_RECOVERY_MAX_PER_HOUR`
+- `AUTONOMOUS_RECOVERY_MAX_CHAIN_DEPTH`
+- `AUTONOMOUS_RECOVERY_SUPERVISOR_MS`
+
+Purpose:
+
+Prevent uncontrolled recovery loops while letting safe recoveries complete and update incidents/reports automatically.
