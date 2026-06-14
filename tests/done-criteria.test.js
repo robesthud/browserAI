@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildAutonomousRuntimeDirective, buildDoneCriteriaDirective, detectGoalObligations } from '../server/agentCore.js'
+import { buildAutonomousRuntimeDirective, buildGuidedRailsDirective, buildDoneCriteriaDirective, detectGoalObligations } from '../server/agentCore.js'
 
 describe('done criteria directives', () => {
   it('defines coding change completion requirements', () => {
@@ -40,5 +40,13 @@ describe('done criteria directives', () => {
     expect(o.deploy).toBe(true)
     expect(o.healthCheck).toBe(true)
     expect(o.logsCheck).toBe(true)
+  })
+
+  it('builds guided rails for full-cycle obligations', () => {
+    const text = buildGuidedRailsDirective({ task: { obligations: { inspect: true, codeChange: true, verify: true, push: true, deploy: true, healthCheck: true, logsCheck: true } } })
+    expect(text).toContain('[guided_full_cycle_rails]')
+    expect(text).toContain('Git:')
+    expect(text).toContain('Deploy:')
+    expect(text).toContain('Final report')
   })
 })

@@ -1146,6 +1146,48 @@ BrowserAI becomes a real Operator Console product instead of a single admin lab 
 
 ---
 
+## Package Runtime-4 — Guided Git/PR/Deploy Rails + Runtime Report Builder
+
+Goal: make full-cycle tasks deterministic enough that “сделай, проверь, запушь, задеплой” follows reliable rails and ends with runtime evidence instead of a purely model-written memory report.
+
+Status: implemented in this package.
+
+Blocks:
+
+1. Added `buildGuidedRailsDirective()` with full-cycle staged guidance:
+   - inspect;
+   - change;
+   - verify;
+   - git/secret scan/commit/push/PR;
+   - deploy;
+   - health;
+   - logs;
+   - final report.
+2. Agent loop injects guided rails whenever obligations are detected.
+3. Runtime final-answer layer now appends a structured evidence report from actual tool history:
+   - changed/read files;
+   - commands;
+   - checks;
+   - git evidence;
+   - deploy/ops/health/log evidence;
+   - errors/recovery;
+   - obligation status.
+4. Commit gate now accepts real verification evidence from `verify_task`, `verify_code`, `npm_test`, `run_tests`, or bash/shell test/build commands instead of only `verify_code`.
+5. Obligation report status is stored in `agentState.obligationStatus` before final output.
+6. Tests cover guided rails generation.
+
+Runbook notes:
+
+- For full-cycle tasks, the model is still free to choose tools, but runtime now provides a reliable ordered checklist and appends objective evidence.
+- Final reports should not rely only on model memory; the runtime evidence block is built from successful/failed tool history.
+- Commit/push/deploy should happen only after verification/secret checks and approval/policy gates where applicable.
+
+Result:
+
+BrowserAI now has stronger rails for the core user story: one natural-language task can lead through implementation, verification, git/deploy steps, health/log checks, and an evidence-backed final report.
+
+---
+
 ## Package Runtime-3 — Persistent Shell Sessions + Command Autopilot
 
 Goal: give Agent Mode a real terminal-like execution layer for long and stateful work, instead of only one-shot bash commands.
@@ -1305,6 +1347,7 @@ The main interface is again a pleasant task-first Agent Mode: chat + workspace, 
 0.1. Package Runtime-Agent — Automated Bash Execution Loop. **Done**
 0.2. Package Runtime-2 — Mission Autopilot / One-Task Full Cycle. **Done**
 0.3. Package Runtime-3 — Persistent Shell Sessions + Command Autopilot. **Done**
+0.4. Package Runtime-4 — Guided Git/PR/Deploy Rails + Runtime Report Builder. **Done**
 1. Package A — Super Operator Workflow v1.
 2. Package B — Mission Detail Pages + Timeline UX.
 3. Package D — Reviewer Agent v2 + Semantic Diff Review.

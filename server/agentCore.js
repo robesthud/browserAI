@@ -300,6 +300,27 @@ export function buildAutonomousRuntimeDirective(agentContext = {}) {
   ].filter(Boolean).join('\n')
 }
 
+export function buildGuidedRailsDirective(agentContext = {}) {
+  const obligations = agentContext?.task?.obligations || {}
+  const active = Object.entries(obligations).filter(([, v]) => v).map(([k]) => k)
+  if (!active.length) return ''
+  const lines = [
+    '[guided_full_cycle_rails]',
+    `Active obligations: ${active.join(', ')}.`,
+    'Use these rails when applicable; do not skip a requested stage without an evidence-backed blocker.',
+  ]
+  if (obligations.inspect) lines.push('1. Inspect: read_project_rules/project_profile/list_files/search_files/read_file and/or shell_session_run for pwd/ls/grep before edits.')
+  if (obligations.codeChange) lines.push('2. Change: read target files first, then edit_file/write_file. Prefer small coherent edits.')
+  if (obligations.verify) lines.push('3. Verify: run verify_task and, when available, npm test/build via bash or shell_session_run. If it fails, inspect output, fix, and retry.')
+  if (obligations.commit || obligations.push || obligations.pr) lines.push('4. Git: run git status/diff, secret_scan, then commit/push only after verification. If push/PR credentials are missing, report the exact blocker.')
+  if (obligations.deploy) lines.push('5. Deploy: use approved ops/deploy tools or safe deploy command only when allowed. After deploy, run health and logs checks.')
+  if (obligations.healthCheck) lines.push('6. Health: verify the live endpoint with curl/wget or ops health action.')
+  if (obligations.logsCheck) lines.push('7. Logs: inspect docker logs/docker ps/journal logs after production changes.')
+  lines.push('8. Final report: summarize changed files, commands/tools, verification, git/push/PR/deploy/health/log evidence, and blockers.')
+  lines.push('[/guided_full_cycle_rails]')
+  return lines.join('\n')
+}
+
 export function buildDoneCriteriaDirective(agentContext = {}) {
   const type = agentContext?.task?.type || 'general_agent_task'
   const criteria = {

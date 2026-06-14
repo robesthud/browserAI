@@ -41,7 +41,7 @@ import { shouldUseCheapEditor, wrapProviderForEditor, routingLabel } from './arc
 import { requiresApproval, categoryOf } from './approvalGate.js'
 import {
   buildAgentContext, normalizeToolResult, createAgentState,
-  buildPlanningDirective, buildAutonomousRuntimeDirective, buildDoneCriteriaDirective, updateAgentStateFromTool,
+  buildPlanningDirective, buildAutonomousRuntimeDirective, buildGuidedRailsDirective, buildDoneCriteriaDirective, updateAgentStateFromTool,
   validateToolCall, makeToolErrorResult,
 } from './agentCore.js'
 
@@ -288,6 +288,55 @@ function unmetGoalObligation(agentContext = {}, recentToolHistory = []) {
   return null
 }
 
+function buildRuntimeEvidenceReport(agentContext = {}, recentToolHistory = [], agentState = {}) {
+  const real = (recentToolHistory || []).filter((h) => !['plan_set', 'plan_check', 'recall_facts', 'remember_fact', 'kb_search'].includes(h.tool))
+  if (!real.length) return ''
+  const obligations = agentContext?.task?.obligations || {}
+  const status = obligationCompletionStatus(obligations, recentToolHistory)
+  const changedFiles = []
+  const readFiles = []
+  const commands = []
+  const checks = []
+  const git = []
+  const deploy = []
+  const errors = []
+  for (const h of real) {
+    const args = parseDigestArgs(h.args)
+    const p = args.path || args.file_path || ''
+    if (h.ok && ['write_file', 'edit_file'].includes(h.tool) && p && !changedFiles.includes(p)) changedFiles.push(p)
+    if (h.ok && h.tool === 'read_file' && p && !readFiles.includes(p)) readFiles.push(p)
+    if (['bash', 'shell_session_run', 'shell_background_start'].includes(h.tool)) commands.push(`${h.ok ? '✓' : '✗'} ${h.tool}: ${args.command || ''} → ${h.outcome || ''}`.slice(0, 500))
+    if (['verify_task', 'verify_code', 'npm_test', 'run_tests'].includes(h.tool) || /test|build|verify|exit=0|passed/i.test(String(h.outcome || ''))) checks.push(`${h.ok ? '✓' : '✗'} ${h.tool}: ${h.outcome || ''}`)
+    if (h.tool.startsWith('git_') || /git\s+(status|diff|commit|push)/i.test(args.command || '')) git.push(`${h.ok ? '✓' : '✗'} ${h.tool}: ${h.outcome || args.command || ''}`)
+    if (h.tool.startsWith('ops_') || h.tool.startsWith('docker_') || /deploy|docker|curl|health|logs/i.test(`${args.command || ''} ${h.outcome || ''}`)) deploy.push(`${h.ok ? '✓' : '✗'} ${h.tool}: ${h.outcome || args.command || ''}`)
+    if (!h.ok) errors.push(`✗ ${h.tool}: ${h.outcome || 'failed'}`)
+  }
+  const missing = Object.entries(obligations).filter(([k, v]) => v && k !== 'finalReport' && !status[k]).map(([k]) => k)
+  const lines = ['\n\n---', '### Runtime evidence']
+  if (changedFiles.length) lines.push('**Изменённые файлы:**', ...changedFiles.slice(0, 20).map((f) => `- ${f}`))
+  if (!changedFiles.length && readFiles.length) lines.push('**Прочитанные файлы:**', ...readFiles.slice(0, 10).map((f) => `- ${f}`))
+  if (commands.length) lines.push('**Команды:**', ...commands.slice(-12).map((c) => `- ${c}`))
+  if (checks.length) lines.push('**Проверки:**', ...checks.slice(-8).map((c) => `- ${c}`))
+  if (git.length) lines.push('**Git:**', ...git.slice(-8).map((c) => `- ${c}`))
+  if (deploy.length) lines.push('**Deploy/ops/health/logs:**', ...deploy.slice(-10).map((c) => `- ${c}`))
+  if (errors.length) lines.push('**Ошибки/восстановление:**', ...errors.slice(-8).map((e) => `- ${e}`))
+  if (Object.keys(obligations).some((k) => obligations[k])) {
+    lines.push('**Статус обязательств:**')
+    for (const [k, v] of Object.entries(obligations)) if (v && k !== 'finalReport') lines.push(`- ${status[k] ? '✓' : '⚠'} ${k}`)
+  }
+  if (missing.length) lines.push(`**Незакрытые обязательства:** ${missing.join(', ')} — см. blockers/ограничения выше.`)
+  agentState.obligationStatus = status
+  return lines.join('\n')
+}
+
+function appendRuntimeEvidence(text = '', agentContext = {}, recentToolHistory = [], agentState = {}) {
+  const report = buildRuntimeEvidenceReport(agentContext, recentToolHistory, agentState)
+  if (!report) return String(text || '')
+  const base = String(text || '').trim()
+  if (/### Runtime evidence|Runtime evidence/i.test(base)) return base
+  return `${base}${report}`.trim()
+}
+
 function narrateToolCall(tool = '', args = {}, agentContext = {}) {
   const cmd = String(args?.command || '').trim()
   if (tool === 'shell_session_run') return 'Выполняю команду в постоянной shell-сессии: так сохраняются cwd/env и удобнее вести длинную разработческую работу.'
@@ -356,16 +405,12 @@ function makeReadBackForEdits(calls) {
 
 function violatesPreDeployVerify(call, recentToolHistory) {
   if (call.tool !== 'git_commit') return false
-  let sawOk = false
-  for (let i = recentToolHistory.length - 1; i >= Math.max(0, recentToolHistory.length - 10); i -= 1) {
+  for (let i = recentToolHistory.length - 1; i >= Math.max(0, recentToolHistory.length - 14); i -= 1) {
     const h = recentToolHistory[i]
-    if (h?.tool === 'verify_code') {
-      if (h.ok) sawOk = true
-      else return true
-      break
-    }
+    if (h?.ok && ['verify_code', 'verify_task', 'npm_test', 'run_tests'].includes(h.tool)) return false
+    if (h?.ok && commandMatches(h, /(npm|pnpm|yarn)\s+(test|run\s+test|run\s+build|build)|vitest|jest|pytest|go\s+test|cargo\s+test|mvn\s+test/i)) return false
   }
-  return !sawOk
+  return true
 }
 
 function dedupePlanCheck(call, planState) {
@@ -823,6 +868,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
   const planningDirective = buildPlanningDirective(agentContext)
   const autonomousDirective = buildAutonomousRuntimeDirective(agentContext)
+  const guidedRailsDirective = buildGuidedRailsDirective(agentContext)
   const doneCriteriaDirective = buildDoneCriteriaDirective(agentContext)
   
   // v2.26: High-Intelligence Directive for High Complexity tasks.
@@ -833,6 +879,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
   if (planningDirective) convo.push({ role: 'user', content: planningDirective })
   if (autonomousDirective) convo.push({ role: 'user', content: autonomousDirective })
+  if (guidedRailsDirective) convo.push({ role: 'user', content: guidedRailsDirective })
   if (doneCriteriaDirective) convo.push({ role: 'user', content: doneCriteriaDirective })
   
   sse(res, 'agent_context', { ...agentContext, toolProfile, toolNames: activeToolNames }); sse(res, 'agent_state', agentState)
@@ -1022,8 +1069,9 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
           continue
         }
 
-        if (streamedFinalAnswer) sse(res, 'assistant', { text: reply.text || '' })
-        else await streamFinalAnswer(res, reply.text || '')
+        const finalTextWithEvidence = didRealWork ? appendRuntimeEvidence(reply.text || '', agentContext, recentToolHistory, agentState) : (reply.text || '')
+        if (streamedFinalAnswer) sse(res, 'assistant', { text: finalTextWithEvidence })
+        else await streamFinalAnswer(res, finalTextWithEvidence)
 
         // CRITICAL ORDER: send 'done' and close the stream FIRST. The
         // lesson-extraction below makes an extra LLM call — if it hangs

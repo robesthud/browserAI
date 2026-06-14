@@ -168,7 +168,7 @@ describe('SSE Stream Shape (v2.19 - Strict Arena Parity)', () => {
     expect(eventNames).toContain('assistant') // MUST flush final complete text
 
     const assistantData = events.find(e => e.event === 'assistant').data.payload
-    expect(assistantData).toHaveProperty('text', 'The file is good.')
+    expect(assistantData.text).toContain('The file is good.')
 
     // Done at the end
     expect(eventNames[eventNames.length - 1]).toBe('done')
