@@ -512,7 +512,7 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
         </div>
       )}
 
-      <div className="flex items-center justify-between gap-2 pt-1">
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
         <button
           onClick={check}
           disabled={checking || !form.apiKey.trim() || !form.baseUrl.trim()}
@@ -520,7 +520,7 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
         >
           {checking ? 'Проверяю…' : 'Проверить'}
         </button>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             onClick={onCancel}
             className="rounded-lg border border-white/10 px-3 py-1.5 text-[12px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream"
@@ -772,13 +772,13 @@ export default function SettingsModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-stretch justify-center p-0 sm:items-center sm:p-4">
       <div
         className="absolute inset-0 bg-black/60 backdrop-blur-sm"
         onClick={onClose}
       />
-      <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-white/10 bg-graphite-800 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-white/5 px-5 py-3.5">
+      <div className="relative flex h-[var(--app-height,100dvh)] w-full max-w-md flex-col overflow-hidden border-white/10 bg-graphite-800 shadow-2xl sm:h-auto sm:max-h-[min(90vh,var(--app-height,100dvh))] sm:rounded-2xl sm:border">
+        <div className="flex shrink-0 items-center justify-between border-b border-white/5 px-4 pb-3 pt-safe sm:px-5 sm:py-3.5">
           <div className="flex items-center gap-2">
             <span className="text-[15px] text-cream">Настройки</span>
             <span
@@ -808,7 +808,7 @@ export default function SettingsModal({
           </button>
         </div>
 
-        <div className="thin-scroll max-h-[78vh] space-y-6 overflow-y-auto px-5 py-4">
+        <div className="mobile-scroll thin-scroll min-h-0 flex-1 space-y-6 overflow-y-auto px-4 py-4 pb-safe sm:max-h-[78vh] sm:px-5">
           {/* ---- Хранилище заблокировано: экран разблокировки ---- */}
           {vault.enabled && vault.locked ? (
             <UnlockScreen onUnlock={onVaultUnlock} />
@@ -816,10 +816,10 @@ export default function SettingsModal({
           <>
           {/* ---- Менеджер ключей ---- */}
           <section className="space-y-2">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-[13px] font-medium text-cream">API-ключи</h3>
               {!editing && (
-                <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center justify-end gap-1.5">
                   <button
                     onClick={() => exportKeysToFile(settings)}
                     disabled={settings.keys.length === 0}

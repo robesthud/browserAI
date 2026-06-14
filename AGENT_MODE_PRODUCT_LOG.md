@@ -1169,7 +1169,9 @@ Blocks:
 5. Main app shell now uses `var(--app-height, 100dvh)` instead of plain `h-screen`/`100dvh` only.
 6. Mobile input/textarea/select controls are forced to 16px to prevent iOS focus zoom.
 7. Mobile scroll containers use contained overscroll and momentum scrolling where appropriate.
-8. Tests verify viewport lock, boot installation and CSS safeguards.
+8. Settings/Agent settings modal is mobile-first: full-height on phones, safe-area header/body, wrapped action buttons and no horizontal clipping.
+9. Browser tool profile now keeps file/git/bash tools available so URL/GitHub tasks do not trap the agent in a browser-only profile.
+10. Tests verify viewport lock, boot installation and CSS safeguards.
 
 Runbook notes:
 

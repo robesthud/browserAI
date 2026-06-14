@@ -204,9 +204,9 @@ export default function AgentSettingsSection() {
     <section className="space-y-5 border-t border-white/5 pt-4">
       {/* ── Approval policy ── */}
       <div className="space-y-2">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-[13px] font-medium text-cream">Подтверждение действий агента</h3>
-          <div className="flex gap-1">
+          <div className="flex flex-wrap justify-end gap-1">
             {Object.entries(PRESETS).map(([k, p]) => (
               <button
                 key={k}
@@ -227,12 +227,12 @@ export default function AgentSettingsSection() {
         ) : (
           <div className="space-y-1">
             {Object.entries(CAT_LABELS).map(([cat, [label, hint]]) => (
-              <div key={cat} className="flex items-center gap-2 rounded-lg border border-white/10 bg-graphite-900/40 px-2.5 py-1.5">
+              <div key={cat} className="flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-graphite-900/40 px-2.5 py-1.5">
                 <div className="min-w-0 flex-1">
                   <div className="text-[12px] font-medium text-cream">{label}</div>
                   <div className="truncate text-[10px] text-cream-faint">{hint}</div>
                 </div>
-                <div className="flex gap-1">
+                <div className="flex flex-wrap gap-1">
                   {['auto', 'ask'].map((v) => (
                     <button
                       key={v}
@@ -248,7 +248,7 @@ export default function AgentSettingsSection() {
                 </div>
               </div>
             ))}
-            <div className="flex items-center justify-between gap-2 pt-1">
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
               <span className="text-[10px] text-cream-faint">Изменения применяются сразу.</span>
               <button
                 type="button"

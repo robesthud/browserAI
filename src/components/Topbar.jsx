@@ -47,7 +47,7 @@ export default function Topbar({
   })()
 
   return (
-    <header className="flex items-center justify-between gap-2 px-3 pb-2 pt-10 md:gap-3 md:px-5 md:py-3.5">
+    <header className="flex items-center justify-between gap-2 px-3 pb-2 pt-safe md:gap-3 md:px-5 md:py-3.5">
       {/* Left/Center: Model Picker (Always visible) + Title (Desktop only) */}
       <div className="flex min-w-0 flex-1 items-center justify-center gap-2 md:justify-start md:pl-12">
         <MobileHeaderModelPicker

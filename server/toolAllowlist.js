@@ -41,6 +41,11 @@ export const TOOL_PROFILES = {
     ...COMMON_AGENT_TOOLS,
     'browser_open', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_close',
     'web_search', 'web_fetch',
+    // Browser tasks often start from a URL but still need workspace/repo tools
+    // (for example GitHub URLs that should be cloned or inspected). Keep the
+    // browser profile capable instead of trapping the agent without git/files.
+    'list_files', 'read_file', 'search_files', 'project_profile',
+    'bash', ...SHELL_AGENT_TOOLS, 'git_status', 'git_clone', 'verify_code', 'verify_task',
   ],
 }
 
