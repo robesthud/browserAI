@@ -16,6 +16,7 @@ import OperatorMissionDetail from './OperatorMissionDetail.jsx'
 import OperatorProjectsPanel from './OperatorProjectsPanel.jsx'
 import OperatorRunbooks from './OperatorRunbooks.jsx'
 import DeploySessionsPanel from './DeploySessionsPanel.jsx'
+import GitHubAutomationPanel from './GitHubAutomationPanel.jsx'
 
 function JsonBlock({ data }) {
   if (!data) return null
@@ -190,7 +191,12 @@ export default function AgentAdmin() {
 
         {activeTab === 'deploys' && <DeploySessionsPanel />}
 
-        {activeTab === 'automation' && <AutomationCenter />}
+        {activeTab === 'automation' && (
+          <>
+            <GitHubAutomationPanel />
+            <AutomationCenter />
+          </>
+        )}
 
         {activeTab === 'diagnostics' && (
           <>

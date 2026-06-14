@@ -1352,6 +1352,22 @@ export const TOOLS = {
     },
   },
 
+  operator_list_github_automation_events: {
+    description: 'List recent GitHub webhook/issue/PR command automation events handled by BrowserAI.',
+    params: { limit: { type: 'number', optional: true, description: 'Max events.' }, repo: { type: 'string', optional: true, description: 'Optional repo slug.' } },
+    handler: async ({ limit = 20, repo = '' } = {}) => {
+      try { const { listGithubAutomationEvents } = await import('./githubAutomation.js'); return ok({ events: listGithubAutomationEvents({ limit, repo }) }) } catch (e) { return err(e.message) }
+    },
+  },
+
+  operator_comment_github_issue: {
+    description: 'Post a GitHub issue or PR conversation comment using the configured GitHub token.',
+    params: { repo: { type: 'string', required: true, description: 'owner/repo.' }, issue_number: { type: 'number', required: true, description: 'Issue or PR number.' }, body: { type: 'string', required: true, description: 'Comment body.' } },
+    handler: async ({ repo = '', issue_number, body = '' } = {}) => {
+      try { const { commentGithubIssue } = await import('./githubAutomation.js'); return ok({ comment: await commentGithubIssue({ repo, issueNumber: issue_number, body }) }) } catch (e) { return err(e.message) }
+    },
+  },
+
   operator_evaluate_project_policy: {
     description: 'Evaluate a project policy decision for an operator action such as code.finalize, code.merge, code.deploy, mission.full_dev_cycle.',
     params: {

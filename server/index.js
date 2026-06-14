@@ -91,6 +91,7 @@ import { initNotifications, listNotifications, notificationSummary, markNotifica
 import { classifyFailure, recommendAutoFix, executeAutoFixRecommendation, createIncidentFromFailure } from './failureClassifier.js'
 import { initAutonomousRecovery, listRecoveryActions, recoverySummary, recoveryGraph, superviseRecoveries } from './autonomousRecovery.js'
 import { getOperatorCodeTask, listOperatorCodeTasks, finalizeOperatorCodeTask, waitOperatorCodeTaskCi, startOperatorCodeCiAutoFix, mergeOperatorCodeTaskPr, reviewOperatorCodeTask, cancelOperatorCodeTask, resumeOperatorCodeTask } from './operatorCode.js'
+import { initGithubAutomation, listGithubAutomationEvents, handleGithubAutomationWebhook, commentGithubIssue } from './githubAutomation.js'
 import { listOpsServices, runOpsAction, readOpsAudit } from './ops.js'
 import { buildSessionHeaders, getSiteProfile, applyBodyDefaults, getChatUrl } from './stealthHeaders.js'
 
@@ -1853,6 +1854,10 @@ app.post('/api/webhooks/github', async (req, res) => {
       const wf = createIncidentWorkflow({ incident: inc, recipeId: 'production_health_check', input: { githubEvent: event, delivery, repo, sha: body.after } })
       return res.json({ ok: true, event, incident: inc, workflowId: wf.id })
     }
+    if (['issue_comment', 'issues', 'pull_request', 'pull_request_review_comment'].includes(event) && ['created', 'opened', 'edited', 'synchronize'].includes(body.action || '')) {
+      const automation = await handleGithubAutomationWebhook({ event, delivery, payload: body })
+      return res.json({ ok: true, event, automation })
+    }
     return res.json({ ok: true, event, ignored: true })
   } catch (e) {
     console.warn('[github webhook] failed:', e?.message || e)
@@ -2563,6 +2568,7 @@ try {
   initIncidents();
   initOperatorMode();
   initDeploySessions();
+  initGithubAutomation();
   initNotifications();
   initAutonomousRecovery();
 } catch (err) {
@@ -3225,6 +3231,17 @@ app.get('/api/operator/projects', requireAuth, (req, res) => {
 
 app.get('/api/operator/project-templates', requireAuth, (_req, res) => {
   res.json({ templates: PROJECT_TEMPLATES })
+})
+
+app.get('/api/operator/github-automation/events', requireAuth, (req, res) => {
+  res.json({ events: listGithubAutomationEvents({ limit: req.query.limit || 50, repo: String(req.query.repo || '') }) })
+})
+
+app.post('/api/operator/github-automation/comment', requireAuth, async (req, res) => {
+  try {
+    const comment = await commentGithubIssue({ repo: req.body?.repo || '', issueNumber: req.body?.issueNumber || req.body?.issue_number, body: req.body?.body || '' })
+    res.json({ ok: true, comment })
+  } catch (e) { res.status(400).json({ ok: false, error: e?.message || String(e) }) }
 })
 
 app.get('/api/operator/project-policy-presets', requireAuth, (_req, res) => {

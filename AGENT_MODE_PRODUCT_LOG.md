@@ -877,27 +877,54 @@ Every autonomous task has a clear audit trail and UI surface.
 
 Goal: make BrowserAI react to GitHub like a real developer assistant.
 
+Status: implemented in this package.
+
 Blocks:
 
 1. Webhook support for:
-   - `issues.opened`;
-   - `issue_comment.created`;
+   - `issues.opened` / `issues.edited` with BrowserAI command in body;
+   - `issue_comment.created` / `issue_comment.edited`;
    - `pull_request_review_comment.created`;
-   - `pull_request` events.
+   - `pull_request.opened` / `pull_request.edited` / `pull_request.synchronize` with command in body.
 2. Command parser for comments:
-   - `/browserai fix`;
+   - `/browserai run <task>`;
    - `/browserai review`;
-   - `/browserai deploy`;
-   - `/browserai status`.
-3. Issue → operator mission mapping.
-4. PR comment → code task / CI auto-fix mapping.
-5. GitHub comment reporting.
-6. Policy gates for repo events.
-7. Tests for webhook event routing.
+   - `/browserai fix-ci`;
+   - `/browserai status`;
+   - `/browserai help`;
+   - aliases: `/agent ...`, `@browserai ...`.
+3. Issue/PR → Operator mission mapping:
+   - `run` → `universal_dev_task`;
+   - `review` → `code_task`;
+   - `fix-ci` → `fix_tests`.
+4. GitHub comment reporting:
+   - mission-start acknowledgement;
+   - status response;
+   - help response;
+   - manual comment API/tool.
+5. Durable automation event log:
+   - `github_automation_events` table;
+   - API list endpoint;
+   - UI panel in Automation tab.
+6. API endpoints:
+   - `GET /api/operator/github-automation/events`;
+   - `POST /api/operator/github-automation/comment`.
+7. Agent tools:
+   - `operator_list_github_automation_events`;
+   - `operator_comment_github_issue`.
+8. Tests for command parsing and event action planning.
+
+Runbook notes:
+
+- Configure a GitHub webhook to `/api/webhooks/github` with events: Issues, Issue comments, Pull requests, Pull request review comments, Workflow runs, Push.
+- Use `/browserai help` in any issue/PR to see available commands.
+- Use `/browserai run <task>` when you want BrowserAI to create an Operator mission from a GitHub discussion.
+- Use `/browserai review` on PRs to launch a code-review/check mission.
+- If `GITHUB_TOKEN` is missing, automation still records events and can create local missions, but GitHub comments are marked as skipped.
 
 Result:
 
-GitHub becomes a control surface for your personal agent.
+GitHub becomes a control surface for the personal operator agent: issues and PR comments can start missions, request review/status, and receive automated responses.
 
 ---
 
