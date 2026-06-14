@@ -104,6 +104,49 @@ function WorkingSpinner() {
   )
 }
 
+function splitRuntimeEvidence(content = '') {
+  const raw = String(content || '')
+  const marker = /\n---\s*\n### Runtime evidence/i
+  const m = raw.match(marker)
+  if (!m || m.index == null) return { main: raw, evidence: '' }
+  return {
+    main: raw.slice(0, m.index).trim(),
+    evidence: raw.slice(m.index).replace(/^\n---\s*\n/i, '').trim(),
+  }
+}
+
+function AgentActivityFold({ message, children }) {
+  const tools = (message.toolCalls || []).filter((tc) => tc.name !== 'plan_set' && tc.name !== 'plan_check')
+  const thoughts = message.thoughts || []
+  const activeTool = [...tools].reverse().find((tc) => tc.status !== 'done')
+  const lastTool = activeTool || tools[tools.length - 1]
+  const lastThought = thoughts[thoughts.length - 1]?.text || ''
+  const failed = tools.filter((tc) => tc.status === 'done' && tc.ok === false).length
+  const done = tools.filter((tc) => tc.status === 'done' && tc.ok !== false).length
+  const statusText = activeTool
+    ? `выполняю ${activeTool.name}`
+    : failed
+      ? `есть ошибки: ${failed}`
+      : tools.length
+        ? `выполнено действий: ${done}/${tools.length}`
+        : 'планирую'
+  const hint = activeTool?.args?.command || activeTool?.args?.path || lastTool?.args?.command || lastTool?.args?.path || lastThought
+  return (
+    <details className="mb-2 rounded-xl border border-white/10 bg-graphite-800/35 text-[13px]" open={false}>
+      <summary className="cursor-pointer list-none px-3 py-2 text-cream-soft hover:bg-white/5">
+        <span className="mr-2 inline-block h-2 w-2 rounded-full bg-emerald-300 align-middle" />
+        <span className="font-medium">Ход работы агента</span>
+        <span className="ml-2 text-cream-faint">{statusText}</span>
+        {hint ? <span className="ml-2 hidden max-w-[360px] truncate align-bottom text-cream-faint/70 md:inline-block">{String(hint).replace(/\s+/g, ' ').slice(0, 160)}</span> : null}
+        <span className="float-right text-cream-faint">раскрыть</span>
+      </summary>
+      <div className="space-y-1 border-t border-white/5 px-2.5 py-2">
+        {children}
+      </div>
+    </details>
+  )
+}
+
 function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, onCancelAskUser, onJobDone, onBranch }) {
   const isUser = m.role === 'user'
   const isDev = devtoolsEnabled()
@@ -355,6 +398,9 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                       />,
                     )
                   }
+                  if (!isDev && items.length > 0) {
+                    return <AgentActivityFold key={`fold-${m.id}`} message={m}>{items}</AgentActivityFold>
+                  }
                   return items
                 })()}
               </div>
@@ -400,11 +446,22 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
 
             {m.job ? <JobCard job={m.job} onJobDone={onJobDone} /> : null}
 
-            {m.content ? (
-              <div className={hasAgentActivity ? 'mt-3 border-t border-white/10 pt-3' : ''}>
-                <Markdown text={m.content} />
-              </div>
-            ) : null}
+            {m.content ? (() => {
+              const parts = !isDev ? splitRuntimeEvidence(m.content) : { main: m.content, evidence: '' }
+              return (
+                <div className={hasAgentActivity ? 'mt-3 border-t border-white/10 pt-3' : ''}>
+                  <Markdown text={parts.main || m.content} />
+                  {parts.evidence ? (
+                    <details className="mt-3 rounded-xl border border-white/10 bg-graphite-800/35 text-[13px]">
+                      <summary className="cursor-pointer px-3 py-2 text-cream-soft hover:bg-white/5">Технический отчёт и evidence</summary>
+                      <div className="border-t border-white/5 px-3 py-2 text-cream-soft">
+                        <Markdown text={parts.evidence} />
+                      </div>
+                    </details>
+                  ) : null}
+                </div>
+              )
+            })() : null}
 
             {m.pending && !m.content && !showsThinkingPill && !(m.job && ['succeeded', 'failed', 'cancelled'].includes(m.job.status)) && (
               <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-graphite-800/60 px-2.5 py-1 text-[12px] text-cream-faint">
@@ -475,7 +532,7 @@ function CheckpointBadge({ toolCalls }) {
   )
 }
 
-export default function MessageList({ messages, aiWorking, onEdit, onRegenerate, onRefresh, onAnswerAskUser, onCancelAskUser, onJobDone, onBranch }) {
+export default function MessageList({ messages, aiWorking, onEdit, onRegenerate, onAnswerAskUser, onCancelAskUser, onJobDone, onBranch }) {
   const bottomRef = useRef(null)
   const scrollRef = useRef(null)
   const prevLenRef = useRef(messages.length)

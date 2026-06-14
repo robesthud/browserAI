@@ -1146,6 +1146,31 @@ BrowserAI becomes a real Operator Console product instead of a single admin lab 
 
 ---
 
+## Package UX-2 — Minimal Agent Chat Output
+
+Goal: keep the main chat as minimal and readable as Arena-style Agent Mode while preserving access to all technical evidence.
+
+Status: implemented in this package.
+
+Blocks:
+
+1. Normal users no longer see every narration/tool card expanded directly in the chat.
+2. Agent activity is collapsed into a compact `Ход работы агента` fold with status/count/last action summary.
+3. Tool details, command output and plan remain available inside the fold when needed.
+4. Runtime evidence appended by the backend is split out of the assistant answer and placed into a collapsed `Технический отчёт и evidence` section.
+5. Devtools mode keeps the old fully expanded technical view for debugging.
+
+Runbook notes:
+
+- Main UX rule: concise assistant answer first; technical trace/evidence is available on demand.
+- Use `localStorage.browserai.devtools = '1'` for expanded diagnostics.
+
+Result:
+
+BrowserAI keeps the functional agent trace, but the chat again feels lightweight: task, short progress summary, final answer, optional evidence.
+
+---
+
 ## Package Runtime-4 — Guided Git/PR/Deploy Rails + Runtime Report Builder
 
 Goal: make full-cycle tasks deterministic enough that “сделай, проверь, запушь, задеплой” follows reliable rails and ends with runtime evidence instead of a purely model-written memory report.
@@ -1348,6 +1373,7 @@ The main interface is again a pleasant task-first Agent Mode: chat + workspace, 
 0.2. Package Runtime-2 — Mission Autopilot / One-Task Full Cycle. **Done**
 0.3. Package Runtime-3 — Persistent Shell Sessions + Command Autopilot. **Done**
 0.4. Package Runtime-4 — Guided Git/PR/Deploy Rails + Runtime Report Builder. **Done**
+0.5. Package UX-2 — Minimal Agent Chat Output. **Done**
 1. Package A — Super Operator Workflow v1.
 2. Package B — Mission Detail Pages + Timeline UX.
 3. Package D — Reviewer Agent v2 + Semantic Diff Review.
