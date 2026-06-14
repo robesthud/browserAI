@@ -41,7 +41,7 @@ import { shouldUseCheapEditor, wrapProviderForEditor, routingLabel } from './arc
 import { requiresApproval, categoryOf } from './approvalGate.js'
 import {
   buildAgentContext, normalizeToolResult, createAgentState,
-  buildPlanningDirective, buildDoneCriteriaDirective, updateAgentStateFromTool,
+  buildPlanningDirective, buildAutonomousRuntimeDirective, buildDoneCriteriaDirective, updateAgentStateFromTool,
   validateToolCall, makeToolErrorResult,
 } from './agentCore.js'
 
@@ -234,6 +234,31 @@ function unmetDoneCriteria(taskType = '', recentToolHistory = []) {
     }
   }
   return ''
+}
+
+function narrateToolCall(tool = '', args = {}, agentContext = {}) {
+  const cmd = String(args?.command || '').trim()
+  if (tool === 'bash') {
+    if (/npm\s+(test|run test)|pnpm\s+test|yarn\s+test|vitest|jest/i.test(cmd)) return 'Запускаю тесты через bash, чтобы подтвердить изменения реальным выводом.'
+    if (/npm\s+run\s+build|pnpm\s+build|yarn\s+build|vite build/i.test(cmd)) return 'Запускаю сборку через bash, чтобы проверить production-готовность.'
+    if (/git\s+status/i.test(cmd)) return 'Проверяю состояние git перед следующими действиями.'
+    if (/git\s+diff/i.test(cmd)) return 'Смотрю diff, чтобы убедиться, что изменения именно те, которые нужны.'
+    if (/curl|wget/i.test(cmd)) return 'Проверяю endpoint/health через bash.'
+    if (/docker\s+logs|docker\s+ps|docker compose/i.test(cmd)) return 'Проверяю Docker-состояние и логи через bash.'
+    if (/grep|rg|find|ls|pwd|cat|sed/i.test(cmd)) return 'Осматриваю проект через bash, чтобы быстро найти нужные файлы и контекст.'
+    return 'Выполняю bash-команду как часть автоматического Agent Mode.'
+  }
+  if (tool === 'list_files') return 'Сначала смотрю структуру workspace, чтобы работать по реальным путям.'
+  if (tool === 'read_file') return `Читаю файл ${args?.path || ''}, прежде чем делать выводы или правки.`
+  if (tool === 'search_files') return 'Ищу по проекту релевантные места для задачи.'
+  if (tool === 'edit_file' || tool === 'write_file') return `Вношу изменение в ${args?.path || 'файл'} и затем проверю результат.`
+  if (tool === 'verify_task' || tool === 'verify_code') return 'Запускаю проверку после изменений, чтобы не заявлять успех без evidence.'
+  if (tool === 'secret_scan') return 'Проверяю, что в изменения не попали секреты.'
+  if (tool.startsWith('git_')) return 'Выполняю git-шаг и буду опираться только на результат команды.'
+  if (tool.startsWith('ops_')) return 'Выполняю operator/ops действие с последующей проверкой состояния.'
+  if (tool === 'ask_user') return 'Нужна твоя развилка/подтверждение, без неё безопасно продолжить нельзя.'
+  const type = agentContext?.task?.type || 'task'
+  return `Выполняю инструмент ${tool} для шага ${type}.`
 }
 
 function summarizeToolOutcome(tool, r) {
@@ -735,6 +760,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   res.on('close', () => clearInterval(idleWatchdog))
 
   const planningDirective = buildPlanningDirective(agentContext)
+  const autonomousDirective = buildAutonomousRuntimeDirective(agentContext)
   const doneCriteriaDirective = buildDoneCriteriaDirective(agentContext)
   
   // v2.26: High-Intelligence Directive for High Complexity tasks.
@@ -744,6 +770,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   }
 
   if (planningDirective) convo.push({ role: 'user', content: planningDirective })
+  if (autonomousDirective) convo.push({ role: 'user', content: autonomousDirective })
   if (doneCriteriaDirective) convo.push({ role: 'user', content: doneCriteriaDirective })
   
   sse(res, 'agent_context', { ...agentContext, toolProfile, toolNames: activeToolNames }); sse(res, 'agent_state', agentState)
@@ -1025,6 +1052,7 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
 
         res.__agentPhase = 'tool'
         res.__agentActiveTool = call.tool
+        sse(res, 'thought', { step, sub: idx, text: narrateToolCall(call.tool, call.args, agentContext), generated: true })
         sse(res, 'tool_start', { step, sub: idx, name: call.tool, args: call.args })
         let r
         if (call.tool === 'ask_user') {

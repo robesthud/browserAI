@@ -1146,6 +1146,46 @@ BrowserAI becomes a real Operator Console product instead of a single admin lab 
 
 ---
 
+## Package Runtime-Agent — Automated Bash Execution Loop
+
+Goal: make the main Agent Mode behave closer to Arena-style work: the user gives a task, the agent explains each step, calls bash/files/git/deploy tools itself, verifies, recovers from errors, and reports evidence.
+
+Status: implemented in this package.
+
+Blocks:
+
+1. Added `buildAutonomousRuntimeDirective()` to the agent runtime core.
+2. Real-work tasks now receive an explicit autonomous mode directive:
+   - user only provides the task;
+   - agent chooses tools;
+   - safe bash is expected for inspection and verification;
+   - agent must not ask the user to run commands manually;
+   - errors should trigger diagnostic/fix attempts instead of immediate surrender;
+   - final answer must include evidence.
+3. Agent loop now emits generated narration before every tool call, e.g.:
+   - project inspection;
+   - file read/edit;
+   - bash test/build/git/docker/curl checks;
+   - verification;
+   - secret scan;
+   - ops actions.
+4. UI narration cards were changed from hidden “thoughts” into visible “agent step” explanations.
+5. Bash/verification tool cards now expose command output to normal users when opened, while still keeping advanced internals behind devtools.
+6. Tests cover the new autonomous runtime directive.
+
+Runbook notes:
+
+- Product behavior rule: never ask the user to run safe commands; call bash/tools directly.
+- After code/config edits, verify via bash/verify tools before final success.
+- After deploy/ops actions, verify health/logs before final success.
+- Tool narration should remain short, factual and user-facing — not hidden chain-of-thought.
+
+Result:
+
+Agent Mode now better matches the desired behavior: one task from the user, visible step-by-step explanations, automatic bash/tool execution, verification and evidence-based reporting.
+
+---
+
 ## Package UX-Restore — Chat + Workspace Agent Mode
 
 Goal: return the main BrowserAI experience to a clean Arena-like agent surface: the user gives one task, while bash/files/git/deploy/operator machinery stays under the hood or in Dev Lab.
@@ -1179,6 +1219,7 @@ The main interface is again a pleasant task-first Agent Mode: chat + workspace, 
 # Recommended execution order
 
 0. Package UX-Restore — Chat + Workspace Agent Mode. **Done**
+0.1. Package Runtime-Agent — Automated Bash Execution Loop. **Done**
 1. Package A — Super Operator Workflow v1.
 2. Package B — Mission Detail Pages + Timeline UX.
 3. Package D — Reviewer Agent v2 + Semantic Diff Review.

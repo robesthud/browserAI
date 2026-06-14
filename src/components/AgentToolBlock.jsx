@@ -243,8 +243,9 @@ export default function AgentToolBlock({
     ? (result.file_path || result.path || result.filename || 'download')
     : ''
 
+  const userVisibleOutput = ['bash', 'verify_code', 'verify_task', 'npm_test', 'run_tests'].includes(name)
   let highlightedHtml = null
-  if (status === 'done' && ok && rawBody && isDev) {
+  if (status === 'done' && ok && rawBody && (isDev || userVisibleOutput)) {
     let lang = ''
     if (name === 'write_file' || name === 'edit_file') lang = detectLangFromPath(args?.path || '')
     else if (name === 'read_file') lang = detectLangFromPath(args?.path || '')
@@ -352,7 +353,7 @@ export default function AgentToolBlock({
             </div>
           )}
 
-          {status === 'done' && isDev ? (
+          {status === 'done' && (isDev || userVisibleOutput) ? (
             highlightedHtml ? (
               <pre
                 className={`thin-scroll max-h-72 overflow-auto whitespace-pre-wrap rounded bg-graphite-900 p-2 font-mono text-[11px] ${ok ? 'text-cream' : 'text-rose-200'}`}
