@@ -1146,6 +1146,48 @@ BrowserAI becomes a real Operator Console product instead of a single admin lab 
 
 ---
 
+## Package Runtime-2 — Mission Autopilot / One-Task Full Cycle
+
+Goal: make BrowserAI keep track of what the user actually asked for — verify, commit, push, PR, deploy, health/log checks — and prevent early final answers when those obligations are still unsatisfied.
+
+Status: implemented in this package.
+
+Blocks:
+
+1. Goal obligation detector in `agentCore`:
+   - inspect;
+   - codeChange;
+   - verify;
+   - commit;
+   - push;
+   - PR;
+   - deploy;
+   - healthCheck;
+   - logsCheck;
+   - finalReport.
+2. Agent context/state now carries inferred `task.obligations`, `state.obligations`, and live `state.obligationStatus`.
+3. Autonomous runtime directive now lists active obligations and tells the agent to complete them or report evidence-backed blockers.
+4. Final-answer gate in `agentLoop` checks obligations before allowing completion:
+   - requested push must show git push / pushed result;
+   - requested deploy must show deploy action;
+   - deploy requires health/log checks;
+   - requested commit/PR/verify must be satisfied or explicitly blocked.
+5. Obligation enforcement emits visible narration and pushes the model back into tool execution instead of silently finishing too early.
+6. Git/ops/bash summaries enriched so obligation checks can identify push/deploy/health/log evidence.
+7. Tests cover full-cycle obligation inference and directive behavior.
+
+Runbook notes:
+
+- If the user says “сделай, запушь и задеплой”, the runtime now treats push/deploy/health/log checks as obligations, not optional niceties.
+- If credentials/approval/policy prevent an obligation, the final report must say so explicitly with tool evidence.
+- This does not remove approval gates: risky production actions still need policy/approval where configured.
+
+Result:
+
+Agent Mode is less likely to stop after partial work: it keeps a checklist of the user’s requested full-cycle outcomes and pushes itself to finish or report a real blocker.
+
+---
+
 ## Package Runtime-Agent — Automated Bash Execution Loop
 
 Goal: make the main Agent Mode behave closer to Arena-style work: the user gives a task, the agent explains each step, calls bash/files/git/deploy tools itself, verifies, recovers from errors, and reports evidence.
@@ -1220,6 +1262,7 @@ The main interface is again a pleasant task-first Agent Mode: chat + workspace, 
 
 0. Package UX-Restore — Chat + Workspace Agent Mode. **Done**
 0.1. Package Runtime-Agent — Automated Bash Execution Loop. **Done**
+0.2. Package Runtime-2 — Mission Autopilot / One-Task Full Cycle. **Done**
 1. Package A — Super Operator Workflow v1.
 2. Package B — Mission Detail Pages + Timeline UX.
 3. Package D — Reviewer Agent v2 + Semantic Diff Review.

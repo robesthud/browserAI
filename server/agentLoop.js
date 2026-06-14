@@ -211,6 +211,15 @@ function commandLooksLikeHealthCheck(argsText = '') {
   return /(curl|wget|http|health|docker logs|docker ps|compose ps|journalctl|logs)/i.test(String(argsText || ''))
 }
 
+function toolCommand(h = {}) {
+  const args = parseDigestArgs(h.args)
+  return String(args.command || '')
+}
+
+function commandMatches(h = {}, re) {
+  return h?.tool === 'bash' && re.test(toolCommand(h))
+}
+
 function unmetDoneCriteria(taskType = '', recentToolHistory = []) {
   const okTools = recentToolHistory.filter((h) => h?.ok).map((h) => h.tool)
   const has = (...tools) => tools.some((t) => okTools.includes(t))
@@ -234,6 +243,49 @@ function unmetDoneCriteria(taskType = '', recentToolHistory = []) {
     }
   }
   return ''
+}
+
+function obligationCompletionStatus(obligations = {}, recentToolHistory = []) {
+  const ok = recentToolHistory.filter((h) => h?.ok)
+  const hasTool = (...tools) => ok.some((h) => tools.includes(h.tool))
+  const hasBash = (re) => ok.some((h) => commandMatches(h, re))
+  const edited = ok.some((h) => ['write_file', 'edit_file'].includes(h.tool))
+  const verified = hasTool('verify_task', 'verify_code', 'npm_test', 'run_tests') || hasBash(/(npm|pnpm|yarn)\s+(test|run\s+test|run\s+build|build)|vitest|jest|pytest|go\s+test|cargo\s+test|mvn\s+test/i)
+  const status = {
+    inspect: hasTool('list_files', 'read_file', 'search_files', 'read_project_rules') || hasBash(/(^|\s)(pwd|ls|find|grep|rg|cat|sed)\b/i),
+    codeChange: edited || hasTool('git_commit') || hasBash(/git\s+(apply|commit)|npm\s+version/i),
+    verify: verified,
+    commit: hasTool('git_commit') || hasBash(/git\s+commit\b/i),
+    push: ok.some((h) => h.tool === 'git_commit' && /pushed=true/i.test(String(h.outcome || ''))) || hasBash(/git\s+push\b/i),
+    pr: hasTool('github_pr_create') || /pull request|\/pull\//i.test(ok.map((h) => h.outcome).join('\n')) || hasBash(/gh\s+pr\s+create/i),
+    deploy: hasTool('ops_run_action') || hasBash(/(deploy\.sh|\bdeploy\b|docker\s+compose\s+up|docker-compose\s+up|systemctl\s+restart|kubectl\s+apply)/i),
+    healthCheck: ok.some((h) => h.tool === 'bash' && commandLooksLikeHealthCheck(h.args)) || hasTool('docker_ps', 'ops_list_services') || hasBash(/curl|wget|health/i),
+    logsCheck: hasTool('docker_logs', 'docker_ps') || hasBash(/docker\s+logs|docker\s+ps|journalctl|tail\s+.*log/i),
+    finalReport: true,
+  }
+  if (obligations.codeChange && !edited && recentToolHistory.some((h) => h?.ok && ['git_clone', 'zip_files'].includes(h.tool))) status.codeChange = true
+  return status
+}
+
+function unmetGoalObligation(agentContext = {}, recentToolHistory = []) {
+  const obligations = agentContext?.task?.obligations || {}
+  const status = obligationCompletionStatus(obligations, recentToolHistory)
+  const order = ['inspect', 'codeChange', 'verify', 'commit', 'push', 'pr', 'deploy', 'healthCheck', 'logsCheck']
+  const labels = {
+    inspect: 'нужно осмотреть проект/контекст реальными tools или bash перед финальным ответом',
+    codeChange: 'пользователь просил изменение кода/фичу/фикс, но не видно успешной правки файла',
+    verify: 'нужна проверка результата через verify/npm test/build/bash',
+    commit: 'пользователь просил commit, но commit ещё не выполнен',
+    push: 'пользователь просил push/GitHub, но push ещё не подтверждён',
+    pr: 'пользователь просил PR, но PR ещё не создан или не подтверждён',
+    deploy: 'пользователь просил deploy/production, но deploy ещё не выполнен или не подтверждён',
+    healthCheck: 'после deploy/ops нужен health check',
+    logsCheck: 'после deploy/ops нужна проверка логов/Docker status',
+  }
+  for (const key of order) {
+    if (obligations[key] && !status[key]) return { key, message: labels[key], status, obligations }
+  }
+  return null
 }
 
 function narrateToolCall(tool = '', args = {}, agentContext = {}) {
@@ -271,6 +323,8 @@ function summarizeToolOutcome(tool, r) {
   if (tool === 'npm_test') return result?.passed ? 'passed' : `exit=${result?.exitCode ?? '?'}`
   if (tool === 'verify_task') return result?.passed ? `passed ${result?.results?.length || 0} checks` : `failed ${result?.results?.length || 0} checks`
   if (tool === 'git_clone') return `path=${result?.path || ''}`
+  if (tool === 'git_commit') return `committed=${result?.committed !== false} pushed=${Boolean(result?.pushed)} ${String(result?.stderr || '').slice(0, 80)}`
+  if (tool === 'ops_run_action') return `exit=${result?.exitCode ?? '?'} ${String(result?.stdout || result?.message || '').slice(0, 120)}`
   if (tool === 'zip_files') return `path=${result?.file_path || ''} entries=${result?.entries || 0}`
   if (tool === 'secret_scan') return result?.ok ? `ok scanned=${result?.scannedFiles || 0}` : `findings high=${result?.high || 0} medium=${result?.medium || 0}`
   if (tool === 'workspace_snapshot_create') return `id=${result?.id || ''} entries=${result?.entries || 0}`
@@ -807,6 +861,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   const okReadPaths = new Set(), failedReadPaths = new Set()
   let fabricationPushback = false
   let verificationPushback = false
+  const obligationPushbacks = new Map()
   let pushedBackThisTurn = false
 
   try {
@@ -934,6 +989,18 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
           sse(res, 'thought', { step, text: `Критерии завершения ещё не выполнены: ${doneCriteriaGap}` })
           convo.push({ role: 'user', content: `[done_criteria_enforcement]\n${doneCriteriaGap}\nContinue with the required tool call(s). Do not final-answer yet.` })
           continue
+        }
+
+        const obligationGap = unmetGoalObligation(agentContext, recentToolHistory)
+        if (obligationGap && !aborted) {
+          const prev = Number(obligationPushbacks.get(obligationGap.key) || 0)
+          if (prev < 2) {
+            obligationPushbacks.set(obligationGap.key, prev + 1)
+            agentState.obligationStatus = obligationGap.status
+            sse(res, 'thought', { step, text: `Автопилот не завершает задачу: ${obligationGap.message}. Продолжаю выполнять обязательный шаг.` })
+            convo.push({ role: 'user', content: `[goal_obligation_enforcement]\nThe user request implies obligation "${obligationGap.key}" but it is not satisfied yet: ${obligationGap.message}.\n\nCurrent obligation status:\n${JSON.stringify(obligationGap.status, null, 2)}\n\nContinue with the required tool call(s). If impossible because of credentials/approval/policy/tooling, state the blocker explicitly in the final report with evidence. Do not silently omit this obligation.` })
+            continue
+          }
         }
 
         const unfinishedPlan = incompletePlanSteps(agentState)
@@ -1094,7 +1161,7 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
           sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
           return { call, r: rErr, pushedBack: true }
         }
-        updateAgentStateFromTool(agentState, call.tool, r, call.args); try { if (persistedTask) updateAgentTask(persistedTask.id, { phase: agentState.phase || currentPhase, state: agentState, history: convo }) } catch { /* best-effort */ }; sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult(call.tool, r, { step, sub: idx }) }); sse(res, 'agent_state', agentState)
+        updateAgentStateFromTool(agentState, call.tool, r, call.args); agentState.obligationStatus = obligationCompletionStatus(agentState.obligations || {}, recentToolHistory); try { if (persistedTask) updateAgentTask(persistedTask.id, { phase: agentState.phase || currentPhase, state: agentState, history: convo }) } catch { /* best-effort */ }; sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult(call.tool, r, { step, sub: idx }) }); sse(res, 'agent_state', agentState)
         res.__agentPhase = 'agent'
         res.__agentActiveTool = ''
         return { call, r }
@@ -1103,6 +1170,7 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
 
       let sawPushBack = false
       for (const res of results) { if (res?.pushedBack) sawPushBack = true; if (res?.call && res?.r) { recentToolHistory.push({ tool: res.call.tool, ok: !!res.r.ok, at: Date.now(), args: summarizeCallArgsForDigest(res.call.args || {}), outcome: summarizeToolOutcome(res.call.tool, res.r) }); if (res.call.tool === 'read_file' && res.call.args?.path) { (res.r.ok ? okReadPaths : failedReadPaths).add(String(res.call.args.path)) } if (res.call.tool === 'plan_set' && res.r.ok) planState.done = new Set(); else if (res.call.tool === 'plan_check' && res.r.ok) (res.r.result?.checked || []).forEach(idx => planState.done.add(Number(idx))) } }
+      agentState.obligationStatus = obligationCompletionStatus(agentState.obligations || {}, recentToolHistory)
 
       // Always feed observations back into the conversation, even for
       // push-back/recovery turns. Otherwise the next LLM step would see the

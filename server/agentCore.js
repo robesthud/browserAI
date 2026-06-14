@@ -108,9 +108,36 @@ export function classifyAgentTask(text = '') {
   return { type: 'simple_answer', complexity: 'low', suggestedMaxSteps: 6 }
 }
 
+export function detectGoalObligations(text = '', task = {}) {
+  const t = String(text || '').toLowerCase()
+  const has = (...patterns) => patterns.some((p) => (p instanceof RegExp ? p.test(t) : t.includes(String(p).toLowerCase())))
+  const isRealWork = task?.complexity && task.complexity !== 'low'
+  const codeChange = task?.type === 'coding_change' || has('исправ', 'почини', 'реализ', 'добав', 'измен', 'перепиш', 'refactor', 'fix ', 'implement', 'bug', 'feature')
+  const deploy = task?.type === 'deploy_ops' || has('деплой', 'депол', 'задеплой', 'разверни', 'deploy', 'production')
+  const commit = has('коммит', 'commit', 'сохрани в git', 'закоммить')
+  const push = commit || has('пуш', 'push', 'github', 'гитхаб', 'отправь в репозитор', 'залей')
+  const pr = has('pull request', 'pr ', 'пиар', 'создай pr', 'создай pull')
+  const verify = codeChange || deploy || has('проверь', 'протест', 'test', 'tests', 'build', 'сборк', 'verify')
+  const healthCheck = deploy || has('health', 'здоров', 'проверь сайт', 'проверь прод')
+  const logsCheck = deploy || has('логи', 'logs', 'docker logs', 'журнал')
+  return {
+    inspect: Boolean(isRealWork),
+    codeChange: Boolean(codeChange),
+    verify: Boolean(verify),
+    commit: Boolean(commit),
+    push: Boolean(push),
+    pr: Boolean(pr),
+    deploy: Boolean(deploy),
+    healthCheck: Boolean(healthCheck),
+    logsCheck: Boolean(logsCheck),
+    finalReport: Boolean(isRealWork),
+  }
+}
+
 export function buildAgentContext({ provider = {}, history = [], extraSystem = '', userId = '', workspaceScope = '', maxSteps = 15 } = {}) {
   const userText = lastUserText(history)
   const task = classifyAgentTask(userText)
+  const obligations = detectGoalObligations(userText, task)
   const providerKind = inferProviderKind(provider.baseUrl || '')
 
   return {
@@ -139,6 +166,7 @@ export function buildAgentContext({ provider = {}, history = [], extraSystem = '
       type: task.type,
       complexity: task.complexity,
       suggestedMaxSteps: task.suggestedMaxSteps,
+      obligations,
     },
     runtime: {
       requestedMaxSteps: maxSteps,
@@ -212,6 +240,8 @@ export function createAgentState({ agentContext = {}, history = [] } = {}) {
     currentStep: needsPlan ? 'Build an explicit plan before acting' : 'Answer or act on the user request',
     openQuestions: [],
     touchedFiles: [],
+    obligations: agentContext?.task?.obligations || {},
+    obligationStatus: {},
     lastErrors: [],
     nextActions: needsPlan ? ['call plan_set with a concise checklist'] : [],
     toolStats: {
@@ -250,10 +280,14 @@ export function buildAutonomousRuntimeDirective(agentContext = {}) {
   const complexity = agentContext?.task?.complexity || 'medium'
   if (complexity === 'low') return ''
   const bashFirst = ['coding_change', 'deploy_ops', 'repo_analysis', 'general_agent_task'].includes(type)
+  const obligations = agentContext?.task?.obligations || {}
+  const activeObligations = Object.entries(obligations).filter(([, v]) => v).map(([k]) => k)
   return [
     '[autonomous_agent_mode]',
     'You are operating in the main BrowserAI Agent Mode, not a manual admin panel.',
     'The user should only provide the task. You choose the tools and keep working until the task is done or blocked.',
+    activeObligations.length ? `Runtime obligations inferred from the prompt: ${activeObligations.join(', ')}.` : '',
+    'If an inferred obligation cannot be completed (missing credentials/approval/tool failure), explicitly report it as a blocker with evidence instead of silently dropping it.',
     'Between actions, briefly explain in Russian what you are about to do and why. Keep explanations short and factual.',
     bashFirst ? 'Use bash naturally for inspection and verification when it is the fastest reliable path: pwd/ls/find/grep/cat, npm test/build, git status/diff, curl health checks, docker logs when allowed.' : '',
     'For development tasks, prefer this loop: inspect with list_files/read_file/bash → plan_set → edit/write → bash/verify_task → fix errors → final evidence report.',
