@@ -413,9 +413,14 @@ export default function Composer({
       <section className={wrapperClass}>
         <div className={innerClass}>
           {!hasMessages && (
-            <h1 className="mb-6 text-center font-serif text-[32px] font-normal leading-tight text-cream sm:text-[38px] md:mb-8 md:text-[44px]">
-              Добро пожаловать в чат с AI
-            </h1>
+            <div className="mb-6 text-center md:mb-8">
+              <h1 className="font-serif text-[32px] font-normal leading-tight text-cream sm:text-[38px] md:text-[44px]">
+                Что нужно сделать?
+              </h1>
+              <p className="mx-auto mt-3 max-w-xl text-[13px] leading-relaxed text-cream-faint md:text-[14px]">
+                Опиши задачу обычным языком. Agent Mode сам прочитает файлы, вызовет bash, внесёт правки, проверит результат и объяснит ход работы.
+              </p>
+            </div>
           )}
 
           <div
@@ -509,7 +514,7 @@ export default function Composer({
                 }
               }}
               rows={1}
-              placeholder="Напишите сообщение…"
+              placeholder="Напишите задачу для агента…"
               className="block w-full resize-none border-0 bg-transparent px-2 pb-2 pt-1 text-[14px]
                          text-cream placeholder:text-cream-faint focus:outline-none focus:ring-0 md:pb-3 md:text-[15px]"
             />
@@ -561,23 +566,23 @@ export default function Composer({
               />
 
               <div className="flex items-center gap-2">
-                {!isStreaming && onSendBackground && (
+                {isDev && !isStreaming && onSendBackground && (
                   <button
                     onClick={() => submit({ background: true })}
                     disabled={!text.trim() && attachments.length === 0}
                     className="hidden items-center gap-1.5 rounded-full border border-amber-300/30 bg-amber-400/10 px-3 py-2 text-[12px] text-amber-100 transition-colors hover:bg-amber-400/20 disabled:opacity-40 md:flex"
-                    title="Запустить агентскую задачу в фоне"
+                    title="Devtools: запустить агентскую задачу в фоне"
                   >
                     <span>↗</span>
                     <span>В фоне</span>
                   </button>
                 )}
-                {!isStreaming && onSendBackground && (
+                {isDev && !isStreaming && onSendBackground && (
                   <button
                     onClick={() => submit({ background: true })}
                     disabled={!text.trim() && attachments.length === 0}
                     className="grid h-9 w-9 place-items-center rounded-full border border-amber-300/30 bg-amber-400/10 text-amber-100 transition-colors hover:bg-amber-400/20 disabled:opacity-40 md:hidden"
-                    title="Запустить в фоне"
+                    title="Devtools: запустить в фоне"
                   >↗</button>
                 )}
                 {isStreaming ? (
@@ -605,10 +610,10 @@ export default function Composer({
           </div>
 
           {!hasMessages && (
-            <p className="mt-3 text-center text-[12px] text-cream-faint">
-              Enter — отправить, Shift+Enter — новая строка. Файлы можно перетащить
-              сюда.
-            </p>
+            <div className="mt-3 text-center text-[12px] text-cream-faint">
+              <p>Enter — отправить, Shift+Enter — новая строка. Файлы можно перетащить сюда.</p>
+              <p className="mt-1">Для файлов и preview открой Workspace справа.</p>
+            </div>
           )}
         </div>
       </section>

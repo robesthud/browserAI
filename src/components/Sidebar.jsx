@@ -30,6 +30,7 @@ export default function Sidebar({
   onResumeAgentTask,
   onFlash,
   onOpenJobChat,
+  devtoolsEnabled = false,
 }) {
   return (
     <aside
@@ -109,56 +110,57 @@ export default function Sidebar({
           )}
         </div>
 
-        {/* низ: режимы + настройки */}
+        {/* низ: основной продуктовый UX — только настройки; Dev Lab скрыт за devtools */}
         <div className="space-y-1 border-t border-white/5 px-2.5 py-2.5">
-          {/* Manual Agent toggle — always visible */}
-            <button
-              onClick={() => onToggleAgentMode?.(!agentMode)}
-              className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2.5 text-left text-[13px] transition-all duration-200 shadow-sm ${
-                agentMode
-                  ? 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-300'
-                  : 'bg-graphite-750/50 border border-white/5 text-cream-soft hover:bg-graphite-750 hover:text-cream'
-              }`}
-              title="Ручной агент: принудительно отправлять все запросы в полный агент с доступом к файлам, bash, git. Auto Mode работает автоматически."
-            >
-              <span className="flex items-center gap-3">
-                <span className="text-lg leading-none">{agentMode ? '🤖' : '💬'}</span>
-                <span className="font-medium">Ручной агент</span>
-              </span>
-              <div className={`relative h-5 w-9 rounded-full transition-colors ${agentMode ? 'bg-emerald-500' : 'bg-graphite-600'}`}>
-                <div className={`absolute top-[2.5px] h-3.5 w-3.5 rounded-full bg-white transition-transform ${agentMode ? 'translate-x-[18px]' : 'translate-x-[2.5px]'}`} />
-              </div>
-            </button>
+          {devtoolsEnabled && (
+            <>
+              <button
+                onClick={() => onToggleAgentMode?.(!agentMode)}
+                className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2.5 text-left text-[13px] transition-all duration-200 shadow-sm ${
+                  agentMode
+                    ? 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-300'
+                    : 'bg-graphite-750/50 border border-white/5 text-cream-soft hover:bg-graphite-750 hover:text-cream'
+                }`}
+                title="Devtools override: принудительно включить/выключить Agent Mode. В обычном интерфейсе Agent Mode всегда основной режим."
+              >
+                <span className="flex items-center gap-3">
+                  <span className="text-lg leading-none">{agentMode ? '🤖' : '💬'}</span>
+                  <span className="font-medium">Agent override</span>
+                </span>
+                <div className={`relative h-5 w-9 rounded-full transition-colors ${agentMode ? 'bg-emerald-500' : 'bg-graphite-600'}`}>
+                  <div className={`absolute top-[2.5px] h-3.5 w-3.5 rounded-full bg-white transition-transform ${agentMode ? 'translate-x-[18px]' : 'translate-x-[2.5px]'}`} />
+                </div>
+              </button>
 
-          {/* Web AI toggle — always visible */}
-            <button
-              onClick={() => onToggleWebAI?.(!useWebAI)}
-              className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2.5 text-left text-[13px] transition-all duration-200 ${
-                useWebAI
-                  ? 'bg-blue-500/20 border border-blue-500/30 text-blue-300'
-                  : 'bg-graphite-750/50 border border-white/5 text-cream-soft hover:bg-graphite-750 hover:text-cream'
-              }`}
-              title="Подмешивать результаты веб-поиска к ответам модели"
-            >
-              <span className="flex items-center gap-3">
-                <span className="text-lg leading-none">{useWebAI ? '🌐' : '📵'}</span>
-                <span className="font-medium">Web AI</span>
-              </span>
-              <div className={`relative h-5 w-9 rounded-full transition-colors ${useWebAI ? 'bg-blue-500' : 'bg-graphite-600'}`}>
-                <div className={`absolute top-[2.5px] h-3.5 w-3.5 rounded-full bg-white transition-transform ${useWebAI ? 'translate-x-[18px]' : 'translate-x-[2.5px]'}`} />
-              </div>
-            </button>
+              <button
+                onClick={() => onToggleWebAI?.(!useWebAI)}
+                className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2.5 text-left text-[13px] transition-all duration-200 ${
+                  useWebAI
+                    ? 'bg-blue-500/20 border border-blue-500/30 text-blue-300'
+                    : 'bg-graphite-750/50 border border-white/5 text-cream-soft hover:bg-graphite-750 hover:text-cream'
+                }`}
+                title="Devtools: подмешивать результаты веб-поиска к ответам модели"
+              >
+                <span className="flex items-center gap-3">
+                  <span className="text-lg leading-none">{useWebAI ? '🌐' : '📵'}</span>
+                  <span className="font-medium">Web AI</span>
+                </span>
+                <div className={`relative h-5 w-9 rounded-full transition-colors ${useWebAI ? 'bg-blue-500' : 'bg-graphite-600'}`}>
+                  <div className={`absolute top-[2.5px] h-3.5 w-3.5 rounded-full bg-white transition-transform ${useWebAI ? 'translate-x-[18px]' : 'translate-x-[2.5px]'}`} />
+                </div>
+              </button>
 
-          {/* Agent Lab — Always visible now */}
-          <button
-            onClick={() => { window.location.href = '/admin/agent' }}
-            className="flex w-full items-center gap-3 rounded-lg border border-white/5 bg-graphite-750/30 px-2.5 py-2 text-left text-[13px]
-                       text-cream-soft transition-all hover:bg-graphite-750 hover:text-cream hover:border-white/15"
-            title="Agent Lab: self-test, runtime diagnostics, workspace metadata"
-          >
-            <span className="text-lg leading-none">🧪</span>
-            <span className="font-medium">Лаборатория Агента</span>
-          </button>
+              <button
+                onClick={() => { window.location.href = '/admin/agent' }}
+                className="flex w-full items-center gap-3 rounded-lg border border-white/5 bg-graphite-750/30 px-2.5 py-2 text-left text-[13px]
+                           text-cream-soft transition-all hover:bg-graphite-750 hover:text-cream hover:border-white/15"
+                title="Dev Lab: operator panels, diagnostics, deploys, automation"
+              >
+                <span className="text-lg leading-none">🧪</span>
+                <span className="font-medium">Dev Lab</span>
+              </button>
+            </>
+          )}
 
           {/* Settings */}
           <button
@@ -173,19 +175,17 @@ export default function Sidebar({
           </button>
         </div>
 
-        {/* Live background jobs (video / image / document generation) —
-            shown here so they stay visible even when the user switches
-            to a different chat. */}
-        <NotificationBadge />
-        <AgentTasksTray chatId={activeId || ''} onResume={onResumeAgentTask} onFlash={onFlash} />
-        <JobsTray onOpenChat={onOpenJobChat || onSelect} />
-
-        {/* Web Push subscription toggle — invisible on browsers without
-            ServiceWorker / PushManager support. */}
-        <PushToggle />
-
-        {/* UI preferences: theme / font-size / haptics */}
-        <SidebarUserPrefs />
+        {devtoolsEnabled && (
+          <>
+            {/* Live background jobs and technical trays live in Dev Lab/devtools,
+                not in the clean Agent Mode surface. */}
+            <NotificationBadge />
+            <AgentTasksTray chatId={activeId || ''} onResume={onResumeAgentTask} onFlash={onFlash} />
+            <JobsTray onOpenChat={onOpenJobChat || onSelect} />
+            <PushToggle />
+            <SidebarUserPrefs />
+          </>
+        )}
       </div>
     </aside>
   )

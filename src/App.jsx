@@ -27,6 +27,11 @@ import { backend } from './lib/backend.js'
 import { pickBestModel } from './lib/autoModel.js'
 import { routeUserMessage } from './lib/smartRouter.js'
 
+function devtoolsEnabled() {
+  try { return localStorage.getItem('browserai.devtools') === '1' }
+  catch { return false }
+}
+
 function CloudSync({ settings, chats }) {
   const firstRun = useRef(true)
   const isLoggedIn = typeof localStorage !== 'undefined' && localStorage.getItem('browserai.auth.enabled') === '1'
@@ -92,10 +97,12 @@ function BrowserApp({ user, reloadAuth }) {
     } catch { return true }
   })
 
-  // Manual Agent mode is available to all users. Auto mode routes each turn
-  // to chat/web/agent automatically. Manual mode is a developer override
-  // that forces agent routing for every message.
-  const effectiveAgentMode = agentMode
+  const isDevTools = useMemo(() => devtoolsEnabled(), [])
+
+  // Main product UX: Agent Mode is the default and hidden from regular users.
+  // The old manual toggles remain available only in Dev Lab/devtools so the
+  // main screen stays a clean chat + workspace where the user only gives a task.
+  const effectiveAgentMode = isDevTools ? agentMode : true
 
   // 2. Derived variables
   const messages = useMemo(() => activeChat?.messages ?? [], [activeChat])
@@ -276,7 +283,7 @@ function BrowserApp({ user, reloadAuth }) {
         collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} onNewChat={() => { newChat(); if (window.innerWidth < 768) setCollapsed(true) }}
         chats={chats} activeId={activeId} onSelect={(id) => { selectChat(id); if (window.innerWidth < 768) setCollapsed(true) }}
         onDelete={deleteChat} onOpenSettings={() => setSettingsOpen(true)}
-        agentMode={effectiveAgentMode} onToggleAgentMode={setAgentMode}
+        agentMode={effectiveAgentMode} onToggleAgentMode={setAgentMode} devtoolsEnabled={isDevTools}
         useWebAI={settings.useWebAI} onToggleWebAI={(next) => setParams({ useWebAI: next })}
         onResumeAgentTask={() => handleSendMessage('продолжай')} onFlash={setFlash}
         onOpenJobChat={(chatId) => { if (chatId) selectChat(chatId); if (window.innerWidth < 768) setCollapsed(true) }}
@@ -291,7 +298,7 @@ function BrowserApp({ user, reloadAuth }) {
         <Topbar
           title={activeChat?.title ?? 'BrowserAI'} configured={configured} aiWorking={aiWorking}
           autoMode={autoMode} autoModelHint={autoHint ? `${autoHint.icon || ''} ${autoHint.reason}` : ''}
-          agentMode={agentMode} workspaceOpen={workspaceOpen} onToggleWorkspace={() => setWorkspaceOpen(!workspaceOpen)}
+          agentMode={effectiveAgentMode} workspaceOpen={workspaceOpen} onToggleWorkspace={() => setWorkspaceOpen(!workspaceOpen)}
           onOpenSettings={() => setSettingsOpen(true)} user={user} onLogout={async () => { await backend.saveCloud({ settings, chats }); await backend.authLogout(); localStorage.removeItem('browserai.auth.enabled'); await reloadAuth?.() }}
           availableModels={availableModels} selectedModel={selectedModel} onSelectModel={setActiveModel}
           onToggleAuto={() => { setAutoMode(!autoMode); setAutoHint(null) }} onOpenSearch={() => setSearchOpen(true)}

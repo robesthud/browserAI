@@ -1146,8 +1146,39 @@ BrowserAI becomes a real Operator Console product instead of a single admin lab 
 
 ---
 
+## Package UX-Restore — Chat + Workspace Agent Mode
+
+Goal: return the main BrowserAI experience to a clean Arena-like agent surface: the user gives one task, while bash/files/git/deploy/operator machinery stays under the hood or in Dev Lab.
+
+Status: implemented in this package.
+
+Blocks:
+
+1. Main UI restored to chat + workspace as the primary product surface.
+2. Agent Mode is now the default behavior for regular users; the old manual agent toggle is a devtools-only override.
+3. Sidebar decluttered:
+   - regular users see New Chat, chat history and Settings;
+   - Agent Lab, job trays, notification/debug trays, push toggle, Web AI toggle and UI debug prefs are hidden behind `localStorage.browserai.devtools = '1'`.
+4. Manual/background execution controls moved out of the normal composer and kept for devtools only.
+5. Empty-state copy now explains the intended workflow: describe a task, the agent reads files, calls bash, edits, verifies and explains progress.
+6. Workspace remains the main right-side work area for files/preview/artifacts.
+7. `/admin/agent` remains available as Dev Lab for operator panels, policies, deploys, GitHub automation, recovery and diagnostics.
+
+Runbook notes:
+
+- Main product path is the normal BrowserAI chat.
+- Dev Lab path is `/admin/agent`; enable visible debug entry points with `localStorage.browserai.devtools = '1'`.
+- Product rule going forward: do not add manual operator panels to the main chat surface; put advanced controls in Dev Lab and expose only task-centric agent behavior in chat.
+
+Result:
+
+The main interface is again a pleasant task-first Agent Mode: chat + workspace, not a crowded operator/admin console.
+
+---
+
 # Recommended execution order
 
+0. Package UX-Restore — Chat + Workspace Agent Mode. **Done**
 1. Package A — Super Operator Workflow v1.
 2. Package B — Mission Detail Pages + Timeline UX.
 3. Package D — Reviewer Agent v2 + Semantic Diff Review.
