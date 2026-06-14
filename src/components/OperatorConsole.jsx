@@ -192,7 +192,7 @@ export default function OperatorConsole() {
               {m.codeTask?.status === 'succeeded' && !m.codeTask?.result?.review && (
                 <button onClick={() => void reviewCodeTask(m.result.codeTaskId)} className="rounded border border-violet-400/25 bg-violet-500/10 px-2 py-0.5 text-[10px] text-violet-100 hover:bg-violet-500/20">review</button>
               )}
-              {m.codeTask?.result?.review && <span className={`rounded px-1.5 py-0.5 text-[10px] ${m.codeTask.result.review.risk === 'critical' || m.codeTask.result.review.risk === 'high' ? 'bg-amber-500/15 text-amber-200' : 'bg-emerald-500/15 text-emerald-200'}`}>risk {m.codeTask.result.review.risk}</span>}
+              {m.codeTask?.result?.review && <span title={m.codeTask.result.review.semantic?.summary || ''} className={`rounded px-1.5 py-0.5 text-[10px] ${m.codeTask.result.review.risk === 'critical' || m.codeTask.result.review.risk === 'high' ? 'bg-amber-500/15 text-amber-200' : 'bg-emerald-500/15 text-emerald-200'}`}>risk {m.codeTask.result.review.risk}{m.codeTask.result.review.semantic ? ` · sem ${m.codeTask.result.review.semantic.available ? m.codeTask.result.review.semantic.risk : 'off'}` : ''}</span>}
               {m.codeTask?.status === 'succeeded' && !m.codeTask?.result?.finalize?.committed && (
                 <button onClick={() => void finalizeCodeTask(m.result.codeTaskId)} className="rounded border border-emerald-400/25 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-100 hover:bg-emerald-500/20">commit+PR</button>
               )}

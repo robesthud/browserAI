@@ -143,7 +143,20 @@ export default function OperatorMissionDetail() {
                     <div className="mt-2 space-y-2">
                       <div className="font-mono text-[10px] text-cream-faint">{codeTask.id} · {codeTask.branch}</div>
                       {codeTask.result?.finalize?.pullRequest?.url && <a className="text-emerald-200 underline" target="_blank" rel="noreferrer" href={codeTask.result.finalize.pullRequest.url}>PR #{codeTask.result.finalize.pullRequest.number}</a>}
-                      {codeTask.result?.review && <div className={`w-fit rounded border px-2 py-0.5 text-[11px] ${statusTone(codeTask.result.review.risk === 'critical' ? 'failed' : 'succeeded')}`}>risk {codeTask.result.review.risk}</div>}
+                      {codeTask.result?.review && <div className="space-y-2 rounded border border-white/10 bg-white/[0.03] p-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className={`w-fit rounded border px-2 py-0.5 text-[11px] ${statusTone(codeTask.result.review.risk === 'critical' || codeTask.result.review.risk === 'high' ? 'failed' : 'succeeded')}`}>risk {codeTask.result.review.risk}</div>
+                          <div className={`w-fit rounded border px-2 py-0.5 text-[11px] ${statusTone(codeTask.result.review.approvedForMerge ? 'succeeded' : 'failed')}`}>merge {codeTask.result.review.approvedForMerge ? 'allowed' : 'blocked'}</div>
+                          <div className={`w-fit rounded border px-2 py-0.5 text-[11px] ${statusTone(codeTask.result.review.approvedForDeploy ? 'succeeded' : 'failed')}`}>deploy {codeTask.result.review.approvedForDeploy ? 'allowed' : 'blocked'}</div>
+                        </div>
+                        {codeTask.result.review.semantic && <div className="rounded bg-black/20 p-2 text-[11px]">
+                          <div className="mb-1 font-medium text-cream">Semantic reviewer: {codeTask.result.review.semantic.available ? codeTask.result.review.semantic.risk : 'unavailable'}</div>
+                          <div className="text-cream-faint">{codeTask.result.review.semantic.summary}</div>
+                          {(codeTask.result.review.semantic.blockers || []).length > 0 && <ul className="mt-1 list-disc pl-4 text-red-200">{codeTask.result.review.semantic.blockers.slice(0, 4).map((b, i) => <li key={i}>{b.file ? `${b.file}: ` : ''}{b.message}</li>)}</ul>}
+                          {(codeTask.result.review.semantic.dimensions || []).length > 0 && <div className="mt-2 grid gap-1 sm:grid-cols-2">{codeTask.result.review.semantic.dimensions.slice(0, 6).map((d) => <div key={d.name} className="rounded border border-white/10 px-2 py-1"><span className="font-medium text-cream-soft">{d.name}</span> <span className="text-cream-faint">· {d.risk}</span></div>)}</div>}
+                        </div>}
+                        {(codeTask.result.review.blockers || []).length > 0 && <div className="text-[11px] text-red-200">Blockers: {codeTask.result.review.blockers.slice(0, 3).join('; ')}</div>}
+                      </div>}
                       {codeTask.result?.ci && <div className={`w-fit rounded border px-2 py-0.5 text-[11px] ${statusTone(codeTask.result.ci.ok ? 'succeeded' : 'failed')}`}>CI {codeTask.result.ci.status}</div>}
                       {codeTask.error && <div className="text-red-200">{codeTask.error}</div>}
                     </div>

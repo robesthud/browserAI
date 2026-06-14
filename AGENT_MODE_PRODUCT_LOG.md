@@ -905,6 +905,8 @@ GitHub becomes a control surface for your personal agent.
 
 Goal: improve code quality and safety before merge/deploy.
 
+Status: implemented in this package.
+
 Blocks:
 
 1. LLM reviewer agent for diffs.
@@ -916,14 +918,21 @@ Blocks:
    - architecture;
    - UX/accessibility;
    - deploy risk.
-4. Review summary stored in code task.
-5. Merge gate requires reviewer approval or human override for high risk.
-6. UI review panel.
-7. Tests for deterministic risk gates and review persistence.
+4. Review summary stored in code task as `result.review.semantic` with schema `browserai.operator_code_review.v2`.
+5. Merge gate blocks deterministic critical risk, failed verification/CI/secrets, semantic blockers, and semantic high/critical risk.
+6. Deploy gate requires verification + green CI + non-high combined risk.
+7. UI review panel in Mission Detail and semantic-risk badge in Operator Console.
+8. Tests for semantic JSON parser, prompt contract, and combined risk gates.
+
+Implementation notes:
+
+- `server/operatorCode.js` now calls the active LLM provider for semantic diff review when a provider/key is configured.
+- If the semantic reviewer is unavailable, deterministic gates remain active and the review records a warning instead of crashing the operator flow.
+- Semantic review is evidence-based and prompted to return strict JSON only; parser tolerates fenced JSON and rejects malformed output safely.
 
 Result:
 
-The agent reviews its own work before merge.
+The agent reviews its own work before merge with deterministic + semantic checks and stores reviewer evidence in the code task.
 
 ---
 

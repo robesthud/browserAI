@@ -10,6 +10,7 @@ import { withWorkspaceScope } from './workspace.js'
 import { createWorkflow, startWorkflow } from './agentWorkflows.js'
 import { addOperatorMissionEvent } from './operatorMode.js'
 import { appendLesson } from './operatorRunbooks.js'
+import { callLLM } from './llmClient.js'
 
 let initialized = false
 const monitors = new Map()
@@ -494,7 +495,122 @@ export function riskForChangedFile(file = '') {
 }
 function maxRisk(a, b) {
   const order = { low: 1, medium: 2, high: 3, critical: 4 }
-  return (order[b] || 0) > (order[a] || 0) ? b : a
+  return (order[normalizeRisk(b)] || 0) > (order[normalizeRisk(a)] || 0) ? normalizeRisk(b) : normalizeRisk(a)
+}
+
+function normalizeRisk(value = 'low') {
+  const v = String(value || '').toLowerCase().trim()
+  return ['low', 'medium', 'high', 'critical'].includes(v) ? v : 'low'
+}
+
+function asArray(value) {
+  return Array.isArray(value) ? value.filter((x) => x !== null && x !== undefined) : []
+}
+
+function stripCodeFence(text = '') {
+  return String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim()
+}
+
+function extractJsonObject(text = '') {
+  const raw = stripCodeFence(text)
+  const direct = parse(raw, null)
+  if (direct && typeof direct === 'object') return direct
+  const start = raw.indexOf('{')
+  const end = raw.lastIndexOf('}')
+  if (start >= 0 && end > start) return parse(raw.slice(start, end + 1), null)
+  return null
+}
+
+export function parseSemanticReviewResponse(text = '') {
+  const obj = extractJsonObject(text)
+  if (!obj || typeof obj !== 'object') {
+    return { available: false, risk: 'low', confidence: 0, summary: 'Semantic reviewer returned non-JSON output', blockers: [], warnings: [], dimensions: [], raw: clip(text, 4000) }
+  }
+  const dimensions = asArray(obj.dimensions).map((d) => ({
+    name: String(d?.name || d?.dimension || 'general').slice(0, 60),
+    risk: normalizeRisk(d?.risk || d?.level || 'low'),
+    findings: asArray(d?.findings).map((x) => String(x).slice(0, 600)).slice(0, 8),
+    recommendations: asArray(d?.recommendations || d?.actions).map((x) => String(x).slice(0, 600)).slice(0, 8),
+  })).slice(0, 12)
+  const blockers = asArray(obj.blockers).map((b) => (typeof b === 'string' ? { severity: 'high', message: b } : {
+    severity: normalizeRisk(b?.severity || b?.risk || 'high'),
+    category: String(b?.category || 'semantic').slice(0, 80),
+    file: String(b?.file || '').slice(0, 240),
+    line: b?.line ? Number(b.line) || null : null,
+    message: String(b?.message || b?.reason || '').slice(0, 1000),
+  })).filter((b) => b.message).slice(0, 20)
+  const warnings = asArray(obj.warnings).map((w) => (typeof w === 'string' ? w : (w?.message || w?.reason || JSON.stringify(w)))).map((w) => String(w).slice(0, 800)).slice(0, 20)
+  let risk = normalizeRisk(obj.risk || obj.level || 'low')
+  for (const d of dimensions) risk = maxRisk(risk, d.risk)
+  for (const b of blockers) risk = maxRisk(risk, b.severity)
+  return {
+    available: true,
+    risk,
+    confidence: Math.max(0, Math.min(1, Number(obj.confidence) || 0)),
+    summary: String(obj.summary || '').slice(0, 1200) || `Semantic risk=${risk}`,
+    blockers,
+    warnings,
+    dimensions,
+    tests: obj.tests && typeof obj.tests === 'object' ? obj.tests : {},
+    security: obj.security && typeof obj.security === 'object' ? obj.security : {},
+    deploy: obj.deploy && typeof obj.deploy === 'object' ? obj.deploy : {},
+    raw: clip(text, 4000),
+  }
+}
+
+export function buildSemanticReviewPrompt({ task = {}, files = [], fileRisks = [], verification = {}, git = {} } = {}) {
+  return `Review this code change as BrowserAI Reviewer Agent v2. Return ONLY valid compact JSON.\n\nRequired JSON schema:\n{\n  "summary": "short review summary",\n  "risk": "low|medium|high|critical",\n  "confidence": 0.0,\n  "dimensions": [\n    {"name":"correctness|security|test_coverage|architecture|ux_accessibility|deploy_risk", "risk":"low|medium|high|critical", "findings":["..."], "recommendations":["..."]}\n  ],\n  "blockers": [{"severity":"high|critical", "category":"correctness|security|tests|architecture|deploy", "file":"path", "line": null, "message":"must fix before merge"}],\n  "warnings": ["non-blocking concern"],\n  "tests": {"assessment":"...", "missing":["..."]},\n  "security": {"assessment":"...", "findings":["..."]},\n  "deploy": {"assessment":"...", "risks":["..."]}\n}\n\nBlock only real correctness/security/data-loss/deploy hazards. Do not invent issues without evidence.\n\nTask goal:\n${clip(task.goal || '', 2000)}\n\nChanged files:\n${files.map((f) => `- ${f}`).join('\n') || '(none)'}\n\nDeterministic file risk map:\n${JSON.stringify(fileRisks, null, 2)}\n\nVerification state:\n${JSON.stringify(verification, null, 2)}\n\nGit status/stat:\n${clip(`${git.status || ''}\n${git.stat || ''}`, 4000)}\n\nDiff preview (truncated):\n${clip(git.diffPreview || '', 28000)}`
+}
+
+async function semanticReview({ task, files, fileRisks, verification, git }) {
+  const provider = getActiveKeyDecrypted(null)
+  if (!provider?.baseUrl || !provider?.model || !provider?.apiKey) {
+    return { available: false, risk: 'low', confidence: 0, summary: 'Semantic reviewer skipped: no active provider/key configured', blockers: [], warnings: [], dimensions: [] }
+  }
+  const prompt = buildSemanticReviewPrompt({ task, files, fileRisks, verification, git })
+  try {
+    const reply = await callLLM({
+      baseUrl: provider.baseUrl,
+      apiKey: provider.apiKey,
+      model: provider.model,
+      authType: provider.authType,
+      authHeader: provider.authHeader,
+      extraHeaders: provider.extraHeaders,
+      temperature: 0.1,
+      messages: [
+        { role: 'system', content: 'You are a strict senior code reviewer. Output only JSON. Never include secrets. Prefer evidence-based findings.' },
+        { role: 'user', content: prompt },
+      ],
+    })
+    return parseSemanticReviewResponse(reply?.text || '')
+  } catch (e) {
+    return { available: false, risk: 'low', confidence: 0, summary: `Semantic reviewer unavailable: ${e?.message || String(e)}`, blockers: [], warnings: [], dimensions: [], error: e?.message || String(e) }
+  }
+}
+
+export function combineReviewGates({ files = [], fileRisks = [], verification = {}, semantic = null } = {}) {
+  let risk = 'low'
+  for (const r of fileRisks) risk = maxRisk(risk, r.level)
+  if (semantic?.available) risk = maxRisk(risk, semantic.risk)
+  const verifyPassed = verification.passed === true
+  const ciOk = verification.ciOk ?? null
+  const secretOk = verification.secretOk !== false
+  const blockers = []
+  if (!files.length) blockers.push('No changed files detected')
+  if (!verifyPassed) blockers.push('Verification has not passed')
+  if (ciOk === false) blockers.push('CI is failing')
+  if (secretOk === false) blockers.push('Secret scan failed')
+  if (fileRisks.some((r) => r.level === 'critical')) blockers.push('Critical-risk file changes detected')
+  if (semantic?.available && asArray(semantic.blockers).length) blockers.push(`Semantic review blockers: ${asArray(semantic.blockers).map((b) => b.message || b).slice(0, 3).join('; ')}`)
+  if (semantic?.available && ['high', 'critical'].includes(semantic.risk)) blockers.push(`Semantic review reported ${semantic.risk} risk`)
+  const warnings = []
+  if (fileRisks.some((r) => r.level === 'high')) warnings.push('High-risk critical path changed; require human review before merge/deploy')
+  if (ciOk === null) warnings.push('CI has not been checked yet')
+  if (semantic && !semantic.available) warnings.push(semantic.summary || 'Semantic reviewer unavailable')
+  for (const w of asArray(semantic?.warnings).slice(0, 8)) warnings.push(`Semantic: ${w}`)
+  const approvedForMerge = blockers.length === 0 && risk !== 'critical' && (ciOk === true || ciOk === null)
+  const approvedForDeploy = approvedForMerge && verifyPassed && ciOk === true && !['high', 'critical'].includes(risk)
+  return { risk, approvedForMerge, approvedForDeploy, blockers, warnings }
 }
 
 export async function reviewOperatorCodeTask({ taskId = '' } = {}) {
@@ -508,38 +624,27 @@ export async function reviewOperatorCodeTask({ taskId = '' } = {}) {
   const diffShort = await run('git diff -- . \' :(exclude)package-lock.json\' | head -n 800', { cwd: task.workdir, timeoutMs: 30_000 })
   const files = String(names.stdout || '').split('\n').map((x) => x.trim()).filter(Boolean)
   const fileRisks = files.map((file) => ({ file, ...riskForChangedFile(file) }))
-  let risk = 'low'
-  for (const r of fileRisks) risk = maxRisk(risk, r.level)
-  const verifyPassed = task.verify?.passed === true
-  const ciOk = task.result?.ci ? task.result.ci.ok === true : null
-  const secretOk = task.verify?.secretScan ? task.verify.secretScan.ok === true : true
-  const blockers = []
-  if (!files.length) blockers.push('No changed files detected')
-  if (!verifyPassed) blockers.push('Verification has not passed')
-  if (ciOk === false) blockers.push('CI is failing')
-  if (secretOk === false) blockers.push('Secret scan failed')
-  if (risk === 'critical') blockers.push('Critical-risk file changes detected')
-  const warnings = []
-  if (risk === 'high') warnings.push('High-risk critical path changed; require human review before merge/deploy')
-  if (ciOk === null) warnings.push('CI has not been checked yet')
-  const approvedForMerge = blockers.length === 0 && risk !== 'critical' && (ciOk === true || ciOk === null)
-  const approvedForDeploy = approvedForMerge && verifyPassed && ciOk === true && !['high', 'critical'].includes(risk)
+  const verification = {
+    passed: task.verify?.passed === true,
+    ciOk: task.result?.ci ? task.result.ci.ok === true : null,
+    secretOk: task.verify?.secretScan ? task.verify.secretScan.ok === true : true,
+  }
+  const git = { status: status.stdout, stat: stat.stdout, diffPreview: diffShort.stdout }
+  const semantic = await semanticReview({ task, files, fileRisks, verification, git })
+  const gates = combineReviewGates({ files, fileRisks, verification, semantic })
   const review = {
-    schema: 'browserai.operator_code_review.v1',
+    schema: 'browserai.operator_code_review.v2',
     generatedAt: new Date().toISOString(),
     taskId: task.id,
-    risk,
-    approvedForMerge,
-    approvedForDeploy,
-    blockers,
-    warnings,
+    ...gates,
     files,
     fileRisks,
-    verification: { passed: verifyPassed, ciOk, secretOk },
-    git: { status: status.stdout, stat: stat.stdout, diffPreview: diffShort.stdout },
-    summary: `${files.length} changed file(s), risk=${risk}, merge=${approvedForMerge ? 'allowed' : 'blocked'}, deploy=${approvedForDeploy ? 'allowed' : 'blocked'}`,
+    semantic,
+    verification,
+    git,
+    summary: `${files.length} changed file(s), risk=${gates.risk}, semantic=${semantic?.available ? semantic.risk : 'unavailable'}, merge=${gates.approvedForMerge ? 'allowed' : 'blocked'}, deploy=${gates.approvedForDeploy ? 'allowed' : 'blocked'}`,
   }
-  emitTaskEvent(task, approvedForMerge ? 'success' : 'warn', 'Code review completed', review.summary, { review })
+  emitTaskEvent(task, gates.approvedForMerge ? 'success' : 'warn', 'Code review completed', review.summary, { review })
   patchTask(task.id, { result: { ...(task.result || {}), review } })
   return getOperatorCodeTask(task.id)
 }
