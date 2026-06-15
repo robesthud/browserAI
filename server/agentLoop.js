@@ -368,6 +368,17 @@ function narrateToolCall(tool = '', args = {}, agentContext = {}) {
   return `Выполняю инструмент ${tool} для шага ${type}.`
 }
 
+function toolSucceeded(tool, r) {
+  if (!r?.ok) return false
+  const result = r.result || {}
+  if (['bash', 'shell_session_run'].includes(tool) && result.exitCode != null) return Number(result.exitCode) === 0
+  if (tool === 'npm_test') return result.passed === true || Number(result.exitCode) === 0
+  if (tool === 'verify_task') return result.passed === true
+  if (tool === 'verify_code') return result.valid !== false && result.ok !== false
+  if (tool === 'run_tests') return result.passed !== false
+  return true
+}
+
 function summarizeToolOutcome(tool, r) {
   if (!r?.ok) return String(r?.error || 'failed').slice(0, 180)
   const result = r.result
@@ -375,7 +386,7 @@ function summarizeToolOutcome(tool, r) {
   if (tool === 'write_file') return `${result?.bytes || 0} bytes written`
   if (tool === 'edit_file') return `replaced=${result?.replaced ?? 1}`
   if (tool === 'verify_code') return result?.valid === false ? 'invalid' : 'valid/skipped'
-  if (tool === 'npm_test') return result?.passed ? 'passed' : `exit=${result?.exitCode ?? '?'}`
+  if (tool === 'npm_test') return result?.passed ? 'passed' : `failed exit=${result?.exitCode ?? '?'}`
   if (tool === 'verify_task') return result?.passed ? `passed ${result?.results?.length || 0} checks` : `failed ${result?.results?.length || 0} checks`
   if (tool === 'git_clone') return `path=${result?.path || ''}`
   if (tool === 'git_commit') return `committed=${result?.committed !== false} pushed=${Boolean(result?.pushed)} ${String(result?.stderr || '').slice(0, 80)}`
@@ -1198,29 +1209,28 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
             userId, chatId, extraTools 
           })
         }
-        if (!r.ok && !pushedBackThisTurn && !aborted && categoryOf(call.tool) !== 'ask') {
-          const recovery = getRecoveryAction({ tool: call.tool, error: r.error, args: call.args, recentToolHistory })
-          const hint = recovery?.message || getRecoveryHint(call.tool, r.error, call.args, recentToolHistory)
+        const semanticOk = toolSucceeded(call.tool, r)
+        if (!semanticOk && !pushedBackThisTurn && !aborted && categoryOf(call.tool) !== 'ask') {
+          const semanticError = r.ok ? summarizeToolOutcome(call.tool, r) : r.error
+          const recovery = getRecoveryAction({ tool: call.tool, error: semanticError, result: r.result, args: call.args, recentToolHistory })
+          const hint = recovery?.message || getRecoveryHint(call.tool, semanticError, call.args, recentToolHistory)
           if (hint) {
             pushedBackThisTurn = true
-            sse(res, 'thought', { step, sub: idx, text: `ОШИБКА: ${call.tool} — ${r.error}. Исправляю…` })
-            
-            // #45 FIX: Absolute Grounding. We inject a loud system message that 
-            // the model CANNOT ignore, effectively forcing a "reasoning correction" step.
-            const rErr = makeToolErrorResult(`[exec_error] ${r.error}.\n\nREQUIRED ACTION TO RECOVER:\n${hint}\n\nExecute this action now.`)
-            sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
+            sse(res, 'thought', { step, sub: idx, text: `ОШИБКА: ${call.tool} — ${semanticError}. Исправляю…` })
+            const rErr = makeToolErrorResult(`[exec_error] ${semanticError}.\n\nREQUIRED ACTION TO RECOVER:\n${hint}\n\nExecute this action now.`)
+            rErr.result = r.result
+            sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, result: r.result, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
             return { call, r: rErr, pushedBack: true }
           }
-          
           pushedBackThisTurn = true
-          // v2.24: surface execution errors as a visible thought + tool_result
-          // (self-healing): the agent acknowledges the failure and retries.
-          sse(res, 'thought', { step, sub: idx, text: `Ошибка выполнения: ${call.tool} — ${r.error}. Пробую восстановиться.` })
-          const rErr = makeToolErrorResult(`[exec_error] ${r.error}`)
-          sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
+          sse(res, 'thought', { step, sub: idx, text: `Ошибка выполнения: ${call.tool} — ${semanticError}. Пробую восстановиться.` })
+          const rErr = makeToolErrorResult(`[exec_error] ${semanticError}`)
+          rErr.result = r.result
+          sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, result: r.result, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
           return { call, r: rErr, pushedBack: true }
         }
-        updateAgentStateFromTool(agentState, call.tool, r, call.args); agentState.obligationStatus = obligationCompletionStatus(agentState.obligations || {}, recentToolHistory); try { if (persistedTask) updateAgentTask(persistedTask.id, { phase: agentState.phase || currentPhase, state: agentState, history: convo }) } catch { /* best-effort */ }; sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult(call.tool, r, { step, sub: idx }) }); sse(res, 'agent_state', agentState)
+        const stateResult = semanticOk ? r : { ...r, ok: false, error: r.error || summarizeToolOutcome(call.tool, r) }
+        updateAgentStateFromTool(agentState, call.tool, stateResult, call.args); agentState.obligationStatus = obligationCompletionStatus(agentState.obligations || {}, recentToolHistory); try { if (persistedTask) updateAgentTask(persistedTask.id, { phase: agentState.phase || currentPhase, state: agentState, history: convo }) } catch { /* best-effort */ }; sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: semanticOk, result: r.result, error: semanticOk ? r.error : (r.error || summarizeToolOutcome(call.tool, r)), structured: normalizeToolResult(call.tool, stateResult, { step, sub: idx }) }); sse(res, 'agent_state', agentState)
         res.__agentPhase = 'agent'
         res.__agentActiveTool = ''
         return { call, r }

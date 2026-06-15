@@ -71,15 +71,17 @@ const BY_PHASE = {
   execute: null,
 }
 
-export function allowedToolsForPhase(phase = 'execute') {
-  const list = BY_PHASE[phase]
-  return Array.isArray(list) ? new Set(list) : null
+export function allowedToolsForPhase(_phase = 'execute') {
+  // Arena-like product decision: phases are guidance/state, not hard tool
+  // cages. Hard phase allowlists caused real failures where the agent could
+  // not run bash/npm install or write a needed fix during discover/verify.
+  // Safety is enforced by approvalGate/project policies/dangerous-command
+  // detection, while the model receives phase guidance in prompts.
+  return null
 }
 
-export function isAllowedInPhase(toolName, phase = 'execute') {
-  const allowed = allowedToolsForPhase(phase)
-  if (!allowed) return true
-  return allowed.has(toolName)
+export function isAllowedInPhase(_toolName, _phase = 'execute') {
+  return true
 }
 
 export default { deriveTaskPhase, allowedToolsForPhase, isAllowedInPhase, hasUnverifiedCodeEdit }

@@ -27,10 +27,11 @@ describe('task state machine', () => {
     expect(hasUnverifiedCodeEdit([...history, { tool: 'verify_code', ok: true }])).toBe(false)
   })
 
-  it('blocks write tools in discovery/verify phases', () => {
-    expect(isAllowedInPhase('edit_file', 'discover')).toBe(false)
-    expect(isAllowedInPhase('edit_file', 'verify')).toBe(false)
+  it('uses phases as guidance without blocking automatic agent tools', () => {
+    expect(isAllowedInPhase('edit_file', 'discover')).toBe(true)
+    expect(isAllowedInPhase('shell_session_run', 'verify')).toBe(true)
     expect(isAllowedInPhase('verify_code', 'verify')).toBe(true)
     expect(allowedToolsForPhase('execute')).toBeNull()
+    expect(allowedToolsForPhase('verify')).toBeNull()
   })
 })
