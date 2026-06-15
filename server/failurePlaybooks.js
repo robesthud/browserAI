@@ -10,6 +10,7 @@ export function classifyToolFailure({ tool = '', error = '', result = null, args
   const categories = []
   const add = (id, severity = 'medium', title = id) => { if (!categories.some((c) => c.id === id)) categories.push({ id, severity, title }) }
 
+  if (/node_modules|vitest:\s*not found|jest:\s*not found|vite:\s*not found|sh:\s*\d+:\s*\w+:\s*not found|npm error missing script|cannot find package/i.test(raw)) add('missing_dependencies', 'high', 'Dependencies are not installed')
   if (/cannot find module|module not found|err_module_not_found|no module named|can't resolve/i.test(raw)) add('missing_module', 'medium', 'Missing module/import')
   if (/syntaxerror|unexpected token|unterminated|string literal|parse error|ts\d{4}/i.test(raw)) add('syntax_or_type_error', 'high', 'Syntax/type error')
   if (/test failed|failed tests|\bfailed\b.*\btest|expect\(|assertionerror|vitest|jest|pytest/i.test(raw) || /npm\s+test|vitest|jest|pytest/i.test(command)) add('test_failure', 'high', 'Test failure')
@@ -45,10 +46,15 @@ export function buildFailurePlaybook(classification = {}) {
     add('read_file', { path: '<file from error>' }, 'Open the file and line mentioned by the syntax/type error')
     add('verify_code', { path: '<edited file>' }, 'Run a focused syntax check after the fix')
   }
+  if (ids.has('missing_dependencies')) {
+    add('project_profile', {}, 'Find the project root and package manager before installing dependencies')
+    add('shell_session_run', { command: 'npm ci --include=dev', timeout_sec: 300 }, 'Install project dependencies automatically inside the sandbox/workspace')
+    add('verify_task', { task_type: 'coding_change' }, 'Rerun verification after dependencies are installed')
+  }
   if (ids.has('missing_module')) {
     add('search_files', { query: 'import require package.json' }, 'Find the import and package metadata')
     add('read_file', { path: 'package.json' }, 'Check whether the dependency exists or the import is wrong')
-    add('bash', { command: 'npm ls <package> || true' }, 'Verify dependency presence before installing or changing import')
+    add('shell_session_run', { command: 'npm ls <package> || true', timeout_sec: 120 }, 'Verify dependency presence before installing or changing import')
   }
   if (ids.has('test_failure')) {
     add('bash', { command: 'npm test -- --runInBand', timeout_sec: 120 }, 'Re-run/focus tests to get deterministic output if needed')
@@ -112,6 +118,7 @@ export function buildToolStrategyDirective(agentContext = {}) {
     '- After edits, run focused checks first when possible, then broader verify_task/npm test/build if appropriate.',
     '- Before git commit/push/deploy: git status/diff + secret_scan + verification evidence.',
     '- For failures: classify stdout/stderr, inspect the referenced file/symbol, fix, and rerun the failing command.',
+    '- If tests/build fail because dependencies are missing, install them yourself with shell_session_run (npm ci/install) when allowed; do not tell the user to run it manually.',
     '- For deploy/ops: health + docker ps/logs are mandatory evidence after changes.',
     '[/tool_strategy]',
   ].join('\n')
