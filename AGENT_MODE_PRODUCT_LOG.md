@@ -1186,18 +1186,20 @@ Blocks:
    - `user-scalable=no`;
    - `viewport-fit=cover` preserved.
 2. Added `src/lib/mobileViewport.js`:
-   - maintains `--app-height`, `--app-width`, `--keyboard-height` from `visualViewport`;
+   - maintains `--app-height`, `--app-width`, `--app-top`, `--keyboard-height` from `visualViewport`;
    - prevents iOS `gesturestart/change/end` pinch zoom;
    - prevents multi-touch pinch and double-tap zoom;
-   - prevents ctrl-wheel zoom.
+   - prevents ctrl-wheel zoom;
+   - stabilizes focus/keyboard by locking page scroll back to top and toggling `keyboard-open`.
 3. Bootstrapped mobile viewport setup in `src/main.jsx`.
 4. CSS root/layout uses `--app-height` with `100dvh` fallback.
 5. Main app shell now uses `var(--app-height, 100dvh)` instead of plain `h-screen`/`100dvh` only.
 6. Mobile input/textarea/select controls are forced to 16px to prevent iOS focus zoom.
 7. Mobile scroll containers use contained overscroll and momentum scrolling where appropriate.
 8. Settings/Agent settings modal is mobile-first: full-height on phones, safe-area header/body, wrapped action buttons and no horizontal clipping.
-9. Browser tool profile now keeps file/git/bash tools available so URL/GitHub tasks do not trap the agent in a browser-only profile.
-10. Tests verify viewport lock, boot installation and CSS safeguards.
+9. Workspace file picker modal is also full-height/safe-area aware on phones.
+10. Browser tool profile now keeps file/git/bash tools available so URL/GitHub tasks do not trap the agent in a browser-only profile.
+11. Tests verify viewport lock, boot installation and CSS safeguards.
 
 Runbook notes:
 

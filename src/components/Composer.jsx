@@ -82,8 +82,8 @@ function WorkspacePickerModal({ open, onClose, onPick }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 bg-graphite-800 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-white/5 px-5 py-3.5">
+      <div className="relative flex h-[var(--app-height,100dvh)] w-full max-w-lg flex-col overflow-hidden border border-white/10 bg-graphite-800 shadow-2xl sm:h-auto sm:max-h-[85vh] sm:rounded-2xl">
+        <div className="flex shrink-0 items-center justify-between border-b border-white/5 px-4 pb-3 pt-safe sm:px-5 sm:py-3.5">
           <div className="text-[15px] text-cream">Выбрать файл из Workspace</div>
           <button
             onClick={onClose}
@@ -92,7 +92,7 @@ function WorkspacePickerModal({ open, onClose, onPick }) {
             <IconClose />
           </button>
         </div>
-        <div className="space-y-3 p-4">
+        <div className="mobile-scroll min-h-0 flex-1 space-y-3 overflow-y-auto p-4 pb-safe">
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}

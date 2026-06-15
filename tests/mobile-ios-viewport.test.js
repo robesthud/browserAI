@@ -16,6 +16,8 @@ describe('mobile iOS viewport optimization', () => {
     expect(lib).toContain('visualViewport')
     expect(lib).toContain('gesturestart')
     expect(lib).toContain('touches.length > 1')
+    expect(lib).toContain('keyboard-open')
+    expect(lib).toContain('lockPageScroll')
   })
 
   it('uses app-height css variable and 16px mobile inputs', () => {
