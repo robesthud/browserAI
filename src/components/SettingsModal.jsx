@@ -15,6 +15,11 @@ import AgentSettingsSection from './AgentSettingsSection.jsx'
 const inputCls =
   'w-full rounded-lg border border-white/10 bg-graphite-900 px-3 py-2 text-[13px] text-cream placeholder:text-cream-faint focus:border-cream/30 focus:outline-none'
 
+function devtoolsEnabled() {
+  try { return localStorage.getItem('browserai.devtools') === '1' }
+  catch { return false }
+}
+
 const PROVIDER_PRESETS = [
   // --- Официальные API (Bearer токен) ---
   {
@@ -753,6 +758,7 @@ export default function SettingsModal({
   if (!open) return null
 
   const active = getActiveKey(settings)
+  const isDevTools = devtoolsEnabled()
 
   const handleImport = async (file) => {
     if (!file) return
@@ -969,8 +975,10 @@ export default function SettingsModal({
           </>
           )}
 
-          {/* ---- Agent Mode: подтверждения + MCP ---- */}
-          <AgentSettingsSection />
+          {/* ---- Dev Lab only: approval policy + MCP. Main BrowserAI is now
+              automatic Agent Mode; regular users should not see manual agent
+              plumbing in Settings. */}
+          {isDevTools && <AgentSettingsSection />}
 
           {/* ---- Шифрование (только при доступном сервере) ---- */}
           {online && (

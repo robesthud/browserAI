@@ -7,6 +7,7 @@ const COMMON_AGENT_TOOLS = [
 ]
 
 export const TOOL_PROFILES = {
+  main_agent: [],
   general: [
     ...COMMON_AGENT_TOOLS,
     'list_files', 'read_file', 'search_files',
@@ -49,18 +50,26 @@ export const TOOL_PROFILES = {
   ],
 }
 
-export function toolProfileForTask(task = {}) {
-  switch (task?.type) {
-    case 'deploy_ops': return 'ops'
-    case 'coding_change': return 'code'
-    case 'repo_analysis': return 'code'
-    case 'research': return 'research'
-    case 'browser_task': return 'browser'
-    default: return 'general'
+function allAutomaticAgentTools() {
+  const names = []
+  for (const [profile, tools] of Object.entries(TOOL_PROFILES)) {
+    if (profile === 'main_agent') continue
+    names.push(...tools)
   }
+  return [...new Set(names)]
 }
 
-export function profileToolNames(profile = 'general') {
+export function toolProfileForTask() {
+  // Product decision: BrowserAI's main surface is an automatic Arena-like
+  // agent, not a profile-limited mode picker. Specialized profiles caused real
+  // failures (e.g. GitHub download routed to browser profile with no git_clone).
+  // Keep profiles as internal documentation/tests, but the runtime uses a
+  // broad main_agent profile so safe universal tools are always available.
+  return 'main_agent'
+}
+
+export function profileToolNames(profile = 'main_agent') {
+  if (profile === 'main_agent') return allAutomaticAgentTools()
   return [...new Set(TOOL_PROFILES[profile] || TOOL_PROFILES.general)]
 }
 

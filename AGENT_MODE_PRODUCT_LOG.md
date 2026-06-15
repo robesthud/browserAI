@@ -1146,6 +1146,32 @@ BrowserAI becomes a real Operator Console product instead of a single admin lab 
 
 ---
 
+## Package Cleanup-1 — Automatic Agent Mode Simplification
+
+Goal: remove the profile-limited/manual-agent confusion and make the main BrowserAI runtime behave as one universal Arena-like automatic agent.
+
+Status: implemented in this package.
+
+Blocks:
+
+1. Runtime tool profile now routes all non-lite tasks to a broad `main_agent` profile.
+2. `main_agent` is the union of general/code/ops/research/browser capabilities, so the agent no longer loses `bash`, `git_clone`, `list_files`, browser, shell, or verification tools because of an over-specific classifier.
+3. Specialized profiles remain as internal documentation, but they no longer cage the main chat agent.
+4. Regular Settings hides manual Agent/MCP/approval plumbing unless `localStorage.browserai.devtools = '1'`; the normal product surface is only automatic Agent Mode + model/key settings.
+5. Tests updated to assert universal tool availability for core actions.
+
+Runbook notes:
+
+- Main chat is the product. Dev Lab/settings internals must not leak into the default user flow.
+- If a task says GitHub/URL/browser/code/deploy, the agent should still have the universal base tools available.
+- Do not add new restrictive profiles to the main chat path; use policy/approval gates for safety, not missing tools.
+
+Result:
+
+BrowserAI's main Agent Mode is less “каша”: one automatic agent with complete safe tool access, while manual plumbing is devtools-only.
+
+---
+
 ## Package Mobile-1 — iPhone/iOS Chat App Optimization
 
 Goal: make BrowserAI feel like a native chat app on iPhone/iOS and other phones: stable viewport, no pinch/double-tap zoom, keyboard-aware height, safe-area support and readable inputs.
@@ -1461,6 +1487,7 @@ The main interface is again a pleasant task-first Agent Mode: chat + workspace, 
 0.5. Package UX-2 — Minimal Agent Chat Output. **Done**
 0.6. Package Runtime-5 — Failure Playbooks + Tool Strategy + Safety Rails. **Done**
 0.7. Package Mobile-1 — iPhone/iOS Chat App Optimization. **Done**
+0.8. Package Cleanup-1 — Automatic Agent Mode Simplification. **Done**
 1. Package A — Super Operator Workflow v1.
 2. Package B — Mission Detail Pages + Timeline UX.
 3. Package D — Reviewer Agent v2 + Semantic Diff Review.
