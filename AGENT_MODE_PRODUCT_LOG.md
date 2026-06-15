@@ -1267,7 +1267,8 @@ Blocks:
 1. Normal users no longer see every narration/tool card expanded directly in the chat.
 2. Agent activity is collapsed into a compact `Ход работы агента` fold with status/count/last action summary.
 3. The collapsed fold now shows a live compact command strip for bash/shell tools: tool name, command, last stdout/stderr tail and running marker.
-4. Tool details, full command output and plan remain available inside the fold when needed.
+4. Generated narration is no longer duplicated next to matching tool cards in the normal UX; technical generated narration remains available in devtools.
+5. Tool details, full command output and plan remain available inside the fold when needed.
 5. Runtime evidence appended by the backend is split out of the assistant answer and placed into a collapsed `Технический отчёт и evidence` section.
 6. Devtools mode keeps the old fully expanded technical view for debugging.
 

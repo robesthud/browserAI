@@ -823,7 +823,7 @@ export function useChats(settings) {
                     ...m,
                     thoughts: [
                       ...(m.thoughts || []),
-                      { step: data.step, text: data.text || '', at: Date.now() },
+                      { step: data.step, sub: data.sub, text: data.text || '', generated: Boolean(data.generated), at: Date.now() },
                     ],
                   }))
                   break

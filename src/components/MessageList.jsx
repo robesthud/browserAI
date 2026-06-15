@@ -361,11 +361,24 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                 {(() => {
                   const items = []
 
-                  const thoughtsByStep = new Map()
-                  for (const t of m.thoughts || []) {
-                    if (!thoughtsByStep.has(t.step)) thoughtsByStep.set(t.step, [])
-                    thoughtsByStep.get(t.step).push(t)
+                  const thoughtsByKey = new Map()
+                  const thoughtKey = (step, sub = '') => `${step ?? ''}:${sub ?? ''}`
+                  const normalizeThought = (value = '') => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase()
+                  const pushThought = (key, thought) => {
+                    if (!thoughtsByKey.has(key)) thoughtsByKey.set(key, [])
+                    const arr = thoughtsByKey.get(key)
+                    const norm = normalizeThought(thought.text)
+                    if (!norm || arr.some((x) => normalizeThought(x.text) === norm)) return
+                    arr.push(thought)
                   }
+                  for (const t of m.thoughts || []) {
+                    // Generated narration mirrors the tool card itself. Keep it
+                    // in devtools, but hide it from the default compact UX to
+                    // avoid duplicated “I am reading/listing…” lines.
+                    if (!isDev && t.generated) continue
+                    pushThought(thoughtKey(t.step, t.sub ?? ''), t)
+                  }
+                  const usedThoughtKeys = new Set()
 
                   // 1:1 Arena Parity: AgentRuntimePanel (debug state) is ONLY for devtools.
                   if (isDev && m.agentState) {
@@ -400,12 +413,19 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                   }
 
                   for (const tc of m.toolCalls || []) {
-                    const ths = thoughtsByStep.get(tc.step) || []
-                    // Thoughts are shown only if they contain text (narrative)
+                    const exactKey = thoughtKey(tc.step, tc.sub ?? '')
+                    const generalKey = thoughtKey(tc.step, '')
+                    const ths = [
+                      ...(thoughtsByKey.get(exactKey) || []),
+                      ...(usedThoughtKeys.has(generalKey) ? [] : (thoughtsByKey.get(generalKey) || [])),
+                    ]
+                    usedThoughtKeys.add(exactKey)
+                    usedThoughtKeys.add(generalKey)
+                    // Thoughts are shown only once and only when they contain
+                    // user-facing narrative distinct from the tool card.
                     for (const t of ths) {
-                      items.push(<AgentThought key={`th-${tc.step}-${t.at}`} text={t.text} />)
+                      items.push(<AgentThought key={`th-${tc.step}-${tc.sub ?? 'x'}-${t.at}`} text={t.text} />)
                     }
-                    thoughtsByStep.delete(tc.step)
 
                     // Hide plan tools — they are rendered as the AgentPlanCard above.
                     if (tc.name === 'plan_set' || tc.name === 'plan_check') continue
