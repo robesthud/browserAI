@@ -40,8 +40,9 @@ export default function Topbar({
   totalTokens = 0,
   costToday = 0,
   costCap = 0,
+  devtoolsEnabled: devtoolsEnabledProp = false,
 }) {
-  const devtoolsEnabled = (() => {
+  const devtoolsEnabled = devtoolsEnabledProp || (() => {
     try { return localStorage.getItem('browserai.devtools') === '1' }
     catch { return false }
   })()
@@ -56,6 +57,7 @@ export default function Topbar({
           autoMode={autoMode}
           onSelectModel={onSelectModel}
           onToggleAuto={onToggleAuto}
+          devtoolsEnabled={devtoolsEnabled}
         />
         <span className="hidden truncate text-[14px] text-cream-soft md:inline-block">{title}</span>
 

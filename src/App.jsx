@@ -304,6 +304,7 @@ function BrowserApp({ user, reloadAuth }) {
           onToggleAuto={() => { setAutoMode(!autoMode); setAutoHint(null) }} onOpenSearch={() => setSearchOpen(true)}
           onOpenCheckpoints={activeChat ? () => setCheckpointsOpen(true) : null} onExportChat={activeChat ? () => downloadChatMarkdown(activeChat) : null}
           totalTokens={messages.reduce((s, m) => s + (m?.tokens?.total || 0), 0)} costToday={costInfo.dailyTotal} costCap={costInfo.cap}
+          devtoolsEnabled={isDevTools}
         />
         <ChatSearchModal open={searchOpen} chats={chats} onSelectChat={selectChat} onClose={() => setSearchOpen(false)} />
         <CheckpointsTray open={checkpointsOpen} chatId={activeChat?.id || ''} onClose={() => setCheckpointsOpen(false)} />

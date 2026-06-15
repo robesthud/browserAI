@@ -903,10 +903,12 @@ export default function SettingsModal({
             )}
           </section>
 
-          {/* ---- Параметры генерации ---- */}
+          {isDevTools && (
+          <>
+          {/* ---- Dev only: generation/debug parameters. Main product is automatic Agent Mode. ---- */}
           <section className="space-y-4 border-t border-white/5 pt-4">
             <h3 className="text-[13px] font-medium text-cream">
-              Параметры генерации
+              Dev: параметры генерации
             </h3>
             <label className="flex items-center justify-between gap-3">
               <div>
@@ -992,6 +994,8 @@ export default function SettingsModal({
               onBackup={onVaultBackup}
               onRestore={onVaultRestore}
             />
+          )}
+          </>
           )}
         </div>
 

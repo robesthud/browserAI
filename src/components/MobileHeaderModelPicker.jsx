@@ -28,6 +28,7 @@ export default function MobileHeaderModelPicker({
   autoMode,
   onSelectModel,
   onToggleAuto,
+  devtoolsEnabled = false,
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -51,7 +52,7 @@ export default function MobileHeaderModelPicker({
   }, [open])
 
   const filtered = models.filter((m) => !query || m.toLowerCase().includes(query.toLowerCase()))
-  const label = autoMode ? 'Авто' : shortName(selectedModel)
+  const label = devtoolsEnabled && autoMode ? 'Авто' : shortName(selectedModel)
 
   return (
     <div ref={rootRef} className="relative">
@@ -61,7 +62,7 @@ export default function MobileHeaderModelPicker({
         className="flex items-center gap-1.5 rounded-full bg-graphite-800/80 px-3 py-1.5 text-[12px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream"
         title="Выбор модели"
       >
-        <span className={`leading-none ${autoMode ? 'text-violet-300' : 'text-cream-faint'}`}>✱</span>
+        <span className={`leading-none ${devtoolsEnabled && autoMode ? 'text-violet-300' : 'text-cream-faint'}`}>✱</span>
         <span className="max-w-[140px] truncate font-medium text-cream">{label}</span>
         <svg width="10" height="10" viewBox="0 0 12 12" className="opacity-60">
           <path d="M2 4 L6 8 L10 4" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -72,22 +73,23 @@ export default function MobileHeaderModelPicker({
         <div
           className="fixed left-2 right-2 top-[64px] z-50 max-h-[70vh] overflow-hidden rounded-2xl border border-white/10 bg-graphite-850 shadow-2xl md:absolute md:left-1/2 md:right-auto md:top-full md:mt-1 md:w-[300px] md:-translate-x-1/2"
         >
-          {/* Auto-mode toggle */}
-          <button
-            type="button"
-            onClick={() => { onToggleAuto?.(); }}
-            className={`flex w-full items-center justify-between border-b border-white/5 px-3 py-2.5 text-[13px] transition-colors ${
-              autoMode ? 'bg-violet-500/10 text-violet-200' : 'text-cream-soft hover:bg-graphite-750'
-            }`}
-          >
-            <span className="flex items-center gap-2">
-              <span>✦</span>
-              <span>Авторежим</span>
-            </span>
-            <span className={`text-[11px] font-medium ${autoMode ? 'text-violet-300' : 'text-cream-faint'}`}>
-              {autoMode ? 'Вкл' : 'Выкл'}
-            </span>
-          </button>
+          {devtoolsEnabled && (
+            <button
+              type="button"
+              onClick={() => { onToggleAuto?.(); }}
+              className={`flex w-full items-center justify-between border-b border-white/5 px-3 py-2.5 text-[13px] transition-colors ${
+                autoMode ? 'bg-violet-500/10 text-violet-200' : 'text-cream-soft hover:bg-graphite-750'
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <span>✦</span>
+                <span>Dev: модель-авто</span>
+              </span>
+              <span className={`text-[11px] font-medium ${autoMode ? 'text-violet-300' : 'text-cream-faint'}`}>
+                {autoMode ? 'Вкл' : 'Выкл'}
+              </span>
+            </button>
+          )}
 
           {/* Search */}
           <div className="border-b border-white/5 px-2 py-2">
@@ -108,12 +110,12 @@ export default function MobileHeaderModelPicker({
               </div>
             ) : (
               filtered.map((m) => {
-                const active = !autoMode && m === selectedModel
+                const active = m === selectedModel
                 return (
                   <button
                     key={m}
                     type="button"
-                    onClick={() => { if (autoMode) onToggleAuto?.(); onSelectModel?.(m); setOpen(false); setQuery('') }}
+                    onClick={() => { if (devtoolsEnabled && autoMode) onToggleAuto?.(); onSelectModel?.(m); setOpen(false); setQuery('') }}
                     className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[13px] transition-colors ${
                       active ? 'bg-graphite-700 text-cream' : 'text-cream-soft hover:bg-graphite-750 hover:text-cream'
                     }`}
