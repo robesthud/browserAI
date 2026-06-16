@@ -59,6 +59,9 @@ try {
   if (!cols.includes('extra_headers')) {
     db.exec(`ALTER TABLE keys ADD COLUMN extra_headers TEXT NOT NULL DEFAULT '{}'`)
   }
+  if (!cols.includes('only_free')) {
+    db.exec(`ALTER TABLE keys ADD COLUMN only_free INTEGER NOT NULL DEFAULT 0`)
+  }
 } catch {
   /* ignore */
 }
@@ -187,6 +190,7 @@ function rowToKey(r, encKey) {
     authHeader: r.auth_header || '',
     responsePath: r.response_path || '',
     extraHeaders: parseExtraHeaders(r.extra_headers),
+    onlyFree: Boolean(r.only_free),
     active: Boolean(r.is_active),
     encrypted: Boolean(r.enc),
     locked,
@@ -230,11 +234,12 @@ export function upsertKey(key, encKey = null) {
   )
 
   const exists = db.prepare('SELECT id FROM keys WHERE id = ?').get(key.id)
+  const onlyFreeFlag = key.onlyFree ? 1 : 0
   if (exists) {
     db.prepare(
       `UPDATE keys
        SET name=?, base_url=?, api_key=?, model=?, available_models=?,
-           enc=?, auth_type=?, auth_header=?, response_path=?, extra_headers=?, updated_at=?
+           enc=?, auth_type=?, auth_header=?, response_path=?, extra_headers=?, only_free=?, updated_at=?
        WHERE id=?`,
     ).run(
       key.name,
@@ -247,6 +252,7 @@ export function upsertKey(key, encKey = null) {
       authHeader,
       responsePath,
       extraHeaders,
+      onlyFreeFlag,
       now,
       key.id,
     )
@@ -254,8 +260,8 @@ export function upsertKey(key, encKey = null) {
     db.prepare(
       `INSERT INTO keys
          (id, name, base_url, api_key, model, available_models,
-          is_active, enc, auth_type, auth_header, response_path, extra_headers, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
+          is_active, enc, auth_type, auth_header, response_path, extra_headers, only_free, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       key.id,
       key.name,
@@ -268,6 +274,7 @@ export function upsertKey(key, encKey = null) {
       authHeader,
       responsePath,
       extraHeaders,
+      onlyFreeFlag,
       now,
       now,
     )
@@ -302,8 +309,8 @@ export function replaceKeys(keys, activeKeyId, encKey = null) {
     const ins = db.prepare(
       `INSERT INTO keys
          (id, name, base_url, api_key, model, available_models,
-          is_active, enc, auth_type, auth_header, response_path, extra_headers, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          is_active, enc, auth_type, auth_header, response_path, extra_headers, only_free, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     for (const k of items) {
       const model = String(k.model || '').trim()
@@ -326,6 +333,7 @@ export function replaceKeys(keys, activeKeyId, encKey = null) {
         String(k.authHeader || '').trim(),
         String(k.responsePath || '').trim(),
         extraH,
+        k.onlyFree ? 1 : 0,
         k.createdAt || now,
         now,
       )

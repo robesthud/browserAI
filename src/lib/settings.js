@@ -58,6 +58,7 @@ export function normalizeKey(key = {}) {
     responsePath: key.responsePath || '',   // путь к тексту в JSON ответе, напр. "choices.0.message.content"
     extraHeaders: (key.extraHeaders && typeof key.extraHeaders === 'object' && !Array.isArray(key.extraHeaders))
       ? key.extraHeaders : {},              // доп. заголовки: { Referer: '...', 'x-app-version': '...' }
+    onlyFree: Boolean(key.onlyFree),
     createdAt: key.createdAt || Date.now(),
     updatedAt: key.updatedAt || Date.now(),
     active: Boolean(key.active),
