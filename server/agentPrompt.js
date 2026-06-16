@@ -33,12 +33,13 @@ Non-negotiable rules:
 11. Workspace root is /workspace. Do not use /workspace/chats/<id> in tool arguments.
 12. Ask the user only when blocked or before risky/destructive actions.`
 
-function userContext({ extraSystem = '', modelHint = '', recall = '', projectRules = '', recentActivity = '', mcpServersBlock = '' } = {}) {
+function userContext({ extraSystem = '', modelHint = '', recall = '', projectRules = '', recentActivity = '', mcpServersBlock = '', repoMap = '' } = {}) {
   const parts = []
   if (extraSystem) parts.push(extraSystem.trim())
   if (modelHint) parts.push(modelHint.trim())
   if (recall) parts.push(`# Recalled context\n${recall.trim()}`)
   if (projectRules) parts.push(`# Project rules\n${projectRules.trim()}`)
+  if (repoMap) parts.push(`# Repository Map (structure, imports, exports and symbols)\n${repoMap.trim()}`)
   if (recentActivity) parts.push(`# Recent workspace activity\n${recentActivity.trim()}`)
   if (mcpServersBlock) parts.push(mcpServersBlock.trim())
   return parts.length ? `# Provided context\n\n${parts.join('\n\n')}` : ''
@@ -81,6 +82,7 @@ export function buildAgentSystemPrompt({
   mcpServersBlock = '',
   lite = false,
   toolNames = null,
+  repoMap = '',
 } = {}) {
   if (lite) {
     return [
@@ -89,7 +91,7 @@ export function buildAgentSystemPrompt({
       native ? NATIVE_TOOL_FORMAT : XML_TOOL_FORMAT,
       '# Available Tools',
       renderToolsForPrompt(extraTools, { lite: true, toolNames }),
-      userContext({ extraSystem, modelHint, recall, projectRules, recentActivity, mcpServersBlock }),
+      userContext({ extraSystem, modelHint, recall, projectRules, recentActivity, mcpServersBlock, repoMap }),
     ].filter(Boolean).join('\n\n')
   }
 
@@ -100,7 +102,7 @@ export function buildAgentSystemPrompt({
     `# System information\nWorkspace root: ${cwd}\nOS: Linux sandbox\nFinal answer language: Russian`,
     '# Available Tools',
     renderToolsForPrompt(extraTools, { toolNames }),
-    userContext({ extraSystem, modelHint, recall, projectRules, recentActivity, mcpServersBlock }),
+    userContext({ extraSystem, modelHint, recall, projectRules, recentActivity, mcpServersBlock, repoMap }),
   ].filter(Boolean).join('\n\n')
 }
 

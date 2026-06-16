@@ -60,6 +60,35 @@ export function clearActiveAgentRun(chatId = '') {
   return activeRunsByChat.delete(String(chatId || ''))
 }
 
+function correctToolName(name) {
+  const lower = String(name || '').toLowerCase().trim().replace(/[-_]+/g, '_')
+  const mapping = {
+    'search_web': 'web_search',
+    'google_search': 'web_search',
+    'google': 'web_search',
+    'web_grep': 'web_search',
+    'fetch_page': 'web_fetch',
+    'web_fetch_page': 'web_fetch',
+    'download_url': 'web_fetch',
+    'read_url': 'web_fetch',
+    'grep': 'search_files',
+    'find_in_files': 'search_files',
+    'grep_files': 'search_files',
+    'search_file': 'search_files',
+    'replace_text': 'edit_file',
+    'modify_file': 'edit_file',
+    'change_file': 'edit_file',
+    'patch_file': 'edit_file',
+    'show_files': 'list_files',
+    'list_folder': 'list_files',
+    'dir': 'list_files',
+    'run_command': 'bash',
+    'execute': 'bash',
+    'terminal': 'bash',
+  }
+  return mapping[lower] || name
+}
+
 // ── System prompt builder ───────────────────────────────────────────────────
 async function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null, chatId = '', lite = false, toolNames = null } = {}) {
   // Lite profile: skip workspace scans and MCP discovery entirely —
@@ -68,9 +97,10 @@ async function buildSystemPrompt({ extraSystem = '', native = false, extraTools 
     return buildAgentSystemPrompt({ extraSystem, native, extraTools, cwd: '/workspace', lite: true, toolNames })
   }
 
-  const [projectRules, recentActivity] = await Promise.all([
+  const [projectRules, recentActivity, repoMap] = await Promise.all([
     withWorkspaceScope(chatId, () => readProjectRules().catch(() => '')),
     withWorkspaceScope(chatId, () => listRecentWorkspaceActivity({ sinceMs: 24 * 60 * 60 * 1000 }).catch(() => [])),
+    withWorkspaceScope(chatId, () => import('./repoMap.js').then(m => m.buildRepoMap()).catch(() => '')),
   ])
 
   let activityText = ''
@@ -106,6 +136,7 @@ async function buildSystemPrompt({ extraSystem = '', native = false, extraTools 
     recentActivity: activityText,
     mcpServersBlock,
     toolNames,
+    repoMap,
   })
 }
 
@@ -1001,11 +1032,29 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
       let calls = []
       if (useNativeTools && Array.isArray(reply.toolCalls)) {
-        for (const tc of reply.toolCalls) if (TOOLS[tc.name] || (extraTools && extraTools[tc.name])) calls.push({ tool: tc.name, args: tc.args || {}, nativeId: tc.id, nativeRaw: tc.raw })
+        for (const tc of reply.toolCalls) {
+          const corrected = correctToolName(tc.name)
+          const exists = TOOLS[corrected] || (extraTools && extraTools[corrected])
+          calls.push({ 
+            tool: corrected, 
+            args: tc.args || {}, 
+            nativeId: tc.id, 
+            nativeRaw: tc.raw,
+            unknown: !exists
+          })
+        }
       }
       if (calls.length === 0) {
         const xmlCalls = parseXmlFunctionCalls(reply.text || '')
-        for (const c of xmlCalls) if (TOOLS[c.tool] || (extraTools && extraTools[c.tool])) calls.push(c)
+        for (const c of xmlCalls) {
+          const corrected = correctToolName(c.tool)
+          const exists = TOOLS[corrected] || (extraTools && extraTools[corrected])
+          calls.push({
+            tool: corrected,
+            args: c.args || {},
+            unknown: !exists
+          })
+        }
       }
 
       if (calls.length === 0) {
@@ -1145,6 +1194,12 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
         recentCallFingerprints.push(callFingerprint(call)); if (recentCallFingerprints.length > 20) recentCallFingerprints.shift()
         if (violatesPreDeployVerify(call, recentToolHistory)) return { call, r: makeToolErrorResult('Blocked: verify_code required.'), pushedBack: true }
         if (isStuckLoop(recentCallFingerprints, callFingerprint(call))) return { call, r: makeToolErrorResult('Stuck in loop.'), pushedBack: true }
+
+        if (call.unknown) {
+          const rErr = makeToolErrorResult(`Инструмент "${call.tool}" не существует. Пожалуйста, используйте только разрешенные инструменты: ${[...allowedToolSet].join(', ')}`)
+          sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
+          return { call, r: rErr, pushedBack: true }
+        }
 
         if (!isToolAllowed(call.tool, allowedToolSet, extraTools)) {
           const rErr = makeToolErrorResult(`Tool ${call.tool} is not available in the current ${toolProfile} tool profile. Use one of: ${[...allowedToolSet].join(', ')}`)
