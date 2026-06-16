@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useMemo } from 'react'
 import {
   IconClose,
   IconTrash,
@@ -219,6 +219,23 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
   const [advanced, setAdvanced] = useState(false)
   const modelRef = useRef(initial.model || '')
 
+  const [onlyFree, setOnlyFree] = useState(false)
+
+  const displayedModels = useMemo(() => {
+    let list = form.availableModels || []
+    if (onlyFree) {
+      const providerId = form.id || ''
+      if (providerId.includes('gemini') || form.baseUrl?.includes('googleapis')) {
+        list = list.filter(m => /flash|8b/i.test(m))
+      } else if (providerId.includes('openrouter') || form.baseUrl?.includes('openrouter')) {
+        list = list.filter(m => m.includes(':free'))
+      } else {
+        list = list.filter(m => /free|mini|flash|haiku|lite|nano/i.test(m))
+      }
+    }
+    return list
+  }, [form.availableModels, onlyFree, form.id, form.baseUrl])
+
   const inferName = (f) => {
     const preset = PROVIDER_PRESETS.find((p) => p.baseUrl === f.baseUrl)
     if (preset?.name) return preset.name
@@ -364,17 +381,30 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
       )}
 
       {form.availableModels?.length > 0 ? (
-        <Field label="Модель" hint={`Найдено моделей: ${form.availableModels.length}`}>
-          <select
-            className={inputCls}
-            value={form.model || form.availableModels[0]}
-            onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
-          >
-            {form.availableModels.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
-        </Field>
+        <>
+          <div className="mb-2 mt-2 flex items-center justify-between">
+            <label className="flex items-center gap-2 text-[12px] text-cream-soft cursor-pointer">
+              <input
+                type="checkbox"
+                checked={onlyFree}
+                onChange={(e) => setOnlyFree(e.target.checked)}
+                className="rounded bg-graphite-900 border-white/10 text-cream focus:ring-0 focus:outline-none"
+              />
+              Показывать только бесплатные модели
+            </label>
+          </div>
+          <Field label="Модель" hint={`Отображено моделей: ${displayedModels.length} из ${form.availableModels.length}`}>
+            <select
+              className={inputCls}
+              value={form.model || displayedModels[0] || ''}
+              onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
+            >
+              {displayedModels.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </Field>
+        </>
       ) : (
         <div className="rounded-lg border border-white/5 bg-graphite-900/40 px-3 py-2 text-[12px] text-cream-faint">
           {checking
