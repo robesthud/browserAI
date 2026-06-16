@@ -191,6 +191,15 @@ const ACTIONS = [
 
 export function routeDeterministicAction(history = []) {
   const text = lastUserText(history)
+  if (!text) return null
+
+  // Если запрос слишком длинный или содержит ключевые слова сложного действия,
+  // мы НЕ перехватываем его детерминистическим роутером, а даем агенту думать!
+  const isComplex = text.length > 55 || 
+                    /запусти|тест|исправь|добавь|разверни|создай файл|edit|modify|npm|node|python|git|bash|сессии|&&|\|\|/i.test(text)
+  
+  if (isComplex) return null
+
   const matches = []
   for (const action of ACTIONS) {
     const routed = action.match(text)
