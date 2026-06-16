@@ -1551,6 +1551,77 @@ export const TOOLS = {
       try { return ok(await runOpsAction({ service, action, params, confirm })) } catch (e) { return err(e.message) }
     },
   },
+
+  db_query: {
+    description: 'Execute a SQL query on either the PostgreSQL or SQLite database. Use this to inspect tables, query rows, and verify schema structures directly.',
+    params: {
+      query: { type: 'string', required: true, description: 'SQL query, e.g. "SELECT * FROM keys;" or "SELECT version();"' },
+      db_type: { type: 'string', optional: true, description: 'Database type: "postgres" or "sqlite". Default is "postgres".' }
+    },
+    handler: async ({ query, db_type = 'postgres' } = {}) => {
+      if (!query) return err('query is required')
+      if (db_type === 'sqlite') {
+        try {
+          const { default: Database } = await import('better-sqlite3')
+          const DB_PATH = process.env.BROWSERAI_DB || '/data/browserai.db'
+          const sdb = new Database(DB_PATH, { readonly: true })
+          const rows = sdb.prepare(query).all()
+          return ok({ rows })
+        } catch (e) { return err(e.message) }
+      } else {
+        try {
+          const r = await runSandboxCommand({
+            command: `PGPASSWORD=browserai_secret psql -h db -U browserai -d browserai -c ${shQuote(query)}`,
+            timeoutMs: 30_000
+          })
+          if (r.exitCode === 0) {
+            return ok({ stdout: r.stdout })
+          } else {
+            return err(r.stderr || `pg query failed with code ${r.exitCode}`)
+          }
+        } catch (e) { return err(e.message) }
+      }
+    }
+  },
+
+  debug_run_code: {
+    description: 'Execute a Javascript or Python file with active runtime debugging/tracebacks to catch logical errors and dump variable values/locals on crash.',
+    params: {
+      path: { type: 'string', required: true, description: 'File path relative to workspace root.' },
+      args: { type: 'string', optional: true, description: 'Command-line arguments to pass to the script.' },
+    },
+    handler: async ({ path: filePath, args = '' } = {}) => {
+      if (!filePath) return err('path is required')
+      const ext = String(filePath).toLowerCase().split('.').pop()
+      const absPath = `/workspace/${filePath.replace(/^\/+/, '')}`
+      
+      if (ext === 'py') {
+        const cmd = `python3 -c "import sys, traceback, cgitb; cgitb.enable(format='text'); sys.argv = ['${filePath}'] + '${args}'.split(); exec(open('${filePath}').read())"`
+        try {
+          const r = await runSandboxCommand({ command: cmd, timeoutMs: 30_000 })
+          return ok({
+            stdout: truncate(r.stdout, 6000),
+            stderr: truncate(r.stderr, 6000),
+            exitCode: r.exitCode,
+            debugger: 'python-cgitb'
+          })
+        } catch (e) { return err(e.message) }
+      } else if (['js', 'mjs', 'cjs'].includes(ext)) {
+        const cmd = `node --trace-uncaught --trace-warnings ${filePath} ${args}`
+        try {
+          const r = await runSandboxCommand({ command: cmd, timeoutMs: 30_000 })
+          return ok({
+            stdout: truncate(r.stdout, 6000),
+            stderr: truncate(r.stderr, 6000),
+            exitCode: r.exitCode,
+            debugger: 'node-trace-uncaught'
+          })
+        } catch (e) { return err(e.message) }
+      } else {
+        return err('Only .js and .py files are supported for runtime debugging.')
+      }
+    }
+  },
 }
 
 // Minimal tool set for low-complexity runs (must match agentLoop.js lite filter)

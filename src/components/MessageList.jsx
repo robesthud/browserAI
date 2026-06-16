@@ -26,7 +26,7 @@ function Attachments({ items }) {
           key={a.id}
           className="flex items-center gap-2 rounded-lg border border-white/10 bg-graphite-900/60 px-2.5 py-1.5 text-[12px] text-cream-soft"
         >
-          {a.dataUrl && a.type.startsWith('image/') ? (
+          {a.dataUrl && typeof a.type === 'string' && a.type.startsWith('image/') ? (
             <img
               src={a.dataUrl}
               alt={a.name}
