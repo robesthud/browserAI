@@ -73,6 +73,7 @@ async function getWorkspaceSizeBytes(dir = getScopedWorkspaceRoot()) {
     const entries = await fs.readdir(dir, { withFileTypes: true })
     for (const entry of entries) {
       if (entry.name === '.history') continue
+      if (WORKSPACE_EXCLUDED_DIRS.includes(entry.name)) continue
       const full = path.join(dir, entry.name)
       if (entry.isDirectory()) {
         total += await getWorkspaceSizeBytes(full)
@@ -334,6 +335,7 @@ async function buildTree(currentPath, currentRel = '', showHidden = false) {
   for (const entry of entries) {
     if (!showHidden && entry.name.startsWith('.')) continue
     if (entry.name === '.history') continue
+    if (WORKSPACE_EXCLUDED_DIRS.includes(entry.name)) continue
 
     const rel = currentRel ? path.posix.join(currentRel, entry.name) : entry.name
     const full = safePath(rel)
