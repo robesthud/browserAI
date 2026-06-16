@@ -440,10 +440,14 @@ const XML_TOOL_CALL_RE = /<(?:x?ai:function_call|tool_use|function_call)([^>]*)>
 const XML_PARAM_RE = /<parameter\s+name="([^"]+)"\s*>([\s\S]*?)<\/parameter>/gi
 
 function parseXmlFunctionCalls(text) {
+  let cleaned = String(text || '')
+  // Strip DeepSeek R1 <think>...</think> blocks to prevent false parses from thinking phase
+  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '')
+
   const calls = []
   XML_TOOL_CALL_RE.lastIndex = 0
   let match
-  while ((match = XML_TOOL_CALL_RE.exec(text)) !== null) {
+  while ((match = XML_TOOL_CALL_RE.exec(cleaned)) !== null) {
     const openAttrs = match[1] || ''
     const content = match[2] || ''
     const nameMatch =

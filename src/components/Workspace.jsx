@@ -7,6 +7,7 @@ import {
 } from '../icons.jsx'
 import FileTree from './FileTree.jsx'
 import FilePreview from './FilePreview.jsx'
+import WebPreview from './WebPreview.jsx'
 import {
   filterWorkspaceTree,
   serializeUploadFiles,
@@ -176,6 +177,7 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
   const [searchingContent, setSearchingContent] = useState(false)
   const [preview, setPreview] = useState(null)
   const [previewStartEditing, setPreviewStartEditing] = useState(false)
+  const [showWebPreview, setShowWebPreview] = useState(false)
   const [tree, setTree] = useState(null)
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -675,6 +677,13 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
                 </button>
               )}
               <button
+                onClick={() => setShowWebPreview(true)}
+                className="grid h-7 min-w-7 place-items-center rounded-lg px-1 text-[11px] font-semibold text-cream-dim transition-colors hover:bg-graphite-750/60 hover:text-cream"
+                title="Веб-просмотр Песочницы (Порты)"
+              >
+                🌐 WEB
+              </button>
+              <button
                 onClick={() =>
                   openNodeMenu(
                     { preventDefault() {}, clientX: 24, clientY: 90 },
@@ -837,6 +846,11 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
         onSave={savePreviewFile}
         onAiEdit={applyAiPatch}
         onRestoreHistory={restoreHistory}
+      />
+
+      <WebPreview
+        open={showWebPreview}
+        onClose={() => setShowWebPreview(false)}
       />
 
       {(uploading || aiBusy) && (
