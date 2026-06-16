@@ -79,7 +79,16 @@ const PROVIDER_PRESETS = [
     label: 'OpenRouter',
     name: 'OpenRouter',
     baseUrl: 'https://openrouter.ai/api/v1',
-    hint: 'openrouter.ai — доступ к 100+ моделям через один ключ',
+    model: 'deepseek/deepseek-r1',
+    availableModels: [
+      'deepseek/deepseek-r1',
+      'deepseek/deepseek-chat',
+      'anthropic/claude-3.5-sonnet',
+      'google/gemini-2.5-flash',
+      'google/gemini-2.5-pro',
+      'meta-llama/llama-3.3-70b-instruct'
+    ],
+    hint: 'openrouter.ai — доступ к 100+ моделям через один ключ (например, DeepSeek R1, V3, Claude 3.5 Sonnet)',
   },
   // --- Бесплатно (серверные managed-сессии) ---
   // Сюда добавляются провайдеры, у которых токен/сессию хранит и
