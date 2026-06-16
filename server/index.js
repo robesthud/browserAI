@@ -298,14 +298,17 @@ function verifyPassword(password, stored = '') {
 
 // #3 FIX: используем HKDF для вывода ключа шифрования из AUTH_SECRET.
 // HKDF добавляет контекстный info-параметр и salt, что безопаснее голого SHA-256.
+let cachedEncryptionKey = null;
 function encryptionKey() {
-  return crypto.hkdfSync(
+  if (cachedEncryptionKey) return cachedEncryptionKey;
+  cachedEncryptionKey = crypto.hkdfSync(
     'sha256',
     Buffer.from(AUTH_SECRET, 'utf8'),
     Buffer.from('browserai-cloud-encryption-salt-v1', 'utf8'),
     Buffer.from('browserai-cloud-encryption', 'utf8'),
     32,
   )
+  return cachedEncryptionKey;
 }
 
 function encryptJson(value) {
