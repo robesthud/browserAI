@@ -34,6 +34,50 @@ import { runInSession, resetSession, startBackgroundTask, readBackgroundLogs, st
 
 function safeJsonParse(text) { try { return JSON.parse(text) } catch { return null } }
 
+function fuzzyReplace(original, oldText, newText) {
+  const norm = (s) => String(s || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  const origNorm = norm(original)
+  const oldNorm = norm(oldText)
+  const newNorm = norm(newText)
+
+  // 1. Exact match first
+  if (origNorm.includes(oldNorm)) {
+    const parts = origNorm.split(oldNorm)
+    if (parts.length === 2) {
+      return original.replace(oldText, newText)
+    }
+  }
+
+  // 2. Line-by-line normalized fuzzy match
+  const origLines = original.split(/\r?\n/)
+  const oldLines = oldText.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+  if (oldLines.length === 0) return null
+
+  let matchStart = -1
+  let matchCount = 0
+
+  for (let i = 0; i <= origLines.length - oldLines.length; i++) {
+    let matches = true
+    for (let j = 0; j < oldLines.length; j++) {
+      if (origLines[i + j].trim() !== oldLines[j]) {
+        matches = false
+        break
+      }
+    }
+    if (matches) {
+      matchCount++
+      matchStart = i
+    }
+  }
+
+  if (matchCount === 1) {
+    const before = origLines.slice(0, matchStart).join('\n')
+    const after = origLines.slice(matchStart + oldLines.length).join('\n')
+    return (before ? before + '\n' : '') + newNorm + (after ? '\n' + after : '')
+  }
+
+  return null
+}
 
 function shQuote(value) {
   return `'${String(value).replace(/'/g, `'\''`)}'`
@@ -287,10 +331,10 @@ export const TOOLS = {
   },
 
   edit_file: {
-    description: 'Replace a specific substring inside an existing file. Use this for small surgical edits instead of rewriting the whole file. Fails if the old_text is not found exactly once.',
+    description: 'Replace a specific substring or block of lines inside an existing file. Tolerates spacing, indentation, and carriage return differences.',
     params: {
       path: { type: 'string', required: true, description: 'Path relative to workspace root.' },
-      old_text: { type: 'string', required: true, description: 'Exact substring to find. Must appear exactly once.' },
+      old_text: { type: 'string', required: true, description: 'Substring or block of lines to find. Tolerates slight formatting differences.' },
       new_text: { type: 'string', required: true, description: 'Replacement text. Use empty string to delete.' },
     },
     handler: async ({ path, old_text, new_text = '' } = {}) => {
@@ -299,10 +343,12 @@ export const TOOLS = {
         const file = await readWorkspaceFile(path)
         const original = file?.text ?? file?.content
         if (typeof original !== 'string') return err(`File is binary or unreadable: ${path}`)
-        const count = original.split(old_text).length - 1
-        if (count === 0) return err(`old_text not found in ${path}`)
-        if (count > 1) return err(`old_text appears ${count} times in ${path}; refine to make it unique`)
-        const updated = original.replace(old_text, String(new_text))
+        
+        const updated = fuzzyReplace(original, old_text, new_text)
+        if (!updated) {
+          return err(`Could not perform fuzzy replace: old_text not found in ${path} (or found multiple times). Ensure old_text matches structurally.`)
+        }
+        
         await writeFileContent(path, updated)
         return ok({ path, replaced: 1, newLength: updated.length, hint: 'Call verify_code next to check syntax.' })
       } catch (e) { return err(e.message) }
