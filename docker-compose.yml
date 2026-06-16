@@ -84,6 +84,8 @@ services:
       - ${DATA_DIR:-./data}/global-npm:/usr/local/lib/node_modules
       - ${DATA_DIR:-./data}/global-bin:/usr/local/bin
       - ${DATA_DIR:-./data}/ssh:/root/.ssh
+      - ${DATA_DIR:-./data}/python-local:/root/.local
+      - ${DATA_DIR:-./data}/pip-cache:/root/.cache/pip
     # Hard resource caps prevent runaway commands from impacting the API.
     mem_limit: 1536m
     cpus: 0.5
