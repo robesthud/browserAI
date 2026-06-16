@@ -290,12 +290,8 @@ function BrowserApp({ user, reloadAuth }) {
       />
       {!collapsed && <button className="fixed inset-0 z-30 bg-black/45 md:hidden" onClick={() => setCollapsed(true)} />}
       <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden" style={{ height: 'var(--app-height, 100dvh)' }}>
-        {collapsed && (
-          <button onClick={() => setCollapsed(false)} className="absolute left-3 top-10 z-10 grid h-9 w-9 place-items-center rounded-lg text-cream-dim hover:bg-graphite-800 md:top-3.5">
-            <IconExpand />
-          </button>
-        )}
         <Topbar
+          collapsed={collapsed} onToggleSidebar={() => setCollapsed(!collapsed)}
           title={activeChat?.title ?? 'BrowserAI'} configured={configured} aiWorking={aiWorking}
           autoMode={autoMode} autoModelHint={autoHint ? `${autoHint.icon || ''} ${autoHint.reason}` : ''}
           agentMode={effectiveAgentMode} workspaceOpen={workspaceOpen} onToggleWorkspace={() => setWorkspaceOpen(!workspaceOpen)}
