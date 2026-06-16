@@ -173,7 +173,10 @@ export function evaluateRecoveryAction(id = '') {
   const rec = getRecoveryAction(id)
   if (!rec || terminal(rec.status)) return rec
   const ent = rec.result?.spawnedEntity || spawnedEntityFromResult(rec.result || {})
-  if (!ent) return rec
+  if (!ent) {
+    const ok = rec.result?.ok === true
+    return patchRecovery(id, { status: ok ? 'succeeded' : 'failed', finishedAt: now() })
+  }
   const target = readSpawnedStatus(ent)
   if (!target || !target.status) return rec
   if (!terminal(target.status)) {
