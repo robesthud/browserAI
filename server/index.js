@@ -1507,8 +1507,19 @@ app.all(/^\/api\/sandbox\/proxy\/(\d+)\/(.*)/, async (req, res) => {
     const response = await fetch(targetUrl, options);
     res.status(response.status);
 
+    const excludeHeaders = [
+      'content-length',
+      'content-encoding',
+      'transfer-encoding',
+      'connection',
+      'keep-alive',
+      'host'
+    ];
+
     response.headers.forEach((val, key) => {
-      res.setHeader(key, val);
+      if (!excludeHeaders.includes(key.toLowerCase())) {
+        res.setHeader(key, val);
+      }
     });
 
     if (response.body) {
