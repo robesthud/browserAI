@@ -433,22 +433,39 @@ export const TOOLS = {
   },
 
   bash: {
-    description: 'Run a shell command inside an isolated Linux sandbox that has the workspace mounted at /workspace. Useful for git, npm, node, curl, grep, build steps, etc. Output is returned. Timeout 30s default, max 120s. For commands that need persistent cwd/env or may run long, prefer shell_session_run or shell_background_start.',
+    description: 'Run a shell command inside a persistent stateful Linux sandbox. cwd, environment variables, cd, and exported paths persist across calls. Useful for git, npm, node, curl, grep, builds, tests, etc.',
     params: {
-      command: { type: 'string', required: true, description: `Shell command, e.g. "ls -la /workspace" or "node -e 'console.log(1+1)'"` },
-      timeout_sec: { type: 'number', optional: true, description: 'Max seconds, default 30, max 120.' },
+      command: { type: 'string', required: true, description: 'Shell command to execute, e.g. "cd server && npm install" or "git status".' },
+      timeout_sec: { type: 'number', optional: true, description: 'Max seconds, default 60, max 900.' },
     },
-    handler: async ({ command, timeout_sec = 30 } = {}) => {
+    handler: async ({ command, timeout_sec = 60, _chatId = '', _signal, _onStdout, _onStderr } = {}) => {
       if (!command) return err('command is required')
+      if (!_chatId) {
+        try {
+          const r = await runWorkspaceCommand(String(command), {
+            timeoutMs: Math.min(900_000, Math.max(1_000, Number(timeout_sec) * 1000 || 60_000)),
+            signal: _signal,
+            onStdout: _onStdout,
+            onStderr: _onStderr
+          })
+          return ok({ stdout: truncate(r.stdout, 12000), stderr: truncate(r.stderr, 6000), exitCode: r.exitCode })
+        } catch (e) { return err(e.message) }
+      }
       try {
-        const r = await runWorkspaceCommand(String(command), {
-          timeoutMs: Math.min(120_000, Math.max(1_000, Number(timeout_sec) * 1000 || 30_000)),
+        const r = await runInSession({
+          chatId: _chatId,
+          command: rewriteWorkspacePaths(String(command)),
+          timeoutMs: Math.min(900_000, Math.max(1_000, Number(timeout_sec) * 1000 || 60_000)),
+          signal: _signal,
+          onStdout: _onStdout,
+          onStderr: _onStderr,
         })
         return ok({
-          stdout: truncate(r.stdout, 6000),
-          stderr: truncate(r.stderr, 3000),
+          stdout: truncate(r.stdout, 12000),
+          stderr: truncate(r.stderr, 6000),
           exitCode: r.exitCode,
-          truncated: r.truncated || false,
+          durationMs: r.durationMs,
+          persistent: true
         })
       } catch (e) { return err(e.message) }
     },
