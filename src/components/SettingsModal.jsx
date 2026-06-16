@@ -219,7 +219,27 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
   const [advanced, setAdvanced] = useState(false)
   const modelRef = useRef(initial.model || '')
 
-  const [onlyFree, setOnlyFree] = useState(false)
+  const [onlyFree, setOnlyFree] = useState(Boolean(initial.onlyFree))
+
+  const handleToggleOnlyFree = (val) => {
+    setOnlyFree(val)
+    setForm((f) => {
+      const list = f.availableModels || []
+      const filtered = val
+        ? (f.id?.includes('openrouter') || f.baseUrl?.includes('openrouter')
+            ? list.filter(m => m.includes(':free'))
+            : (f.id?.includes('gemini') || f.baseUrl?.includes('googleapis')
+                ? list.filter(m => /flash|8b/i.test(m))
+                : list.filter(m => /free|mini|flash|haiku|lite|nano/i.test(m))))
+        : list
+      const updatedModel = filtered.includes(f.model) ? f.model : (filtered[0] || '')
+      return {
+        ...f,
+        onlyFree: val,
+        model: updatedModel
+      }
+    })
+  }
 
   const displayedModels = useMemo(() => {
     let list = form.availableModels || []
@@ -243,11 +263,24 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
     catch { return f.name || 'AI-провайдер' }
   }
 
-  const prepareForSave = (f) => ({
-    ...f,
-    name: f.name?.trim() || inferName(f),
-    model: f.model || f.availableModels?.[0] || '',
-  })
+  const prepareForSave = (f) => {
+    let list = f.availableModels || []
+    if (f.onlyFree) {
+      const providerId = f.id || ''
+      if (providerId.includes('gemini') || f.baseUrl?.includes('googleapis')) {
+        list = list.filter(m => /flash|8b/i.test(m))
+      } else if (providerId.includes('openrouter') || f.baseUrl?.includes('openrouter')) {
+        list = list.filter(m => m.includes(':free'))
+      } else {
+        list = list.filter(m => /free|mini|flash|haiku|lite|nano/i.test(m))
+      }
+    }
+    return {
+      ...f,
+      name: f.name?.trim() || inferName(f),
+      model: f.model || list[0] || f.availableModels?.[0] || '',
+    }
+  }
 
   const set = (field) => (e) => {
     const value = e.target.value
@@ -387,7 +420,7 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
               <input
                 type="checkbox"
                 checked={onlyFree}
-                onChange={(e) => setOnlyFree(e.target.checked)}
+                onChange={(e) => handleToggleOnlyFree(e.target.checked)}
                 className="rounded bg-graphite-900 border-white/10 text-cream focus:ring-0 focus:outline-none"
               />
               Показывать только бесплатные модели
