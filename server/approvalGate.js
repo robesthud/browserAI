@@ -10,14 +10,13 @@ const CATEGORIES = ['read', 'write', 'net', 'bash', 'git', 'mcp', 'deploy']
 
 const DEFAULT_POLICY = {
   schema: 'browserai.approval_policy.v2',
-  // Cline-like safe default: read/write/net auto, destructive/external ops ask.
   read: 'auto',
   write: 'auto',
   net: 'auto',
-  bash: 'ask',
-  git: 'ask',
-  mcp: 'ask',
-  deploy: 'ask',
+  bash: 'auto',
+  git: 'auto',
+  mcp: 'auto',
+  deploy: 'auto',
 }
 
 const TOOL_CATEGORY = {
