@@ -967,6 +967,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   let verificationPushback = false
   const obligationPushbacks = new Map()
   let pushedBackThisTurn = false
+  let consecutiveFailures = 0
 
   try {
     while (step < maxSteps) {
@@ -1007,11 +1008,17 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       const activeProvider = routing.useCheap ? wrapProviderForEditor(provider, routing.cheapModel) : provider
       if (routing.useCheap) sse(res, 'thought', { step, text: routingLabel(routing) })
 
+      let currentModel = activeProvider.model
+      if (consecutiveFailures >= 3 && currentModel === 'deepseek-chat') {
+        currentModel = 'deepseek-reasoner'
+        sse(res, 'thought', { step, text: '🔄 Автоматическое самоисцеление: Обнаружено 3 последовательных сбоя. Временно повышаю уровень интеллекта модели до deepseek-reasoner для выхода из тупика!' })
+      }
+
       let reply, streamedFinalAnswer = false
       try {
         const useStream = supportsStreaming(activeProvider.baseUrl)
         const messagesWithCache = applyAnthropicCacheHints(convo, activeProvider.baseUrl)
-        const llmArgs = { baseUrl: activeProvider.baseUrl, apiKey: activeProvider.apiKey, authType: activeProvider.authType || 'bearer', authHeader: activeProvider.authHeader || '', extraHeaders: activeProvider.extraHeaders || {}, model: activeProvider.model, messages: messagesWithCache, temperature: Number(activeProvider.temperature ?? 0.3), signal: abortCtl.signal, ...(useNativeTools ? { tools: toolsSpec, toolChoice: 'auto' } : {}) }
+        const llmArgs = { baseUrl: activeProvider.baseUrl, apiKey: activeProvider.apiKey, authType: activeProvider.authType || 'bearer', authHeader: activeProvider.authHeader || '', extraHeaders: activeProvider.extraHeaders || {}, model: currentModel, messages: messagesWithCache, temperature: Number(activeProvider.temperature ?? 0.3), signal: abortCtl.signal, ...(useNativeTools ? { tools: toolsSpec, toolChoice: 'auto' } : {}) }
         if (useStream) {
           reply = await streamingLLMCall(res, step, llmArgs, { onUsage: (u) => accumulateUsage(u) })
           streamedFinalAnswer = !reply.toolCalls?.length && !reply.preParsedCalls?.length
@@ -1269,6 +1276,13 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
           })
         }
         const semanticOk = toolSucceeded(call.tool, r)
+        if (categoryOf(call.tool) !== 'ask') {
+          if (!semanticOk) {
+            consecutiveFailures++
+          } else {
+            consecutiveFailures = 0
+          }
+        }
         if (!semanticOk && !pushedBackThisTurn && !aborted && categoryOf(call.tool) !== 'ask') {
           const semanticError = r.ok ? summarizeToolOutcome(call.tool, r) : r.error
           const recovery = getRecoveryAction({ tool: call.tool, error: semanticError, result: r.result, args: call.args, recentToolHistory })
