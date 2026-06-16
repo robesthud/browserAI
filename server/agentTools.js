@@ -90,6 +90,9 @@ function scopedContainerRoot() {
 function rewriteWorkspacePaths(command = '') {
   const root = scopedContainerRoot()
   if (root === '/workspace') return String(command)
+  if (String(command).includes('/workspace/chats/')) {
+    return String(command)
+  }
   return String(command).replace(/\/workspace(?=\/|\s|&&|;|\)|$)/g, root)
 }
 
