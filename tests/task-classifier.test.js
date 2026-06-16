@@ -4,7 +4,7 @@
 // system prompt + repo map + memory preload.
 import { describe, it, expect } from 'vitest'
 import { classifyAgentTask } from '../server/agentCore.js'
-import { buildClineSystemPrompt } from '../server/clinePrompt.js'
+import { buildAgentSystemPrompt } from '../server/agentPrompt.js'
 
 const CASES = [
   // Small talk / простые вопросы → low (lite prompt, без repo map)
@@ -43,8 +43,8 @@ describe('classifyAgentTask: lite vs full routing', () => {
 
 describe('lite system prompt', () => {
   it('is at least 4x smaller than the full prompt', () => {
-    const full = buildClineSystemPrompt({ cwd: '/workspace' })
-    const lite = buildClineSystemPrompt({ cwd: '/workspace', lite: true })
+    const full = buildAgentSystemPrompt({ cwd: '/workspace' })
+    const lite = buildAgentSystemPrompt({ cwd: '/workspace', lite: true })
     expect(lite.length).toBeLessThan(full.length / 4)
     // Sanity: lite prompt still teaches tool-use formatting
     expect(lite).toContain('Available Tools')
