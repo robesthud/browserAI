@@ -90,6 +90,11 @@ function BrowserApp({ user, reloadAuth }) {
     } catch { return true }
   })
   const [autoHint, setAutoHint] = useState(null)
+  const handleSelectModel = useCallback(async (modelId) => {
+    setAutoMode(false)
+    await setActiveModel(modelId)
+  }, [setActiveModel])
+
   const [agentMode, setAgentMode] = useState(() => {
     try {
       const saved = localStorage.getItem('browserai.agentMode')
@@ -267,7 +272,7 @@ function BrowserApp({ user, reloadAuth }) {
     onSlashSetModel: (modelId) => {
       const hit = availableModels.find((m) => m.id === modelId || m.name === modelId || (m.id || '').endsWith(modelId))
       if (!hit) return false
-      setActiveModel?.(hit.id); return true
+      handleSelectModel(hit.id); return true
     },
     onSlashFetchCost: async () => {
       const r = await fetch('/api/cost/today', { credentials: 'include' })
@@ -296,7 +301,7 @@ function BrowserApp({ user, reloadAuth }) {
           autoMode={autoMode} autoModelHint={autoHint ? `${autoHint.icon || ''} ${autoHint.reason}` : ''}
           agentMode={effectiveAgentMode} workspaceOpen={workspaceOpen} onToggleWorkspace={() => setWorkspaceOpen(!workspaceOpen)}
           onOpenSettings={() => setSettingsOpen(true)} user={user} onLogout={async () => { await backend.saveCloud({ settings, chats }); await backend.authLogout(); localStorage.removeItem('browserai.auth.enabled'); await reloadAuth?.() }}
-          availableModels={availableModels} selectedModel={selectedModel} onSelectModel={setActiveModel}
+          availableModels={availableModels} selectedModel={selectedModel} onSelectModel={handleSelectModel}
           onToggleAuto={() => { setAutoMode(!autoMode); setAutoHint(null) }} onOpenSearch={() => setSearchOpen(true)}
           onOpenCheckpoints={activeChat ? () => setCheckpointsOpen(true) : null} onExportChat={activeChat ? () => downloadChatMarkdown(activeChat) : null}
           totalTokens={messages.reduce((s, m) => s + (m?.tokens?.total || 0), 0)} costToday={costInfo.dailyTotal} costCap={costInfo.cap}
