@@ -47,7 +47,7 @@ import {
 } from './agentCore.js'
 
 const DEFAULT_MAX_STEPS = 15
-const DEFAULT_DEADLINE_MS = 5 * 60 * 1000
+const DEFAULT_DEADLINE_MS = 20 * 60 * 1000
 const IDLE_NOTICE_MS = 75 * 1000
 const LLM_HARD_IDLE_MS = 2 * 60 * 1000
 const activeRunsByChat = new Map()
