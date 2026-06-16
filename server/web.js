@@ -80,9 +80,10 @@ async function searchWeb(query, limit = 5) {
 }
 
 // #13 FIX: проверяем URL перед fetch, чтобы исключить SSRF-атаки через fetchWebPage
+import dns from 'node:dns/promises'
 import { isPrivateIp } from './ssrf.js'
 
-function assertPublicWebUrl(rawUrl) {
+async function assertPublicWebUrl(rawUrl) {
   let parsed
   try {
     parsed = new URL(rawUrl)
@@ -96,10 +97,21 @@ function assertPublicWebUrl(rawUrl) {
   if (host === 'localhost' || host.endsWith('.local') || isPrivateIp(host)) {
     throw new Error('Access to internal networks is not allowed')
   }
+
+  // Защита от DNS Rebinding / SSRF обхода через локальные IP
+  try {
+    const lookup = await dns.lookup(host)
+    if (lookup && isPrivateIp(lookup.address)) {
+      throw new Error('Access to internal networks is not allowed (resolved private IP)')
+    }
+  } catch (err) {
+    if (err.message && err.message.includes('not allowed')) throw err
+    // Ошибки резолва пропускаем — fetch сам упадет
+  }
 }
 
 async function fetchWebPage(url) {
-  assertPublicWebUrl(url)
+  await assertPublicWebUrl(url)
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 10_000)
