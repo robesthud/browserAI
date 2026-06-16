@@ -86,10 +86,8 @@ services:
       - ${DATA_DIR:-./data}/ssh:/root/.ssh
       - ${DATA_DIR:-./data}/python-local:/root/.local
       - ${DATA_DIR:-./data}/pip-cache:/root/.cache/pip
-    # Hard resource caps prevent runaway commands from impacting the API.
-    mem_limit: 1536m
-    cpus: 0.5
-    pids_limit: 128
+    # Generous limits for fast builds and tests on personal VPS.
+    pids_limit: 1024
 
   # ──────────────────────────────────────────────────────────────────────
   # postgres — built-in robust database for sandbox and app data
