@@ -1483,6 +1483,48 @@ function workspaceChatIdFromReq(req) {
     || ''
 }
 
+// Reverse proxy for sandbox ports (webhooks, dev servers, etc.)
+app.all(/^\/api\/sandbox\/proxy\/(\d+)\/(.*)/, async (req, res) => {
+  const port = req.params[0];
+  const path = req.params[1] || '';
+  const query = req.url.split('?')[1] || '';
+  const targetUrl = `http://agent-sandbox:${port}/${path}${query ? '?' + query : ''}`;
+
+  try {
+    const headers = { ...req.headers };
+    delete headers.host;
+    delete headers.connection;
+
+    const options = {
+      method: req.method,
+      headers,
+    };
+
+    if (!['GET', 'HEAD'].includes(req.method)) {
+      options.body = req.rawBody || JSON.stringify(req.body);
+    }
+
+    const response = await fetch(targetUrl, options);
+    res.status(response.status);
+
+    response.headers.forEach((val, key) => {
+      res.setHeader(key, val);
+    });
+
+    if (response.body) {
+      const reader = response.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(value);
+      }
+    }
+    res.end();
+  } catch (err) {
+    res.status(502).json({ error: `Failed to proxy to sandbox port ${port}: ${err.message}` });
+  }
+});
+
 app.use('/api/workspace', (req, _res, next) => {
   withWorkspaceScope(workspaceChatIdFromReq(req), () => next())
 })

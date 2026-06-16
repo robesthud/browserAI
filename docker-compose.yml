@@ -72,7 +72,7 @@ services:
     container_name: agent-sandbox
     restart: unless-stopped
     # Stay alive idling so `docker exec` works at any time.
-    command: bash -c "apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl git grep bash jq python3 python3-pip build-essential nodejs npm >/dev/null 2>&1 && useradd -m -u 1000 agent || true && tail -f /dev/null"
+    command: bash -c "apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl git grep bash jq python3 python3-pip build-essential nodejs npm postgresql-client mysql-client >/dev/null 2>&1 && useradd -m -u 1000 agent || true && tail -f /dev/null"
     user: "0:0"  # boot as root only long enough to install packages; commands run as 1000 via -u
     read_only: false
     tmpfs:
@@ -81,10 +81,29 @@ services:
     working_dir: /workspace
     volumes:
       - ${WORKSPACE_DIR:-./workspace}:/workspace
+      - ${DATA_DIR:-./data}/global-npm:/usr/local/lib/node_modules
+      - ${DATA_DIR:-./data}/global-bin:/usr/local/bin
+      - ${DATA_DIR:-./data}/ssh:/root/.ssh
     # Hard resource caps prevent runaway commands from impacting the API.
     mem_limit: 1536m
     cpus: 0.5
     pids_limit: 128
+
+  # ──────────────────────────────────────────────────────────────────────
+  # postgres — built-in robust database for sandbox and app data
+  # ──────────────────────────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: browserai-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=browserai
+      - POSTGRES_PASSWORD=browserai_secret
+      - POSTGRES_DB=browserai
+    volumes:
+      - ${DATA_DIR:-./data}/postgres:/var/lib/postgresql/data
+    mem_limit: 256m
+    cpus: 0.25
 
   # ──────────────────────────────────────────────────────────────────────
   # computer-sandbox — virtual X11 desktop for Computer Use tools.

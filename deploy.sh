@@ -18,7 +18,7 @@ docker rm -f browserai agent-sandbox 2>/dev/null || true
 docker ps -a --format '{{.Names}}' | grep -E '^[0-9a-f]+_browserai$' | xargs -r docker rm -f 2>/dev/null || true
 
 echo "Restarting services..."
-docker compose up -d --remove-orphans browserai agent-sandbox
+docker compose up -d --remove-orphans browserai agent-sandbox db
 
 echo "Waiting for health..."
 for i in $(seq 1 30); do

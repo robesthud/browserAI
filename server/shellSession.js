@@ -30,8 +30,7 @@
  *   need to involve a third-party PTY library.
  */
 import { spawn } from 'node:child_process'
-
-const SANDBOX_CONTAINER = process.env.AGENT_SANDBOX_CONTAINER || 'agent-sandbox'
+import { getSandboxContainer, getSandboxEnv } from './agentSandbox.js'
 
 // One session per chatId. Closed automatically after IDLE_TIMEOUT_MS
 // of inactivity (keep memory bounded across many old chats).
@@ -48,14 +47,21 @@ function makeSentinel() {
   return '__BA' + Math.random().toString(36).slice(2, 10).toUpperCase() + 'END__'
 }
 
-function openSession(chatId, cwd = '/workspace') {
+async function openSession(chatId, cwd = '/workspace') {
+  const sandboxContainer = await getSandboxContainer()
+  const envs = getSandboxEnv()
   const args = [
     'exec', '-i',
     '--user', process.env.AGENT_SANDBOX_USER || '0:0',
-    '-w', cwd,
-    SANDBOX_CONTAINER,
-    'bash', '--noprofile', '--norc',
   ]
+  for (const [k, v] of Object.entries(envs)) {
+    args.push('-e', `${k}=${v}`)
+  }
+  args.push(
+    '-w', cwd,
+    sandboxContainer,
+    'bash', '--noprofile', '--norc',
+  )
   const proc = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'] })
   const session = {
     chatId,
@@ -95,14 +101,14 @@ function scheduleIdleClose(session) {
  *
  * Returns { stdout, stderr, exitCode, durationMs, sessionId }.
  */
-export function runInSession({ chatId, command, timeoutMs = 60_000, signal, onStdout, onStderr } = {}) {
+export async function runInSession({ chatId, command, timeoutMs = 60_000, signal, onStdout, onStderr } = {}) {
   if (!chatId)                          return Promise.reject(new Error('chatId required'))
   if (typeof command !== 'string' || !command) return Promise.reject(new Error('command must be a non-empty string'))
 
   let session = SESSIONS.get(chatId)
   if (!session || !session.alive) {
     const cwd = arguments[0]?.cwd || '/workspace'
-    session = openSession(chatId, cwd)
+    session = await openSession(chatId, cwd)
   }
 
   return new Promise((resolve, reject) => {
@@ -259,16 +265,23 @@ function clipRing(text, max) {
  * command runs in its own `docker exec`, output captured to a ring
  * buffer for later inspection via readBackgroundLogs / listBackgroundTasks.
  */
-export function startBackgroundTask({ chatId = '', command, name = '', cwd = '/workspace' } = {}) {
+export async function startBackgroundTask({ chatId = '', command, name = '', cwd = '/workspace' } = {}) {
   if (typeof command !== 'string' || !command) throw new Error('command required')
   const taskId = genTaskId()
+  const sandboxContainer = await getSandboxContainer()
+  const envs = getSandboxEnv()
   const args = [
     'exec',
     '--user', process.env.AGENT_SANDBOX_USER || '0:0',
-    '-w', cwd,
-    SANDBOX_CONTAINER,
-    'sh', '-c', command,
   ]
+  for (const [k, v] of Object.entries(envs)) {
+    args.push('-e', `${k}=${v}`)
+  }
+  args.push(
+    '-w', cwd,
+    sandboxContainer,
+    'sh', '-c', command,
+  )
   const proc = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] })
   const task = {
     id: taskId,

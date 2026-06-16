@@ -28,9 +28,54 @@
 import { spawn } from 'node:child_process'
 import { redactSecrets } from './sandboxPolicy.js'
 
-const SANDBOX_CONTAINER = process.env.AGENT_SANDBOX_CONTAINER || 'agent-sandbox'
+let resolvedSandboxContainer = null
 const MAX_STDOUT = 16 * 1024
 const MAX_STDERR = 4 * 1024
+
+export async function getSandboxContainer() {
+  if (resolvedSandboxContainer) return resolvedSandboxContainer
+  return new Promise((resolve) => {
+    const defaultName = process.env.AGENT_SANDBOX_CONTAINER || 'agent-sandbox'
+    const proc = spawn('docker', ['ps', '--format', '{{.Names}}'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    proc.stdout.on('data', (d) => { stdout += d.toString() })
+    proc.on('close', () => {
+      const names = stdout.split('\n').map(n => n.trim()).filter(Boolean)
+      const found = names.find(n => n.endsWith('agent-sandbox') || n === 'agent-sandbox')
+      resolvedSandboxContainer = found || defaultName
+      resolve(resolvedSandboxContainer)
+    })
+    proc.on('error', () => {
+      resolvedSandboxContainer = defaultName
+      resolve(resolvedSandboxContainer)
+    })
+  })
+}
+
+export function getSandboxEnv() {
+  const env = {}
+  const whitelistPatterns = [
+    /API_KEY/i,
+    /TOKEN/i,
+    /SECRET/i,
+    /PASSWORD/i,
+    /URL/i,
+    /^TG_/i,
+    /^GITHUB_/i,
+    /^GEMINI_/i,
+    /^ANTHROPIC_/i,
+    /^OPENAI_/i,
+    /^LUMA_/i,
+    /^ELEVENLABS_/i
+  ]
+
+  for (const [key, val] of Object.entries(process.env)) {
+    if (whitelistPatterns.some(pat => pat.test(key))) {
+      env[key] = val
+    }
+  }
+  return env
+}
 
 function clip(buf, max) {
   if (buf.length <= max) return { text: redactSecrets(buf.toString('utf8')), truncated: false }
@@ -50,18 +95,25 @@ function clip(buf, max) {
  * @returns {Promise<{stdout, stderr, exitCode, truncated}>}
  */
 export function runSandboxCommand({ command, timeoutMs = 120_000, cwd = '/workspace', signal, onStdout, onStderr } = {}) {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     if (!command || typeof command !== 'string') {
       return reject(new Error('command must be a non-empty string'))
     }
 
+    const sandboxContainer = await getSandboxContainer()
+    const envs = getSandboxEnv()
     const args = [
       'exec',
       '--user', process.env.AGENT_SANDBOX_USER || '0:0',
-      '-w', cwd,
-      SANDBOX_CONTAINER,
-      'sh', '-c', command,
     ]
+    for (const [k, v] of Object.entries(envs)) {
+      args.push('-e', `${k}=${v}`)
+    }
+    args.push(
+      '-w', cwd,
+      sandboxContainer,
+      'sh', '-c', command,
+    )
 
     const proc = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] })
     const outChunks = []
