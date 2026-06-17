@@ -41,6 +41,9 @@ function init() {
     );
     CREATE INDEX IF NOT EXISTS idx_sm_user ON semantic_memory(user_id);
     CREATE INDEX IF NOT EXISTS idx_sm_created ON semantic_memory(created_at);
+    
+    -- FTS5 Virtual Table for incredibly fast exact-phrase and keyword search on our VPS
+    CREATE VIRTUAL TABLE IF NOT EXISTS semantic_memory_fts USING fts5(mem_id UNINDEXED, text);
   `)
   initialized = true
 }
@@ -137,12 +140,23 @@ export async function rememberMemory(userId, text, { chatId = '', provider } = {
     INSERT INTO semantic_memory (id, user_id, chat_id, text, vector_json, dim, score_hits, created_at, last_used_at)
     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
   `).run(id, userId, chatId || '', clean, JSON.stringify(vector), vector.length, ts, ts)
+  
+  // Sync insert into FTS5
+  try {
+    db.prepare(`INSERT INTO semantic_memory_fts (mem_id, text) VALUES (?, ?)`).run(id, clean)
+  } catch { /* best-effort */ }
+
   // Trim oldest if we overflow.
   const overflow = db.prepare('SELECT COUNT(*) c FROM semantic_memory WHERE user_id=?').get(userId).c
   if (overflow > MAX_PER_USER) {
-    db.prepare(`DELETE FROM semantic_memory WHERE id IN (
-      SELECT id FROM semantic_memory WHERE user_id=? ORDER BY last_used_at ASC LIMIT ?
-    )`).run(userId, overflow - MAX_PER_USER)
+    const toDeleteRows = db.prepare(`SELECT id FROM semantic_memory WHERE user_id=? ORDER BY last_used_at ASC LIMIT ?`).all(userId, overflow - MAX_PER_USER)
+    const deleteIds = toDeleteRows.map((r) => r.id)
+    if (deleteIds.length > 0) {
+      db.prepare(`DELETE FROM semantic_memory WHERE id IN (${deleteIds.map(() => '?').join(',')})`).run(...deleteIds)
+      try {
+        db.prepare(`DELETE FROM semantic_memory_fts WHERE mem_id IN (${deleteIds.map(() => '?').join(',')})`).run(...deleteIds)
+      } catch { /* best-effort */ }
+    }
   }
   return { id }
 }
@@ -151,6 +165,16 @@ export async function recallMemory(userId, query, { topK = RECALL_TOP_K, provide
   init()
   if (!userId || !query) return []
   const qv = await embed(query, { provider })
+
+  // Fast exact-keyword/FTS5 sparse pre-search to boost matches
+  let ftsIds = []
+  try {
+    const ftsRows = db.prepare(`
+      SELECT mem_id FROM semantic_memory_fts WHERE text MATCH ? LIMIT 30
+    `).all(query.trim().replace(/[*"']/g, '') + '*') // wildcard safe
+    ftsIds = ftsRows.map((r) => r.mem_id)
+  } catch { /* FTS5 empty or wildcard syntax error */ }
+
   // Pull ALL rows whose dim matches the query vector — switching providers
   // mid-session might leave heterogeneous dims; we just ignore the rest.
   const rows = db.prepare('SELECT id, text, vector_json, dim FROM semantic_memory WHERE user_id=?').all(userId)
@@ -159,7 +183,10 @@ export async function recallMemory(userId, query, { topK = RECALL_TOP_K, provide
     if (r.dim !== qv.length) continue
     let v
     try { v = JSON.parse(r.vector_json) } catch { continue }
-    const s = cosine(qv, v)
+    let s = cosine(qv, v)
+    if (ftsIds.includes(r.id)) {
+      s += 0.35 // Hybrid search boost! Greatly improves exact match quality!
+    }
     if (s > 0.15) scored.push({ id: r.id, text: r.text, score: s })
   }
   scored.sort((a, b) => b.score - a.score)
@@ -198,5 +225,8 @@ export function listMemories(userId, { limit = 50 } = {}) {
 export function forgetMemory(userId, id) {
   init()
   const r = db.prepare('DELETE FROM semantic_memory WHERE user_id=? AND id=?').run(userId, id)
+  try {
+    db.prepare('DELETE FROM semantic_memory_fts WHERE mem_id=?').run(id)
+  } catch { /* best-effort */ }
   return { deleted: r.changes }
 }
