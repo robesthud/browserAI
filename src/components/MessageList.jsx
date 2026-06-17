@@ -310,9 +310,8 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
               />
             ) : null}
             {m.thinking && !isDev && m.pending ? (
-              <div className="mb-1.5 inline-flex items-center gap-1.5 rounded-full border border-white/5 bg-graphite-800/20 px-2 py-0.5 text-[11px] text-cream-faint">
-                <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-amber-300" />
-                <span>Агент размышляет…</span>
+              <div className="mb-1.5 inline-flex items-center gap-1.5 rounded-full border border-white/5 bg-graphite-800/20 px-2.5 py-0.5 text-[11px]">
+                <span className="shimmer-text">Агент размышляет…</span>
               </div>
             ) : null}
             
@@ -475,9 +474,10 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
             })() : null}
 
             {m.pending && !m.content && !showsThinkingPill && !(m.job && ['succeeded', 'failed', 'cancelled'].includes(m.job.status)) && (
-              <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-graphite-800/60 px-2.5 py-1 text-[12px] text-cream-faint">
-                <span className={`inline-block h-2 w-2 animate-pulse rounded-full ${m.agentState?.status === 'thinking' || (!m.agentState && !hasAgentActivity) ? 'bg-amber-300' : 'bg-emerald-300'}`} />
-                <span>{m.agentState?.status === 'thinking' || (!m.agentState && !hasAgentActivity) ? 'Агент размышляет…' : 'Агент выполняет действия…'}</span>
+              <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-graphite-800/60 px-2.5 py-1 text-[12px]">
+                <span className="shimmer-text">
+                  {m.agentState?.status === 'thinking' || (!m.agentState && !hasAgentActivity) ? 'Агент размышляет…' : 'Агент выполняет действия…'}
+                </span>
               </div>
             )}
 

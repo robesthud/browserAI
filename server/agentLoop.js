@@ -525,11 +525,15 @@ function sse(res, event, data) {
     res.__browseraiLastEventAt = now
     if (!data?.watchdog) res.__browseraiLastRealEventAt = now
     res.write(`event: ${event}\ndata: ${JSON.stringify(normaliseSsePayload(res, event, data))}\n\n`)
+    res.flush?.()
   } catch { /* best-effort: ignore */ }
 }
 
 function sseKeepAlive(res) {
-  try { res.write(': keep-alive\n\n') } catch { /* best-effort: ignore */ }
+  try {
+    res.write(': keep-alive\n\n')
+    res.flush?.()
+  } catch { /* best-effort: ignore */ }
 }
 
 // ── Reflection ──────────────────────────────────────────────────────────────
