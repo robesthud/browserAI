@@ -193,6 +193,9 @@ export function getAvailableModels(key) {
   if (k.onlyFree) {
     const list = k.availableModels || []
     const providerId = k.id || ''
+    if (providerId.includes('groq') || k.baseUrl?.includes('groq.com')) {
+      return list // All Groq models are free
+    }
     if (providerId.includes('gemini') || k.baseUrl?.includes('googleapis')) {
       return list.filter(m => /flash|8b/i.test(m))
     } else if (providerId.includes('openrouter') || k.baseUrl?.includes('openrouter')) {

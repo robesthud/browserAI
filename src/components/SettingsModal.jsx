@@ -226,11 +226,13 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
     setForm((f) => {
       const list = f.availableModels || []
       const filtered = val
-        ? (f.id?.includes('openrouter') || f.baseUrl?.includes('openrouter')
-            ? list.filter(m => m.includes(':free'))
-            : (f.id?.includes('gemini') || f.baseUrl?.includes('googleapis')
-                ? list.filter(m => /flash|8b/i.test(m))
-                : list.filter(m => /free|mini|flash|haiku|lite|nano/i.test(m))))
+        ? (f.id?.includes('groq') || f.baseUrl?.includes('groq.com')
+            ? list
+            : (f.id?.includes('openrouter') || f.baseUrl?.includes('openrouter')
+                ? list.filter(m => m.includes(':free'))
+                : (f.id?.includes('gemini') || f.baseUrl?.includes('googleapis')
+                    ? list.filter(m => /flash|8b/i.test(m))
+                    : list.filter(m => /free|mini|flash|haiku|lite|nano/i.test(m)))))
         : list
       const updatedModel = filtered.includes(f.model) ? f.model : (filtered[0] || '')
       return {
@@ -245,6 +247,9 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
     let list = form.availableModels || []
     if (onlyFree) {
       const providerId = form.id || ''
+      if (providerId.includes('groq') || form.baseUrl?.includes('groq.com')) {
+        return list
+      }
       if (providerId.includes('gemini') || form.baseUrl?.includes('googleapis')) {
         list = list.filter(m => /flash|8b/i.test(m))
       } else if (providerId.includes('openrouter') || form.baseUrl?.includes('openrouter')) {
@@ -267,7 +272,9 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
     let list = f.availableModels || []
     if (onlyFree) {
       const providerId = f.id || ''
-      if (providerId.includes('gemini') || f.baseUrl?.includes('googleapis')) {
+      if (providerId.includes('groq') || f.baseUrl?.includes('groq.com')) {
+        list = f.availableModels || []
+      } else if (providerId.includes('gemini') || f.baseUrl?.includes('googleapis')) {
         list = list.filter(m => /flash|8b/i.test(m))
       } else if (providerId.includes('openrouter') || f.baseUrl?.includes('openrouter')) {
         list = list.filter(m => m.includes(':free'))
