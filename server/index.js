@@ -1120,8 +1120,10 @@ app.post('/api/keys', requireAuth, requireUnlocked, (req, res) => {
       )
     : {}
 
+  const onlyFree = Boolean(k.onlyFree)
+
   upsertKey(
-    { id: k.id.slice(0, 100), name, baseUrl, apiKey, model, availableModels, authType, authHeader, responsePath, extraHeaders },
+    { id: k.id.slice(0, 100), name, baseUrl, apiKey, model, availableModels, authType, authHeader, responsePath, extraHeaders, onlyFree },
     encKey()
   )
   res.json({ keys: listKeys(encKey()), activeKeyId: getActiveKeyId(), vault: vaultState() })
