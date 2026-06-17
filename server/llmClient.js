@@ -840,7 +840,6 @@ async function callOpenAICompatibleStream({
     timeoutMs: 1_800_000,
     signal,
   })
-  })
   if (!r.ok) {
     const raw = await r.text().catch(() => '')
     throw new Error(`Provider HTTP ${r.status} from ${url}: ${raw.slice(0, 400)}`)
