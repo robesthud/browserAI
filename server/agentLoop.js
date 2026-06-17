@@ -24,7 +24,7 @@ import {
 } from './llmClient.js'
 import { registerQuestion } from './askUserRegistry.js'
 import { searchWeb, fetchWebPage } from './web.js'
-import { routeHistory } from './smartRouter.js'
+import { routeHistory, classifyIntentAI } from './smartRouter.js'
 import { routeDeterministicAction } from './deterministicActionRouter.js'
 import { toolProfileForTask, profileToolNames, isToolAllowed } from './toolAllowlist.js'
 import { getRecoveryAction, getRecoveryHint as recoveryHint } from './recoveryEngine.js'
@@ -843,7 +843,21 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   // low-complexity (greeting / single question) gets the lite prompt
   // (~2.5k tokens) instead of the full 16k-token engineering prompt.
   const agentContext = buildAgentContext({ provider, history, extraSystem, userId, workspaceScope, maxSteps })
-  const serverRoute = routeHistory(history, { forceAgent: Boolean(provider.forceAgent) })
+  let serverRoute = routeHistory(history, { forceAgent: Boolean(provider.forceAgent) })
+
+  // ── AI Supervisor Intent Classification ──
+  // If we are not forcing the agent manually, we let the AI Supervisor determine the optimal mode
+  if (provider.baseUrl !== 'mock' && !provider.forceAgent) {
+    const aiDecision = await classifyIntentAI({ provider, history })
+    if (aiDecision) {
+      serverRoute = {
+        mode: aiDecision.toLowerCase(),
+        reason: 'AI-supervisor classification',
+        icon: aiDecision === 'CHAT' ? '💬' : (aiDecision === 'WEB' ? '🌐' : '🤖')
+      }
+    }
+  }
+
   if (provider.baseUrl !== 'mock' && !provider.forceAgent && (serverRoute.mode === 'chat' || serverRoute.mode === 'web')) {
     sse(res, 'agent_context', { ...agentContext, serverRoute })
     try {

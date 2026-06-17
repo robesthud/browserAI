@@ -1,3 +1,5 @@
+import { callLLM } from './llmClient.js'
+
 function textFromContent(content) {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
@@ -44,4 +46,55 @@ export function routeUserMessage(text = '', attachments = [], { forceAgent = fal
 
 export function routeHistory(history = [], opts = {}) {
   return routeUserMessage(lastUserText(history), [], opts)
+}
+
+export async function classifyIntentAI({ provider, history }) {
+  const userText = lastUserText(history)
+  if (!userText.trim()) return 'CHAT'
+
+  const t = userText.toLowerCase().trim()
+  if (t.length <= 15 && /^(привет|hi|hello|как дела|кто ты|ку|здравствуй|йо|йоу|прив|дратути|тест|test)$/.test(t)) {
+    return 'CHAT'
+  }
+
+  let model = provider.model
+  const lowerBase = String(provider.baseUrl || '').toLowerCase()
+  if (lowerBase.includes('deepseek.com') && model === 'deepseek-reasoner') {
+    model = 'deepseek-chat'
+  } else if (lowerBase.includes('googleapis') || lowerBase.includes('gemini')) {
+    model = 'gemini-2.5-flash'
+  } else if (lowerBase.includes('openrouter')) {
+    model = 'google/gemini-2.5-flash:free'
+  }
+
+  const systemPrompt = `You are a professional router. Classify the user intent. Reply with exactly one word in uppercase:
+CHAT - simple greeting, casual conversation, general questions not needing tools/files.
+WEB - requests for current facts, weather, news, or internet search.
+AGENT - requests to create/edit/delete files, write/fix code, run bash commands, docker, git, deploy, or work in workspace.
+
+User message: "${userText}"
+Output:`
+
+  try {
+    const reply = await Promise.race([
+      callLLM({
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey,
+        authType: provider.authType || 'bearer',
+        authHeader: provider.authHeader || '',
+        extraHeaders: provider.extraHeaders || {},
+        model,
+        messages: [{ role: 'system', content: systemPrompt }],
+        temperature: 0,
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000))
+    ])
+    const decision = String(reply?.text || '').trim().toUpperCase()
+    if (['CHAT', 'WEB', 'AGENT'].includes(decision)) {
+      return decision
+    }
+  } catch (e) {
+    console.warn('[intent classification failed, falling back to heuristics]:', e.message)
+  }
+  return null
 }
