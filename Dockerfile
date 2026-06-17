@@ -3,6 +3,9 @@
 FROM node:22-alpine AS builder
 WORKDIR /app
 
+# Install build dependencies so native addons (better-sqlite3) compile successfully if prebuilds fail
+RUN apk add --no-cache python3 make g++
+
 # Install all deps (incl. devDependencies for vite build)
 COPY package.json package-lock.json* ./
 RUN npm ci --include=dev
