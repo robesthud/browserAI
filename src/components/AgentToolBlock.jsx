@@ -2,61 +2,61 @@ import { useState } from 'react'
 import { highlight, detectLangFromPath } from '../lib/syntaxHighlight.js'
 
 const VERBS = {
-  list_files:      { action: 'Смотрю файлы', icon: '📂' },
-  find_projects:   { action: 'Ищу проекты', icon: '🗂' },
-  read_file:       { action: 'Читаю файл', icon: '📄' },
-  write_file:      { action: 'Записываю файл', icon: '✏️' },
-  edit_file:       { action: 'Изменяю файл', icon: '🔧' },
-  delete_file:     { action: 'Удаляю', icon: '🗑️' },
-  file_history:    { action: 'Смотрю историю файла', icon: '🕓' },
-  restore_file:    { action: 'Восстанавливаю файл', icon: '↩️' },
-  search_files:    { action: 'Ищу по файлам', icon: '🔎' },
-  download_url:    { action: 'Скачиваю', icon: '📥' },
-  git_status:      { action: 'Проверяю git status', icon: '⎇' },
-  git_diff:        { action: 'Смотрю git diff', icon: '⎇' },
-  git_commit:      { action: 'Создаю git commit', icon: '⎇' },
-  git_push:        { action: 'Пушу изменения', icon: '⎇' },
-  git_pull:        { action: 'Обновляю репозиторий', icon: '⎇' },
-  git_clone:       { action: 'Клонирую репозиторий', icon: '⎇' },
-  zip_files:       { action: 'Создаю ZIP-архив', icon: '🗜️' },
-  github_pr_create:{ action: 'Создаю GitHub PR', icon: '🔀' },
-  web_search:      { action: 'Ищу в интернете', icon: '🌐' },
-  web_fetch:       { action: 'Открываю страницу', icon: '📥' },
-  fetch_page:      { action: 'Открываю страницу', icon: '📥' },
-  generate_image:  { action: 'Генерирую изображение', icon: '🎨' },
-  bash:            { action: 'Запускаю команду', icon: '>_' },
-  shell_session_run: { action: 'Команда в shell-сессии', icon: '>_' },
-  shell_session_reset: { action: 'Сбрасываю shell-сессию', icon: '↺' },
-  shell_background_start: { action: 'Запускаю фоновую команду', icon: '↻' },
-  shell_background_read: { action: 'Читаю фоновую команду', icon: '📜' },
-  shell_background_stop: { action: 'Останавливаю фоновую команду', icon: '◼' },
-  shell_background_list: { action: 'Смотрю фоновые команды', icon: '☰' },
-  bash_bg:         { action: 'Запускаю фоновую задачу', icon: '↻' },
-  bash_logs:       { action: 'Читаю логи задачи', icon: '📜' },
-  bash_stop:       { action: 'Останавливаю задачу', icon: '◼' },
-  bash_list:       { action: 'Смотрю фоновые задачи', icon: '☰' },
-  bash_reset:      { action: 'Сбрасываю shell-сессию', icon: '↺' },
-  verify_code:     { action: 'Проверяю код', icon: '✅' },
-  run_tests:       { action: 'Запускаю тесты', icon: '🧪' },
-  browser_open:    { action: 'Открываю страницу', icon: '🌐' },
-  browser_screenshot:{ action: 'Делаю скриншот', icon: '📸' },
-  browser_click:   { action: 'Кликаю в браузере', icon: '🖱' },
-  browser_type:    { action: 'Ввожу текст', icon: '⌨' },
-  browser_close:   { action: 'Закрываю страницу', icon: '✖' },
-  analyze_image:   { action: 'Анализирую изображение', icon: '👁' },
-  ops_list_services:{ action:'Смотрю сервисы', icon: '🛠' },
-  ops_run_action:  { action: 'Выполняю ops-действие', icon: '🛠' },
-  plan_set:        { action: 'Составляю план', icon: '📋' },
-  plan_check:      { action: 'Отмечаю шаг плана', icon: '☑️' },
-  use_subagents:   { action: 'Запускаю sub-agents', icon: '🛰' },
-  remember_fact:   { action: 'Запоминаю факт', icon: '🧠' },
-  forget_fact:     { action: 'Удаляю факт', icon: '🧠' },
-  recall_facts:    { action: 'Вспоминаю факты', icon: '🧠' },
-  kb_add:          { action: 'Добавляю в базу знаний', icon: '📚' },
-  kb_search:       { action: 'Ищу в базе знаний', icon: '📚' },
-  kb_list:         { action: 'Смотрю базу знаний', icon: '📚' },
-  kb_delete:       { action: 'Удаляю из базы знаний', icon: '📚' },
-  replace_across_files: { action: 'Массово заменяю в файлах', icon: '🔄' },
+  list_files:      { action: 'list', icon: '📂' },
+  find_projects:   { action: 'find_projects', icon: '🗂' },
+  read_file:       { action: 'read', icon: '📄' },
+  write_file:      { action: 'write', icon: '✏️' },
+  edit_file:       { action: 'edit', icon: '🔧' },
+  delete_file:     { action: 'delete', icon: '🗑️' },
+  file_history:    { action: 'history', icon: '🕓' },
+  restore_file:    { action: 'restore', icon: '↩️' },
+  search_files:    { action: 'search', icon: '🔎' },
+  download_url:    { action: 'download', icon: '📥' },
+  git_status:      { action: 'git status', icon: '⎇' },
+  git_diff:        { action: 'git diff', icon: '⎇' },
+  git_commit:      { action: 'git commit', icon: '⎇' },
+  git_push:        { action: 'git push', icon: '⎇' },
+  git_pull:        { action: 'git pull', icon: '⎇' },
+  git_clone:       { action: 'git clone', icon: '⎇' },
+  zip_files:       { action: 'zip', icon: '🗜️' },
+  github_pr_create:{ action: 'pr_create', icon: '🔀' },
+  web_search:      { action: 'web_search', icon: '🌐' },
+  web_fetch:       { action: 'web_fetch', icon: '📥' },
+  fetch_page:      { action: 'web_fetch', icon: '📥' },
+  generate_image:  { action: 'image', icon: '🎨' },
+  bash:            { action: 'bash', icon: '>_' },
+  shell_session_run: { action: 'bash', icon: '>_' },
+  shell_session_reset: { action: 'reset', icon: '↺' },
+  shell_background_start: { action: 'bash_bg', icon: '↻' },
+  shell_background_read: { action: 'bash_read', icon: '📜' },
+  shell_background_stop: { action: 'bash_stop', icon: '◼' },
+  shell_background_list: { action: 'bash_list', icon: '☰' },
+  bash_bg:         { action: 'bash_bg', icon: '↻' },
+  bash_logs:       { action: 'bash_logs', icon: '📜' },
+  bash_stop:       { action: 'bash_stop', icon: '◼' },
+  bash_list:       { action: 'bash_list', icon: '☰' },
+  bash_reset:      { action: 'bash_reset', icon: '↺' },
+  verify_code:     { action: 'verify', icon: '✅' },
+  run_tests:       { action: 'tests', icon: '🧪' },
+  browser_open:    { action: 'browser', icon: '🌐' },
+  browser_screenshot:{ action: 'screenshot', icon: '📸' },
+  browser_click:   { action: 'click', icon: '🖱' },
+  browser_type:    { action: 'type', icon: '⌨' },
+  browser_close:   { action: 'close', icon: '✖' },
+  analyze_image:   { action: 'analyze', icon: '👁' },
+  ops_list_services:{ action:'ops_services', icon: '🛠' },
+  ops_run_action:  { action: 'ops', icon: '🛠' },
+  plan_set:        { action: 'plan_set', icon: '📋' },
+  plan_check:      { action: 'plan_check', icon: '☑️' },
+  use_subagents:   { action: 'subagents', icon: '🛰' },
+  remember_fact:   { action: 'remember', icon: '🧠' },
+  forget_fact:     { action: 'forget', icon: '🧠' },
+  recall_facts:    { action: 'recall', icon: '🧠' },
+  kb_add:          { action: 'kb_add', icon: '📚' },
+  kb_search:       { action: 'kb_search', icon: '📚' },
+  kb_list:         { action: 'kb_list', icon: '📚' },
+  kb_delete:       { action: 'kb_delete', icon: '📚' },
+  replace_across_files: { action: 'replace', icon: '🔄' },
 }
 
 function devtoolsEnabled() {
@@ -269,24 +269,24 @@ export default function AgentToolBlock({
   }
 
   return (
-    <div className="my-1.5 overflow-hidden rounded-lg border border-white/10 bg-graphite-800/60 text-[12px] md:text-[13px]">
+    <div className="my-0.5 overflow-hidden rounded-md border border-white/5 bg-graphite-800/25 text-[11px] md:text-[12px] shadow-sm">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-white/5 md:gap-2 md:px-3 md:py-2"
+        className="flex w-full items-center gap-1.5 px-2 py-1 text-left hover:bg-white/5"
       >
-        <span className="font-mono text-[11px] text-cream-faint shrink-0">{spec.icon}</span>
-        <span className="min-w-0 shrink truncate font-medium text-cream" title={spec.action}>{spec.action}</span>
+        <span className="font-mono text-[10px] text-cream-faint shrink-0">{spec.icon}</span>
+        <span className="min-w-0 shrink truncate font-semibold font-mono text-cream-soft" title={spec.action}>{spec.action}</span>
         {argSummary && (
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-cream-faint md:text-[12px]" title={argSummary}>
+          <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-cream-faint/80" title={argSummary}>
             {argSummary}
           </span>
         )}
         {!argSummary && <span className="flex-1" />}
-        {deltaPill && <span className="shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 font-mono text-[10px] text-violet-200">{deltaPill}</span>}
-        <span className={`shrink-0 text-[13px] leading-none ${markCls}`}>{mark}</span>
-        {duration && <span className="shrink-0 font-mono text-[10px] text-cream-faint md:text-[11px]">{duration}</span>}
-        <svg width="10" height="10" viewBox="0 0 12 12" className={`shrink-0 opacity-50 transition-transform ${open ? 'rotate-180' : ''}`}>
+        {deltaPill && <span className="shrink-0 rounded bg-violet-500/10 px-1 py-0.2 font-mono text-[9px] text-violet-200">{deltaPill}</span>}
+        <span className={`shrink-0 text-[11px] leading-none ${markCls}`}>{mark}</span>
+        {duration && <span className="shrink-0 font-mono text-[9px] text-cream-faint">{duration}</span>}
+        <svg width="8" height="8" viewBox="0 0 12 12" className={`shrink-0 opacity-40 transition-transform ${open ? 'rotate-180' : ''}`}>
           <path d="M2 4 L6 8 L10 4" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>

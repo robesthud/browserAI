@@ -154,27 +154,27 @@ function AgentActivityFold({ message, children }) {
   const hint = activeTool?.args?.command || activeTool?.args?.path || lastTool?.args?.command || lastTool?.args?.path || lastThought
   const preview = compactToolPreview(activeTool || lastTool)
   return (
-    <details className="mb-2 rounded-xl border border-white/10 bg-graphite-800/35 text-[13px]" open={false}>
-      <summary className="cursor-pointer list-none px-3 py-2 text-cream-soft hover:bg-white/5">
-        <div className="flex items-center gap-2">
-          <span className={`inline-block h-2 w-2 rounded-full align-middle ${activeTool ? 'animate-pulse bg-amber-300' : failed ? 'bg-red-300' : 'bg-emerald-300'}`} />
-          <span className="font-medium">Ход работы агента</span>
-          <span className="text-cream-faint">{statusText}</span>
-          {hint ? <span className="hidden min-w-0 max-w-[360px] truncate align-bottom text-cream-faint/70 md:inline-block">{String(hint).replace(/\s+/g, ' ').slice(0, 160)}</span> : null}
-          <span className="ml-auto shrink-0 text-cream-faint">раскрыть</span>
+    <details className="mb-1 rounded-md border border-white/5 bg-graphite-800/20 text-[12px]" open={false}>
+      <summary className="cursor-pointer list-none px-2.5 py-1 text-cream-soft hover:bg-white/5">
+        <div className="flex items-center gap-1.5">
+          <span className={`inline-block h-1.5 w-1.5 rounded-full align-middle ${activeTool ? 'animate-pulse bg-amber-300' : failed ? 'bg-red-300' : 'bg-emerald-300'}`} />
+          <span className="font-semibold text-cream">Ход работы агента</span>
+          <span className="text-cream-faint/80">{statusText}</span>
+          {hint ? <span className="hidden min-w-0 max-w-[280px] truncate align-bottom text-cream-faint/60 font-mono text-[11px] md:inline-block">{String(hint).replace(/\s+/g, ' ').slice(0, 120)}</span> : null}
+          <span className="ml-auto shrink-0 text-cream-faint/60 text-[11px]">раскрыть</span>
         </div>
         {preview && (preview.command || preview.output) ? (
-          <div className="mt-1.5 rounded-lg border border-white/5 bg-black/15 px-2 py-1 font-mono text-[11px] leading-relaxed text-cream-faint">
+          <div className="mt-1 rounded border border-white/5 bg-black/10 px-2 py-0.5 font-mono text-[10px] leading-relaxed text-cream-faint">
             <div className="flex min-w-0 items-center gap-1.5">
               <span className={preview.running ? 'text-amber-300' : preview.ok ? 'text-emerald-300' : 'text-red-300'}>{preview.running ? '●' : preview.ok ? '✓' : '✗'}</span>
-              <span className="shrink-0 text-cream-soft">{preview.label}</span>
+              <span className="shrink-0 text-cream-soft font-semibold">{preview.label}</span>
               {preview.command ? <span className="min-w-0 truncate">{preview.command}</span> : null}
             </div>
-            {preview.output ? <div className="mt-0.5 truncate text-cream-faint/80">{preview.output}{preview.running ? ' ▌' : ''}</div> : null}
+            {preview.output ? <div className="mt-0.5 truncate text-cream-faint/70">{preview.output}{preview.running ? ' ▌' : ''}</div> : null}
           </div>
         ) : null}
       </summary>
-      <div className="space-y-1 border-t border-white/5 px-2.5 py-2">
+      <div className="space-y-0.5 border-t border-white/5 px-2 py-1">
         {children}
       </div>
     </details>
