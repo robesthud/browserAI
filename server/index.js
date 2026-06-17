@@ -839,19 +839,24 @@ function rankModels(models = [], requestedModel = '') {
 
 
 async function probeChatModel(root, apiKey, model) {
-  const r = await fetch(`${root}/chat/completions`, {
+  const proxyUrl = process.env.CF_PROXY_URL || ''
+  const proxySecret = process.env.CF_PROXY_SECRET || ''
+  const r = await fetchViaProxy({
+    url: `${root}/chat/completions`,
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
+    body: {
       model,
       messages: [{ role: 'user', content: 'ping' }],
       max_tokens: 1,
       stream: false,
-    }),
-    signal: AbortSignal.timeout(15000),
+    },
+    proxyUrl,
+    proxySecret,
+    timeoutMs: 15000,
   })
 
   if (r.ok) return { ok: true }
@@ -879,9 +884,15 @@ async function fetchModels(baseUrl, apiKey, requestedModel = '') {
   }
 
   const root = String(baseUrl).replace(/\/$/, '')
-  const r = await fetch(`${root}/models`, {
+  const proxyUrl = process.env.CF_PROXY_URL || ''
+  const proxySecret = process.env.CF_PROXY_SECRET || ''
+  const r = await fetchViaProxy({
+    url: `${root}/models`,
+    method: 'GET',
     headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(15000),
+    proxyUrl,
+    proxySecret,
+    timeoutMs: 15000,
   })
 
   if (!r.ok) {
