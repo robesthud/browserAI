@@ -559,7 +559,10 @@ async function callAnthropicOfficialStream({
 
 function stripAdditionalProperties(obj) {
   if (!obj || typeof obj !== 'object') return obj
-  const cloned = Array.isArray(obj) ? [] : {}
+  if (Array.isArray(obj)) {
+    return obj.map(stripAdditionalProperties)
+  }
+  const cloned = {}
   for (const [k, v] of Object.entries(obj)) {
     if (k === 'additionalProperties') continue
     cloned[k] = (typeof v === 'object' && v !== null) ? stripAdditionalProperties(v) : v
