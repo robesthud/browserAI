@@ -691,7 +691,7 @@ export default function MessageList({ messages, aiWorking, onEdit, onRegenerate,
         </div>
       )}
 
-      <div className="mx-auto w-full max-w-2xl divide-y divide-white/[0.04]">
+      <div className="mx-auto w-full max-w-2xl space-y-1">
         {messages.map((m, i) => (
           <MemoMessage
             key={m.id}
