@@ -243,11 +243,6 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
         style={{ transform: `translateX(${swipe.offset}px)`, transition: swipe.offset === 0 || swipe.open ? 'transform 0.2s ease' : 'none' }}
         className={`relative z-10 flex gap-2.5 bg-graphite-900 px-4 py-1.5 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}
       >
-      {!isUser && (
-        <div className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-cream text-graphite-900 text-[10px] mt-1">
-          <IconBot />
-        </div>
-      )}
 
       <div className={`min-w-0 max-w-[85%] ${isUser ? 'ml-auto text-right' : 'flex-1'}`}>
         {!isUser && (
@@ -421,9 +416,6 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                       />,
                     )
                   }
-                  if (!isDev && items.length > 0) {
-                    return <AgentActivityFold key={`fold-${m.id}`} message={m}>{items}</AgentActivityFold>
-                  }
                   return items
                 })()}
               </div>
@@ -472,12 +464,12 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
             {m.content ? (() => {
               const parts = !isDev ? splitRuntimeEvidence(m.content) : { main: m.content, evidence: '' }
               return (
-                <div className={hasAgentActivity ? 'mt-3 border-t border-white/10 pt-3' : ''}>
+                <div className={hasAgentActivity ? 'mt-2 pt-1' : ''}>
                   <Markdown text={parts.main || m.content} />
                   {parts.evidence ? (
-                    <details className="mt-3 rounded-xl border border-white/10 bg-graphite-800/35 text-[13px]">
-                      <summary className="cursor-pointer px-3 py-2 text-cream-soft hover:bg-white/5">Технический отчёт и evidence</summary>
-                      <div className="border-t border-white/5 px-3 py-2 text-cream-soft">
+                    <details className="mt-3 rounded-lg border border-white/5 bg-graphite-800/20 text-[12px]">
+                      <summary className="cursor-pointer px-2.5 py-1 text-cream-soft hover:bg-white/5">Технический отчёт и evidence</summary>
+                      <div className="px-2.5 py-1 text-cream-soft">
                         <Markdown text={parts.evidence} />
                       </div>
                     </details>
