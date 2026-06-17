@@ -106,6 +106,18 @@ services:
     cpus: 0.25
 
   # ──────────────────────────────────────────────────────────────────────
+  # ollama — local sovereign AI service
+  # ──────────────────────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: browserai-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ${DATA_DIR:-./data}/ollama:/root/.ollama
+
+  # ──────────────────────────────────────────────────────────────────────
   # computer-sandbox — virtual X11 desktop for Computer Use tools.
   #
   # OPT-IN: lives under the `computer` compose profile so plain

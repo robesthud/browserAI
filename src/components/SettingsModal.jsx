@@ -109,6 +109,17 @@ const PROVIDER_PRESETS = [
     },
     hint: 'Бесплатно. Токен и cookies хранятся на сервере и обновляются автоматически. Управление: /admin/deepseek или Telegram-бот.',
   },
+  {
+    id: 'ollama',
+    group: 'free',
+    label: '🦙 Ollama (локально)',
+    name: 'Ollama (локально)',
+    baseUrl: 'http://browserai-ollama:11434/v1',
+    model: 'qwen2.5-coder:1.5b',
+    apiKey: 'ollama',
+    availableModels: ['qwen2.5-coder:1.5b', 'llama3.2:1b', 'qwen2.5-coder:7b'],
+    hint: 'Локальный суверенный ИИ на твоем VPS. Требуется предварительный запуск контейнера Ollama и загрузка модели.',
+  },
 ]
 
 function Field({ label, hint, children }) {
