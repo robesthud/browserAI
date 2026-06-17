@@ -5,7 +5,6 @@ import Markdown from '../lib/markdown.jsx'
 import AgentToolBlock from './AgentToolBlock.jsx'
 import AgentRuntimePanel from './AgentRuntimePanel.jsx'
 import AgentThought from './AgentThought.jsx'
-import AgentPlanCard from './AgentPlanCard.jsx'
 import AgentExtendedThinking from './AgentExtendedThinking.jsx'
 import AgentAskUser from './AgentAskUser.jsx'
 import JobCard from './JobCard.jsx'
@@ -134,51 +133,6 @@ function compactToolPreview(tool = null) {
     running: tool.status !== 'done',
     ok: tool.ok !== false,
   }
-}
-
-function AgentActivityFold({ message, children }) {
-  const tools = (message.toolCalls || []).filter((tc) => tc.name !== 'plan_set' && tc.name !== 'plan_check')
-  const thoughts = message.thoughts || []
-  const activeTool = [...tools].reverse().find((tc) => tc.status !== 'done')
-  const lastTool = activeTool || tools[tools.length - 1]
-  const lastThought = thoughts[thoughts.length - 1]?.text || ''
-  const failed = tools.filter((tc) => tc.status === 'done' && tc.ok === false).length
-  const done = tools.filter((tc) => tc.status === 'done' && tc.ok !== false).length
-  const statusText = activeTool
-    ? `выполняю ${activeTool.name}`
-    : failed
-      ? `есть ошибки: ${failed}`
-      : tools.length
-        ? `выполнено действий: ${done}/${tools.length}`
-        : 'планирую'
-  const hint = activeTool?.args?.command || activeTool?.args?.path || lastTool?.args?.command || lastTool?.args?.path || lastThought
-  const preview = compactToolPreview(activeTool || lastTool)
-  return (
-    <details className="mb-1 rounded-md border border-white/5 bg-graphite-800/20 text-[12px]" open={false}>
-      <summary className="cursor-pointer list-none px-2.5 py-1 text-cream-soft hover:bg-white/5">
-        <div className="flex items-center gap-1.5">
-          <span className={`inline-block h-1.5 w-1.5 rounded-full align-middle ${activeTool ? 'animate-pulse bg-amber-300' : failed ? 'bg-red-300' : 'bg-emerald-300'}`} />
-          <span className="font-semibold text-cream">Ход работы агента</span>
-          <span className="text-cream-faint/80">{statusText}</span>
-          {hint ? <span className="hidden min-w-0 max-w-[280px] truncate align-bottom text-cream-faint/60 font-mono text-[11px] md:inline-block">{String(hint).replace(/\s+/g, ' ').slice(0, 120)}</span> : null}
-          <span className="ml-auto shrink-0 text-cream-faint/60 text-[11px]">раскрыть</span>
-        </div>
-        {preview && (preview.command || preview.output) ? (
-          <div className="mt-1 rounded border border-white/5 bg-black/10 px-2 py-0.5 font-mono text-[10px] leading-relaxed text-cream-faint">
-            <div className="flex min-w-0 items-center gap-1.5">
-              <span className={preview.running ? 'text-amber-300' : preview.ok ? 'text-emerald-300' : 'text-red-300'}>{preview.running ? '●' : preview.ok ? '✓' : '✗'}</span>
-              <span className="shrink-0 text-cream-soft font-semibold">{preview.label}</span>
-              {preview.command ? <span className="min-w-0 truncate">{preview.command}</span> : null}
-            </div>
-            {preview.output ? <div className="mt-0.5 truncate text-cream-faint/70">{preview.output}{preview.running ? ' ▌' : ''}</div> : null}
-          </div>
-        ) : null}
-      </summary>
-      <div className="space-y-0.5 border-t border-white/5 px-2 py-1">
-        {children}
-      </div>
-    </details>
-  )
 }
 
 function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, onCancelAskUser, onJobDone, onBranch }) {
