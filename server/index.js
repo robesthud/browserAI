@@ -841,6 +841,7 @@ function rankModels(models = [], requestedModel = '') {
 async function probeChatModel(root, apiKey, model) {
   const proxyUrl = process.env.CF_PROXY_URL || ''
   const proxySecret = process.env.CF_PROXY_SECRET || ''
+  const isLocal = root.includes('localhost') || root.includes('127.0.0.1') || root.includes('browserai-ollama') || root.includes('ollama')
   const r = await fetchViaProxy({
     url: `${root}/chat/completions`,
     method: 'POST',
@@ -854,7 +855,7 @@ async function probeChatModel(root, apiKey, model) {
       max_tokens: 1,
       stream: false,
     },
-    proxyUrl,
+    proxyUrl: isLocal ? '' : proxyUrl,
     proxySecret,
     timeoutMs: 15000,
   })
@@ -886,11 +887,12 @@ async function fetchModels(baseUrl, apiKey, requestedModel = '') {
   const root = String(baseUrl).replace(/\/$/, '')
   const proxyUrl = process.env.CF_PROXY_URL || ''
   const proxySecret = process.env.CF_PROXY_SECRET || ''
+  const isLocal = root.includes('localhost') || root.includes('127.0.0.1') || root.includes('browserai-ollama') || root.includes('ollama')
   const r = await fetchViaProxy({
     url: `${root}/models`,
     method: 'GET',
     headers: { Authorization: `Bearer ${apiKey}` },
-    proxyUrl,
+    proxyUrl: isLocal ? '' : proxyUrl,
     proxySecret,
     timeoutMs: 15000,
   })
@@ -2351,7 +2353,8 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   // ALWAYS proxy through Cloudflare Workers if CF_PROXY_URL is configured, to bypass VPS Russian IP blocks!
   const cfProxyUrl = process.env.CF_PROXY_URL || ''
   const cfProxySecret = process.env.CF_PROXY_SECRET || ''
-  const useProxy = Boolean(cfProxyUrl)
+  const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('browserai-ollama') || baseUrl.includes('ollama')
+  const useProxy = Boolean(cfProxyUrl) && !isLocal
 
   try {
     let upstream

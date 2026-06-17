@@ -225,12 +225,13 @@ async function callOpenAICompatible({
   const url = joinUrl(baseUrl, 'chat/completions')
   const proxyUrl = process.env.CF_PROXY_URL || ''
   const proxySecret = process.env.CF_PROXY_SECRET || ''
+  const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('browserai-ollama') || baseUrl.includes('ollama')
   const r = await fetchViaProxy({
     url,
     method: 'POST',
     headers,
     body,
-    proxyUrl,
+    proxyUrl: isLocal ? '' : proxyUrl,
     proxySecret,
     timeoutMs: 120_000,
   })
@@ -833,12 +834,13 @@ async function callOpenAICompatibleStream({
   const url = joinUrl(baseUrl, 'chat/completions')
   const proxyUrl = process.env.CF_PROXY_URL || ''
   const proxySecret = process.env.CF_PROXY_SECRET || ''
+  const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('browserai-ollama') || baseUrl.includes('ollama')
   const r = await fetchViaProxy({
     url,
     method: 'POST',
     headers,
     body,
-    proxyUrl,
+    proxyUrl: isLocal ? '' : proxyUrl,
     proxySecret,
     timeoutMs: 1_800_000,
     signal,
