@@ -117,7 +117,7 @@ const PROVIDER_PRESETS = [
     baseUrl: 'http://browserai-ollama:11434/v1',
     model: 'qwen2.5-coder:1.5b',
     apiKey: 'ollama',
-    availableModels: ['qwen2.5-coder:1.5b', 'llama3.2:1b', 'qwen2.5-coder:7b'],
+    availableModels: ['qwen2.5-coder:1.5b', 'moondream', 'llama3.2:1b', 'qwen2.5-coder:7b'],
     hint: 'Локальный суверенный ИИ на твоем VPS. Требуется предварительный запуск контейнера Ollama и загрузка модели.',
   },
 ]
