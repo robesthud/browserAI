@@ -101,14 +101,15 @@ function scheduleIdleClose(session) {
  *
  * Returns { stdout, stderr, exitCode, durationMs, sessionId }.
  */
-export async function runInSession({ chatId, command, timeoutMs = 60_000, signal, onStdout, onStderr } = {}) {
+export async function runInSession(opts = {}) {
+  const { chatId, command, timeoutMs = 60_000, signal, onStdout, onStderr, cwd } = opts
   if (!chatId)                          return Promise.reject(new Error('chatId required'))
   if (typeof command !== 'string' || !command) return Promise.reject(new Error('command must be a non-empty string'))
 
   let session = SESSIONS.get(chatId)
   if (!session || !session.alive) {
-    const cwd = arguments[0]?.cwd || '/workspace'
-    session = await openSession(chatId, cwd)
+    const sessionCwd = cwd || `/workspace/chats/${chatId}`
+    session = await openSession(chatId, sessionCwd)
   }
 
   return new Promise((resolve, reject) => {

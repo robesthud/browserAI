@@ -720,6 +720,9 @@ async function runLightweightChat({ res, provider, history, userId, chatId, mode
     ...history.slice(-8),
   ]
 
+  // Dynamic Temperature: 0.7 for chat, 0.3 for web search
+  const currentTemperature = mode === 'chat' ? 0.7 : 0.3
+
   const reply = await callLLM({
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey,
@@ -728,8 +731,14 @@ async function runLightweightChat({ res, provider, history, userId, chatId, mode
     extraHeaders: provider.extraHeaders || {},
     model: provider.model,
     messages,
-    temperature: Number(provider.temperature ?? 0.5),
+    temperature: currentTemperature,
   })
+
+  // Point 3: Automatic escalation/rollback
+  const replyText = reply?.text || ''
+  if (mode === 'chat' && (replyText.includes('<xai:function_call>') || replyText.includes('<tool_use>') || replyText.includes('<function_call>'))) {
+    throw new Error('escalate-to-agent')
+  }
 
   if (reply?.usage) {
     tokens.prompt += Number(reply.usage.prompt || 0)
@@ -860,12 +869,23 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
   if (provider.baseUrl !== 'mock' && !provider.forceAgent && (serverRoute.mode === 'chat' || serverRoute.mode === 'web')) {
     sse(res, 'agent_context', { ...agentContext, serverRoute })
+    let escalated = false
     try {
       await runLightweightChat({ res, provider, history, userId, chatId, mode: serverRoute.mode })
-    } finally {
-      if (chatId) activeRunsByChat.delete(chatId)
+    } catch (err) {
+      if (err.message === 'escalate-to-agent') {
+        escalated = true
+        sse(res, 'thought', { step: 0, text: '🔄 Автоматическая эскалация: Обнаружен вызов инструментов в режиме чата. Повышаю режим до полноценного Режима Агента для безопасного выполнения!' })
+        serverRoute = { mode: 'agent', reason: 'escalated-from-chat', icon: '🤖' }
+      } else {
+        if (chatId) activeRunsByChat.delete(chatId)
+        throw err
+      }
     }
-    return
+    if (!escalated) {
+      if (chatId) activeRunsByChat.delete(chatId)
+      return
+    }
   }
 
   const liteRun = agentContext?.task?.complexity === 'low'

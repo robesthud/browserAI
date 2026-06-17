@@ -67,12 +67,23 @@ export async function classifyIntentAI({ provider, history }) {
     model = 'google/gemini-2.5-flash:free'
   }
 
-  const systemPrompt = `You are a professional router. Classify the user intent. Reply with exactly one word in uppercase:
-CHAT - simple greeting, casual conversation, general questions not needing tools/files.
-WEB - requests for current facts, weather, news, or internet search.
-AGENT - requests to create/edit/delete files, write/fix code, run bash commands, docker, git, deploy, or work in workspace.
+  // Contextual routing: format the last 4 messages of history
+  const recentMessages = (history || []).slice(-4).map((m) => {
+    const role = String(m.role || 'user').toUpperCase()
+    const content = typeof m.content === 'string' ? m.content : '[media]'
+    return `${role}: ${content}`
+  }).join('\n')
 
-User message: "${userText}"
+  const systemPrompt = `You are a professional supervisor router. Classify the user's latest message intent, taking the recent conversation context into account.
+Reply with exactly one word in uppercase:
+CHAT - simple greeting, casual conversation, general questions, explanations or writing text/articles not needing tools/files.
+WEB - requests for current facts, weather, news, or internet search.
+AGENT - requests to create/edit/delete files, write/fix/run code, run bash/terminal commands, docker, git, deploy, or work in workspace.
+
+Recent Conversation Context:
+${recentMessages}
+
+User message to classify: "${userText}"
 Output:`
 
   try {
