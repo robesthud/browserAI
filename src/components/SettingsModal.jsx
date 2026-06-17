@@ -117,7 +117,10 @@ const PROVIDER_PRESETS = [
     baseUrl: 'http://browserai-ollama:11434/v1',
     model: 'qwen2.5-coder:1.5b',
     apiKey: 'ollama',
-    availableModels: ['qwen2.5-coder:1.5b', 'moondream', 'llama3.2:1b', 'qwen2.5-coder:7b'],
+    // NOTE: qwen2.5-coder:7b was removed — it requires ~5GB RAM and gets
+    // OOM-killed ("signal: killed") on the 3.8GB Timeweb VPS. Only list
+    // models that actually fit in memory here.
+    availableModels: ['qwen2.5-coder:1.5b', 'llama3.2:1b', 'moondream'],
     hint: 'Локальный суверенный ИИ на твоем VPS. Требуется предварительный запуск контейнера Ollama и загрузка модели.',
   },
 ]
