@@ -118,17 +118,6 @@ function BrowserApp({ user, reloadAuth }) {
   const configured = isConfigured(settings)
   const activeKey = useMemo(() => getActiveKey(settings), [settings])
   const availableModels = useMemo(() => {
-    if (activeKey?.onlyFree) {
-      const list = activeKey.availableModels || []
-      const providerId = activeKey.id || ''
-      if (providerId.includes('gemini') || activeKey.baseUrl?.includes('googleapis')) {
-        return list.filter(m => /flash|8b/i.test(m))
-      } else if (providerId.includes('openrouter') || activeKey.baseUrl?.includes('openrouter')) {
-        return list.filter(m => m.includes(':free'))
-      } else {
-        return list.filter(m => /free|mini|flash|haiku|lite|nano/i.test(m))
-      }
-    }
     const all = getAllAvailableModels(settings)
     return all.length ? all : getAvailableModels(activeKey)
   }, [settings, activeKey])

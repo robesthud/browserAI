@@ -189,13 +189,25 @@ export function getSelectedModel(key) {
 }
 
 export function getAvailableModels(key) {
-  return normalizeKey(key).availableModels
+  const k = normalizeKey(key)
+  if (k.onlyFree) {
+    const list = k.availableModels || []
+    const providerId = k.id || ''
+    if (providerId.includes('gemini') || k.baseUrl?.includes('googleapis')) {
+      return list.filter(m => /flash|8b/i.test(m))
+    } else if (providerId.includes('openrouter') || k.baseUrl?.includes('openrouter')) {
+      return list.filter(m => m.includes(':free'))
+    } else {
+      return list.filter(m => /free|mini|flash|haiku|lite|nano/i.test(m))
+    }
+  }
+  return k.availableModels
 }
 
 export function getAllAvailableModels(settings) {
   const out = []
   for (const key of settings?.keys || []) {
-    for (const model of normalizeKey(key).availableModels) {
+    for (const model of getAvailableModels(key)) {
       if (!out.includes(model)) out.push(model)
     }
   }
