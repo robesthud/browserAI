@@ -265,7 +265,7 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
 
   const prepareForSave = (f) => {
     let list = f.availableModels || []
-    if (f.onlyFree) {
+    if (onlyFree) {
       const providerId = f.id || ''
       if (providerId.includes('gemini') || f.baseUrl?.includes('googleapis')) {
         list = list.filter(m => /flash|8b/i.test(m))
@@ -278,6 +278,7 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
     return {
       ...f,
       name: f.name?.trim() || inferName(f),
+      onlyFree: onlyFree,
       model: f.model || list[0] || f.availableModels?.[0] || '',
     }
   }
