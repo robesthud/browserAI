@@ -544,74 +544,34 @@ async function probeChatModel(baseUrl, apiKey, model, signal) {
   return { ok: false, status: response.status }
 }
 
-export async function validateKey({ baseUrl, apiKey, model }, signal) {
-  const root = normalizeBaseUrl(baseUrl)
-  if (!root || !apiKey) {
-    return {
-      ok: false,
-      message: 'Укажите Base URL и ключ',
-      models: [],
-      preferredModel: '',
-    }
-  }
-
+export async function validateKey({ baseUrl, apiKey, model, authType, authHeader, extraHeaders }, signal) {
   try {
-    const response = await fetch(`${root}/models`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
+    const response = await fetch('/api/validate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        baseUrl,
+        apiKey,
+        model,
+        authType,
+        authHeader,
+        extraHeaders,
+      }),
       signal,
     })
 
     if (!response.ok) {
-      if (response.status === 401 || response.status === 403) {
-        return {
-          ok: false,
-          message: `Ключ отклонён (${response.status})`,
-          models: [],
-          preferredModel: '',
-        }
-      }
       return {
         ok: false,
-        message: `Ошибка ${response.status}`,
+        message: `Ошибка сервера: ${response.status}`,
         models: [],
         preferredModel: '',
       }
     }
 
-    const payload = await response.json().catch(() => null)
-    const models = normalizeModels(payload)
-    const preferredCandidates = [model, ...models].filter(Boolean).slice(0, 8)
-
-    for (const candidate of preferredCandidates) {
-      const probe = await probeChatModel(root, apiKey, candidate, signal)
-      if (probe.ok) {
-        return {
-          ok: true,
-          message: models.length
-            ? `Ключ валиден · моделей: ${models.length}`
-            : 'Ключ валиден',
-          models,
-          preferredModel: candidate,
-        }
-      }
-      if (probe.status === 401 || probe.status === 403) {
-        return {
-          ok: false,
-          message: `Ключ отклонён (${probe.status})`,
-          models,
-          preferredModel: '',
-        }
-      }
-    }
-
-    return {
-      ok: true,
-      message: models.length
-        ? `Ключ валиден · моделей: ${models.length}`
-        : 'Ключ валиден',
-      models,
-      preferredModel: model || models[0] || '',
-    }
+    return await response.json()
   } catch (error) {
     return {
       ok: false,
