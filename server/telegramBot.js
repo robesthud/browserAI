@@ -441,6 +441,8 @@ async function handleCommand(msg) {
         '/stop — остановить текущий агентский run',
         '/status — статус BrowserAI/DeepSeek',
         '/health — health check',
+        '/uptime — системные метрики и RAM/CPU',
+        '/files — список файлов в Workspace',
         '/logs [service] [tail] — docker logs',
         '/docker — docker compose ps',
         '/ci — GitHub Actions status',
@@ -461,6 +463,35 @@ async function handleCommand(msg) {
     }
     case '/status':
       return menu(chatId)
+    case '/uptime': {
+      try {
+        const { snapshotMetrics } = await import('./monitoring.js')
+        const m = snapshotMetrics()
+        const text = [
+          '📈 Системные метрики VPS:',
+          `Uptime: ${Math.round(m.upSec / 3600)}ч ${Math.round((m.upSec % 3600) / 60)}м`,
+          `Node: ${m.nodeVersion}`,
+          `Memory (RSS): ${m.rssMB} MB`,
+          `Heap (Used/Total): ${m.heapUsedMB} MB / ${m.heapTotalMB} MB`,
+          `Host Free RAM: ${m.freememMB} MB / ${m.totalmemMB} MB`,
+          `CPU Cores: ${m.cpus}`,
+          `Load Average: ${m.loadavg.map(n => n.toFixed(2)).join(', ')}`
+        ].join('\n')
+        return sendMessage(chatId, text)
+      } catch (e) {
+        return sendMessage(chatId, `❌ Ошибка метрик: ${e.message}`)
+      }
+    }
+    case '/files': {
+      try {
+        const { getWorkspaceTree } = await import('./workspace.js')
+        const tree = await getWorkspaceTree(false)
+        const files = (tree.children || []).map(f => `${f.type === 'directory' ? '📁' : '📄'} ${f.name}`).join('\n')
+        return sendMessage(chatId, `📁 Файлы в Workspace:\n\n${files || 'Пусто'}`)
+      } catch (e) {
+        return sendMessage(chatId, `❌ Не удалось получить файлы: ${e.message}`)
+      }
+    }
     case '/health': {
       const h = await localHealthCheck()
       return sendMessage(chatId, `🩺 BrowserAI health\nstatus: ${h.ok ? 'OK ✅' : 'FAIL ❌'}\nurl: ${h.url}\n${h.text || ''}`)
@@ -617,6 +648,8 @@ export async function startTelegramBot() {
     { command: 'stop', description: 'Остановить текущий run' },
     { command: 'status', description: 'Статус сервера' },
     { command: 'health', description: 'Health check' },
+    { command: 'uptime', description: 'Системные метрики VPS (RAM/CPU)' },
+    { command: 'files', description: 'Список файлов в Workspace' },
     { command: 'logs', description: 'Логи контейнера' },
     { command: 'docker', description: 'Docker ps' },
     { command: 'ci', description: 'GitHub Actions' },

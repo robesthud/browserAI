@@ -67,10 +67,11 @@ async function pageSummary(page, state, screenshotPath = '') {
 }
 
 async function saveScreenshot(page, relPath = '') {
-  const name = relPath || `browser-screenshots/screenshot-${Date.now()}.png`
+  const name = relPath || `browser-screenshots/screenshot-${Date.now()}.jpg`
   const full = safePath(name)
   await fs.mkdir(path.dirname(full), { recursive: true })
-  await page.screenshot({ path: full, fullPage: true })
+  // Use JPEG with 80% quality to reduce size by 10x (making previews load instantly and saving VPS disk space!)
+  await page.screenshot({ path: full, fullPage: true, type: 'jpeg', quality: 80 })
   return name
 }
 

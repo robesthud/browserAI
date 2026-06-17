@@ -3074,7 +3074,7 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
   let recallNote = ''
   try {
     const lastUser = [...safeHistory].reverse().find((m) => m.role === 'user')
-    if (lastUser?.content && req.user?.id) {
+    if (lastUser?.content && req.user?.id && !isLite) {
       const { renderRecallForPrompt } = await import('./semanticMemory.js')
       // FIX: wrap semantic recall (which may do a provider /embeddings call) in a hard timeout.
       // Previously a slow/hanging embeddings fetch on the second+ agent task in a chat could
