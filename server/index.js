@@ -2348,12 +2348,10 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   const targetUrl = getChatUrl(baseUrl)
 
   // Определяем, нужно ли проксировать через Cloudflare Workers
-  // Для сессионных токенов (веб-интерфейсы) — да, если CF_PROXY_URL задан
-  const profile = getSiteProfile(baseUrl)
-  const isSession = authType === 'cookie' || authType === 'custom' || profile.isBearerSession
+  // ALWAYS proxy through Cloudflare Workers if CF_PROXY_URL is configured, to bypass VPS Russian IP blocks!
   const cfProxyUrl = process.env.CF_PROXY_URL || ''
   const cfProxySecret = process.env.CF_PROXY_SECRET || ''
-  const useProxy = isSession && cfProxyUrl
+  const useProxy = Boolean(cfProxyUrl)
 
   try {
     let upstream
