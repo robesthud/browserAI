@@ -198,6 +198,16 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
+      connectSrc: [
+        "'self'",
+        "https://openrouter.ai",
+        "https://generativelanguage.googleapis.com",
+        "https://api.openai.com",
+        "https://api.anthropic.com",
+        "https://api.together.xyz",
+        "https://api.groq.com",
+        "https://api.deepseek.com"
+      ],
       baseUri: ["'self'"],
       // Vite legacy builds inject small inline loader scripts. They are required
       // for older Android System WebView versions that do not support modules.
