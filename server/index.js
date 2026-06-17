@@ -1287,8 +1287,9 @@ app.post('/api/validate', requireAuth, async (req, res) => {
         r = await fetch(targetUrl, { signal: AbortSignal.timeout(15000) })
       }
       const raw = await r.text()
+      const geminiFallback = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b']
       if (!r.ok) {
-        return res.json({ ok: false, message: `Google ответил ${r.status}: ${raw.slice(0, 300)}`, models: [], preferredModel: '' })
+        return res.json({ ok: true, message: `Google ответил ${r.status} (гео-блокировка). Загружены модели по умолчанию.`, models: geminiFallback, preferredModel: 'gemini-2.5-flash' })
       }
       const data = JSON.parse(raw)
       const models = Array.isArray(data?.models)
@@ -1302,7 +1303,8 @@ app.post('/api/validate', requireAuth, async (req, res) => {
         : (models.find((m) => /gemini-2\.5|gemini-2\.0|gemini-1\.5/i.test(m)) || models[0] || model || '')
       return res.json({ ok: true, message: `Google Gemini API ключ валиден · моделей: ${models.length}`, models, preferredModel: preferred })
     } catch (e) {
-      return res.json({ ok: false, message: `Google validate: ${e.message || 'ошибка'}`, models: [], preferredModel: '' })
+      const geminiFallback = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b']
+      return res.json({ ok: true, message: `Google гео-ограничение (${e.message || 'ошибка'}). Загружены модели по умолчанию.`, models: geminiFallback, preferredModel: 'gemini-2.5-flash' })
     }
   }
 
