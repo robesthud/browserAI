@@ -476,7 +476,6 @@ async function callAnthropicOfficialStream({
     timeoutMs: 1_800_000,
     signal,
   })
-  })
   if (!r.ok) {
     const raw = await r.text().catch(() => '')
     throw new Error(`Anthropic HTTP ${r.status}: ${raw.slice(0, 500)}`)
