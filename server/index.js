@@ -108,6 +108,7 @@ import {
 } from './deepseekTokenRefresher.js'
 import { startTelegramBot } from './telegramBot.js'
 import { runAgent, listActiveAgentRuns, clearActiveAgentRun } from './agentLoop.js'
+import { classifyAgentTask } from './agentCore.js'
 import { listDeterministicActions } from './deterministicActionRouter.js'
 import { getAgentTask, latestAgentTask, listAgentTasks, buildResumeSystemMessage } from './agentTasks.js'
 import {
@@ -3090,8 +3091,13 @@ app.post('/api/agent/chat', requireAuth, async (req, res) => {
     }
   } catch { /* optional */ }
 
+  const lastUserMsg = [...safeHistory].reverse().find((m) => m.role === 'user')
+  const lastUserText = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : ''
+  const taskClassification = classifyAgentTask(lastUserText)
+  const isLite = taskClassification.complexity === 'low'
+
   const extraSystemFinal = [
-    `## AGENT QUALITY RULES (ENFORCED)
+    isLite ? '' : `## AGENT QUALITY RULES (ENFORCED)
 
 - ALWAYS call read_project_rules BEFORE starting work on a new task. This loads AGENTS.md, README.md, and package.json context automatically.
 - ALWAYS call verify_code IMMEDIATELY after every write_file or edit_file to catch syntax errors before they crash the app.
