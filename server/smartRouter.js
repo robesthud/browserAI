@@ -57,12 +57,37 @@ export async function classifyIntentAI({ provider, history }) {
     return 'CHAT'
   }
 
+  let classificationProvider = provider
   let model = provider.model
   const lowerBase = String(provider.baseUrl || '').toLowerCase()
-  if (lowerBase.includes('deepseek.com') && model === 'deepseek-reasoner') {
+
+  const isGemini = lowerBase.includes('googleapis') || lowerBase.includes('gemini')
+  
+  if (isGemini) {
+    try {
+      const { getSessionState, getActiveBearer } = await import('./deepseekTokenRefresher.js')
+      const dsState = getSessionState()
+      const dsBearer = getActiveBearer()
+      if (dsState?.alive && dsBearer) {
+        classificationProvider = {
+          baseUrl: 'https://chat.deepseek.com/api/v0',
+          apiKey: dsBearer,
+          authType: 'bearer',
+          extraHeaders: {
+            'Referer': 'https://chat.deepseek.com/',
+            'Origin': 'https://chat.deepseek.com',
+            'Cookie': dsState.cookies || '',
+          }
+        }
+        model = 'deepseek-chat'
+      } else {
+        return null // Fallback to heuristics if no working DeepSeek managed session
+      }
+    } catch {
+      return null
+    }
+  } else if (lowerBase.includes('deepseek.com') && model === 'deepseek-reasoner') {
     model = 'deepseek-chat'
-  } else if (lowerBase.includes('googleapis') || lowerBase.includes('gemini')) {
-    model = 'gemini-2.5-flash'
   } else if (lowerBase.includes('openrouter')) {
     model = 'google/gemini-2.5-flash:free'
   }
@@ -89,11 +114,11 @@ Output:`
   try {
     const reply = await Promise.race([
       callLLM({
-        baseUrl: provider.baseUrl,
-        apiKey: provider.apiKey,
-        authType: provider.authType || 'bearer',
-        authHeader: provider.authHeader || '',
-        extraHeaders: provider.extraHeaders || {},
+        baseUrl: classificationProvider.baseUrl,
+        apiKey: classificationProvider.apiKey,
+        authType: classificationProvider.authType || 'bearer',
+        authHeader: classificationProvider.authHeader || '',
+        extraHeaders: classificationProvider.extraHeaders || {},
         model,
         messages: [{ role: 'system', content: systemPrompt }],
         temperature: 0,
