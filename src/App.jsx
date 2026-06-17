@@ -192,11 +192,11 @@ function BrowserApp({ user, reloadAuth }) {
       }
     }
 
-    // Manual agent toggle takes priority over autoMode/smartRouter
-    const route = effectiveAgentMode
-      ? { mode: 'agent', reason: 'Агент включён вручную', icon: '🤖' }
-      : autoMode
-        ? routeUserMessage(text, attachments)
+    // AutoMode (smart router) takes priority over manual/default agent toggle so that simple greetings bypass the heavy loop.
+    const route = autoMode
+      ? routeUserMessage(text, attachments)
+      : effectiveAgentMode
+        ? { mode: 'agent', reason: 'Агент включён вручную', icon: '🤖' }
         : { mode: 'chat', reason: 'Обычный чат', icon: '💬' }
 
     const mergeOverride = (extra = {}) => {
