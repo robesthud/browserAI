@@ -72,7 +72,7 @@ function CopyButton({ text }) {
         }
       }}
       className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-cream-faint
-                 opacity-0 transition-opacity hover:text-cream group-hover:opacity-100"
+                 opacity-60 transition-opacity hover:text-cream"
       title="Скопировать"
     >
       <IconCopy />
@@ -256,7 +256,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                 {m.tokens.total > 9999 ? `${(m.tokens.total / 1000).toFixed(1)}k` : m.tokens.total}t
               </span>
             ) : null}
-            <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 ml-1">
+            <div className="opacity-60 hover:opacity-100 transition-opacity flex items-center gap-1 ml-1">
               {m.content && !m.pending && <CopyButton text={m.content} />}
               {!isUser && onRegenerate && (
                  <button onClick={() => onRegenerate(m)} disabled={aiWorking} className={`text-cream-faint hover:text-cream px-0.5 ${aiWorking ? 'hidden' : ''}`} title="Сгенерировать заново">
