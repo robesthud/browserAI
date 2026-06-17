@@ -241,88 +241,57 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
       <div
         {...swipe.bind}
         style={{ transform: `translateX(${swipe.offset}px)`, transition: swipe.offset === 0 || swipe.open ? 'transform 0.2s ease' : 'none' }}
-        className="relative z-10 flex gap-3 bg-graphite-900 px-4 py-5"
+        className={`relative z-10 flex gap-2.5 bg-graphite-900 px-4 py-1.5 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}
       >
-      <div
-        className={`grid h-8 w-8 shrink-0 place-items-center rounded-full
-          ${isUser ? 'bg-graphite-600 text-cream' : 'bg-cream text-graphite-900'}`}
-      >
-        {isUser ? <IconUser /> : <IconBot />}
-      </div>
-
-      <div className="min-w-0 flex-1">
-        <div className="mb-1 flex items-center gap-2">
-          <span className="text-[13px] font-medium text-cream flex items-center gap-2">
-            {isUser ? 'Вы' : 'Ассистент'}
-            {!isUser && isLast && aiWorking && <WorkingSpinner />}
-          </span>
-          {m.content && !m.pending && <CopyButton text={m.content} />}
-          {isUser && onEdit && (
-             <button onClick={() => onEdit(m)} className="opacity-0 group-hover:opacity-100 transition-opacity text-cream-faint hover:text-cream px-1" title="Редактировать">
-               <IconEdit />
-             </button>
-          )}
-          {!isUser && onRegenerate && (
-             <button onClick={() => onRegenerate(m)} disabled={aiWorking} className={`opacity-0 group-hover:opacity-100 transition-opacity text-cream-faint hover:text-cream px-1 ${aiWorking ? 'hidden' : ''}`} title="Сгенерировать заново">
-               <IconRefresh />
-             </button>
-          )}
-          {onBranch && !aiWorking && (
-            <button
-              onClick={() => onBranch(m.id)}
-              className="opacity-0 group-hover:opacity-100 transition-opacity text-cream-faint hover:text-cream px-1"
-              title="Создать ветку из этого сообщения (новый чат с историей до сих пор)"
-            >↳</button>
-          )}
-          {/* Per-message token badge for assistant turns */}
-          {!isUser && isDev && hasAgentActivity && (
-            <button
-              onClick={() => {
-                const trace = {
-                  schema: 'browserai.agent_trace.v1',
-                  id: m.id,
-                  role: 'assistant',
-                  content: m.content,
-                  agentContext: m.agentContext,
-                  agentState: m.agentState,
-                  tools: m.toolCalls,
-                  thoughts: m.thoughts,
-                  askUsers: m.askUsers,
-                  error: m.error,
-                  providerError: m.providerError,
-                  warnings: m.routerWarnings,
-                  tokens: m.tokens
-                }
-                const blob = new Blob([JSON.stringify(trace, null, 2)], { type: 'application/json' })
-                const url = URL.createObjectURL(blob)
-                const a = document.createElement('a')
-                a.href = url
-                a.download = `agent-trace-${m.id}.json`
-                a.click()
-                URL.revokeObjectURL(url)
-              }}
-              className="opacity-0 group-hover:opacity-100 transition-opacity text-cream-faint hover:text-cream px-1"
-              title="Export Agent Trace JSON"
-            >
-              {"{}"}
-            </button>
-          )}
-          {!isUser && m.tokens?.total ? (
-            <span
-              className="rounded-full border border-white/10 bg-graphite-800/40 px-1.5 font-mono text-[10px] text-cream-faint"
-              title={`prompt: ${m.tokens.prompt || 0} · completion: ${m.tokens.completion || 0}`}
-            >
-              {m.tokens.total > 9999 ? `${(m.tokens.total / 1000).toFixed(1)}k` : m.tokens.total}t
-            </span>
-          ) : null}
+      {!isUser && (
+        <div className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-cream text-graphite-900 text-[10px] mt-1">
+          <IconBot />
         </div>
+      )}
+
+      <div className={`min-w-0 max-w-[85%] ${isUser ? 'ml-auto text-right' : 'flex-1'}`}>
+        {!isUser && (
+          <div className="mb-0.5 flex items-center gap-1.5 text-[11px] text-cream-faint select-none">
+            {isLast && aiWorking && <WorkingSpinner />}
+            {m.tokens?.total ? (
+              <span
+                className="rounded-full border border-white/5 bg-graphite-800/40 px-1 font-mono text-[9px]"
+                title={`prompt: ${m.tokens.prompt || 0} · completion: ${m.tokens.completion || 0}`}
+              >
+                {m.tokens.total > 9999 ? `${(m.tokens.total / 1000).toFixed(1)}k` : m.tokens.total}t
+              </span>
+            ) : null}
+            <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 ml-1">
+              {m.content && !m.pending && <CopyButton text={m.content} />}
+              {!isUser && onRegenerate && (
+                 <button onClick={() => onRegenerate(m)} disabled={aiWorking} className={`text-cream-faint hover:text-cream px-0.5 ${aiWorking ? 'hidden' : ''}`} title="Сгенерировать заново">
+                   <IconRefresh />
+                 </button>
+              )}
+              {onBranch && !aiWorking && (
+                <button
+                  onClick={() => onBranch(m.id)}
+                  className="text-cream-faint hover:text-cream px-0.5"
+                  title="Создать ветку"
+                >↳</button>
+              )}
+            </div>
+          </div>
+        )}
 
         {isUser ? (
-          <p className="whitespace-pre-wrap break-words text-[14px] leading-relaxed text-cream-soft" style={{ overflowWrap: "anywhere", wordBreak: "break-word" }}>
-            {m.content}
-          </p>
+          <div className="relative group/bubble inline-block">
+            {isUser && onEdit && (
+              <button onClick={() => onEdit(m)} className="absolute left-[-26px] top-1/2 -translate-y-1/2 opacity-0 group-hover/bubble:opacity-100 transition-opacity text-cream-faint hover:text-cream px-1" title="Редактировать">
+                <IconEdit />
+              </button>
+            )}
+            <div className="rounded-2xl rounded-tr-none bg-graphite-750 px-3 py-2 text-[14px] leading-relaxed text-cream text-left whitespace-pre-wrap break-words inline-block max-w-full shadow-sm">
+              {m.content}
+            </div>
+          </div>
         ) : m.error && !hasAgentActivity ? (
-          <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[13px] text-red-300">
+          <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[13px] text-red-300 text-left">
             <div>⚠ {friendlyAssistantError(m.error, m.providerError)}</div>
             {isDev && (m.providerError || m.error) && (
               <details className="mt-2 text-[11px] text-red-200/80">
@@ -334,7 +303,7 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
             )}
           </div>
         ) : (
-          <div className="text-[14px] leading-relaxed text-cream-soft" style={{ overflowWrap: "anywhere", wordBreak: "break-word" }}>
+          <div className="text-[14px] leading-relaxed text-cream-soft text-left" style={{ overflowWrap: "anywhere", wordBreak: "break-word" }}>
             {/* Provider-side extended thinking (Claude 3.7+, OpenAI o1/o3,
                 DeepSeek R1). Auto-opens while streaming, folds when done.
                 Distinct from the per-step `thoughts` narrative below. */}
@@ -346,8 +315,8 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
               />
             ) : null}
             {m.thinking && !isDev && m.pending ? (
-              <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-graphite-800/60 px-2.5 py-1 text-[12px] text-cream-faint">
-                <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-300" />
+              <div className="mb-1.5 inline-flex items-center gap-1.5 rounded-full border border-white/5 bg-graphite-800/20 px-2 py-0.5 text-[11px] text-cream-faint">
+                <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-amber-300" />
                 <span>Агент размышляет…</span>
               </div>
             ) : null}
