@@ -223,11 +223,16 @@ async function callOpenAICompatible({
   }
 
   const url = joinUrl(baseUrl, 'chat/completions')
-  const r = await fetch(url, {
+  const proxyUrl = process.env.CF_PROXY_URL || ''
+  const proxySecret = process.env.CF_PROXY_SECRET || ''
+  const r = await fetchViaProxy({
+    url,
     method: 'POST',
     headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
+    body,
+    proxyUrl,
+    proxySecret,
+    timeoutMs: 120_000,
   })
 
   const raw = await r.text()
@@ -392,15 +397,21 @@ async function callAnthropicOfficial({
     body.tool_choice = { type: 'auto' }
   }
   if (system) body.system = system
-  const r = await fetch(joinUrl(baseUrl, 'messages'), {
+  const url = joinUrl(baseUrl, 'messages')
+  const proxyUrl = process.env.CF_PROXY_URL || ''
+  const proxySecret = process.env.CF_PROXY_SECRET || ''
+  const r = await fetchViaProxy({
+    url,
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-api-key': apiKey,
       'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
     },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
+    body,
+    proxyUrl,
+    proxySecret,
+    timeoutMs: 120_000,
   })
   const raw = await r.text()
   if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${raw.slice(0, 500)}`)
@@ -447,7 +458,11 @@ async function callAnthropicOfficialStream({
     body.tools = toAnthropicTools(tools)
     body.tool_choice = { type: 'auto' }
   }
-  const r = await fetch(joinUrl(baseUrl, 'messages'), {
+  const url = joinUrl(baseUrl, 'messages')
+  const proxyUrl = process.env.CF_PROXY_URL || ''
+  const proxySecret = process.env.CF_PROXY_SECRET || ''
+  const r = await fetchViaProxy({
+    url,
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -455,8 +470,12 @@ async function callAnthropicOfficialStream({
       'x-api-key': apiKey,
       'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
     },
-    body: JSON.stringify(body),
-    signal: signal || AbortSignal.timeout(1_800_000), // 30 min hard cap: stream duration counts toward fetch timeout
+    body,
+    proxyUrl,
+    proxySecret,
+    timeoutMs: 1_800_000,
+    signal,
+  })
   })
   if (!r.ok) {
     const raw = await r.text().catch(() => '')
@@ -539,6 +558,16 @@ async function callAnthropicOfficialStream({
   return { text, toolCalls: nativeToolCalls, usage }
 }
 
+function stripAdditionalProperties(obj) {
+  if (!obj || typeof obj !== 'object') return obj
+  const cloned = Array.isArray(obj) ? [] : {}
+  for (const [k, v] of Object.entries(obj)) {
+    if (k === 'additionalProperties') continue
+    cloned[k] = (typeof v === 'object' && v !== null) ? stripAdditionalProperties(v) : v
+  }
+  return cloned
+}
+
 // ── Google Gemini official GenerateContent transport ────────────────────────
 function toGeminiTools(tools = []) {
   if (!tools || tools.length === 0) return []
@@ -546,7 +575,7 @@ function toGeminiTools(tools = []) {
     functionDeclarations: tools.map(t => ({
       name: t.function.name,
       description: t.function.description || '',
-      parameters: t.function.parameters || { type: 'object', properties: {} }
+      parameters: stripAdditionalProperties(t.function.parameters || { type: 'object', properties: {} })
     }))
   }]
 }
@@ -800,10 +829,18 @@ async function callOpenAICompatibleStream({
   }
 
   const url = joinUrl(baseUrl, 'chat/completions')
-  const r = await fetch(url, {
-    method: 'POST', headers,
-    body: JSON.stringify(body),
-    signal: signal || AbortSignal.timeout(1_800_000), // 30 min hard cap: stream duration counts toward fetch timeout
+  const proxyUrl = process.env.CF_PROXY_URL || ''
+  const proxySecret = process.env.CF_PROXY_SECRET || ''
+  const r = await fetchViaProxy({
+    url,
+    method: 'POST',
+    headers,
+    body,
+    proxyUrl,
+    proxySecret,
+    timeoutMs: 1_800_000,
+    signal,
+  })
   })
   if (!r.ok) {
     const raw = await r.text().catch(() => '')
