@@ -192,8 +192,10 @@ function BrowserApp({ user, reloadAuth }) {
       }
     }
 
-    // AutoMode (smart router) takes priority over manual/default agent toggle so that simple greetings bypass the heavy loop.
-    const route = autoMode
+    // For regular users, we ALWAYS use the smart router to select the mode (agent/web/chat)
+    // to prevent heavy loops and excessive token usage on simple messages.
+    // For devs, we let them override it manually via the sidebar toggles when autoMode is OFF.
+    const route = (!isDevTools || autoMode)
       ? routeUserMessage(text, attachments)
       : effectiveAgentMode
         ? { mode: 'agent', reason: 'Агент включён вручную', icon: '🤖' }
