@@ -288,7 +288,18 @@ export function useChats(settings) {
 
   const updateChat = useCallback((id, updater) => {
     setChats((prev) =>
-      prev.map((c) => (c.id === id ? updater(c) : c)),
+      prev.map((c) => {
+        if (c.id !== id) return c
+        // Accept BOTH a transform function updater(c)=>nextChat AND a plain
+        // partial-object patch {messages, agentMode, ...}. The object form is
+        // used by callers in App.jsx (handleRegenerate, /agent toggle);
+        // previously they passed an object and we did `updater(c)` →
+        // "TypeError: updater is not a function" crashing the whole React tree
+        // (visible as the recurring "t is not a function" on mobile).
+        if (typeof updater === 'function') return updater(c)
+        if (updater && typeof updater === 'object') return { ...c, ...updater }
+        return c
+      }),
     )
   }, [])
 

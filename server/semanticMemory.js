@@ -95,6 +95,10 @@ async function providerEmbed(text, provider) {
   // #14 FIX: deepseek and some other providers don't support /embeddings at all
   // or use a different base URL. If it's deepseek, don't even try - save time and hang risk.
   if (provider.baseUrl.includes('deepseek.com')) return null
+  // Ollama exposes embeddings at a different path (/api/embeddings) and NOT at
+  // the OpenAI-compatible /v1/embeddings we build below → every call 404'd and
+  // spammed the logs. Fall back to the local hashed embedder instead.
+  if (provider.baseUrl.includes('ollama') || provider.baseUrl.includes(':11434')) return null
 
   const url = `${String(provider.baseUrl).replace(/\/$/, '')}/embeddings`
   try {
