@@ -372,10 +372,6 @@ function Message({ m, isLast, aiWorking, onEdit, onRegenerate, onAnswerAskUser, 
                       }
                     }
                   }
-                  if (plan && plan.steps?.length > 0) {
-                    items.push(<AgentPlanCard key="plan" plan={plan} />)
-                  }
-
                   for (const tc of m.toolCalls || []) {
                     const exactKey = thoughtKey(tc.step, tc.sub ?? '')
                     const generalKey = thoughtKey(tc.step, '')
