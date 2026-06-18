@@ -63,16 +63,24 @@ services:
       - agent-sandbox
 
   # Isolated runner for LLM-generated shell commands.
-  # The image is bare alpine + a few common tools. Root filesystem is
-  # read-only; only /workspace is writable, mounted from the same host
-  # directory the main app sees so file ops from the LLM are visible
-  # in the UI immediately.
+  # Base image: ubuntu:22.04 + a curated toolset so the agent can work with
+  # ANY project: SSH into remote servers, clone/inspect git repos, sync files
+  # via rsync, query databases, diagnose network issues, etc.
+  # Root filesystem is writable; only /workspace is the shared workspace with
+  # the main app so file ops from the LLM are visible in the UI immediately.
   agent-sandbox:
     image: ubuntu:22.04
     container_name: agent-sandbox
     restart: unless-stopped
     # Stay alive idling so `docker exec` works at any time.
-    command: bash -c "apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates xz-utils git grep bash jq python3 python3-pip build-essential postgresql-client mysql-client >/dev/null 2>&1 && curl -fsSL https://nodejs.org/dist/v22.13.0/node-v22.13.0-linux-x64.tar.xz | tar -xJ -C /usr/local --strip-components=1 && useradd -m -u 1000 agent || true && tail -f /dev/null"
+    # Toolset groups:
+    #   base        — curl, wget, ca-certificates, xz-utils, git, grep, bash, jq, file, less
+    #   ssh         — openssh-client (ssh, scp, sftp, ssh-keygen, ssh-keyscan) + sshpass (non-interactive password auth)
+    #   sync/archive— rsync, zip, unzip, tar
+    #   build       — build-essential (gcc, g++, make), python3 + pip, node 22 + npm
+    #   db clients  — postgresql-client, mysql-client, sqlite3
+    #   net debug   — netcat-openbsd (nc), dnsutils (dig, nslookup)
+    command: bash -c "apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl wget ca-certificates xz-utils git grep bash jq file less openssh-client sshpass rsync zip unzip build-essential python3 python3-pip postgresql-client mysql-client sqlite3 netcat-openbsd dnsutils >/dev/null 2>&1 && curl -fsSL https://nodejs.org/dist/v22.13.0/node-v22.13.0-linux-x64.tar.xz | tar -xJ -C /usr/local --strip-components=1 && useradd -m -u 1000 agent || true && tail -f /dev/null"
     user: "0:0"  # boot as root only long enough to install packages; commands run as 1000 via -u
     read_only: false
     tmpfs:
