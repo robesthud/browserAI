@@ -47,40 +47,38 @@ RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
     >/dev/null 2>&1 \
     && rm -rf /var/lib/apt/lists/*
 
-# ── 4. DevOps CLI (бинарники) ───────────────────────────────────────────────
+# ── 4. DevOps CLI (бинарники с retry для нестабильной сети) ─────────────────
 # ВАЖНО: ставим в /usr/bin/, НЕ в /usr/local/bin/ — последний перекрыт
 # volume-монтированием global-bin из docker-compose.yml.
+# Используем --retry-all-errors т.к. github.com с российских IP нестабилен.
 # kubectl
-RUN KUBECTL_VER=$(curl -sL https://dl.k8s.io/release/stable.txt) \
-    && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VER}/bin/linux/amd64/kubectl" \
-       -o /usr/bin/kubectl \
-    && chmod +x /usr/bin/kubectl
+RUN KUBECTL_VER=$(curl --retry 5 --retry-all-errors -fsSL https://dl.k8s.io/release/stable.txt) \
+    && curl --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 30 \
+       -fsSL "https://dl.k8s.io/release/${KUBECTL_VER}/bin/linux/amd64/kubectl" \
+       -o /usr/bin/kubectl && chmod +x /usr/bin/kubectl
 
 # terraform
-RUN TF_VER=$(curl -sL https://api.github.com/repos/hashicorp/terraform/releases/latest \
+RUN TF_VER=$(curl --retry 5 --retry-all-errors -fsSL https://api.github.com/repos/hashicorp/terraform/releases/latest \
        | grep -oP '"tag_name":\s*"\K[^"]+' | head -1) \
-    && curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VER#v}/terraform_${TF_VER#v}_linux_amd64.zip" \
-       -o /tmp/tf.zip \
-    && unzip -o /tmp/tf.zip -d /usr/bin/ \
-    && rm /tmp/tf.zip
+    && curl --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 30 \
+       -fsSL "https://releases.hashicorp.com/terraform/${TF_VER#v}/terraform_${TF_VER#v}_linux_amd64.zip" \
+       -o /tmp/tf.zip && unzip -o /tmp/tf.zip -d /usr/bin/ && rm -f /tmp/tf.zip
 
 # gh (GitHub CLI)
-RUN GH_VER=$(curl -sL https://api.github.com/repos/cli/cli/releases/latest \
+RUN GH_VER=$(curl --retry 5 --retry-all-errors -fsSL https://api.github.com/repos/cli/cli/releases/latest \
        | grep -oP '"tag_name":\s*"v\K[^"]+' | head -1) \
-    && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_amd64.tar.gz" \
-       -o /tmp/gh.tgz \
-    && tar xzf /tmp/gh.tgz -C /tmp \
-    && cp /tmp/gh_${GH_VER}_linux_amd64/bin/gh /usr/bin/gh \
-    && rm -rf /tmp/gh*
+    && curl --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 30 \
+       -fsSL "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_amd64.tar.gz" \
+       -o /tmp/gh.tgz && tar xzf /tmp/gh.tgz -C /tmp \
+    && cp /tmp/gh_${GH_VER}_linux_amd64/bin/gh /usr/bin/gh && rm -rf /tmp/gh*
 
 # helm
-RUN HELM_VER=$(curl -sL https://api.github.com/repos/helm/helm/releases/latest \
+RUN HELM_VER=$(curl --retry 5 --retry-all-errors -fsSL https://api.github.com/repos/helm/helm/releases/latest \
        | grep -oP '"tag_name":\s*"v\K[^"]+' | head -1) \
-    && curl -fsSL "https://get.helm.sh/helm-v${HELM_VER}-linux-amd64.tar.gz" \
-       -o /tmp/helm.tgz \
-    && tar xzf /tmp/helm.tgz -C /tmp \
-    && cp /tmp/linux-amd64/helm /usr/bin/helm \
-    && rm -rf /tmp/helm* /tmp/linux-amd64
+    && curl --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 30 \
+       -fsSL "https://get.helm.sh/helm-v${HELM_VER}-linux-amd64.tar.gz" \
+       -o /tmp/helm.tgz && tar xzf /tmp/helm.tgz -C /tmp \
+    && cp /tmp/linux-amd64/helm /usr/bin/helm && rm -rf /tmp/helm* /tmp/linux-amd64
 
 # ── 5. Python DevOps-инструменты (pip) ───────────────────────────────────────
 # На Ubuntu 22.04 Python 3.10 не имеет --break-system-packages (это 3.11+).
@@ -91,11 +89,11 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # yq (Mike Farah's Go version — обрабатывает YAML/JSON/XML/CSV)
-RUN YQ_VER=$(curl -sL https://api.github.com/repos/mikefarah/yq/releases/latest \
+RUN YQ_VER=$(curl --retry 5 --retry-all-errors -fsSL https://api.github.com/repos/mikefarah/yq/releases/latest \
        | grep -oP '"tag_name":\s*"v\K[^"]+' | head -1) \
-    && curl -fsSL "https://github.com/mikefarah/yq/releases/download/v${YQ_VER}/yq_linux_amd64" \
-       -o /usr/bin/yq \
-    && chmod +x /usr/bin/yq
+    && curl --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 30 \
+       -fsSL "https://github.com/mikefarah/yq/releases/download/v${YQ_VER}/yq_linux_amd64" \
+       -o /usr/bin/yq && chmod +x /usr/bin/yq
 
 # ── 6. Пользователь для запуска команд ───────────────────────────────────────
 RUN useradd -m -u 1000 agent
