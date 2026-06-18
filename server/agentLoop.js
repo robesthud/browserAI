@@ -91,6 +91,10 @@ function correctToolName(name) {
 }
 
 // ── System prompt builder ───────────────────────────────────────────────────
+// Кэш repoMap: строится один раз для chat-сессии, переиспользуется на каждом шаге
+// вместо повторного сканирования (экономия ~30к токенов × N шагов на больших проектах).
+const repoMapCache = new Map()
+
 async function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null, chatId = '', lite = false, toolNames = null } = {}) {
   // Lite profile: skip workspace scans and MCP discovery entirely —
   // a greeting doesn't need project rules or the repo activity feed.
@@ -98,11 +102,19 @@ async function buildSystemPrompt({ extraSystem = '', native = false, extraTools 
     return buildAgentSystemPrompt({ extraSystem, native, extraTools, cwd: '/workspace', lite: true, toolNames })
   }
 
-  const [projectRules, recentActivity, repoMap] = await Promise.all([
+  const [projectRules, recentActivity] = await Promise.all([
     withWorkspaceScope(chatId, () => readProjectRules().catch(() => '')),
     withWorkspaceScope(chatId, () => listRecentWorkspaceActivity({ sinceMs: 24 * 60 * 60 * 1000 }).catch(() => [])),
-    withWorkspaceScope(chatId, () => import('./repoMap.js').then(m => m.buildRepoMap()).catch(() => '')),
   ])
+
+  // repoMap: берём из кэша для этого chatId, строим только один раз.
+  let repoMap = ''
+  if (repoMapCache.has(chatId)) {
+    repoMap = repoMapCache.get(chatId)
+  } else {
+    repoMap = await withWorkspaceScope(chatId, () => import('./repoMap.js').then(m => m.buildRepoMap()).catch(() => ''))
+    repoMapCache.set(chatId, repoMap)
+  }
 
   let activityText = ''
   if (Array.isArray(recentActivity) && recentActivity.length > 0) {

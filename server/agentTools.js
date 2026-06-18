@@ -833,7 +833,7 @@ export const TOOLS = {
   },
 
   generate_image: {
-    description: 'Generate an image using Gemini AI (free tier supported via gemini-2.5-flash-image or gemini-3.1-flash-image). Saves to workspace as .png/.jpg/.webp.',
+    description: 'Generate an image using the active AI model IF it supports image generation (Gemini, DALL-E, GLM-Image, FLUX, etc). If the active model cannot generate images, it returns an honest error telling you which model to select. Saves to workspace as .png/.jpg/.webp.',
     params: {
       file_path: { type: 'string', required: true, description: 'Path relative to workspace root where the image will be saved, e.g. "images/cat.png". Must end with .png, .jpg, .jpeg, or .webp.' },
       prompt: { type: 'string', required: true, description: 'Image generation prompt in English. Be descriptive and specific about style, lighting, composition, and subject.' },
@@ -845,20 +845,17 @@ export const TOOLS = {
         return err('file_path must end with .png, .jpg, .jpeg, or .webp')
       }
 
-      let apiKey = ''
-      let baseUrl = 'https://generativelanguage.googleapis.com/v1beta'
-      if (_provider && isGoogleGenerativeNativeUrl(_provider.baseUrl)) {
-        apiKey = _provider.apiKey
-        baseUrl = String(_provider.baseUrl).replace(/\/+$/, '')
-      } else if (process.env.GEMINI_API_KEY) {
-        apiKey = process.env.GEMINI_API_KEY
-      } else {
-        return err('No Gemini API key available.')
+      // Capability-aware: проверяем, МОЖЕТ ли текущая модель генерировать изображения.
+      // Если не может — честно говорим пользователю, не пытаемся переключиться тайно.
+      const { detectImageCapability } = await import('./mediaCapabilities.js')
+      const cap = detectImageCapability(_provider || {})
+      if (!cap.capable) {
+        return err(cap.hint + ' Do NOT attempt to draw/generate the image using text, SVG, HTML, base64, or ASCII — these are not real image generation. Tell the user to select an image-capable model.')
       }
 
-      const imageModel = _provider?.model?.includes('gemini-3.1') ? 'gemini-3.1-flash-image' :
-                         _provider?.model?.includes('gemini-3') ? 'gemini-3.1-flash-image' :
-                         'gemini-2.5-flash-image'
+      const apiKey = cap.apiKey
+      const baseUrl = cap.baseUrl
+      const imageModel = cap.imageModel
 
       const proxyUrl = process.env.CF_PROXY_URL || ''
       const proxySecret = process.env.CF_PROXY_SECRET || ''
@@ -947,20 +944,16 @@ export const TOOLS = {
       const outExt = String(output_path).toLowerCase().split('.').pop()
       if (!['png', 'jpg', 'jpeg', 'webp'].includes(outExt)) return err('output_path must end with .png, .jpg, .jpeg, or .webp')
 
-      let apiKey = ''
-      let baseUrl = 'https://generativelanguage.googleapis.com/v1beta'
-      if (_provider && isGoogleGenerativeNativeUrl(_provider.baseUrl)) {
-        apiKey = _provider.apiKey
-        baseUrl = String(_provider.baseUrl).replace(/\/+$/, '')
-      } else if (process.env.GEMINI_API_KEY) {
-        apiKey = process.env.GEMINI_API_KEY
-      } else {
-        return err('No Gemini API key available.')
+      // Capability-aware: редактирование требует ту же модель, что и генерация.
+      const { detectImageEditCapability } = await import('./mediaCapabilities.js')
+      const cap = detectImageEditCapability(_provider || {})
+      if (!cap.capable) {
+        return err(cap.hint + ' Do NOT attempt to edit the image using text/SVG/HTML. Tell the user to select an image-capable model.')
       }
 
-      const imageModel = _provider?.model?.includes('gemini-3.1') ? 'gemini-3.1-flash-image' :
-                         _provider?.model?.includes('gemini-3') ? 'gemini-3.1-flash-image' :
-                         'gemini-2.5-flash-image'
+      const apiKey = cap.apiKey
+      const baseUrl = cap.baseUrl
+      const imageModel = cap.imageModel
 
       const proxyUrl = process.env.CF_PROXY_URL || ''
       const proxySecret = process.env.CF_PROXY_SECRET || ''
@@ -1047,16 +1040,21 @@ export const TOOLS = {
   },
 
   generate_video: {
-    description: 'Generate a short AI video using Luma Dream Machine. Requires LUMA_API_KEY in environment. Saves as .mp4.',
+    description: 'Generate a short AI video IF the active model supports video generation (Google Veo). If the active model cannot generate video, returns an honest error. Saves as .mp4.',
     params: {
       file_path: { type: 'string', required: true, description: 'Output path, e.g. "videos/clip.mp4". Must end with .mp4.' },
       prompt: { type: 'string', required: true, description: 'Video description in English. Be detailed about motion, camera, scene.' },
     },
-    handler: async ({ file_path, prompt }) => {
+    handler: async ({ file_path, prompt, _provider }) => {
       if (!file_path || !prompt) return err('file_path and prompt are required')
       if (!String(file_path).toLowerCase().endsWith('.mp4')) return err('file_path must end with .mp4')
-      const lumaKey = process.env.LUMA_API_KEY
-      if (!lumaKey) return err('LUMA_API_KEY not set. Get a free key at https://lumalabs.ai/api')
+
+      // Capability-aware: проверяем поддержку генерации видео текущей моделью.
+      const { detectVideoCapability } = await import('./mediaCapabilities.js')
+      const cap = detectVideoCapability(_provider || {})
+      if (!cap.capable) {
+        return err(cap.hint + ' Do NOT attempt to generate video using text/ASCII/HTML. Tell the user to select a video-capable model (Veo).')
+      }
       try {
         const createRes = await fetch('https://api.lumalabs.ai/dream-machine/v1/generations', {
           method: 'POST',
