@@ -81,8 +81,19 @@ RUN HELM_VER=$(curl -sL https://api.github.com/repos/helm/helm/releases/latest \
     && rm -rf /tmp/helm* /tmp/linux-amd64
 
 # ── 5. Python DevOps-инструменты (pip) ───────────────────────────────────────
-RUN pip3 install --no-cache-dir --break-system-packages \
-    ansible awscli httpie yq
+# На Ubuntu 22.04 Python 3.10 не имеет --break-system-packages (это 3.11+).
+# Ставим ansible/awscli/httpie через apt, а yq — отдельным бинарником.
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+    ansible awscli httpie \
+    >/dev/null 2>&1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# yq (Mike Farah's Go version — обрабатывает YAML/JSON/XML/CSV)
+RUN YQ_VER=$(curl -sL https://api.github.com/repos/mikefarah/yq/releases/latest \
+       | grep -oP '"tag_name":\s*"v\K[^"]+' | head -1) \
+    && curl -fsSL "https://github.com/mikefarah/yq/releases/download/v${YQ_VER}/yq_linux_amd64" \
+       -o /usr/local/bin/yq \
+    && chmod +x /usr/local/bin/yq
 
 # ── 6. Пользователь для запуска команд ───────────────────────────────────────
 RUN useradd -m -u 1000 agent
