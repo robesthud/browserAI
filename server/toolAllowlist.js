@@ -1,5 +1,9 @@
 const SHELL_AGENT_TOOLS = ['shell_session_run', 'shell_session_reset', 'shell_background_start', 'shell_background_read', 'shell_background_stop', 'shell_background_list']
 
+// Консолидированные имена инструментов — это то, что модель ВИДИТ в промпте.
+// Позволяем и их, и базовые (для обратной совместимости со старыми чатами).
+const CONSOLIDATED = ['file', 'shell', 'git', 'web', 'browser', 'computer', 'media', 'memory', 'kb', 'verify', 'plan', 'docker', 'ops', 'operator', 'ask_user', 'read_project_rules', 'project_profile', 'db_query', 'review_code_changes', 'generate_video', 'debug_run_code']
+
 const COMMON_AGENT_TOOLS = [
   'plan_set', 'plan_check', 'ask_user', 'read_project_rules', 'project_profile', 'secret_scan', 'workspace_snapshot_list',
   'recall_facts', 'remember_fact', 'forget_fact', 'kb_search', 'kb_list', 'kb_add', 'kb_delete',
@@ -69,7 +73,12 @@ export function toolProfileForTask() {
 }
 
 export function profileToolNames(profile = 'main_agent') {
-  if (profile === 'main_agent') return allAutomaticAgentTools()
+  if (profile === 'main_agent') {
+    // Возвращаем консолидированные имена + все базовые (для обратной совместимости).
+    // Модель видит только ~15 консолидированных (через renderConsolidatedTools),
+    // но allowlist пускает и базовые имена, если модель их вызовет из старого чата.
+    return [...new Set([...CONSOLIDATED, ...allAutomaticAgentTools()])]
+  }
   return [...new Set(TOOL_PROFILES[profile] || TOOL_PROFILES.general)]
 }
 

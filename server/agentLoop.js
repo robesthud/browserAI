@@ -27,6 +27,7 @@ import { searchWeb, fetchWebPage } from './web.js'
 import { routeHistory, classifyIntentAI } from './smartRouter.js'
 import { routeDeterministicAction } from './deterministicActionRouter.js'
 import { toolProfileForTask, profileToolNames, isToolAllowed } from './toolAllowlist.js'
+import { expandConsolidatedCall, isConsolidatedTool } from './toolConsolidation.js'
 import { getRecoveryAction, getRecoveryHint as recoveryHint } from './recoveryEngine.js'
 import { buildToolStrategyDirective } from './failurePlaybooks.js'
 import { createWorkspaceSnapshot } from './workspaceSnapshots.js'
@@ -899,7 +900,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
   let useNativeTools = supportsNativeTools(provider.baseUrl)
   let systemPrompt = await buildSystemPrompt({ extraSystem, native: useNativeTools, extraTools, chatId, lite: liteRun, toolNames: activeToolNames })
-  let toolsSpec = useNativeTools ? buildNativeToolsSpec(extraTools, { lite: liteRun, toolNames: activeToolNames }) : undefined
+  let toolsSpec = useNativeTools ? (liteRun ? buildNativeToolsSpec(extraTools, { lite: true, toolNames: activeToolNames }) : (await import('./toolConsolidation.js')).buildConsolidatedNativeSpec()) : undefined
 
   const convo = [{ role: 'system', content: systemPrompt }, ...history]
   const deadline = Date.now() + DEFAULT_DEADLINE_MS
@@ -1079,7 +1080,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       if (useNativeTools && Array.isArray(reply.toolCalls)) {
         for (const tc of reply.toolCalls) {
           const corrected = correctToolName(tc.name)
-          const exists = TOOLS[corrected] || (extraTools && extraTools[corrected])
+          const exists = TOOLS[corrected] || (extraTools && extraTools[corrected]) || isConsolidatedTool(corrected)
           calls.push({ 
             tool: corrected, 
             args: tc.args || {}, 
@@ -1093,7 +1094,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
         const xmlCalls = parseXmlFunctionCalls(reply.text || '')
         for (const c of xmlCalls) {
           const corrected = correctToolName(c.tool)
-          const exists = TOOLS[corrected] || (extraTools && extraTools[corrected])
+          const exists = TOOLS[corrected] || (extraTools && extraTools[corrected]) || isConsolidatedTool(corrected)
           calls.push({
             tool: corrected,
             args: c.args || {},
@@ -1301,17 +1302,25 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
           const answers = await Promise.all(rawList.slice(0, 6).map(q => { const { id, promise, expiresAt } = registerQuestion({ kind: 'ask_user', userId, chatId, step, sub: idx, question: q.question, options: q.options, multi: q.multi, allowCustom: q.allowCustomResponse }); sse(res, 'ask_user', { step, sub: idx, question_id: id, expiresAt, question: q.question, options: q.options }); return promise.then(a => ({ ok: true, answer: a }), e => ({ ok: false, error: e.message })) }))
           r = { ok: true, result: answers.length === 1 ? answers[0].answer : { answers } }
         } else {
-          r = await invokeTool(call.tool, { 
-            ...call.args, 
-            _provider: provider,
-            _projectRules: (await withWorkspaceScope(chatId, () => readProjectRules().catch(() => ''))),
-            _recentActivity: (await withWorkspaceScope(chatId, () => listRecentWorkspaceActivity({ sinceMs: 24 * 60 * 60 * 1000 }).catch(() => []))).map(a => `${a.reason} ${a.path}`).join(', ')
-          }, { 
-            signal: abortCtl.signal, 
-            onStdout: (c) => sse(res, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stdout', chunk: String(c).slice(0, 2000) }), 
-            onStderr: (c) => sse(res, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stderr', chunk: String(c).slice(0, 2000) }), 
-            userId, chatId, extraTools 
-          })
+          // Expand consolidated tool calls (file→read_file, shell→bash, etc.)
+          // The SSE events above keep the consolidated name (what the model sees),
+          // but the actual execution goes to the underlying handler.
+          const exp = expandConsolidatedCall(call.tool, call.args)
+          if (exp.error) {
+            r = { ok: false, error: exp.error }
+          } else {
+            r = await invokeTool(exp.name, { 
+              ...exp.args, 
+              _provider: provider,
+              _projectRules: (await withWorkspaceScope(chatId, () => readProjectRules().catch(() => ''))),
+              _recentActivity: (await withWorkspaceScope(chatId, () => listRecentWorkspaceActivity({ sinceMs: 24 * 60 * 60 * 1000 }).catch(() => []))).map(a => `${a.reason} ${a.path}`).join(', ')
+            }, { 
+              signal: abortCtl.signal, 
+              onStdout: (c) => sse(res, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stdout', chunk: String(c).slice(0, 2000) }), 
+              onStderr: (c) => sse(res, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stderr', chunk: String(c).slice(0, 2000) }), 
+              userId, chatId, extraTools 
+            })
+          }
         }
         const semanticOk = toolSucceeded(call.tool, r)
         if (categoryOf(call.tool) !== 'ask') {
