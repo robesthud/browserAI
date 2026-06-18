@@ -63,29 +63,22 @@ services:
       - agent-sandbox
 
   # Isolated runner for LLM-generated shell commands.
-  # Base image: ubuntu:22.04 + a curated toolset so the agent can work with
-  # ANY project: SSH into remote servers, clone/inspect git repos, sync files
-  # via rsync, query databases, diagnose network issues, etc.
-  # Root filesystem is writable; only /workspace is the shared workspace with
-  # the main app so file ops from the LLM are visible in the UI immediately.
+  # Полноценный toolset для работы с любыми проектами: SSH на серверы,
+  # git, базы данных, Docker, k8s, terraform, языки (Node/Python/Go/Rust/
+  # Ruby/PHP/Java), медиа (ffmpeg/imagemagick), DevOps CLI.
+  # Dockerfile: docker/agent-sandbox/Dockerfile
   agent-sandbox:
-    image: ubuntu:22.04
+    build:
+      context: ./docker/agent-sandbox
+      dockerfile: Dockerfile
+    image: browserai-agent-sandbox:latest
     container_name: agent-sandbox
     restart: unless-stopped
-    # Stay alive idling so `docker exec` works at any time.
-    # Toolset groups:
-    #   base        — curl, wget, ca-certificates, xz-utils, git, grep, bash, jq, file, less
-    #   ssh         — openssh-client (ssh, scp, sftp, ssh-keygen, ssh-keyscan) + sshpass (non-interactive password auth)
-    #   sync/archive— rsync, zip, unzip, tar
-    #   build       — build-essential (gcc, g++, make), python3 + pip, node 22 + npm
-    #   db clients  — postgresql-client, mysql-client, sqlite3
-    #   net debug   — netcat-openbsd (nc), dnsutils (dig, nslookup)
-    command: bash -c "apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl wget ca-certificates xz-utils git grep bash jq file less openssh-client sshpass rsync zip unzip build-essential python3 python3-pip postgresql-client mysql-client sqlite3 netcat-openbsd dnsutils >/dev/null 2>&1 && curl -fsSL https://nodejs.org/dist/v22.13.0/node-v22.13.0-linux-x64.tar.xz | tar -xJ -C /usr/local --strip-components=1 && useradd -m -u 1000 agent || true && tail -f /dev/null"
-    user: "0:0"  # boot as root only long enough to install packages; commands run as 1000 via -u
+    user: "0:0"  # boot as root; agent commands run as uid 1000 via -u
     read_only: false
     tmpfs:
       - /tmp:size=256m
-      - /home/agent:size=256m,uid=1000,gid=1000,mode=1777,exec
+      - /home/agent:size=512m,uid=1000,gid=1000,mode=1777,exec
     working_dir: /workspace
     volumes:
       - ${WORKSPACE_DIR:-./workspace}:/workspace
@@ -94,6 +87,8 @@ services:
       - ${DATA_DIR:-./data}/ssh:/root/.ssh
       - ${DATA_DIR:-./data}/python-local:/root/.local
       - ${DATA_DIR:-./data}/pip-cache:/root/.cache/pip
+      # Docker socket — позволяет агенту управлять контейнерами хоста
+      - /var/run/docker.sock:/var/run/docker.sock
     # Generous limits for fast builds and tests on personal VPS.
     pids_limit: 1024
 
