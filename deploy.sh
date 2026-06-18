@@ -15,7 +15,7 @@ docker compose build browserai
 
 echo "Removing stale compose replacement containers..."
 docker rm -f browserai agent-sandbox 2>/dev/null || true
-docker ps -a --format '{{.Names}}' | grep -E '^[0-9a-f]+_browserai$' | xargs -r docker rm -f 2>/dev/null || true
+docker ps -a --format '{{.Names}}' | grep -E '^[0-9a-f]+_(browserai|agent-sandbox)$' | xargs -r docker rm -f 2>/dev/null || true
 
 echo "Restarting services..."
 docker compose up -d --remove-orphans browserai agent-sandbox db ollama
