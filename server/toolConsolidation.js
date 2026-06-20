@@ -296,7 +296,14 @@ export const CONSOLIDATED_TOOL_NAMES = [...Object.keys(GROUPS), ...STANDALONE_TO
  * Есть ли инструмент среди консолидированных групп?
  */
 export function isConsolidatedTool(name) {
-  return Boolean(GROUPS[name])
+  // Approach 2 — a tool is 'consolidated' if it appears in either the
+  // GROUP matrix (file/shell/git/etc.) or the STANDALONE_TOOLS list
+  // (ask_user, read_project_rules, etc.). This must match
+  // CONSOLIDATED_TOOL_NAMES — otherwise the allowlist will incorrectly
+  // reject standalones as legacy.
+  if (Boolean(GROUPS[name])) return true
+  if (STANDALONE_TOOLS.includes(name)) return true
+  return false
 }
 
 /**
@@ -306,13 +313,16 @@ export function isConsolidatedTool(name) {
  * Если name не является консолидированным — возвращает как есть (обратная совместимость
  * со старыми чатами, где модель вызывала read_file напрямую).
  */
-export function expandConsolidatedCall(name, args = {}) {
+export function expandConsolidatedCall(name, args) {
+  // Approach 2 — defend against null/undefined args (defensive).
+  // Without this, `String(args.action || '')` throws on null args.
+  const safeArgs = (args && typeof args === 'object') ? args : {}
   const group = GROUPS[name]
   if (!group) {
     // Не консолидированный — пропускаем как есть (старый формат или standalone).
-    return { name, args }
+    return { name, args: safeArgs }
   }
-  const action = String(args.action || '').trim()
+  const action = String(safeArgs.action || '').trim()
   if (!action) {
     return { error: `Tool "${name}" requires an "action" parameter. Available actions: ${Object.keys(group.actions).join(', ')}.` }
   }
@@ -354,6 +364,8 @@ export function renderConsolidatedTools() {
  */
 export function buildConsolidatedNativeSpec(extraTools = null) {
   const specs = []
+
+  // Consolidated groups (file, shell, git, …)
   for (const [name, def] of Object.entries(GROUPS)) {
     specs.push({
       type: 'function',
@@ -375,6 +387,36 @@ export function buildConsolidatedNativeSpec(extraTools = null) {
       },
     })
   }
+
+  // Кастомные инструменты пользователя: добавляем в native spec как есть,
+  // чтобы модель видела их при native function-calling.
+  if (extraTools && typeof extraTools === 'object') {
+    for (const [name, def] of Object.entries(extraTools)) {
+      if (!def || typeof def !== 'object') continue
+      const properties = {}
+      const required = []
+      for (const [pName, pMeta] of Object.entries(def.params || {})) {
+        const schemaType = pMeta?.type === 'number' ? 'number'
+          : pMeta?.type === 'boolean' ? 'boolean'
+          : pMeta?.type === 'array' ? 'array'
+          : pMeta?.type === 'object' ? 'object'
+          : 'string'
+        properties[pName] = { type: schemaType, description: pMeta?.description || '' }
+        if (schemaType === 'array') properties[pName].items = { type: 'object' }
+        if (schemaType === 'object') properties[pName].additionalProperties = true
+        if (pMeta?.required) required.push(pName)
+      }
+      specs.push({
+        type: 'function',
+        function: {
+          name,
+          description: def.description || '',
+          parameters: { type: 'object', properties, required },
+        },
+      })
+    }
+  }
+
   return specs
 }
 

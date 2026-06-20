@@ -34,6 +34,9 @@ import { runInSession, resetSession, startBackgroundTask, readBackgroundLogs, st
 
 function safeJsonParse(text) { try { return JSON.parse(text) } catch { return null } }
 
+// fuzzyReplace — возвращает строку при успехе или объект { error } при неудаче.
+// Никогда не возвращает null — это позволяет caller'у различить «не найдено»
+// от «найдено несколько раз» и выдать осмысленное сообщение пользователю.
 function fuzzyReplace(original, oldText, newText) {
   const norm = (s) => String(s || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
   const origNorm = norm(original)
@@ -42,16 +45,18 @@ function fuzzyReplace(original, oldText, newText) {
 
   // 1. Exact match first
   if (origNorm.includes(oldNorm)) {
-    const parts = origNorm.split(oldNorm)
-    if (parts.length === 2) {
+    const exactCount = origNorm.split(oldNorm).length - 1
+    if (exactCount === 1) {
       return original.replace(oldText, newText)
     }
+    // Встречается несколько раз — сообщаем количество, чтобы агент уточнил контекст
+    return { error: `old_text found ${exactCount} times (exact match). Make old_text more specific so it matches only once.` }
   }
 
   // 2. Line-by-line normalized fuzzy match
   const origLines = original.split(/\r?\n/)
   const oldLines = oldText.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
-  if (oldLines.length === 0) return null
+  if (oldLines.length === 0) return { error: 'old_text is empty after trimming — nothing to replace.' }
 
   let matchStart = -1
   let matchCount = 0
@@ -76,7 +81,11 @@ function fuzzyReplace(original, oldText, newText) {
     return (before ? before + '\n' : '') + newNorm + (after ? '\n' + after : '')
   }
 
-  return null
+  if (matchCount > 1) {
+    return { error: `old_text matched ${matchCount} locations (fuzzy). Make old_text more specific so it matches only once.` }
+  }
+
+  return { error: 'old_text not found — neither exact nor fuzzy match succeeded. Read the file again and use a substring that exactly exists.' }
 }
 
 function shQuote(value) {
@@ -280,18 +289,42 @@ export const TOOLS = {
   },
 
   read_file: {
-    description: 'Read the full contents of a text file from the workspace.',
+    description: 'Read a text file from the workspace. Supports reading specific line ranges to stay within context limits.',
     params: {
-      path: { type: 'string', required: true, description: 'Path relative to workspace root, e.g. "src/app.js".' },
+      path: { type: 'string', required: true, description: 'Path relative to workspace root.' },
+      start_line: { type: 'number', optional: true, description: 'Line to start reading from (1-indexed).' },
+      end_line: { type: 'number', optional: true, description: 'Line to stop reading at (inclusive).' },
     },
-    handler: async ({ path } = {}) => {
+    handler: async ({ path, start_line, end_line } = {}) => {
       if (!path) return err('path is required')
       try {
         const file = await readWorkspaceFile(path)
-        if (!file?.text && !file?.content) {
-          return err(`File is binary or empty: ${path} (mime=${file?.mime})`)
+        const text = file.text ?? file.content
+        if (typeof text !== 'string') return err(`File is binary or empty: ${path}`)
+        
+        const lines = text.split(/\r?\n/)
+        const total = lines.length
+        
+        let start = Math.max(1, Number(start_line) || 1)
+        let end = Math.min(total, Number(end_line) || total)
+        
+        // Auto-truncate huge files if no range given
+        if (!start_line && !end_line && text.length > 30000) {
+          end = 500
         }
-        return ok({ path, content: truncate(file.text ?? file.content, 20000), mime: file.mime })
+
+        const selection = lines.slice(start - 1, end)
+        const content = selection.map((line, i) => `${(start + i).toString().padStart(4, ' ')} | ${line}`).join('\n')
+        
+        return ok({ 
+          path, 
+          total_lines: total,
+          start_line: start,
+          end_line: end,
+          content,
+          mime: file.mime,
+          hint: end < total ? `File truncated. Use read_file with start_line=${end + 1} to read more.` : null
+        })
       } catch (e) { return err(e.message) }
     },
   },
@@ -348,8 +381,11 @@ export const TOOLS = {
         if (typeof original !== 'string') return err(`File is binary or unreadable: ${path}`)
         
         const updated = fuzzyReplace(original, old_text, new_text)
-        if (!updated) {
-          return err(`Could not perform fuzzy replace: old_text not found in ${path} (or found multiple times). Ensure old_text matches structurally.`)
+        if (updated && typeof updated === 'object' && updated.error) {
+          return err(`edit_file failed on ${path}: ${updated.error}`)
+        }
+        if (typeof updated !== 'string') {
+          return err(`edit_file: unexpected result type for ${path}`)
         }
         
         await writeFileContent(path, updated)
@@ -1635,8 +1671,15 @@ export const TOOLS = {
         } catch (e) { return err(e.message) }
       } else {
         try {
+          // Credentials читаются из env — не хардкодим в коде.
+          // Fallback-значения соответствуют docker-compose.yml defaults
+          // и безопасны: они не попадают в git и легко переопределяются.
+          const pgPassword = process.env.POSTGRES_PASSWORD || process.env.PG_PASSWORD || 'browserai_secret'
+          const pgUser     = process.env.POSTGRES_USER     || process.env.PG_USER     || 'browserai'
+          const pgHost     = process.env.POSTGRES_HOST     || process.env.PG_HOST     || 'db'
+          const pgDb       = process.env.POSTGRES_DB       || process.env.PG_DB       || 'browserai'
           const r = await runSandboxCommand({
-            command: `PGPASSWORD=browserai_secret psql -h db -U browserai -d browserai -c ${shQuote(query)}`,
+            command: `PGPASSWORD=${shQuote(pgPassword)} psql -h ${shQuote(pgHost)} -U ${shQuote(pgUser)} -d ${shQuote(pgDb)} -c ${shQuote(query)}`,
             timeoutMs: 30_000
           })
           if (r.exitCode === 0) {
@@ -1658,21 +1701,23 @@ export const TOOLS = {
     handler: async ({ path: filePath, args = '' } = {}) => {
       if (!filePath) return err('path is required')
       const ext = String(filePath).toLowerCase().split('.').pop()
-      const absPath = `/workspace/${filePath.replace(/^\/+/, '')}`
-      
+      // shQuote исключает shell injection через filePath/args с кавычками или спецсимволами
+      const safeFile = shQuote(safePath(String(filePath).replace(/^\/+/, '')))
+      const safeArgs = String(args || '').split(/\s+/).filter(Boolean).map(shQuote).join(' ')
+
       if (ext === 'py') {
-        const cmd = `python3 -c "import sys, traceback, cgitb; cgitb.enable(format='text'); sys.argv = ['${filePath}'] + '${args}'.split(); exec(open('${filePath}').read())"`
+        const cmd = `python3 -W all -u ${safeFile} ${safeArgs}`
         try {
           const r = await runSandboxCommand({ command: cmd, timeoutMs: 30_000 })
           return ok({
             stdout: truncate(r.stdout, 6000),
             stderr: truncate(r.stderr, 6000),
             exitCode: r.exitCode,
-            debugger: 'python-cgitb'
+            debugger: 'python-traceback'
           })
         } catch (e) { return err(e.message) }
       } else if (['js', 'mjs', 'cjs'].includes(ext)) {
-        const cmd = `node --trace-uncaught --trace-warnings ${filePath} ${args}`
+        const cmd = `node --trace-uncaught --trace-warnings ${safeFile} ${safeArgs}`
         try {
           const r = await runSandboxCommand({ command: cmd, timeoutMs: 30_000 })
           return ok({
@@ -1683,7 +1728,7 @@ export const TOOLS = {
           })
         } catch (e) { return err(e.message) }
       } else {
-        return err('Only .js and .py files are supported for runtime debugging.')
+        return err('Only .js/.mjs/.cjs and .py files are supported for runtime debugging.')
       }
     }
   },

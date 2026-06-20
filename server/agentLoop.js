@@ -16,8 +16,9 @@
  *            legacy JSON-in-fenced-block format.
  */
 import { TOOLS, LITE_TOOL_NAMES, invokeTool } from './agentTools.js'
+import { isDeepSeekWebUrl } from './deepseekWeb.js'
 import {
-  withWorkspaceScope, readWorkspaceFile, readProjectRules, listRecentWorkspaceActivity,
+  withWorkspaceScope, readWorkspaceFile, readProjectRules, listRecentWorkspaceActivity, getContainerWorkspaceRoot, ensureWorkspaceRoot,
 } from './workspace.js'
 import {
   callLLM, callLLMStream, supportsNativeTools, supportsStreaming, normalizeProviderError,
@@ -31,12 +32,45 @@ import { expandConsolidatedCall, isConsolidatedTool } from './toolConsolidation.
 import { getRecoveryAction, getRecoveryHint as recoveryHint } from './recoveryEngine.js'
 import { buildToolStrategyDirective } from './failurePlaybooks.js'
 import { createWorkspaceSnapshot } from './workspaceSnapshots.js'
-import { deriveTaskPhase, allowedToolsForPhase } from './taskStateMachine.js'
+import { deriveTaskPhase, allowedToolsForPhase, createRetryBudget, recordToolCall, guardToolCall, detectStuck, shouldEscalate, buildEscalationPrompt, nextPhase, PHASES } from './taskStateMachine.js'
 import { createAgentTask, updateAgentTask, finishAgentTask } from './agentTasks.js'
 import {
   clipToolOutput, manageContext, applyAnthropicCacheHints,
   upsertAgentStateDigest,
 } from './contextManager.js'
+import { safeErrorMessage, safeProviderError } from './errorSanitizer.js'
+import log from './logger.js'
+import {
+  historyArgs,
+  historyAction,
+  historyPath,
+  isFileToolAction,
+  isVerificationHistoryEntry,
+  needsVerificationSinceLastEdit,
+  commandLooksLikeHealthCheck,
+  toolCommand,
+  commandMatches,
+  askedForExplicitLocalTest,
+  hasLocalTestAttempt,
+  hasSuccessfulLocalTest,
+  hasStrongLocalTestSuccessClaim,
+  hasUnsupportedEnvironmentClaim,
+  unmetDoneCriteria,
+  obligationCompletionStatus,
+  runtimeSemantics,
+  normalizeRuntimeHistoryEntry,
+} from './agentRuntimeSemantics.js'
+import { buildFinalStatus, isBlocked } from './agentFinalStatus.js'
+import { createRunLog as _createRunLog, newRunId as _newRunId } from './runLogs.js'
+import { buildReplayArtifact as _buildReplayArtifact, saveReplay as _saveReplay } from './replayArtifact.js'
+import { classifyError as _classifyError } from './errorTaxonomy.js'
+import {
+  normalizeRuntimeCall,
+  narrateRuntimeCall,
+  shouldReadBackCall,
+  violatesPreDeployVerifyCall,
+} from './runtimeCallSemantics.js'
+import { toolSucceeded, summarizeToolOutcome } from './runtimeToolResultSemantics.js'
 import { buildAgentSystemPrompt } from './agentPrompt.js'
 import { recordSpend, checkCap } from './costTracker.js'
 import { shouldUseCheapEditor, wrapProviderForEditor, routingLabel } from './architectEditor.js'
@@ -47,10 +81,15 @@ import {
   validateToolCall, makeToolErrorResult,
 } from './agentCore.js'
 
-const DEFAULT_MAX_STEPS = 15
-const DEFAULT_DEADLINE_MS = 20 * 60 * 1000
-const IDLE_NOTICE_MS = 75 * 1000
-const LLM_HARD_IDLE_MS = 2 * 60 * 1000
+// Все таймауты читаются из env, чтобы можно было настроить без пересборки.
+// BROWSERAI_MAX_STEPS       — лимит шагов агента (default: 15)
+// BROWSERAI_DEADLINE_MS     — общий дедлайн run в мс (default: 20 мин)
+// BROWSERAI_IDLE_NOTICE_MS  — через сколько мс без события показывать watchdog-статус (default: 75с)
+// BROWSERAI_LLM_IDLE_MS     — через сколько мс молчания LLM считается зависшим (default: 120с)
+const DEFAULT_MAX_STEPS   = Number(process.env.BROWSERAI_MAX_STEPS)    || 15
+const DEFAULT_DEADLINE_MS = Number(process.env.BROWSERAI_DEADLINE_MS)  || 20 * 60 * 1000
+const IDLE_NOTICE_MS      = Number(process.env.BROWSERAI_IDLE_NOTICE_MS) || 75 * 1000
+const LLM_HARD_IDLE_MS    = Number(process.env.BROWSERAI_LLM_IDLE_MS)  || 2 * 60 * 1000
 const activeRunsByChat = new Map()
 
 export function listActiveAgentRuns() {
@@ -61,45 +100,86 @@ export function clearActiveAgentRun(chatId = '') {
   return activeRunsByChat.delete(String(chatId || ''))
 }
 
+// Статические алиасы — модель иногда использует нестандартные имена.
+// При добавлении нового инструмента в TOOLS его каноническое имя
+// подхватывается автоматически через normalizeToRegisteredName ниже.
+const TOOL_NAME_ALIASES = {
+  'search_web':    'web_search',
+  'google_search': 'web_search',
+  'google':        'web_search',
+  'web_grep':      'web_search',
+  'fetch_page':    'web_fetch',
+  'web_fetch_page':'web_fetch',
+  'download_url':  'web_fetch',
+  'read_url':      'web_fetch',
+  'grep':          'search_files',
+  'find_in_files': 'search_files',
+  'grep_files':    'search_files',
+  'search_file':   'search_files',
+  'replace_text':  'edit_file',
+  'modify_file':   'edit_file',
+  'change_file':   'edit_file',
+  'patch_file':    'edit_file',
+  'show_files':    'list_files',
+  'list_folder':   'list_files',
+  'dir':           'list_files',
+  'run_command':   'bash',
+  'execute':       'bash',
+  'terminal':      'bash',
+}
+
+// normalizeToRegisteredName: если lower-case нормализованное имя точно совпадает
+// с зарегистрированным в TOOLS — возвращаем каноническое (case-safe) имя.
+// Это исключает дрейф при добавлении новых инструментов в реестр.
+let _toolNamesLower = null
+function getToolNamesLower() {
+  if (!_toolNamesLower) {
+    _toolNamesLower = new Map(Object.keys(TOOLS).map(n => [n.toLowerCase(), n]))
+  }
+  return _toolNamesLower
+}
+
 function correctToolName(name) {
   const lower = String(name || '').toLowerCase().trim().replace(/[-_]+/g, '_')
-  const mapping = {
-    'search_web': 'web_search',
-    'google_search': 'web_search',
-    'google': 'web_search',
-    'web_grep': 'web_search',
-    'fetch_page': 'web_fetch',
-    'web_fetch_page': 'web_fetch',
-    'download_url': 'web_fetch',
-    'read_url': 'web_fetch',
-    'grep': 'search_files',
-    'find_in_files': 'search_files',
-    'grep_files': 'search_files',
-    'search_file': 'search_files',
-    'replace_text': 'edit_file',
-    'modify_file': 'edit_file',
-    'change_file': 'edit_file',
-    'patch_file': 'edit_file',
-    'show_files': 'list_files',
-    'list_folder': 'list_files',
-    'dir': 'list_files',
-    'run_command': 'bash',
-    'execute': 'bash',
-    'terminal': 'bash',
-  }
-  return mapping[lower] || name
+  // 1. Статический алиас
+  if (TOOL_NAME_ALIASES[lower]) return TOOL_NAME_ALIASES[lower]
+  // 2. Точное совпадение с зарегистрированным именем (case-insensitive)
+  const registered = getToolNamesLower().get(lower)
+  if (registered) return registered
+  // 3. Возвращаем как есть — unknown-проверка позже поймает его
+  return name
 }
 
 // ── System prompt builder ───────────────────────────────────────────────────
 // Кэш repoMap: строится один раз для chat-сессии, переиспользуется на каждом шаге
 // вместо повторного сканирования (экономия ~30к токенов × N шагов на больших проектах).
+// LRU-ограничение: максимум REPO_MAP_CACHE_MAX записей.
+// При превышении удаляется самая старая запись (порядок вставки в Map).
+const REPO_MAP_CACHE_MAX = 50
 const repoMapCache = new Map()
 
+function repoMapCacheSet(chatId, value) {
+  if (repoMapCache.has(chatId)) repoMapCache.delete(chatId) // обновляем порядок
+  repoMapCache.set(chatId, value)
+  if (repoMapCache.size > REPO_MAP_CACHE_MAX) {
+    // удаляем первый (самый старый) ключ
+    repoMapCache.delete(repoMapCache.keys().next().value)
+  }
+}
+
 async function buildSystemPrompt({ extraSystem = '', native = false, extraTools = null, chatId = '', lite = false, toolNames = null } = {}) {
-  // Lite profile: skip workspace scans and MCP discovery entirely —
-  // a greeting doesn't need project rules or the repo activity feed.
+  const containerRoot = getContainerWorkspaceRoot()
+  const envContext = `# Environment Context
+- Current Working Directory (CWD): ${containerRoot}
+- All tool paths are relative to this root.
+- If you clone a repo, it will be in ${containerRoot}/<repo-name>.
+- Use 'ls -R' via bash if you are unsure where files are.
+- DO NOT invent paths. Use 'list_files' to see what exists.
+`
+
+  // Lite profile: skip workspace scans and MCP discovery entirely
   if (lite) {
-    return buildAgentSystemPrompt({ extraSystem, native, extraTools, cwd: '/workspace', lite: true, toolNames })
+    return buildAgentSystemPrompt({ extraSystem: envContext + '\n' + extraSystem, native, extraTools, cwd: containerRoot, lite: true, toolNames })
   }
 
   const [projectRules, recentActivity] = await Promise.all([
@@ -113,7 +193,7 @@ async function buildSystemPrompt({ extraSystem = '', native = false, extraTools 
     repoMap = repoMapCache.get(chatId)
   } else {
     repoMap = await withWorkspaceScope(chatId, () => import('./repoMap.js').then(m => m.buildRepoMap()).catch(() => ''))
-    repoMapCache.set(chatId, repoMap)
+    repoMapCacheSet(chatId, repoMap)
   }
 
   let activityText = ''
@@ -140,17 +220,18 @@ async function buildSystemPrompt({ extraSystem = '', native = false, extraTools 
     }
   } catch { /* optional */ }
 
-  return buildAgentSystemPrompt({
-    extraSystem,
+  const finalPrompt = buildAgentSystemPrompt({
+    extraSystem: envContext + '\n' + extraSystem,
     native,
     extraTools,
-    cwd: '/workspace',
+    cwd: containerRoot,
     projectRules,
     recentActivity: activityText,
     mcpServersBlock,
     toolNames,
     repoMap,
   })
+  return finalPrompt
 }
 
 
@@ -200,7 +281,10 @@ function callFingerprint(call) {
   return `${call.tool}::${normalised}`
 }
 
-const STUCK_THRESHOLD = 3
+// STUCK_THRESHOLD = 4: два одинаковых read_file подряд — нормальная ситуация
+// (агент перечитывает файл после правки). Три подряд — уже признак петли.
+// Четыре — надёжный сигнал для прерывания без ложных срабатываний.
+const STUCK_THRESHOLD = 4
 function isStuckLoop(recentCalls, currentFingerprint) {
   if (!currentFingerprint) return false
   let consecutive = 0
@@ -218,9 +302,10 @@ function isStuckLoop(recentCalls, currentFingerprint) {
 function summarizeCallArgsForDigest(args = {}) {
   if (!args || typeof args !== 'object') return ''
   const pick = {}
-  for (const k of ['path', 'file_path', 'source_path', 'output_path', 'url', 'query', 'command', 'message']) {
+  for (const k of ['action', 'path', 'file_path', 'source_path', 'output_path', 'url', 'query', 'command', 'message', 'service', 'task_id']) {
     if (args[k] != null) pick[k] = String(args[k]).slice(0, 160)
   }
+  if (Array.isArray(args.indices)) pick.indices = args.indices.slice(0, 10)
   try { return JSON.stringify(pick) } catch { return '' }
 }
 
@@ -229,87 +314,6 @@ function incompletePlanSteps(agentState = {}) {
   if (!steps.length) return []
   const done = new Set([...(agentState.plan?.done || [])].map(Number))
   return steps.filter((s) => !(s.done || done.has(Number(s.idx))))
-}
-
-function parseDigestArgs(s = '') {
-  try { return JSON.parse(String(s || '{}')) } catch { return {} }
-}
-
-function isCodeLikePath(path = '') {
-  return /\.(js|mjs|cjs|jsx|ts|tsx|json|css|html|yml|yaml)$/i.test(String(path || ''))
-}
-
-function needsVerificationSinceLastEdit(recentToolHistory = []) {
-  let lastEdit = -1
-  for (let i = 0; i < recentToolHistory.length; i += 1) {
-    const h = recentToolHistory[i]
-    if (!h?.ok || !['write_file', 'edit_file'].includes(h.tool)) continue
-    const args = parseDigestArgs(h.args)
-    const p = args.path || args.file_path || ''
-    if (isCodeLikePath(p)) lastEdit = i
-  }
-  if (lastEdit < 0) return false
-  return !recentToolHistory.slice(lastEdit + 1).some((h) => h?.ok && ['verify_code', 'npm_test', 'verify_task'].includes(h.tool))
-}
-
-function commandLooksLikeHealthCheck(argsText = '') {
-  return /(curl|wget|http|health|docker logs|docker ps|compose ps|journalctl|logs)/i.test(String(argsText || ''))
-}
-
-function toolCommand(h = {}) {
-  const args = parseDigestArgs(h.args)
-  return String(args.command || '')
-}
-
-function commandMatches(h = {}, re) {
-  return ['bash', 'shell_session_run', 'shell_background_start'].includes(h?.tool) && re.test(toolCommand(h))
-}
-
-function unmetDoneCriteria(taskType = '', recentToolHistory = []) {
-  const okTools = recentToolHistory.filter((h) => h?.ok).map((h) => h.tool)
-  const has = (...tools) => tools.some((t) => okTools.includes(t))
-  if (taskType === 'repo_analysis') {
-    if (!has('list_files')) return 'Нужно сначала посмотреть дерево проекта через list_files.'
-    if (!has('read_file', 'search_files')) return 'Нужно прочитать/поискать реальные файлы проекта перед анализом.'
-  }
-  if (taskType === 'research') {
-    if (!has('web_search', 'web_fetch')) return 'Нужно использовать web_search/web_fetch для research-задачи.'
-  }
-  if (taskType === 'browser_task') {
-    if (has('browser_open') && !has('browser_screenshot')) return 'После открытия страницы нужен browser_screenshot/визуальная проверка.'
-  }
-  if (taskType === 'deploy_ops') {
-    const changedDeploy = recentToolHistory.some((h) => h?.ok && ['ops_run_action', 'git_commit'].includes(h.tool))
-      || recentToolHistory.some((h) => h?.ok && h.tool === 'bash' && /(deploy|docker compose up|restart|systemctl|git pull|git reset)/i.test(String(h.args || '')))
-    if (changedDeploy) {
-      const checked = recentToolHistory.some((h) => h?.ok && ['docker_logs', 'docker_ps', 'ops_list_services'].includes(h.tool))
-        || recentToolHistory.some((h) => h?.ok && h.tool === 'bash' && commandLooksLikeHealthCheck(h.args))
-      if (!checked) return 'После deploy/restart/git изменения нужен health/log check (curl/docker logs/docker ps).'
-    }
-  }
-  return ''
-}
-
-function obligationCompletionStatus(obligations = {}, recentToolHistory = []) {
-  const ok = recentToolHistory.filter((h) => h?.ok)
-  const hasTool = (...tools) => ok.some((h) => tools.includes(h.tool))
-  const hasBash = (re) => ok.some((h) => commandMatches(h, re))
-  const edited = ok.some((h) => ['write_file', 'edit_file'].includes(h.tool))
-  const verified = hasTool('verify_task', 'verify_code', 'npm_test', 'run_tests') || hasBash(/(npm|pnpm|yarn)\s+(test|run\s+test|run\s+build|build)|vitest|jest|pytest|go\s+test|cargo\s+test|mvn\s+test/i)
-  const status = {
-    inspect: hasTool('list_files', 'read_file', 'search_files', 'read_project_rules') || hasBash(/(^|\s)(pwd|ls|find|grep|rg|cat|sed)\b/i),
-    codeChange: edited || hasTool('git_commit') || hasBash(/git\s+(apply|commit)|npm\s+version/i),
-    verify: verified,
-    commit: hasTool('git_commit') || hasBash(/git\s+commit\b/i),
-    push: ok.some((h) => h.tool === 'git_commit' && /pushed=true/i.test(String(h.outcome || ''))) || hasBash(/git\s+push\b/i),
-    pr: hasTool('github_pr_create') || /pull request|\/pull\//i.test(ok.map((h) => h.outcome).join('\n')) || hasBash(/gh\s+pr\s+create/i),
-    deploy: hasTool('ops_run_action') || hasBash(/(deploy\.sh|\bdeploy\b|docker\s+compose\s+up|docker-compose\s+up|systemctl\s+restart|kubectl\s+apply)/i),
-    healthCheck: ok.some((h) => ['bash', 'shell_session_run', 'shell_background_start'].includes(h.tool) && commandLooksLikeHealthCheck(h.args)) || hasTool('docker_ps', 'ops_list_services') || hasBash(/curl|wget|health/i),
-    logsCheck: hasTool('docker_logs', 'docker_ps') || hasBash(/docker\s+logs|docker\s+ps|journalctl|tail\s+.*log/i),
-    finalReport: true,
-  }
-  if (obligations.codeChange && !edited && recentToolHistory.some((h) => h?.ok && ['git_clone', 'zip_files'].includes(h.tool))) status.codeChange = true
-  return status
 }
 
 function unmetGoalObligation(agentContext = {}, recentToolHistory = []) {
@@ -346,14 +350,15 @@ function buildRuntimeEvidenceReport(agentContext = {}, recentToolHistory = [], a
   const deploy = []
   const errors = []
   for (const h of real) {
-    const args = parseDigestArgs(h.args)
-    const p = args.path || args.file_path || ''
-    if (h.ok && ['write_file', 'edit_file'].includes(h.tool) && p && !changedFiles.includes(p)) changedFiles.push(p)
-    if (h.ok && h.tool === 'read_file' && p && !readFiles.includes(p)) readFiles.push(p)
-    if (['bash', 'shell_session_run', 'shell_background_start'].includes(h.tool)) commands.push(`${h.ok ? '✓' : '✗'} ${h.tool}: ${args.command || ''} → ${h.outcome || ''}`.slice(0, 500))
-    if (['verify_task', 'verify_code', 'npm_test', 'run_tests'].includes(h.tool) || /test|build|verify|exit=0|passed/i.test(String(h.outcome || ''))) checks.push(`${h.ok ? '✓' : '✗'} ${h.tool}: ${h.outcome || ''}`)
-    if (h.tool.startsWith('git_') || /git\s+(status|diff|commit|push)/i.test(args.command || '')) git.push(`${h.ok ? '✓' : '✗'} ${h.tool}: ${h.outcome || args.command || ''}`)
-    if (h.tool.startsWith('ops_') || h.tool.startsWith('docker_') || /deploy|docker|curl|health|logs/i.test(`${args.command || ''} ${h.outcome || ''}`)) deploy.push(`${h.ok ? '✓' : '✗'} ${h.tool}: ${h.outcome || args.command || ''}`)
+    const semantic = runtimeSemantics(h)
+    const args = semantic.args || historyArgs(h)
+    const p = semantic.path || historyPath(h)
+    if (h.ok && (semantic.isWrite || semantic.isEdit) && p && !changedFiles.includes(p)) changedFiles.push(p)
+    if (h.ok && semantic.isRead && p && !readFiles.includes(p)) readFiles.push(p)
+    if (semantic.family === 'shell') commands.push(`${h.ok ? '✓' : '✗'} ${h.tool}: ${semantic.command || args.command || ''} → ${h.outcome || ''}`.slice(0, 500))
+    if (semantic.isVerify || /test|build|verify|exit=0|passed/i.test(String(h.outcome || ''))) checks.push(`${h.ok ? '✓' : '✗'} ${h.tool}: ${h.outcome || ''}`)
+    if (semantic.family === 'git' || /git\s+(status|diff|commit|push)/i.test(semantic.command || args.command || '')) git.push(`${h.ok ? '✓' : '✗'} ${h.tool}: ${h.outcome || semantic.command || args.command || ''}`)
+    if (semantic.family === 'ops' || semantic.family === 'docker' || semantic.isDeploy || semantic.isHealthCheck || semantic.isLogsCheck) deploy.push(`${h.ok ? '✓' : '✗'} ${h.tool}: ${h.outcome || semantic.command || args.command || ''}`)
     if (!h.ok) errors.push(`✗ ${h.tool}: ${h.outcome || 'failed'}`)
   }
   const missing = Object.entries(obligations).filter(([k, v]) => v && k !== 'finalReport' && !status[k]).map(([k]) => k)
@@ -382,91 +387,18 @@ function appendRuntimeEvidence(text = '', agentContext = {}, recentToolHistory =
   return `${base}${report}`.trim()
 }
 
-function narrateToolCall(tool = '', args = {}, agentContext = {}) {
-  const cmd = String(args?.command || '').trim()
-  if (tool === 'shell_session_run') return 'Выполняю команду в постоянной shell-сессии: так сохраняются cwd/env и удобнее вести длинную разработческую работу.'
-  if (tool === 'shell_background_start') return 'Запускаю долгую команду в фоне, чтобы можно было читать вывод и не блокировать Agent Mode.'
-  if (tool === 'shell_background_read') return 'Читаю текущий stdout/stderr фоновой команды.'
-  if (tool === 'shell_background_stop') return 'Останавливаю фоновую shell-команду.'
-  if (tool === 'shell_session_reset') return 'Сбрасываю постоянную shell-сессию, чтобы восстановить чистое состояние.'
-  if (tool === 'bash') {
-    if (/npm\s+(test|run test)|pnpm\s+test|yarn\s+test|vitest|jest/i.test(cmd)) return 'Запускаю тесты через bash, чтобы подтвердить изменения реальным выводом.'
-    if (/npm\s+run\s+build|pnpm\s+build|yarn\s+build|vite build/i.test(cmd)) return 'Запускаю сборку через bash, чтобы проверить production-готовность.'
-    if (/git\s+status/i.test(cmd)) return 'Проверяю состояние git перед следующими действиями.'
-    if (/git\s+diff/i.test(cmd)) return 'Смотрю diff, чтобы убедиться, что изменения именно те, которые нужны.'
-    if (/curl|wget/i.test(cmd)) return 'Проверяю endpoint/health через bash.'
-    if (/docker\s+logs|docker\s+ps|docker compose/i.test(cmd)) return 'Проверяю Docker-состояние и логи через bash.'
-    if (/grep|rg|find|ls|pwd|cat|sed/i.test(cmd)) return 'Осматриваю проект через bash, чтобы быстро найти нужные файлы и контекст.'
-    return 'Выполняю bash-команду как часть автоматического Agent Mode.'
-  }
-  if (tool === 'list_files') return 'Сначала смотрю структуру workspace, чтобы работать по реальным путям.'
-  if (tool === 'read_file') return `Читаю файл ${args?.path || ''}, прежде чем делать выводы или правки.`
-  if (tool === 'search_files') return 'Ищу по проекту релевантные места для задачи.'
-  if (tool === 'edit_file' || tool === 'write_file') return `Вношу изменение в ${args?.path || 'файл'} и затем проверю результат.`
-  if (tool === 'verify_task' || tool === 'verify_code') return 'Запускаю проверку после изменений, чтобы не заявлять успех без evidence.'
-  if (tool === 'secret_scan') return 'Проверяю, что в изменения не попали секреты.'
-  if (tool.startsWith('git_')) return 'Выполняю git-шаг и буду опираться только на результат команды.'
-  if (tool.startsWith('ops_')) return 'Выполняю operator/ops действие с последующей проверкой состояния.'
-  if (tool === 'ask_user') return 'Нужна твоя развилка/подтверждение, без неё безопасно продолжить нельзя.'
-  const type = agentContext?.task?.type || 'task'
-  return `Выполняю инструмент ${tool} для шага ${type}.`
-}
-
-function toolSucceeded(tool, r) {
-  if (!r?.ok) return false
-  const result = r.result || {}
-  if (['bash', 'shell_session_run'].includes(tool) && result.exitCode != null) return Number(result.exitCode) === 0
-  if (tool === 'npm_test') return result.passed === true || Number(result.exitCode) === 0
-  if (tool === 'verify_task') return result.passed === true
-  if (tool === 'verify_code') return result.valid !== false && result.ok !== false
-  if (tool === 'run_tests') return result.passed !== false
-  return true
-}
-
-function summarizeToolOutcome(tool, r) {
-  if (!r?.ok) return String(r?.error || 'failed').slice(0, 180)
-  const result = r.result
-  if (tool === 'read_file') return `${result?.content?.length || 0} chars`
-  if (tool === 'write_file') return `${result?.bytes || 0} bytes written`
-  if (tool === 'edit_file') return `replaced=${result?.replaced ?? 1}`
-  if (tool === 'verify_code') return result?.valid === false ? 'invalid' : 'valid/skipped'
-  if (tool === 'npm_test') return result?.passed ? 'passed' : `failed exit=${result?.exitCode ?? '?'}`
-  if (tool === 'verify_task') return result?.passed ? `passed ${result?.results?.length || 0} checks` : `failed ${result?.results?.length || 0} checks`
-  if (tool === 'git_clone') return `path=${result?.path || ''}`
-  if (tool === 'git_commit') return `committed=${result?.committed !== false} pushed=${Boolean(result?.pushed)} ${String(result?.stderr || '').slice(0, 80)}`
-  if (tool === 'ops_run_action') return `exit=${result?.exitCode ?? '?'} ${String(result?.stdout || result?.message || '').slice(0, 120)}`
-  if (tool === 'zip_files') return `path=${result?.file_path || ''} entries=${result?.entries || 0}`
-  if (tool === 'secret_scan') return result?.ok ? `ok scanned=${result?.scannedFiles || 0}` : `findings high=${result?.high || 0} medium=${result?.medium || 0}`
-  if (tool === 'workspace_snapshot_create') return `id=${result?.id || ''} entries=${result?.entries || 0}`
-  if (tool === 'workspace_snapshot_restore') return `id=${result?.id || ''} restored=${Boolean(result?.restored)}`
-  if (tool === 'bash' || tool === 'shell_session_run') return `exit=${result?.exitCode ?? '?'} duration=${result?.durationMs || 0}ms`
-  if (tool === 'shell_background_start') return `task=${result?.taskId || ''}`
-  if (tool === 'shell_background_read') return `running=${Boolean(result?.running)} exit=${result?.exitCode ?? ''}`
-  if (tool === 'shell_background_stop') return `stopped=${Boolean(result?.stopped)}`
-  return String(result?.message || result?.path || result?.file_path || 'ok').slice(0, 180)
-}
-
 function makeReadBackForEdits(calls) {
   const out = []
   const seen = new Set()
-  for (const call of calls || []) {
-    if (call.tool !== 'edit_file' && call.tool !== 'write_file') continue
-    const p = call.args?.path
+  for (const raw of calls || []) {
+    const call = raw?.semantic ? raw : normalizeRuntimeCall(raw)
+    if (!shouldReadBackCall(call)) continue
+    const p = call.semantic?.path || call.args?.path
     if (!p || seen.has(p)) continue
     seen.add(p)
     out.push({ tool: 'read_file', args: { path: p }, _readBack: true })
   }
   return out
-}
-
-function violatesPreDeployVerify(call, recentToolHistory) {
-  if (call.tool !== 'git_commit') return false
-  for (let i = recentToolHistory.length - 1; i >= Math.max(0, recentToolHistory.length - 14); i -= 1) {
-    const h = recentToolHistory[i]
-    if (h?.ok && ['verify_code', 'verify_task', 'npm_test', 'run_tests'].includes(h.tool)) return false
-    if (h?.ok && commandMatches(h, /(npm|pnpm|yarn)\s+(test|run\s+test|run\s+build|build)|vitest|jest|pytest|go\s+test|cargo\s+test|mvn\s+test/i)) return false
-  }
-  return true
 }
 
 function dedupePlanCheck(call, planState) {
@@ -532,20 +464,20 @@ function normaliseSsePayload(res, event, data) {
   return { schema: 'browserai.agent_stream_event.v1', event, seq, timestamp, ...payload, payload }
 }
 
-function sse(res, event, data) {
+function sse(target, event, data) {
   try {
     const now = Date.now()
-    res.__browseraiLastEventAt = now
-    if (!data?.watchdog) res.__browseraiLastRealEventAt = now
-    res.write(`event: ${event}\ndata: ${JSON.stringify(normaliseSsePayload(res, event, data))}\n\n`)
-    res.flush?.()
+    target.__browseraiLastEventAt = now
+    if (!data?.watchdog) target.__browseraiLastRealEventAt = now
+    target.write(`event: ${event}\ndata: ${JSON.stringify(normaliseSsePayload(target, event, data))}\n\n`)
+    target.flush?.()
   } catch { /* best-effort: ignore */ }
 }
 
-function sseKeepAlive(res) {
+function sseKeepAlive(target) {
   try {
-    res.write(': keep-alive\n\n')
-    res.flush?.()
+    target.write(': keep-alive\n\n')
+    target.flush?.()
   } catch { /* best-effort: ignore */ }
 }
 
@@ -573,9 +505,9 @@ async function runReflectionCheck({ provider, ask, draft, toolHistory }) {
   return { needsMoreWork: !!todo, reason: todo ? todo[1].trim() : '', usage: reply.usage }
 }
 
-async function streamFinalAnswer(res, fullText) {
+async function streamFinalAnswer(wrappedRes, fullText) {
   const text = String(fullText || '')
-  if (!text) { sse(res, 'assistant', { text: '' }); return }
+  if (!text) { sse(wrappedRes, 'assistant', { text: '' }); return }
   
   // #37 FIX: Clean up thinking leakage in final answer.
   // Generic fix for any first word: we remove common English meta-preambles
@@ -587,14 +519,14 @@ async function streamFinalAnswer(res, fullText) {
 
   const parts = cleaned.match(/.{1,32}/g) || [cleaned]
   for (const chunk of parts) {
-    sse(res, 'assistant_delta', { chunk })
+    sse(wrappedRes, 'assistant_delta', { chunk })
     await new Promise((r) => setTimeout(r, 10))
   }
-  sse(res, 'assistant', { text: cleaned })
+  sse(wrappedRes, 'assistant', { text: cleaned })
 }
 
 // ── LLM Streaming call ──────────────────────────────────────────────────────
-async function streamingLLMCall(res, step, opts, hooks = {}) {
+async function streamingLLMCall(wrappedRes, step, opts, hooks = {}) {
   const OPEN_RE  = /<(?:x?ai:function_call|tool_use|function_call|thinking|thought)([^>]*)>/i
   const CLOSE_RE = /<\/(?:x?ai:function_call|tool_use|function_call|thinking|thought)>/i
   let scanBuf = '', visibleTextBuf = '', insideXml = false, xmlTagName = '', xmlOpenAttrs = ''
@@ -625,8 +557,8 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
 
   function flushVisibleText() {
     if (!visibleTextBuf) return
-    if (preParsedCalls.length > 0 || insideXml) sse(res, 'thought', { step, text: visibleTextBuf })
-    else sse(res, 'assistant_delta', { step, chunk: visibleTextBuf })
+    if (preParsedCalls.length > 0 || insideXml) sse(wrappedRes, 'thought', { step, text: visibleTextBuf })
+    else sse(wrappedRes, 'assistant_delta', { step, chunk: visibleTextBuf })
     visibleTextBuf = ''
   }
 
@@ -659,10 +591,10 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
         const parsed = parseXmlBody(body, xmlTagName, xmlOpenAttrs)
         xmlTagName = ''; xmlOpenAttrs = ''
         if (parsed) {
-          if (parsed.kind === 'thinking') sse(res, 'thinking_delta', { step, chunk: parsed.text })
+          if (parsed.kind === 'thinking') sse(wrappedRes, 'thinking_delta', { step, chunk: parsed.text })
           else {
             preParsedCalls.push(parsed)
-            sse(res, 'tool_preview', { step, name: parsed.tool, args: parsed.args })
+            sse(wrappedRes, 'tool_preview', { step, name: parsed.tool, args: parsed.args })
             hooks.onParsedCall?.(parsed)
           }
         }
@@ -673,7 +605,7 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
   const result = await callLLMStream({
     ...opts,
     onTextDelta: (chunk, meta) => {
-      if (meta?.kind === 'thinking') sse(res, 'thinking_delta', { step, chunk: String(chunk || '') })
+      if (meta?.kind === 'thinking') sse(wrappedRes, 'thinking_delta', { step, chunk: String(chunk || '') })
       else consumeChunk(String(chunk || ''))
     },
     onToolCallDelta: (tc = {}) => {
@@ -683,7 +615,7 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
       const key = `${idx}:${name}`
       if (nativePreviewed.has(key)) return
       nativePreviewed.add(key)
-      sse(res, 'tool_preview', { step, sub: idx, name, args: safeJson(tc.argsBuf || '{}') })
+      sse(wrappedRes, 'tool_preview', { step, sub: idx, name, args: safeJson(tc.argsBuf || '{}') })
     },
     onUsage: (u) => hooks.onUsage?.(u),
   })
@@ -693,15 +625,15 @@ async function streamingLLMCall(res, step, opts, hooks = {}) {
 }
 
 // ── Lightweight server-side router paths ────────────────────────────────────
-async function runLightweightChat({ res, provider, history, userId, chatId, mode = 'chat' }) {
+async function runLightweightChat({ res, wrappedRes, provider, history, userId, chatId, mode = 'chat' }) {
   const tokens = { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: 0 }
   const lastUser = String([...history].reverse().find((m) => m.role === 'user')?.content || '')
   let webContext = ''
 
   if (mode === 'web' && lastUser) {
-    sse(res, 'tool_start', { step: 0, sub: 0, name: 'web_search', args: { query: lastUser, depth: '1' } })
+    sse(wrappedRes, 'tool_start', { step: 0, sub: 0, name: 'web_search', args: { query: lastUser, depth: '1' } })
     const results = await searchWeb(lastUser, 5).catch(() => [])
-    sse(res, 'tool_result', { step: 0, sub: 0, name: 'web_search', ok: true, result: { results: results.slice(0, 5) } })
+    sse(wrappedRes, 'tool_result', { step: 0, sub: 0, name: 'web_search', ok: true, result: { results: results.slice(0, 5) } })
 
     const pages = []
     for (const r of results.slice(0, 2)) {
@@ -764,18 +696,18 @@ async function runLightweightChat({ res, provider, history, userId, chatId, mode
     tokens.reasoningTokens += Number(reply.usage.reasoningTokens || 0)
     tokens.llmCalls += 1
     try { recordSpend({ userId, chatId, model: provider.model, usage: reply.usage }) } catch { /* ignore */ }
-    sse(res, 'usage', { step: 0, ...reply.usage, totals: { ...tokens } })
+    sse(wrappedRes, 'usage', { step: 0, ...reply.usage, totals: { ...tokens } })
   }
 
-  await streamFinalAnswer(res, reply?.text || '')
-  sseDone(res, { steps: 0, reason: mode === 'web' ? 'server-web-route' : 'server-chat-route' }, tokens)
+  await streamFinalAnswer(wrappedRes, reply?.text || '')
+  sseDone(wrappedRes, { steps: 0, reason: mode === 'web' ? 'server-web-route' : 'server-chat-route' }, tokens)
   res.end()
 }
 
 
-async function runDeterministicAction({ action, res, userId, chatId }) {
+async function runDeterministicAction({ action, res, wrappedRes, userId, chatId }) {
   const tokens = { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: 0 }
-  sse(res, 'agent_context', { deterministicAction: { id: action.id, tool: action.tool, reason: action.reason, risk: action.risk, requiresApproval: action.requiresApproval }, task: { type: action.id, complexity: 'low' } })
+  sse(wrappedRes, 'agent_context', { deterministicAction: { id: action.id, tool: action.tool, reason: action.reason, risk: action.risk, requiresApproval: action.requiresApproval }, task: { type: action.id, complexity: 'low' } })
   if (action.requiresApproval) {
     const { id: aqId, promise: aqPromise, expiresAt } = registerQuestion({
       kind: 'tool_approval', userId, chatId, step: 0, sub: 0,
@@ -783,7 +715,7 @@ async function runDeterministicAction({ action, res, userId, chatId }) {
       question: action.approvalQuestion || `Разрешить ${action.tool}?`,
       options: [{ id: 'approve', label: 'Разрешить' }, { id: 'deny', label: 'Запретить' }],
     })
-    sse(res, 'tool_approval', { step: 0, sub: 0, question_id: aqId, expiresAt, tool: action.tool, category: categoryOf(action.tool), args: action.args || {} })
+    sse(wrappedRes, 'tool_approval', { step: 0, sub: 0, question_id: aqId, expiresAt, tool: action.tool, category: categoryOf(action.tool), args: action.args || {} })
     let approved = false
     try {
       const ans = await aqPromise
@@ -791,8 +723,8 @@ async function runDeterministicAction({ action, res, userId, chatId }) {
       approved = ['approve', 'yes', 'ok', 'allow', 'true', 'разрешить'].includes(pick.toLowerCase().trim())
     } catch { /* denied/expired */ }
     if (!approved) {
-      await streamFinalAnswer(res, '❌ Действие отменено: нет подтверждения.')
-      sseDone(res, { steps: 0, reason: `${action.id}-denied` }, tokens)
+      await streamFinalAnswer(wrappedRes, '❌ Действие отменено: нет подтверждения.')
+      sseDone(wrappedRes, { steps: 0, reason: `${action.id}-denied` }, tokens)
       res.end()
       return
     }
@@ -800,10 +732,10 @@ async function runDeterministicAction({ action, res, userId, chatId }) {
   // Deterministic actions are intentionally compact: no visible tool_start card,
   // no LLM thinking. We still emit tool_result so the workspace panel refreshes.
   const r = await invokeTool(action.tool, action.args || {}, { userId, chatId })
-  sse(res, 'tool_result', { step: 0, sub: 0, name: action.tool, ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult(action.tool, r, { step: 0, sub: 0 }), compact: true })
+  sse(wrappedRes, 'tool_result', { step: 0, sub: 0, name: action.tool, ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult(action.tool, r, { step: 0, sub: 0 }), compact: true })
   const text = r.ok ? action.successText?.(r) : action.errorText?.(r)
-  await streamFinalAnswer(res, text || (r.ok ? '✅ Готово.' : `❌ Ошибка: ${r.error || 'unknown error'}`))
-  sseDone(res, { steps: 0, reason: r.ok ? (action.successReason || `${action.id}-done`) : (action.errorReason || `${action.id}-error`) }, tokens)
+  await streamFinalAnswer(wrappedRes, text || (r.ok ? '✅ Готово.' : `❌ Ошибка: ${r.error || 'unknown error'}`))
+  sseDone(wrappedRes, { steps: 0, reason: r.ok ? (action.successReason || `${action.id}-done`) : (action.errorReason || `${action.id}-error`) }, tokens)
   res.end()
 }
 
@@ -812,30 +744,132 @@ function getRecoveryHint(tool, error, args = {}, recentToolHistory = []) {
   return recoveryHint({ tool, error, args, recentToolHistory })
 }
 
-// ── Agent Loop ──────────────────────────────────────────────────────────────
-export async function runAgent(opts) {
-  return withWorkspaceScope(opts?.workspaceScope || '', () => runAgentInner({ ...(opts || {}), workspaceScope: opts?.workspaceScope || '' }))
+
+// Approach 6 — sseTrace wrapper: proxies res for write()/end() so sse() can
+// capture every emitted event into the replay artifact, while still
+// delivering them to the real client response.
+function wrapResForSseTrace(realRes, trace) {
+  const proxy = Object.create(realRes)
+  proxy.write = (chunk) => {
+    try {
+      const text = String(chunk || '')
+      const lines = text.split(/\n\n/)
+      for (const block of lines) {
+        if (!block.trim() || block.startsWith(':')) continue
+        const evtMatch = block.match(/^event: ([^\n]+)/m)
+        const dataMatch = block.match(/^data: ([^\n]+)/m)
+        if (evtMatch) {
+          let payload = null
+          if (dataMatch) {
+            try { payload = JSON.parse(dataMatch[1]) } catch { payload = dataMatch[1] }
+          }
+          trace.push({ event: evtMatch[1].trim(), at: Date.now(), payload })
+        }
+      }
+    } catch { /* ignore capture failures */ }
+    return realRes.write(chunk)
+  }
+  proxy.end = (chunk) => { try { return realRes.end(chunk) } catch { return realRes.end() } }
+  proxy.flush = () => { try { return realRes.flush?.() } catch { /* ignore */ } }
+  proxy.flushHeaders = () => { try { return realRes.flushHeaders?.() } catch { /* ignore */ } }
+  proxy.setHeader = (...args) => { try { return realRes.setHeader(...args) } catch { return undefined } }
+  proxy.on = (...args) => { try { return realRes.on?.(...args) } catch { return undefined } }
+  proxy.emit = (...args) => { try { return realRes.emit?.(...args) } catch { return undefined } }
+  return proxy
 }
 
-async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_STEPS, extraSystem = '', userId = '', workspaceScope = '', res }) {
+// Approach 6 — finalize a run: emit finalization + run_end on the runLog,
+// persist to disk, build + save the replay artifact.
+function finalizeRun({ runLog, sseTrace, history, finalStatus, reason, step, maxSteps, recentToolHistory, agentContext, res, startTime, route = '/api/agent/chat' }) {
+  try {
+    if (!runLog) return
+    runLog.finalization({
+      reason,
+      taskCompleted: Boolean(finalStatus?.taskCompleted),
+      verified: Boolean(finalStatus?.verified),
+      blockers: finalStatus?.blockers || [],
+    })
+    const lastError = sseTrace.find((e) => e?.event === 'error')
+    if (lastError) {
+      runLog.error({
+        err: new Error(lastError.payload?.message || 'sse-error'),
+        tool: lastError.payload?.tool || null,
+        exitReason: reason,
+        route,
+        context: { reason },
+      })
+    }
+    if (['deadline', 'max-steps', 'crash', 'llm-error', 'no-provider', 'cap-reached'].includes(reason)) {
+      runLog.error({ reason: 'termination: ' + reason, exitReason: reason, route, context: { reason } })
+    }
+    runLog.run_end({ durationMs: Date.now() - startTime, endedStep: step })
+    runLog.persist()
+    const lastUserAsk = ([...(history || [])].reverse().find((m) => m?.role === 'user')?.content || '').slice(0, 240)
+    const artifact = _buildReplayArtifact({
+      runId: runLog.runId,
+      runLog,
+      finalStatus,
+      reason,
+      history: recentToolHistory || [],
+      sseTrace,
+      provider: { baseUrl: runLog.getState().provider?.baseUrl, model: runLog.getState().provider?.model },
+      input: { lastUserAsk, chatId: runLog.getState().task?.chatId, taskType: runLog.getState().task?.type, historySize: (history || []).length },
+    })
+    _saveReplay(artifact)
+  } catch { /* best-effort: don't break agent loop on log failure */ }
+}
+
+// ── Agent Loop ──────────────────────────────────────────────────────────────
+export async function runAgent(opts) {
+  return withWorkspaceScope(opts?.workspaceScope || '', async () => {
+    await ensureWorkspaceRoot()
+    return runAgentInner({ ...(opts || {}), workspaceScope: opts?.workspaceScope || '' })
+  })
+}
+
+async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_STEPS, extraSystem = '', userId = '', workspaceScope = '', res, runId: runIdOpt = '', taskType: taskTypeOpt = '' }) {
   const chatId = String(workspaceScope || '')
+  const startTime = Date.now()
+  log.info('agent_start', { chatId, model: provider?.model, taskType: (typeof taskTypeOpt === 'string' && taskTypeOpt) ? taskTypeOpt : 'task', maxSteps })
+
+  // Approach 6 — Observability. Per-run structured log + replay artifact.
+  const runLog = _createRunLog({
+    runId: runIdOpt || _newRunId(),
+    provider,
+    routeMode: 'agent',
+    taskType: (typeof taskTypeOpt === 'string' && taskTypeOpt) ? taskTypeOpt : 'task',
+    userId,
+    chatId,
+    maxSteps,
+    route: '/api/agent/chat',
+    scope: chatId,
+  })
+  runLog.run_start({ firstUserAsk: ([...history].reverse().find((m) => m?.role === 'user')?.content || '').slice(0, 240) })
+  const sseTrace = []
+  const wrappedRes = wrapResForSseTrace(res, sseTrace)
+  
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
   res.setHeader('X-Accel-Buffering', 'no')
   res.flushHeaders?.()
 
-  sse(res, 'stream_protocol', { version: 1, events: ['stream_protocol', 'agent_context', 'agent_task', 'agent_state', 'thinking', 'thinking_delta', 'assistant_delta', 'assistant', 'thought', 'tool_preview', 'tool_router', 'tool_start', 'tool_progress', 'tool_result', 'tool_diagnostic', 'ask_user', 'tool_approval', 'usage', 'done', 'error'] })
+  const currentAbortCtl = new AbortController()
+
+  // Moved after headers sent
+  sse(wrappedRes, 'stream_protocol', { version: 1, events: ['stream_protocol', 'agent_context', 'agent_task', 'agent_state', 'thinking', 'thinking_delta', 'assistant_delta', 'assistant', 'thought', 'tool_preview', 'tool_router', 'tool_start', 'tool_progress', 'tool_result', 'tool_diagnostic', 'ask_user', 'tool_approval', 'usage', 'done', 'error'] })
 
   if (chatId) {
     const existing = activeRunsByChat.get(chatId)
-    if (existing && Date.now() - existing.startedAt < DEFAULT_DEADLINE_MS + 60_000) {
-      sse(res, 'error', { message: 'В этом чате уже выполняется запрос. Дождитесь завершения или нажмите Stop.' })
-      sseDone(res, { steps: 0, reason: 'duplicate-run-blocked' }, { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: 0 })
-      res.end()
-      return
+    if (existing) {
+      // #42 FIX: Instead of blocking, automatically abort the previous run
+      // and start the new one. This prevents the "Request already running" error.
+      try {
+        existing.abortCtl.abort('superseded by new request')
+      } catch (e) { /* ignore */ }
+      activeRunsByChat.delete(chatId)
     }
-    activeRunsByChat.set(chatId, { startedAt: Date.now() })
+    activeRunsByChat.set(chatId, { startedAt: Date.now(), abortCtl: currentAbortCtl })
   }
 
   const tokens = { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: 0 }
@@ -846,13 +880,14 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   }
 
   if (!provider?.baseUrl || !provider?.apiKey) {
-    sse(res, 'error', { message: 'Provider not configured' }); sseDone(res, { steps: 0, reason: 'no-provider' }, tokens); res.end(); if (chatId) activeRunsByChat.delete(chatId); return
+    const finalStatus = buildFinalStatus({ agentContext: {}, recentToolHistory: [], agentState: {}, aborted: false, step: 0, maxSteps: 0, reason: 'no-provider', userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths: new Set(), okReadPaths: new Set() })
+    sse(wrappedRes, 'error', { message: 'Provider not configured', finalStatus }); sseDone(wrappedRes, { steps: 0, reason: 'no-provider', finalStatus }, tokens); finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'no-provider', step: 0, maxSteps: 0, recentToolHistory: [], agentContext: {}, res, startTime, route: '/api/agent/chat' }); res.end(); if (chatId) activeRunsByChat.delete(chatId); return
   }
 
   const deterministicAction = routeDeterministicAction(history)
   if (deterministicAction) {
     try {
-      await runDeterministicAction({ action: deterministicAction, res, userId, chatId })
+      await runDeterministicAction({ action: deterministicAction, res, wrappedRes, userId, chatId })
     } finally {
       if (chatId) activeRunsByChat.delete(chatId)
     }
@@ -885,14 +920,14 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   }
 
   if (provider.baseUrl !== 'mock' && !provider.forceAgent && (serverRoute.mode === 'chat' || serverRoute.mode === 'web')) {
-    sse(res, 'agent_context', { ...agentContext, serverRoute })
+    sse(wrappedRes, 'agent_context', { ...agentContext, serverRoute })
     let escalated = false
     try {
-      await runLightweightChat({ res, provider, history, userId, chatId, mode: serverRoute.mode })
+      await runLightweightChat({ res, wrappedRes, provider, history, userId, chatId, mode: serverRoute.mode })
     } catch (err) {
       if (err.message === 'escalate-to-agent') {
         escalated = true
-        sse(res, 'thought', { step: 0, text: '🔄 Автоматическая эскалация: Обнаружен вызов инструментов в режиме чата. Повышаю режим до полноценного Режима Агента для безопасного выполнения!' })
+        sse(wrappedRes, 'thought', { step: 0, text: '🔄 Автоматическая эскалация: Обнаружен вызов инструментов в режиме чата. Повышаю режим до полноценного Режима Агента для безопасного выполнения!' })
         serverRoute = { mode: 'agent', reason: 'escalated-from-chat', icon: '🤖' }
       } else {
         if (chatId) activeRunsByChat.delete(chatId)
@@ -905,7 +940,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
     }
   }
 
-  const liteRun = agentContext?.task?.complexity === 'low'
+  const liteRun = agentContext?.task?.complexity === 'low' || isDeepSeekWebUrl(provider?.baseUrl || '')
   const toolProfile = toolProfileForTask(agentContext?.task)
   const activeToolNames = liteRun ? null : profileToolNames(toolProfile)
   const allowedToolSet = activeToolNames ? new Set(activeToolNames) : null
@@ -917,8 +952,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   const convo = [{ role: 'system', content: systemPrompt }, ...history]
   const deadline = Date.now() + DEFAULT_DEADLINE_MS
   let step = 0, aborted = false
-  const abortCtl = new AbortController()
-  res.on('close', () => { aborted = true; abortCtl.abort('client closed') })
+  res.on('close', () => { aborted = true; currentAbortCtl.abort('client closed') })
 
   if (agentContext.runtime.effectiveMaxSteps > maxSteps) maxSteps = agentContext.runtime.effectiveMaxSteps
   const agentState = createAgentState({ agentContext, history })
@@ -947,7 +981,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       ? `Всё ещё выполняю инструмент ${activeTool} (${Math.round(idleMs / 1000)}с без вывода)…`
       : `Всё ещё жду ${phase === 'llm' ? 'ответ модели' : 'следующий шаг'} (${Math.round(idleMs / 1000)}с без событий)…`
 
-    sse(res, 'agent_state', {
+    sse(wrappedRes, 'agent_state', {
       ...agentState,
       status: phase === 'tool' ? 'running' : 'thinking',
       currentStep,
@@ -958,7 +992,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
     // long builds can be quiet but still healthy; tool-level timeouts handle them.
     if (phase === 'llm' && idleMs > LLM_HARD_IDLE_MS && !watchdogAborted) {
       watchdogAborted = true
-      try { abortCtl.abort(new Error('LLM idle watchdog timeout')) } catch { /* ignore */ }
+      try { currentAbortCtl.abort(new Error('LLM idle watchdog timeout')) } catch { /* ignore */ }
     }
   }, 15_000)
   idleWatchdog.unref?.()
@@ -982,7 +1016,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   if (toolStrategyDirective) convo.push({ role: 'user', content: toolStrategyDirective })
   if (doneCriteriaDirective) convo.push({ role: 'user', content: doneCriteriaDirective })
   
-  sse(res, 'agent_context', { ...agentContext, toolProfile, toolNames: activeToolNames }); sse(res, 'agent_state', agentState)
+  sse(wrappedRes, 'agent_context', { ...agentContext, toolProfile, toolNames: activeToolNames }); sse(wrappedRes, 'agent_state', agentState)
   if (res.flushHeaders) res.flushHeaders()
 
   // Automatic memory preload disabled: it added noisy, low-value tool cards
@@ -1006,7 +1040,15 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   const keepAliveInterval = setInterval(() => sseKeepAlive(res), 15_000)
   res.on('close', () => clearInterval(keepAliveInterval))
 
+  // recentToolHistory: хранит до TOOL_HISTORY_MAX записей.
+  // Без ограничения на runs с maxSteps=60 список мог вырасти до 60×N записей.
+  // Obligation/stuck/evidence checks используют последние записи — cap не теряет важного контекста.
+  const TOOL_HISTORY_MAX = 120
   const recentCallFingerprints = [], recentToolHistory = [], planState = { done: new Set() }
+  function pushToolHistory(entry) {
+    recentToolHistory.push(entry)
+    if (recentToolHistory.length > TOOL_HISTORY_MAX) recentToolHistory.shift()
+  }
   let currentPhase = 'execute'
   let currentPhaseAllowedSet = null
   let autoSnapshotCreated = false
@@ -1016,15 +1058,21 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   const okReadPaths = new Set(), failedReadPaths = new Set()
   let fabricationPushback = false
   let verificationPushback = false
+  let explicitLocalTestPushback = false
+  let localTestSuccessClaimPushback = false
+  let unsupportedEnvClaimPushback = false
   const obligationPushbacks = new Map()
   let pushedBackThisTurn = false
   let consecutiveFailures = 0
+  const budget = createRetryBudget()
+  let lastPhaseChangeStep = 0
 
   try {
     while (step < maxSteps) {
 
       if (Date.now() > deadline) {
-        sse(res, 'error', { message: 'Deadline exceeded' }); sseDone(res, { steps: step, reason: 'deadline' }, tokens); break
+        const finalStatus = buildFinalStatus({ agentContext, recentToolHistory, agentState, aborted, step, maxSteps, reason: 'deadline', userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths, okReadPaths })
+        sse(wrappedRes, 'error', { message: 'Deadline exceeded', finalStatus }); sseDone(wrappedRes, { steps: step, reason: 'deadline', finalStatus }, tokens); finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'deadline', step, maxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' }); break
       }
       step += 1
       if (step > 1 && step % 6 === 0) {
@@ -1033,10 +1081,22 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       }
       pushedBackThisTurn = false
       const phaseInfo = deriveTaskPhase({ agentContext, agentState, recentToolHistory })
+      if (phaseInfo.phase !== currentPhase) lastPhaseChangeStep = step
       currentPhase = phaseInfo.phase
       currentPhaseAllowedSet = allowedToolsForPhase(currentPhase)
       agentState.phase = currentPhase
       agentState.phaseReason = phaseInfo.reason
+
+      // State machine: stuck detection + escalation pushback
+      const stuck = detectStuck({ recentToolHistory, budget, phase: currentPhase, step, planState, lastPhaseChangeStep })
+      const escalation = shouldEscalate({ stuck, budget, step, maxSteps })
+      if (escalation.escalate && !pushedBackThisTurn) {
+        pushedBackThisTurn = true
+        const escText = buildEscalationPrompt({ stuck, currentPhase, step })
+        sse(wrappedRes, 'thought', { step, text: `⚠️ ${escalation.reason}` })
+        convo.push({ role: 'user', content: escText })
+      }
+
       try { if (persistedTask) updateAgentTask(persistedTask.id, { phase: currentPhase, state: agentState, history: convo }) } catch { /* best-effort */ }
       upsertAgentStateDigest(convo, agentState, recentToolHistory)
       manageContext(convo, provider?.model)
@@ -1049,36 +1109,51 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       res.__agentActiveTool = ''
       agentState.currentStep = `Step ${step}: Thinking...`
       agentState.updatedAt = new Date().toISOString()
-      sse(res, 'thinking', { step })
-      sse(res, 'agent_state', agentState)
+      sse(wrappedRes, 'thinking', { step })
+      sse(wrappedRes, 'agent_state', agentState)
 
       const capCheck = checkCap(userId)
-      if (!capCheck.ok) { sse(res, 'error', { message: capCheck.reason }); sseDone(res, { steps: step, reason: 'cap-reached' }, tokens); res.end(); return }
+      if (!capCheck.ok) {
+        const finalStatus = buildFinalStatus({ agentContext, recentToolHistory, agentState, aborted, step, maxSteps, reason: 'cap-reached', userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths, okReadPaths })
+        sse(wrappedRes, 'error', { message: capCheck.reason, finalStatus }); sseDone(wrappedRes, { steps: step, reason: 'cap-reached', finalStatus }, tokens); finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'cap-reached', step, maxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' }); res.end(); return
+      }
 
       const routing = shouldUseCheapEditor({ provider, step, recentToolHistory, userId })
       const activeProvider = routing.useCheap ? wrapProviderForEditor(provider, routing.cheapModel) : provider
-      if (routing.useCheap) sse(res, 'thought', { step, text: routingLabel(routing) })
+      if (routing.useCheap) sse(wrappedRes, 'thought', { step, text: routingLabel(routing) })
 
       let currentModel = activeProvider.model
       if (consecutiveFailures >= 3 && currentModel === 'deepseek-chat') {
         currentModel = 'deepseek-reasoner'
-        sse(res, 'thought', { step, text: '🔄 Автоматическое самоисцеление: Обнаружено 3 последовательных сбоя. Временно повышаю уровень интеллекта модели до deepseek-reasoner для выхода из тупика!' })
+        sse(wrappedRes, 'thought', { step, text: '🔄 Автоматическое самоисцеление: Обнаружено 3 последовательных сбоя. Временно повышаю уровень интеллекта модели до deepseek-reasoner для выхода из тупика!' })
       }
 
       let reply, streamedFinalAnswer = false
       try {
         const useStream = supportsStreaming(activeProvider.baseUrl)
         const messagesWithCache = applyAnthropicCacheHints(convo, activeProvider.baseUrl)
-        const llmArgs = { baseUrl: activeProvider.baseUrl, apiKey: activeProvider.apiKey, authType: activeProvider.authType || 'bearer', authHeader: activeProvider.authHeader || '', extraHeaders: activeProvider.extraHeaders || {}, model: currentModel, messages: messagesWithCache, temperature: Number(activeProvider.temperature ?? 0.3), signal: abortCtl.signal, ...(useNativeTools ? { tools: toolsSpec, toolChoice: 'auto' } : {}) }
+        const llmArgs = {
+          baseUrl: activeProvider.baseUrl,
+          apiKey: activeProvider.apiKey,
+          authType: activeProvider.authType || 'bearer',
+          authHeader: activeProvider.authHeader || '',
+          extraHeaders: activeProvider.extraHeaders || {},
+          model: currentModel,
+          messages: messagesWithCache,
+          temperature: Number(activeProvider.temperature ?? 0.3),
+          signal: currentAbortCtl.signal,
+          ...(useNativeTools ? { tools: toolsSpec, toolChoice: 'auto' } : {})
+        }
         if (useStream) {
-          reply = await streamingLLMCall(res, step, llmArgs, { onUsage: (u) => accumulateUsage(u) })
+          reply = await streamingLLMCall(wrappedRes, step, llmArgs, { onUsage: (u) => accumulateUsage(u) })
           streamedFinalAnswer = !reply.toolCalls?.length && !reply.preParsedCalls?.length
         } else {
           reply = await callLLM(llmArgs); accumulateUsage(reply?.usage)
         }
       } catch (e) {
         const providerError = normalizeProviderError(e, { baseUrl: provider.baseUrl, model: provider.model, phase: 'agent-llm-call' })
-        sse(res, 'error', { message: 'LLM failed: ' + providerError.message, providerError }); sseDone(res, { steps: step, reason: 'llm-error' }, tokens); res.end(); return
+        const finalStatus = buildFinalStatus({ agentContext, recentToolHistory, agentState, aborted, step, maxSteps, reason: 'llm-error', error: providerError, userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths, okReadPaths })
+        sse(wrappedRes, 'error', { message: 'LLM failed: ' + safeErrorMessage(providerError.message), providerError: safeProviderError(providerError), finalStatus }); sseDone(wrappedRes, { steps: step, reason: 'llm-error', finalStatus }, tokens); finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'llm-error', step, maxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' }); res.end(); return
       }
 
       res.__agentPhase = 'agent'
@@ -1086,7 +1161,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
       let spendNote = null
       try { spendNote = recordSpend({ userId, chatId, model: activeProvider.model, usage: reply?.usage || {} }) } catch { /* best-effort: ignore */ }
-      if (reply?.usage) sse(res, 'usage', { step, ...reply.usage, totals: { ...tokens }, cost: spendNote?.cost || 0 })
+      if (reply?.usage) sse(wrappedRes, 'usage', { step, ...reply.usage, totals: { ...tokens }, cost: spendNote?.cost || 0 })
 
       let calls = []
       if (useNativeTools && Array.isArray(reply.toolCalls)) {
@@ -1118,12 +1193,12 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       if (calls.length === 0) {
         if (looksLikeUnapplliedCodeReply(reply.text, history) && !aborted && !pushedBackThisTurn) {
           pushedBackThisTurn = true
-          sse(res, 'thought', { step, text: 'Code not applied. Requesting fix.' })
+          sse(wrappedRes, 'thought', { step, text: 'Code not applied. Requesting fix.' })
           convo.push({ role: 'user', content: 'You provided code without tool calls. Apply changes with write_file/edit_file now.' }); continue
         }
         if (step === 1 && !pushedBackThisTurn && !aborted) {
           pushedBackThisTurn = true
-          sse(res, 'thought', { step, text: 'No tools called. Forcing action.' })
+          sse(wrappedRes, 'thought', { step, text: 'No tools called. Forcing action.' })
           convo.push({ role: 'user', content: 'ACT now by calling a tool.' }); continue
         }
 
@@ -1137,7 +1212,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
           })
           if (cited.length > 0) {
             fabricationPushback = true
-            sse(res, 'thought', { step, text: `Самопроверка: ответ ссылается на файлы, которые НЕ удалось прочитать (${cited.slice(0, 5).join(', ')}). Требую переработку по реальным файлам.` })
+            sse(wrappedRes, 'thought', { step, text: `Самопроверка: ответ ссылается на файлы, которые НЕ удалось прочитать (${cited.slice(0, 5).join(', ')}). Требую переработку по реальным файлам.` })
             convo.push({ role: 'user', content: `[fabrication_check] Your draft cites files that DO NOT EXIST — every read_file on them failed: ${cited.join(', ')}. You invented their content. Start over: call list_files to see the REAL tree, read_file the REAL files, and rewrite the answer using only verbatim quotes from successful read_file results. Do not mention non-existent files.` })
             continue
           }
@@ -1145,6 +1220,9 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
         const lastUserAsk = [...history].reverse().find((m) => m.role === 'user')?.content || ''
         const didRealWork = recentToolHistory.some((h) => h.ok && !['ask_user', 'recall_facts', 'plan_check', 'plan_set'].includes(h.tool))
+        const explicitLocalTestRequested = askedForExplicitLocalTest(lastUserAsk)
+        const localTestAttempted = hasLocalTestAttempt(recentToolHistory)
+        const localTestPassed = hasSuccessfulLocalTest(recentToolHistory)
         if (didRealWork && !convo.some(m => m.role === 'user' && String(m.content).startsWith('[reflection]')) && !aborted) {
           // Hard 20s cap: reflection is advisory — a hanging provider call
           // here must never block stream completion (same spinner-hang class).
@@ -1153,20 +1231,41 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
             new Promise((r) => setTimeout(() => r(null), 20_000)),
           ]).catch(() => null)
           if (verdict?.needsMoreWork) {
-            sse(res, 'thought', { step, text: `Самопроверка: ${verdict.reason}` })
+            sse(wrappedRes, 'thought', { step, text: `Самопроверка: ${verdict.reason}` })
             convo.push({ role: 'user', content: `[reflection] Gaps identified:\n${verdict.reason}` }); continue
           }
         }
         if (!verificationPushback && needsVerificationSinceLastEdit(recentToolHistory) && !aborted) {
           verificationPushback = true
-          sse(res, 'thought', { step, text: 'Самопроверка: после изменения кода не было verify_code/npm_test. Запускаю проверку перед финальным ответом.' })
+          sse(wrappedRes, 'thought', { step, text: 'Самопроверка: после изменения кода не было verify_code/npm_test. Запускаю проверку перед финальным ответом.' })
           convo.push({ role: 'user', content: `[verification_required]\nYou changed code/config files but have not verified them after the last edit. Call verify_task, verify_code on touched files, or npm_test now. Do not final-answer until verification is done or explicitly explain a skipped verifier via tool result.` })
+          continue
+        }
+
+        if (explicitLocalTestRequested && !localTestAttempted && !explicitLocalTestPushback && !aborted) {
+          explicitLocalTestPushback = true
+          sse(wrappedRes, 'thought', { step, text: 'Самопроверка: пользователь явно просил локальный тест, но реальный запуск теста ещё не подтверждён. Требую выполнить тест до финального ответа.' })
+          convo.push({ role: 'user', content: `[explicit_local_test_enforcement]\nThe user explicitly asked for a real local test run. Before the final answer, run the exact local test command now via bash, shell_session_run, npm_test, or verify_task. Quote the real stdout/stderr or the exact failing command in the final answer. Do not skip this step.` })
+          continue
+        }
+
+        if (hasStrongLocalTestSuccessClaim(reply.text || '') && !localTestPassed && !localTestSuccessClaimPushback && !aborted) {
+          localTestSuccessClaimPushback = true
+          sse(wrappedRes, 'thought', { step, text: 'Самопроверка: черновик заявляет, что тесты прошли, но в tool history нет успешного подтверждения. Требую реальный rerun или исправление отчёта.' })
+          convo.push({ role: 'user', content: `[test_success_claim_check]\nYour draft claims that tests passed, but there is no successful local test evidence in tool history. Re-run the exact local test command now and keep the success claim only if the tool output actually passes. Otherwise correct the final answer to reflect the real failure/output.` })
+          continue
+        }
+
+        if (Boolean(agentContext?.task?.obligations?.verify) && hasUnsupportedEnvironmentClaim(reply.text || '') && !localTestAttempted && !unsupportedEnvClaimPushback && !aborted) {
+          unsupportedEnvClaimPushback = true
+          sse(wrappedRes, 'thought', { step, text: 'Самопроверка: черновик заявляет, что локальная проверка невозможна, но прямого tool evidence нет. Требую явный rerun и точный stdout/stderr.' })
+          convo.push({ role: 'user', content: `[test_blocker_evidence_check]\nYour draft claims that local verification is impossible / blocked by the environment. Do NOT make that claim without direct tool evidence. Run the exact local verification command now via bash or shell_session_run. If it truly cannot run, quote the exact command and the exact tool error verbatim in the final answer.` })
           continue
         }
 
         const doneCriteriaGap = unmetDoneCriteria(agentContext?.task?.type, recentToolHistory)
         if (doneCriteriaGap && !aborted) {
-          sse(res, 'thought', { step, text: `Критерии завершения ещё не выполнены: ${doneCriteriaGap}` })
+          sse(wrappedRes, 'thought', { step, text: `Критерии завершения ещё не выполнены: ${doneCriteriaGap}` })
           convo.push({ role: 'user', content: `[done_criteria_enforcement]\n${doneCriteriaGap}\nContinue with the required tool call(s). Do not final-answer yet.` })
           continue
         }
@@ -1177,7 +1276,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
           if (prev < 2) {
             obligationPushbacks.set(obligationGap.key, prev + 1)
             agentState.obligationStatus = obligationGap.status
-            sse(res, 'thought', { step, text: `Автопилот не завершает задачу: ${obligationGap.message}. Продолжаю выполнять обязательный шаг.` })
+            sse(wrappedRes, 'thought', { step, text: `Автопилот не завершает задачу: ${obligationGap.message}. Продолжаю выполнять обязательный шаг.` })
             convo.push({ role: 'user', content: `[goal_obligation_enforcement]\nThe user request implies obligation "${obligationGap.key}" but it is not satisfied yet: ${obligationGap.message}.\n\nCurrent obligation status:\n${JSON.stringify(obligationGap.status, null, 2)}\n\nContinue with the required tool call(s). If impossible because of credentials/approval/policy/tooling, state the blocker explicitly in the final report with evidence. Do not silently omit this obligation.` })
             continue
           }
@@ -1185,7 +1284,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
         const unfinishedPlan = incompletePlanSteps(agentState)
         if (unfinishedPlan.length > 0 && !aborted) {
-          sse(res, 'thought', { step, text: `План ещё не закрыт: осталось ${unfinishedPlan.length} шаг(ов). Продолжаю выполнение.` })
+          sse(wrappedRes, 'thought', { step, text: `План ещё не закрыт: осталось ${unfinishedPlan.length} шаг(ов). Продолжаю выполнение.` })
           convo.push({ role: 'user', content: `[plan_enforcement]
 You created a plan but have not completed it. Remaining steps:
 ${unfinishedPlan.map((s) => `- ${s.idx}. ${s.text}`).join('\n')}
@@ -1195,8 +1294,8 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
         }
 
         const finalTextWithEvidence = didRealWork ? appendRuntimeEvidence(reply.text || '', agentContext, recentToolHistory, agentState) : (reply.text || '')
-        if (streamedFinalAnswer) sse(res, 'assistant', { text: finalTextWithEvidence })
-        else await streamFinalAnswer(res, finalTextWithEvidence)
+        if (streamedFinalAnswer) sse(wrappedRes, 'assistant', { text: finalTextWithEvidence })
+        else await streamFinalAnswer(wrappedRes, finalTextWithEvidence)
 
         // CRITICAL ORDER: send 'done' and close the stream FIRST. The
         // lesson-extraction below makes an extra LLM call — if it hangs
@@ -1204,8 +1303,20 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
         // sent, the UI spinner never stops and the Composer silently
         // swallows every next message. Lessons are best-effort background
         // work and must never delay stream completion.
-        try { if (persistedTask) finishAgentTask(persistedTask.id, { status: 'succeeded', state: agentState, history: convo }) } catch { /* best-effort */ }
-        sseDone(res, { steps: step, reason: 'final' }, tokens); res.end()
+        const finalStatus = buildFinalStatus({
+          agentContext,
+          recentToolHistory,
+          agentState,
+          aborted,
+          step,
+          maxSteps: DEFAULT_MAX_STEPS,
+          reason: 'final',
+          userText: [...history].reverse().find((m) => m.role === 'user')?.content || '',
+          failedReadPaths,
+          okReadPaths,
+        })
+        try { if (persistedTask) finishAgentTask(persistedTask.id, { status: finalStatus.taskCompleted ? 'succeeded' : (isBlocked(finalStatus) ? 'blocked' : 'partial'), state: agentState, history: convo, finalStatus }) } catch { /* best-effort */ }
+        sseDone(wrappedRes, { steps: step, reason: 'final', finalStatus }, tokens); finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'final', step, maxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' }); res.end()
         if (didRealWork && !aborted && userId) {
           void (async () => {
             try {
@@ -1229,15 +1340,16 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
       // XML-style calls), so without this the text was silently lost.
       const cameFromNativeToolCalls = useNativeTools && Array.isArray(reply.toolCalls) && reply.toolCalls.length > 0
       if (reply.text && String(reply.text).trim() && cameFromNativeToolCalls) {
-        sse(res, 'thought', { step, text: String(reply.text).trim() })
+        sse(wrappedRes, 'thought', { step, text: String(reply.text).trim() })
       }
 
       if (calls.some(c => c.nativeId)) convo.push({ role: 'assistant', content: reply.text || '', tool_calls: calls.filter(c => c.nativeId).map(c => c.nativeRaw) })
       else convo.push({ role: 'assistant', content: reply.text || '' })
 
-      for (let i = 0; i < calls.length; i++) if (calls[i].tool === 'plan_check') calls[i] = dedupePlanCheck(calls[i], planState)
+      calls = calls.map((call) => normalizeRuntimeCall(call))
+      for (let i = 0; i < calls.length; i++) if (calls[i].tool === 'plan_check') calls[i] = normalizeRuntimeCall(dedupePlanCheck(calls[i], planState))
       const readBacks = makeReadBackForEdits(calls)
-      for (const rb of readBacks) calls.push(rb)
+      for (const rb of readBacks) calls.push(normalizeRuntimeCall(rb))
 
       // Execute tool calls sequentially, not in parallel. Some models emit
       // write_file + read_file in the same assistant turn; running them with
@@ -1250,27 +1362,27 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
         const call = calls[idx]
         results.push(await (async () => {
         recentCallFingerprints.push(callFingerprint(call)); if (recentCallFingerprints.length > 20) recentCallFingerprints.shift()
-        if (violatesPreDeployVerify(call, recentToolHistory)) return { call, r: makeToolErrorResult('Blocked: verify_code required.'), pushedBack: true }
+        if (violatesPreDeployVerifyCall(call, recentToolHistory)) return { call, r: makeToolErrorResult('Blocked: verify_code required.'), pushedBack: true }
         if (isStuckLoop(recentCallFingerprints, callFingerprint(call))) return { call, r: makeToolErrorResult('Stuck in loop.'), pushedBack: true }
 
         if (call.unknown) {
           const rErr = makeToolErrorResult(`Инструмент "${call.tool}" не существует. Пожалуйста, используйте только разрешенные инструменты: ${[...allowedToolSet].join(', ')}`)
-          sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
+          sse(wrappedRes, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
           return { call, r: rErr, pushedBack: true }
         }
 
         if (!isToolAllowed(call.tool, allowedToolSet, extraTools)) {
           const rErr = makeToolErrorResult(`Tool ${call.tool} is not available in the current ${toolProfile} tool profile. Use one of: ${[...allowedToolSet].join(', ')}`)
-          sse(res, 'tool_router', { step, sub: idx, name: call.tool, warnings: [rErr.error] })
-          sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
+          sse(wrappedRes, 'tool_router', { step, sub: idx, name: call.tool, warnings: [rErr.error] })
+          sse(wrappedRes, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
           return { call, r: rErr, pushedBack: true }
         }
 
         if (!isToolAllowed(call.tool, currentPhaseAllowedSet, extraTools)) {
           const allowed = currentPhaseAllowedSet ? [...currentPhaseAllowedSet].join(', ') : 'all profile tools'
           const rErr = makeToolErrorResult(`Tool ${call.tool} is blocked in phase ${currentPhase}. Use one of: ${allowed}`)
-          sse(res, 'tool_router', { step, sub: idx, name: call.tool, warnings: [rErr.error], phase: currentPhase })
-          sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
+          sse(wrappedRes, 'tool_router', { step, sub: idx, name: call.tool, warnings: [rErr.error], phase: currentPhase })
+          sse(wrappedRes, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
           return { call, r: rErr, pushedBack: true }
         }
 
@@ -1280,9 +1392,9 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
             pushedBackThisTurn = true
             // v2.24: surface schema errors as a visible thought + tool_result so
             // the UI (and tests) see the self-healing push-back explicitly.
-            sse(res, 'thought', { step, sub: idx, text: `ОШИБКА СХЕМЫ: ${call.tool} — ${validation.error}. Исправляю вызов инструмента.` })
+            sse(wrappedRes, 'thought', { step, sub: idx, text: `ОШИБКА СХЕМЫ: ${call.tool} — ${validation.error}. Исправляю вызов инструмента.` })
             const rErr = makeToolErrorResult(`[schema_error] ${validation.error}`)
-            sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
+            sse(wrappedRes, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
             return { call, r: rErr, pushedBack: true }
           }
           return { call, r: makeToolErrorResult(validation.error) }
@@ -1292,26 +1404,33 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
           try {
             const snap = await withWorkspaceScope(chatId, () => createWorkspaceSnapshot({ label: `before-${call.tool}-step-${step}` }))
             autoSnapshotCreated = true
-            sse(res, 'tool_diagnostic', { step, sub: idx, name: 'workspace_snapshot_create', path: snap.file, message: `Rollback snapshot created: ${snap.id}` })
+            sse(wrappedRes, 'tool_diagnostic', { step, sub: idx, name: 'workspace_snapshot_create', path: snap.file, message: `Rollback snapshot created: ${snap.id}` })
           } catch (e) {
-            sse(res, 'thought', { step, sub: idx, text: `Не удалось создать snapshot перед ${call.tool}: ${e.message}` })
+            sse(wrappedRes, 'thought', { step, sub: idx, text: `Не удалось создать snapshot перед ${call.tool}: ${safeErrorMessage(e)}` })
           }
         }
         if (call.tool !== 'ask_user' && requiresApproval(call.tool, userId, call.args || {})) {
           const { id: aqId, promise: aqPromise, expiresAt } = registerQuestion({ kind: 'tool_approval', userId, chatId, step, sub: idx, tool: call.tool, category: categoryOf(call.tool), question: `Approve ${call.tool}?`, options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }] })
-          sse(res, 'tool_approval', { step, sub: idx, question_id: aqId, expiresAt, tool: call.tool, args: call.args })
+          sse(wrappedRes, 'tool_approval', { step, sub: idx, question_id: aqId, expiresAt, tool: call.tool, args: call.args })
           let approved = false; try { const ans = await aqPromise; const pick = Array.isArray(ans?.selected) ? String(ans.selected[0]) : String(ans?.text || ans); approved = ['approve', 'yes', 'ok', 'allow', 'true'].includes(pick.toLowerCase().trim()) } catch { /* best-effort: ignore */ }
           if (!approved) return { call, r: { ok: false, error: 'User denied.' } }
         }
 
         res.__agentPhase = 'tool'
         res.__agentActiveTool = call.tool
-        sse(res, 'thought', { step, sub: idx, text: narrateToolCall(call.tool, call.args, agentContext), generated: true })
-        sse(res, 'tool_start', { step, sub: idx, name: call.tool, args: call.args })
+        sse(wrappedRes, 'thought', { step, sub: idx, text: narrateRuntimeCall(call, agentContext), generated: true })
+        sse(wrappedRes, 'tool_start', { step, sub: idx, name: call.tool, args: call.args })
+
+        // State machine: record retry budget + advisory guard
+        recordToolCall(budget, call.tool, call.args || {}, step)
+        const guard = guardToolCall({ tool: call.tool, phase: currentPhase, budget, recentToolHistory, step })
+        if (guard.advisory && guard.blocked) {
+          sse(wrappedRes, 'thought', { step, sub: idx, text: `⚠️ ${guard.reason} Proceeding with advisory only.`, generated: true })
+        }
         let r
         if (call.tool === 'ask_user') {
           const aArgs = call.args || {}, rawList = Array.isArray(aArgs.questions) ? aArgs.questions : [{ id: 'q1', question: aArgs.question || '?', options: aArgs.options || [], allowCustomResponse: aArgs.allow_custom !== false, multi: aArgs.multi !== false }]
-          const answers = await Promise.all(rawList.slice(0, 6).map(q => { const { id, promise, expiresAt } = registerQuestion({ kind: 'ask_user', userId, chatId, step, sub: idx, question: q.question, options: q.options, multi: q.multi, allowCustom: q.allowCustomResponse }); sse(res, 'ask_user', { step, sub: idx, question_id: id, expiresAt, question: q.question, options: q.options }); return promise.then(a => ({ ok: true, answer: a }), e => ({ ok: false, error: e.message })) }))
+          const answers = await Promise.all(rawList.slice(0, 6).map(q => { const { id, promise, expiresAt } = registerQuestion({ kind: 'ask_user', userId, chatId, step, sub: idx, question: q.question, options: q.options, multi: q.multi, allowCustom: q.allowCustomResponse }); sse(wrappedRes, 'ask_user', { step, sub: idx, question_id: id, expiresAt, question: q.question, options: q.options }); return promise.then(a => ({ ok: true, answer: a }), e => ({ ok: false, error: e.message })) }))
           r = { ok: true, result: answers.length === 1 ? answers[0].answer : { answers } }
         } else {
           // Expand consolidated tool calls (file→read_file, shell→bash, etc.)
@@ -1327,14 +1446,14 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
               _projectRules: (await withWorkspaceScope(chatId, () => readProjectRules().catch(() => ''))),
               _recentActivity: (await withWorkspaceScope(chatId, () => listRecentWorkspaceActivity({ sinceMs: 24 * 60 * 60 * 1000 }).catch(() => []))).map(a => `${a.reason} ${a.path}`).join(', ')
             }, { 
-              signal: abortCtl.signal, 
-              onStdout: (c) => sse(res, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stdout', chunk: String(c).slice(0, 2000) }), 
-              onStderr: (c) => sse(res, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stderr', chunk: String(c).slice(0, 2000) }), 
+              signal: currentAbortCtl.signal, 
+              onStdout: (c) => sse(wrappedRes, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stdout', chunk: String(c).slice(0, 2000) }), 
+              onStderr: (c) => sse(wrappedRes, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stderr', chunk: String(c).slice(0, 2000) }), 
               userId, chatId, extraTools 
             })
           }
         }
-        const semanticOk = toolSucceeded(call.tool, r)
+        const semanticOk = toolSucceeded(call.tool, r, call.args)
         if (categoryOf(call.tool) !== 'ask') {
           if (!semanticOk) {
             consecutiveFailures++
@@ -1343,34 +1462,34 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
           }
         }
         if (!semanticOk && !pushedBackThisTurn && !aborted && categoryOf(call.tool) !== 'ask') {
-          const semanticError = r.ok ? summarizeToolOutcome(call.tool, r) : r.error
+          const semanticError = r.ok ? summarizeToolOutcome(call.tool, r, call.args) : r.error
           const recovery = getRecoveryAction({ tool: call.tool, error: semanticError, result: r.result, args: call.args, recentToolHistory })
           const hint = recovery?.message || getRecoveryHint(call.tool, semanticError, call.args, recentToolHistory)
           if (hint) {
             pushedBackThisTurn = true
-            sse(res, 'thought', { step, sub: idx, text: `ОШИБКА: ${call.tool} — ${semanticError}. Исправляю…` })
+            sse(wrappedRes, 'thought', { step, sub: idx, text: `ОШИБКА: ${call.tool} — ${semanticError}. Исправляю…` })
             const rErr = makeToolErrorResult(`[exec_error] ${semanticError}.\n\nREQUIRED ACTION TO RECOVER:\n${hint}\n\nExecute this action now.`)
             rErr.result = r.result
-            sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, result: r.result, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
+            sse(wrappedRes, 'tool_result', { step, sub: idx, name: call.tool, ok: false, result: r.result, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
             return { call, r: rErr, pushedBack: true }
           }
           pushedBackThisTurn = true
-          sse(res, 'thought', { step, sub: idx, text: `Ошибка выполнения: ${call.tool} — ${semanticError}. Пробую восстановиться.` })
+          sse(wrappedRes, 'thought', { step, sub: idx, text: `Ошибка выполнения: ${call.tool} — ${semanticError}. Пробую восстановиться.` })
           const rErr = makeToolErrorResult(`[exec_error] ${semanticError}`)
           rErr.result = r.result
-          sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: false, result: r.result, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
+          sse(wrappedRes, 'tool_result', { step, sub: idx, name: call.tool, ok: false, result: r.result, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
           return { call, r: rErr, pushedBack: true }
         }
-        const stateResult = semanticOk ? r : { ...r, ok: false, error: r.error || summarizeToolOutcome(call.tool, r) }
-        updateAgentStateFromTool(agentState, call.tool, stateResult, call.args); agentState.obligationStatus = obligationCompletionStatus(agentState.obligations || {}, recentToolHistory); try { if (persistedTask) updateAgentTask(persistedTask.id, { phase: agentState.phase || currentPhase, state: agentState, history: convo }) } catch { /* best-effort */ }; sse(res, 'tool_result', { step, sub: idx, name: call.tool, ok: semanticOk, result: r.result, error: semanticOk ? r.error : (r.error || summarizeToolOutcome(call.tool, r)), structured: normalizeToolResult(call.tool, stateResult, { step, sub: idx }) }); sse(res, 'agent_state', agentState)
+        const stateResult = semanticOk ? r : { ...r, ok: false, error: r.error || summarizeToolOutcome(call.tool, r, call.args) }
+        updateAgentStateFromTool(agentState, call.tool, stateResult, call.args); agentState.obligationStatus = obligationCompletionStatus(agentState.obligations || {}, recentToolHistory); try { if (persistedTask) updateAgentTask(persistedTask.id, { phase: agentState.phase || currentPhase, state: agentState, history: convo }) } catch { /* best-effort */ }; sse(wrappedRes, 'tool_result', { step, sub: idx, name: call.tool, ok: semanticOk, result: r.result, error: semanticOk ? r.error : (r.error || summarizeToolOutcome(call.tool, r, call.args)), structured: normalizeToolResult(call.tool, stateResult, { step, sub: idx }) }); sse(wrappedRes, 'agent_state', agentState)
         res.__agentPhase = 'agent'
         res.__agentActiveTool = ''
-        return { call, r }
+        return { call, r, semanticOk }
         })())
       }
 
       let sawPushBack = false
-      for (const res of results) { if (res?.pushedBack) sawPushBack = true; if (res?.call && res?.r) { recentToolHistory.push({ tool: res.call.tool, ok: !!res.r.ok, at: Date.now(), args: summarizeCallArgsForDigest(res.call.args || {}), outcome: summarizeToolOutcome(res.call.tool, res.r) }); if (res.call.tool === 'read_file' && res.call.args?.path) { (res.r.ok ? okReadPaths : failedReadPaths).add(String(res.call.args.path)) } if (res.call.tool === 'plan_set' && res.r.ok) planState.done = new Set(); else if (res.call.tool === 'plan_check' && res.r.ok) (res.r.result?.checked || []).forEach(idx => planState.done.add(Number(idx))) } }
+      for (const res of results) { if (res?.pushedBack) sawPushBack = true; if (res?.call && res?.r) { const semanticOk = typeof res.semanticOk === 'boolean' ? res.semanticOk : !!res.r.ok; const historyEntry = normalizeRuntimeHistoryEntry({ tool: res.call.tool, ok: semanticOk, at: Date.now(), args: summarizeCallArgsForDigest(res.call.args || {}), outcome: summarizeToolOutcome(res.call.tool, res.r, res.call.args || {}) }); pushToolHistory(historyEntry); const semantic = historyEntry.semantic || runtimeSemantics(historyEntry); if (semantic.isRead && semantic.path) { (semanticOk ? okReadPaths : failedReadPaths).add(String(semantic.path)) } if ((res.call.tool === 'plan_set' || (res.call.tool === 'plan' && res.call.args?.action === 'set')) && semanticOk) planState.done = new Set(); else if ((res.call.tool === 'plan_check' || (res.call.tool === 'plan' && res.call.args?.action === 'check')) && semanticOk) (res.r.result?.checked || []).forEach(idx => planState.done.add(Number(idx))) }; try { if (res?.call && runLog) { const sem = runtimeSemantics({ tool: res.call.tool, args: JSON.stringify(res.call.args || {}), outcome: '' }); runLog.toolCall({ tool: res.call.tool, args: summarizeCallArgsForDigest(res.call.args || {}), ok: typeof res.semanticOk === 'boolean' ? res.semanticOk : !!res.r?.ok, semantic: sem, outcome: summarizeToolOutcome(res.call.tool, res.r || {}, res.call.args || {}), error: res.r?.ok ? null : (res.r?.error || null) }) } } catch { /* ignore log failures */ } }
       agentState.obligationStatus = obligationCompletionStatus(agentState.obligations || {}, recentToolHistory)
 
       // Always feed observations back into the conversation, even for
@@ -1390,8 +1509,24 @@ ${obsContent}` })
       if (sawPushBack) continue
 
     }
-    if (step >= maxSteps) { sse(res, 'error', { message: `Stopped after ${maxSteps} steps` }); sseDone(res, { steps: step, reason: 'max-steps' }, tokens) }
-  } catch (e) { try { if (persistedTask) finishAgentTask(persistedTask.id, { status: 'failed', state: agentState, history: convo }) } catch { /* best-effort */ }; sse(res, 'error', { message: e.message }); sseDone(res, { steps: step, reason: 'crash' }, tokens) } finally { clearInterval(idleWatchdog); if (chatId) activeRunsByChat.delete(chatId); try { res.end() } catch { /* best-effort: ignore */ } }
+    if (step >= maxSteps) {
+      const finalStatus = buildFinalStatus({ agentContext, recentToolHistory, agentState, aborted, step, maxSteps, reason: 'max-steps', userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths, okReadPaths })
+      try { if (persistedTask) finishAgentTask(persistedTask.id, { status: 'blocked', state: agentState, history: convo, finalStatus }) } catch { /* best-effort */ }
+      sse(wrappedRes, 'error', { message: `Stopped after ${maxSteps} steps`, finalStatus }); sseDone(wrappedRes, { steps: step, reason: 'max-steps', finalStatus }, tokens); finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'max-steps', step, maxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' })
+    }
+  } catch (e) {
+    const finalStatus = buildFinalStatus({ agentContext, recentToolHistory, agentState, aborted, step, maxSteps, reason: 'crash', error: e, userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths, okReadPaths })
+    try { if (persistedTask) finishAgentTask(persistedTask.id, { status: 'failed', state: agentState, history: convo, finalStatus }) } catch { /* best-effort */ }
+    sse(wrappedRes, 'error', { message: safeErrorMessage(e), finalStatus }); sseDone(wrappedRes, { steps: step, reason: 'crash', finalStatus }, tokens); finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'crash', step, maxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' })
+  } finally { clearInterval(idleWatchdog); if (chatId) activeRunsByChat.delete(chatId); try { res.end() } catch { /* best-effort: ignore */ } }
 }
 
-function sseDone(res, payload, tokens) { sse(res, 'done', { ...payload, tokens }) }
+function sseDone(wrappedRes, payload, tokens) { sse(wrappedRes, 'done', { ...payload, tokens }) }
+
+export const __test = {
+  askedForExplicitLocalTest,
+  hasLocalTestAttempt,
+  hasSuccessfulLocalTest,
+  needsVerificationSinceLastEdit,
+  obligationCompletionStatus,
+}

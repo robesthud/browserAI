@@ -31,6 +31,19 @@ function lastUserText(history = []) {
   return textFromContent(last?.content || '')
 }
 
+// Возвращает true если последнее сообщение пользователя содержит изображение
+// но не содержит текста. Используется для предотвращения ложной классификации
+// image-only запросов как simple_answer (т.к. textFromContent вернёт '[image]').
+function lastUserHasImageOnly(history = []) {
+  const last = [...history].reverse().find((m) => m?.role === 'user')
+  if (!last) return false
+  const content = last.content
+  if (!Array.isArray(content)) return false
+  const hasImage = content.some((p) => p?.type === 'image_url' || p?.type === 'image')
+  const hasText  = content.some((p) => p?.type === 'text' && String(p.text || '').trim())
+  return hasImage && !hasText
+}
+
 export function inferProviderKind(baseUrl = '') {
   let host
   let pathname
@@ -50,7 +63,31 @@ export function inferProviderKind(baseUrl = '') {
   return 'openai-compatible'
 }
 
-export function classifyAgentTask(text = '') {
+function hasNegatedDeployIntent(text = '') {
+  const t = String(text || '').toLowerCase()
+  return /(?:ничего\s+не|не)\s+(?:[\p{L}\p{N}_-]+\s+){0,3}(?:деплой|депол|deploy|production|публикуй|publish|разверни|разворачивай)/iu.test(t)
+    || /без\s+деплоя/iu.test(t)
+}
+
+function hasAffirmativeDeployIntent(text = '') {
+  const t = String(text || '').toLowerCase()
+  const mention = /(деплой|депол|задеплой|deploy|production|разверни|разворачивай)/iu.test(t)
+  return mention && !hasNegatedDeployIntent(t)
+}
+
+// Проверяет, содержит ли текст отрицание перед ключевым словом изменения кода.
+// Примеры: «не исправляй», «ничего не добавляй», «без правок».
+function hasNegatedCodingIntent(text = '') {
+  const t = String(text || '').toLowerCase()
+  return /(?:ничего\s+не|не)\s+(?:[\p{L}\p{N}_-]+\s+){0,3}(?:исправ|почини|реализу|добав|перепиш|измен|обнов|refactor|fix|implement)/iu.test(t)
+    || /без\s+(?:правок|изменений|правки|кода|фикса)/iu.test(t)
+}
+
+export function classifyAgentTask(text = '', { history = [] } = {}) {
+  // Image-only сообщение (без текста) — не simple_answer, требует анализа изображения
+  if (lastUserHasImageOnly(history)) {
+    return { type: 'browser_task', complexity: 'medium', suggestedMaxSteps: 20 }
+  }
   const t = String(text || '').toLowerCase()
   const has = (...words) => words.some((w) => t.includes(w))
 
@@ -76,10 +113,12 @@ export function classifyAgentTask(text = '') {
   // We want to trigger Agent Mode for ANYTHING that looks like work,
   // not just high-complexity requests.
   
-  if (has('деплой', 'разверни', 'сервер', 'timeweb', 'docker', 'nginx', 'ssl', 'ci/cd', 'github actions', 'workflow failed', 'логи', 'logs')) {
+  if (hasAffirmativeDeployIntent(t) || has('сервер', 'timeweb', 'docker', 'nginx', 'ssl', 'ci/cd', 'github actions', 'workflow failed', 'логи', 'logs')) {
     return { type: 'deploy_ops', complexity: 'high', suggestedMaxSteps: 60 }
   }
-  if (has('исправ', 'почини', 'реализуй', 'добавь', 'перепиши', 'refactor', 'fix ', 'implement', 'bug', 'баг', 'ошибк', 'код', 'скрипт', 'script', 'function', 'тест', 'test')) {
+  // Проверяем отрицание перед coding_change, чтобы «не исправляй код»
+  // не попадало в тяжёлый 50-шаговый coding-цикл.
+  if (!hasNegatedCodingIntent(t) && has('исправ', 'почини', 'реализуй', 'добавь', 'перепиши', 'refactor', 'fix ', 'implement', 'bug', 'баг', 'ошибк', 'код', 'скрипт', 'script', 'function', 'тест', 'test')) {
     return { type: 'coding_change', complexity: 'high', suggestedMaxSteps: 50 }
   }
   // NB: plain «файл»/«папка» removed — «создай файл hello.txt» is a simple
@@ -113,7 +152,7 @@ export function detectGoalObligations(text = '', task = {}) {
   const has = (...patterns) => patterns.some((p) => (p instanceof RegExp ? p.test(t) : t.includes(String(p).toLowerCase())))
   const isRealWork = task?.complexity && task.complexity !== 'low'
   const codeChange = task?.type === 'coding_change' || has('исправ', 'почини', 'реализ', 'добав', 'измен', 'перепиш', 'refactor', 'fix ', 'implement', 'bug', 'feature')
-  const deploy = task?.type === 'deploy_ops' || has('деплой', 'депол', 'задеплой', 'разверни', 'deploy', 'production')
+  const deploy = task?.type === 'deploy_ops' || hasAffirmativeDeployIntent(t)
   const commit = has('коммит', 'commit', 'сохрани в git', 'закоммить')
   const push = commit || has('пуш', 'push', 'github', 'гитхаб', 'отправь в репозитор', 'залей')
   const pr = has('pull request', 'pr ', 'пиар', 'создай pr', 'создай pull')
@@ -136,7 +175,7 @@ export function detectGoalObligations(text = '', task = {}) {
 
 export function buildAgentContext({ provider = {}, history = [], extraSystem = '', userId = '', workspaceScope = '', maxSteps = 15 } = {}) {
   const userText = lastUserText(history)
-  const task = classifyAgentTask(userText)
+  const task = classifyAgentTask(userText, { history })
   const obligations = detectGoalObligations(userText, task)
   const providerKind = inferProviderKind(provider.baseUrl || '')
 
