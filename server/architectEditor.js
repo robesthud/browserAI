@@ -29,8 +29,8 @@
  *   wrapProviderForEditor(provider, cheapModel)
  *      → returns a shallow clone of provider with model swapped
  */
-import dbHandle from './db.js'
-import { suggestCheapSibling } from './modelKnowledge.js'
+import dbHandle, { listKeys } from './db.js'
+import { suggestCheapSibling, suggestStrongSibling } from './modelKnowledge.js'
 
 function userMode(userId = '') {
   try {
@@ -107,4 +107,62 @@ export function routingLabel(decision = {}) {
   return null
 }
 
-export default { shouldUseCheapEditor, wrapProviderForEditor, routingLabel }
+/**
+ * Package I: Reviewer model — switch to strong sibling for reflection/review turns.
+ * Called when agent is about to do a final review of changes (post-verify step).
+ * Returns { useStrong, strongModel, reason } 
+ */
+export function reviewerModelFor({ provider, recentToolHistory = [], step = 1 } = {}) {
+  if (!provider?.model) return { useStrong: false }
+  // Only upgrade on reflection/review turns (after verify or test pass)
+  const recentOk = recentToolHistory.slice(-3)
+  const hasVerify = recentOk.some(h => h.ok && (h.semantic?.isVerify || h.semantic?.isLocalTest))
+  const hasCodeChange = recentOk.some(h => h.ok && (h.semantic?.isWrite || h.semantic?.isEdit))
+  if (!hasVerify || !hasCodeChange || step < 3) return { useStrong: false, reason: 'no verify evidence yet' }
+  
+  const strongModel = suggestStrongSibling(provider.model)
+  if (strongModel && strongModel !== provider.model) {
+    return { useStrong: true, strongModel, reason: `reflection turn — upgrade to strong sibling ${strongModel}` }
+  }
+  return { useStrong: false, reason: 'no stronger sibling known' }
+}
+
+export default { shouldUseCheapEditor, wrapProviderForEditor, routingLabel, reviewerModelFor }
+
+export function getAutopilotModelForTurn({ step = 1, recentToolHistory = [], userId = '' } = {}) {
+  let keys = []
+  try {
+    keys = listKeys()
+  } catch (e) {
+    console.warn('[Autopilot Router] DB query failed:', e.message)
+    return null
+  }
+
+  // Gather all available models across all configured keys
+  const allAvailableModels = new Set()
+  for (const k of keys) {
+    if (k.availableModels && Array.isArray(k.availableModels)) {
+      for (const m of k.availableModels) {
+        allAvailableModels.add(String(m).toLowerCase())
+      }
+    }
+    if (k.model) {
+      allAvailableModels.add(String(k.model).toLowerCase())
+    }
+  }
+
+  const isReflectionTurn = recentToolHistory.slice(-1).some(h => h.ok && (h.semantic?.isVerify || h.semantic?.isLocalTest))
+
+  if (step === 1 || isReflectionTurn) {
+    if (allAvailableModels.has('deepseek-reasoner')) return 'deepseek-reasoner'
+    if (allAvailableModels.has('glm-5.2')) return 'glm-5.2'
+    if (allAvailableModels.has('glm-4.7')) return 'glm-4.7'
+    if (allAvailableModels.has('deepseek_chat')) return 'deepseek_chat'
+    return null
+  }
+
+  if (allAvailableModels.has('glm-4.7-flash')) return 'glm-4.7-flash'
+  if (allAvailableModels.has('glm-4.6v-flash')) return 'glm-4.6v-flash'
+  if (allAvailableModels.has('qwen2.5-coder:1.5b')) return 'qwen2.5-coder:1.5b'
+  return null
+}

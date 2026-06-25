@@ -46,6 +46,9 @@ export function normalizeKey(key = {}) {
     name: key.name || '',
     baseUrl: key.baseUrl || 'https://api.openai.com/v1',
     apiKey: key.apiKey || '',
+    maskedApiKey: key.maskedApiKey || '',
+    hasSecret: Boolean(key.hasSecret || key.apiKey),
+    useStoredSecret: key.useStoredSecret !== undefined ? Boolean(key.useStoredSecret) : Boolean(key.hasSecret || key.apiKey),
     model,
     availableModels:
       availableModels.length > 0
@@ -228,13 +231,15 @@ export function findKeyForModel(settings, model) {
 export function resolveActive(settings) {
   const k = getActiveKey(settings)
   return {
+    keyId: k?.id || '',
+    useStoredSecret: Boolean(k?.useStoredSecret || (k?.hasSecret && !k?.apiKey)),
     baseUrl: k?.baseUrl || '',
     apiKey: k?.apiKey || '',
     model: getSelectedModel(k),
     authType: k?.authType || 'bearer',
     authHeader: k?.authHeader || '',
     responsePath: k?.responsePath || '',
-    extraHeaders: (k?.extraHeaders && typeof k.extraHeaders === 'object') ? k.extraHeaders : {},
+    extraHeaders: (k?.extraHeaders && typeof k?.extraHeaders === 'object') ? k.extraHeaders : {},
     systemPrompt: settings?.systemPrompt ?? DEFAULT_PARAMS.systemPrompt,
     temperature: settings?.temperature ?? DEFAULT_PARAMS.temperature,
     stream: settings?.stream ?? DEFAULT_PARAMS.stream,
@@ -244,5 +249,5 @@ export function resolveActive(settings) {
 
 export function isConfigured(settings) {
   const a = resolveActive(settings)
-  return Boolean(a.apiKey && a.baseUrl && a.model)
+  return Boolean((a.apiKey || a.useStoredSecret) && a.baseUrl && a.model)
 }

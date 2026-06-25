@@ -14,7 +14,7 @@ async function readJson(rel) {
 
 async function findFiles(dirRel = '', names = new Set(), depth = 0, out = []) {
   if (depth > 3 || out.length > 40) return out
-  let entries = []
+  let entries
   try { entries = await fs.readdir(safePath(dirRel), { withFileTypes: true }) } catch { return out }
   for (const e of entries) {
     if (EXCLUDED.has(e.name)) continue

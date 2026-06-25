@@ -7,9 +7,8 @@ const DEFAULT_TIMEOUT_MS = 180_000
 const SSH_HOST = process.env.OPS_SSH_HOST || '186.246.31.78'
 const SSH_USER = process.env.OPS_SSH_USER || 'root'
 const SSH_KEY = process.env.OPS_SSH_KEY || '/data/ops/timeweb_ed25519'
-const APP_DIR = process.env.OPS_APP_DIR || (() => {
-  try { const fs = require('fs'); return fs.existsSync('/app/docker-compose.yml') ? '/app' : '/opt/browserai' } catch { return '/opt/browserai' }
-})()
+const APP_DIR = process.env.OPS_APP_DIR ||
+  (existsSync('/app/docker-compose.yml') ? '/app' : '/opt/browserai')
 const TG_TOKEN = process.env.TG_BOT_TOKEN || ''
 const TG_ADMIN_CHAT_ID = process.env.TG_ADMIN_CHAT_ID || process.env.TG_CHAT_ID || ''
 const OPS_SERVICES_FILE = process.env.OPS_SERVICES_FILE || '/data/ops/services.json'
@@ -50,6 +49,7 @@ function clip(s = '', max = 12000) {
 }
 
 function auditOps(event = {}) {
+  // appendFileSync — допустим, т.к. вызывается редко и в fire-and-forget контексте
   try {
     appendFileSync(OPS_AUDIT_LOG, JSON.stringify({ ts: new Date().toISOString(), ...event }) + '\n')
   } catch { /* audit log best effort */ }
@@ -61,6 +61,7 @@ export function readOpsAudit({ limit = 100 } = {}) {
   try {
     if (!existsSync(OPS_AUDIT_LOG)) return []
     const max = Math.min(1000, Math.max(1, Number(limit) || 100))
+    // Читаем только последние N строк — защита от OOM на больших файлах
     const lines = readFileSync(OPS_AUDIT_LOG, 'utf8').split('\n').filter(Boolean)
     const recent = lines.slice(-max).reverse()
     return recent.map((l) => { try { return JSON.parse(l) } catch { return { raw: l.slice(0, 500) } } })
@@ -75,13 +76,16 @@ function shQuote(value = '') {
 
 function runLocal(command, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   return new Promise((resolve) => {
-    const proc = spawn('sh', ['-lc', command], { stdio: ['ignore', 'pipe', 'pipe'] })
+    // Без -l (login shell) — не загружаем .bashrc/.profile, быстрее и безопаснее
+    const proc = spawn('sh', ['-c', command], { stdio: ['ignore', 'pipe', 'pipe'] })
     const out = []
     const err = []
+    let outLen = 0; let errLen = 0
+    const OPS_BUF_LIMIT = 8 * 1024 * 1024  // OPS-1: 8 MB cap — deploy logs can be huge
     let killed = false
     const timer = setTimeout(() => { killed = true; try { proc.kill('SIGKILL') } catch { /* already exited */ } }, timeoutMs)
-    proc.stdout.on('data', (c) => out.push(c))
-    proc.stderr.on('data', (c) => err.push(c))
+    proc.stdout.on('data', (c) => { if (outLen < OPS_BUF_LIMIT) { out.push(c); outLen += c.length } })
+    proc.stderr.on('data', (c) => { if (errLen < OPS_BUF_LIMIT) { err.push(c); errLen += c.length } })
     proc.on('close', (code) => {
       clearTimeout(timer)
       resolve({
@@ -102,7 +106,7 @@ function runSsh(command, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
     'ssh',
     '-i', shQuote(SSH_KEY),
     '-o', 'BatchMode=yes',
-    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', 'StrictHostKeyChecking=yes',
     '-o', 'ConnectTimeout=10',
     `${SSH_USER}@${SSH_HOST}`,
     shQuote(command),
@@ -146,7 +150,9 @@ async function runRestServiceAction(svc, action, params = {}) {
   } else if (auth.type === 'header') {
     const token = process.env[auth.env || ''] || auth.value || ''
     if (!token) throw new Error(`Missing auth header env: ${auth.env}`)
-    headers[auth.header || 'Authorization'] = token
+    // OPS-2: strip CRLF from header name to prevent header injection
+    const safeHeaderName = String(auth.header || 'Authorization').replace(/[\r\n]/g, '').slice(0, 128)
+    headers[safeHeaderName] = token
   } else if (auth.type === 'basic') {
     const user = process.env[auth.userEnv || ''] || auth.user || ''
     const pass = process.env[auth.passEnv || ''] || auth.pass || ''
@@ -480,8 +486,14 @@ export async function runOpsAction({ service, action, params = {}, confirm = fal
   }
 
   const tail = Math.min(500, Math.max(20, Number(params.tail) || 120))
-  const serviceName = String(params.service || 'browserai').replace(/[^a-zA-Z0-9_-]/g, '') || 'browserai'
-  const healthUrl = String(params.url || 'http://127.0.0.1/api/health').replace(/'/g, '')
+  const _rawSvc = String(params.service || 'browserai').replace(/[^a-zA-Z0-9_-]/g, '')
+  // Убеждаемся что имя начинается с буквы/цифры (не только дефисы)
+  const serviceName = /^[a-zA-Z0-9]/.test(_rawSvc) ? _rawSvc : 'browserai'
+  const _rawHealthUrl = String(params.url || 'http://127.0.0.1/api/health').replace(/'/g, '').replace(/[\r\n]/g, '')
+  // OPS-3: allow only http/https health URLs pointing to localhost (ops monitor only checks local app)
+  const healthUrl = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(_rawHealthUrl)
+    ? _rawHealthUrl
+    : 'http://127.0.0.1/api/health'
   const healthTimeout = Math.min(60, Math.max(2, Number(params.timeout_sec || params.timeoutSec) || 10))
   const waitTimeout = Math.min(3600, Math.max(10, Number(params.timeout_sec || params.timeoutSec) || 600))
   const waitInterval = Math.min(60, Math.max(3, Number(params.interval_sec || params.intervalSec) || 10))

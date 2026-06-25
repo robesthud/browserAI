@@ -7,13 +7,15 @@
  * The registry stores metadata so the UI/debug endpoints can restore pending
  * questions for the current user/chat without exposing secrets.
  */
+import { randomBytes } from 'node:crypto'
 const PENDING = new Map()
 const PENDING_TTL_MS = 30 * 60 * 1000  // 30 minutes
  // id -> {resolve,reject,timer,createdAt,expiresAt,meta,status}
-const ASK_TIMEOUT_MS = Number(process.env.BROWSERAI_ASK_TIMEOUT_MS || 10 * 60 * 1000)
+const ASK_TIMEOUT_MS = Number(process.env.BROWSERAI_ASK_TIMEOUT_MS || 3 * 60 * 1000)
 
+// Use cryptographically secure random ID — IDs act as bearer tokens for answer routing
 function genId() {
-  return 'ask-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8)
+  return 'ask-' + Date.now().toString(36) + '-' + randomBytes(9).toString('base64url')
 }
 
 function publicEntry(id, entry) {
@@ -127,7 +129,9 @@ function cleanupExpiredQuestions() {
   const now = Date.now()
   let evicted = 0
   for (const [id, q] of PENDING) {
-    if (now - (q.createdAt || 0) > PENDING_TTL_MS) {
+    // Use per-question timeout (expiresAt) if available, else fall back to PENDING_TTL_MS
+    const deadline = q.expiresAt || ((q.createdAt || 0) + PENDING_TTL_MS)
+    if (now > deadline) {
       try { q.reject?.(new Error('Question expired after 30 min')) } catch { /* best-effort: question may already be settled */ }
       PENDING.delete(id)
       evicted++

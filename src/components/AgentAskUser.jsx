@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 function devtoolsEnabled() {
   try { return localStorage.getItem('browserai.devtools') === '1' }
@@ -49,17 +49,24 @@ export default function AgentAskUser({
   const [selected, setSelected] = useState(answered ? initialSelected : [])
   const [custom, setCustom] = useState(answered ? (answer?.custom || '') : '')
   const [sending, setSending] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
   const isApproval = kind === 'approval'
   const isDev = devtoolsEnabled()
 
+  useEffect(() => {
+    if (!expiresAt || answered) return undefined
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [expiresAt, answered])
+
   const expiresLabel = useMemo(() => {
     if (!expiresAt || answered) return ''
-    const ms = Number(expiresAt) - Date.now()
+    const ms = Number(expiresAt) - now
     if (!Number.isFinite(ms) || ms <= 0) return 'истекает сейчас'
     const min = Math.floor(ms / 60000)
     const sec = Math.floor((ms % 60000) / 1000)
     return min > 0 ? `${min}м ${sec}с` : `${sec}с`
-  }, [expiresAt, answered])
+  }, [expiresAt, answered, now])
 
   const quickSubmit = async (verdict) => {
     if (answered || sending) return
@@ -140,18 +147,21 @@ export default function AgentAskUser({
               type="button"
               onClick={() => onCancel?.()}
               disabled={sending}
+              aria-label="Отменить запрос уточнения"
               className="min-w-[88px] flex-1 rounded-lg border border-white/15 px-3 py-1.5 text-[12px] font-medium text-cream-faint transition hover:bg-graphite-700 hover:text-cream disabled:opacity-40 sm:flex-none"
             >Отмена</button>
             <button
               type="button"
               onClick={() => quickSubmit('deny')}
               disabled={sending}
+              aria-label="Отклонить действие агента"
               className="min-w-[88px] flex-1 rounded-lg border border-white/15 px-3 py-1.5 text-[12px] font-medium text-cream-soft transition hover:bg-graphite-700 hover:text-cream disabled:opacity-40 sm:flex-none"
             >Отклонить</button>
             <button
               type="button"
               onClick={() => quickSubmit('approve')}
               disabled={sending}
+              aria-label="Разрешить действие агента"
               className="min-w-[88px] flex-1 rounded-lg bg-emerald-500 px-3 py-1.5 text-[12px] font-medium text-graphite-900 transition hover:bg-emerald-400 disabled:opacity-40 sm:flex-none"
             >{sending ? '…' : 'Разрешить'}</button>
           </div>
@@ -175,7 +185,7 @@ export default function AgentAskUser({
       </div>
 
       {normalizedOptions.length > 0 && (
-        <div className="space-y-1">
+        <div className="space-y-1" role={multi ? 'group' : 'radiogroup'} aria-label={question}>
           {normalizedOptions.map((opt) => {
             const checked = selected.includes(opt.id)
             return (
@@ -183,6 +193,8 @@ export default function AgentAskUser({
                 key={opt.id}
                 type="button"
                 disabled={answered}
+                role={multi ? 'checkbox' : 'radio'}
+                aria-checked={checked}
                 onClick={() => toggle(opt.id)}
                 className={`flex w-full items-start gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors ${
                   checked
@@ -223,12 +235,14 @@ export default function AgentAskUser({
             type="button"
             disabled={sending}
             onClick={() => onCancel?.()}
+            aria-label="Отменить запрос уточнения"
             className="min-w-[88px] flex-1 rounded-lg border border-white/15 px-3 py-1.5 text-[12px] text-cream-soft transition hover:bg-graphite-700 disabled:opacity-40 sm:flex-none"
           >Отмена</button>
           <button
             type="button"
             disabled={!canSubmit}
             onClick={submit}
+            aria-label="Отправить ответ агенту"
             className="min-w-[88px] flex-1 rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-graphite-900 transition disabled:opacity-40 sm:flex-none"
           >{sending ? 'Отправка…' : 'Ответить'}</button>
         </div>

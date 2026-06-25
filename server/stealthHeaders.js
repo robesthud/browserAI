@@ -27,9 +27,13 @@ const USER_AGENTS = [
   'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 Mobile Safari/537.36',
 ]
 
-/** Случайный User-Agent из пула */
+// Кешируем UA на весь процесс — один UA как у настоящего браузера
+// Меняется только при рестарте сервера (приемлемо для anti-bot эвристик)
+const _PROCESS_UA = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
+
+/** Случайный User-Agent из пула (стабильный на процесс) */
 export function randomUserAgent() {
-  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
+  return _PROCESS_UA
 }
 
 // ─── Базовые браузерные заголовки ───────────────────────────────────────────
@@ -243,11 +247,20 @@ export function buildSessionHeaders({
       case 'cookie':
         authH = { 'Cookie': key }
         break
-      case 'custom':
-        authH = authHeader.trim()
-          ? { [authHeader.trim()]: key }
-          : { 'Authorization': key }
+      case 'custom': {
+        const customHeader = String(authHeader || '').trim()
+        // Блокируем опасные заголовки — та же защита что в sanitizeExtraHeaders
+        const FORBIDDEN_CUSTOM = new Set([
+          'host', 'content-length', 'transfer-encoding', 'connection',
+          'upgrade', 'http2-settings', 'x-forwarded-for', 'x-real-ip',
+          'x-forwarded-host', 'x-forwarded-proto',
+        ])
+        const safeHeader = (customHeader && !FORBIDDEN_CUSTOM.has(customHeader.toLowerCase()))
+          ? customHeader
+          : 'Authorization'
+        authH = { [safeHeader]: key }
         break
+      }
       case 'bearer':
       default:
         // Не дублируем «Bearer » если токен уже начинается с него
@@ -274,13 +287,14 @@ export function sanitizeExtraHeaders(raw = {}) {
   const FORBIDDEN = new Set([
     'host', 'content-length', 'transfer-encoding',
     'connection', 'upgrade', 'http2-settings',
+    'content-type', // устанавливается явно в buildSessionHeaders
   ])
   const result = {}
   for (const [k, v] of Object.entries(raw)) {
     const key = String(k || '').trim()
     if (!key || key.length > 100) continue
     if (FORBIDDEN.has(key.toLowerCase())) continue
-    const val = String(v || '').trim()
+    const val = String(v || '').trim().replace(/[\r\n]/g, '')
     if (!val || val.length > 4096) continue
     result[key] = val
   }
@@ -299,8 +313,10 @@ export function applyBodyDefaults(body = {}, baseUrl = '') {
   if (profile.temperatureMax != null && typeof merged.temperature === 'number' && merged.temperature > profile.temperatureMax) {
     merged.temperature = profile.temperatureMax
   }
-  if (typeof merged.temperature === 'number' && merged.temperature < 0) {
-    merged.temperature = 0
+  if (typeof merged.temperature === 'number') {
+    if (merged.temperature < 0) merged.temperature = 0
+    // Общий верхний лимит 2.0 — стандарт OpenAI; провайдеры с меньшим лимитом clamp выше
+    if (profile.temperatureMax == null && merged.temperature > 2.0) merged.temperature = 2.0
   }
   return merged
 }
@@ -328,3 +344,4 @@ export function buildProbeBody(baseUrl, model) {
     stream:   false, // probe всегда non-stream для простоты парсинга ответа
   }, baseUrl)
 }
+

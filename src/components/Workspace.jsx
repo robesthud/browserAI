@@ -139,6 +139,45 @@ function PatchPreviewModal({ patch, onApply, onCancel }) {
   )
 }
 
+function DiffViewerModal({ state, onClose }) {
+  if (!state) return null
+  const diffs = state.diffs || []
+  return (
+    <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/65 p-3">
+      <div className="flex max-h-[86vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-graphite-850 shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b border-white/10 px-4 py-3">
+          <div>
+            <div className="text-sm font-medium text-cream">Workspace diff viewer</div>
+            <div className="mt-0.5 text-xs text-cream-faint">{diffs.length} diff(s) из `.browserai/events.jsonl`</div>
+          </div>
+          <button onClick={onClose} className="rounded-lg px-2 py-1 text-cream-dim hover:bg-white/10 hover:text-cream">×</button>
+        </div>
+        <div className="thin-scroll min-h-0 flex-1 overflow-auto p-3">
+          {state.loading ? (
+            <div className="p-4 text-sm text-cream-faint">Загрузка diff…</div>
+          ) : diffs.length ? (
+            <div className="space-y-3">
+              {diffs.slice().reverse().map((item, idx) => (
+                <details key={`${item.eventId || idx}-${item.path}`} className="rounded-xl border border-white/7 bg-graphite-900/60" open={idx === 0}>
+                  <summary className="cursor-pointer px-3 py-2 text-[12px] text-cream-soft hover:bg-white/5">
+                    <span className="font-mono text-emerald-200">{item.path || item.diff?.path}</span>
+                    <span className="ml-2 text-cream-faint">{item.type} · {item.tool || 'tool'} · {item.ts ? new Date(item.ts).toLocaleString('ru-RU') : ''}</span>
+                  </summary>
+                  <pre className="thin-scroll max-h-[52vh] overflow-auto whitespace-pre-wrap border-t border-white/5 p-3 font-mono text-[11px] leading-snug text-cream-soft">
+                    {item.diff?.patch || ''}
+                  </pre>
+                </details>
+              ))}
+            </div>
+          ) : (
+            <div className="p-4 text-sm text-cream-faint">Diff events пока не найдены.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ContextMenu({ state, onClose, onAction }) {
   if (!state) return null
   return (
@@ -185,6 +224,7 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
   const [error, setError] = useState('')
   const [menu, setMenu] = useState(null)
   const [pendingPatch, setPendingPatch] = useState(null)
+  const [diffViewer, setDiffViewer] = useState(null)
   const fileInputRef = useRef(null)
   const folderInputRef = useRef(null)
   const isDev = devtoolsEnabled()
@@ -214,7 +254,7 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
     workspaceApi.setChatId(chatId || '')
     if (chatId) workspaceApi.initChatWorkspace(chatId).catch(() => {})
     if (open) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
+       
       void refresh()
     }
   }, [chatId, open, refresh])
@@ -262,6 +302,17 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
       setError(e.message || 'Не удалось загрузить по URL')
     } finally {
       setUploading(false)
+    }
+  }
+
+  const openDiffViewer = async () => {
+    setDiffViewer({ loading: true, diffs: [] })
+    try {
+      const data = await workspaceApi.getDiffs('', 500)
+      setDiffViewer({ loading: false, diffs: data.diffs || [] })
+    } catch (e) {
+      setDiffViewer({ loading: false, diffs: [], error: e.message || 'Не удалось загрузить diff' })
+      setError(e.message || 'Не удалось загрузить diff')
     }
   }
 
@@ -677,6 +728,13 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
                 </button>
               )}
               <button
+                onClick={() => void openDiffViewer()}
+                className="grid h-7 min-w-7 place-items-center rounded-lg px-1 text-[11px] font-semibold text-cream-dim transition-colors hover:bg-graphite-750/60 hover:text-cream"
+                title="Workspace diff viewer"
+              >
+                Δ
+              </button>
+              <button
                 onClick={() => setShowWebPreview(true)}
                 className="grid h-7 min-w-7 place-items-center rounded-lg px-1 text-[11px] font-semibold text-cream-dim transition-colors hover:bg-graphite-750/60 hover:text-cream"
                 title="Веб-просмотр Песочницы (Порты)"
@@ -833,6 +891,8 @@ export default function Workspace({ open, onClose, settings, chatId, onSendToCha
         onApply={() => void applyPendingPatch()}
         onCancel={() => setPendingPatch(null)}
       />
+
+      <DiffViewerModal state={diffViewer} onClose={() => setDiffViewer(null)} />
 
       <FilePreview
         key={preview ? `${preview.path}:${preview.modifiedAt}:${previewStartEditing ? 1 : 0}` : 'empty'}

@@ -1,4 +1,5 @@
 import db from './db.js'
+import log from './logger.js'
 import { executeAutoFixRecommendation, recommendAutoFix } from './failureClassifier.js'
 import { createNotification } from './notifications.js'
 import { getOperatorMission } from './operatorMode.js'
@@ -105,8 +106,8 @@ function patchRecovery(id, patch = {}) {
   const next = { ...cur, ...patch }
   db.prepare(`UPDATE autonomous_recovery_actions SET status=?, result_json=?, outcome_json=?, error=?, updated_at=?, finished_at=? WHERE id=?`).run(
     next.status || cur.status,
-    JSON.stringify(next.result || parse(cur.result_json, {})),
-    JSON.stringify(next.outcome || parse(cur.outcome_json, {})),
+    (() => { try { return JSON.stringify(next.result || parse(cur.result_json, {})) } catch { return cur.result_json || '{}' } })(),
+    (() => { try { return JSON.stringify(next.outcome || parse(cur.outcome_json, {})) } catch { return cur.outcome_json || '{}' } })(),
     next.error || '',
     now(),
     next.finishedAt ?? next.finished_at ?? cur.finished_at ?? null,

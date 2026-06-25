@@ -50,15 +50,17 @@ function makeSentinel() {
 async function openSession(chatId, cwd = '/workspace') {
   const sandboxContainer = await getSandboxContainer()
   const envs = getSandboxEnv()
+  // Санируем cwd — должен быть абсолютным путём внутри контейнера
+  const safeCwd = String(cwd || '/workspace').replace(/\.\./g, '').replace(/\/+/g, '/') || '/workspace'
   const args = [
     'exec', '-i',
-    '--user', process.env.AGENT_SANDBOX_USER || '0:0',
+    '--user', process.env.AGENT_SANDBOX_USER || '1000:1000',
   ]
   for (const [k, v] of Object.entries(envs)) {
     args.push('-e', `${k}=${v}`)
   }
   args.push(
-    '-w', cwd,
+    '-w', safeCwd,
     sandboxContainer,
     'bash', '--noprofile', '--norc',
   )
@@ -72,10 +74,22 @@ async function openSession(chatId, cwd = '/workspace') {
     closeTimer: null,
     alive: true,
   }
-  proc.on('exit', () => { session.alive = false; SESSIONS.delete(chatId) })
-  proc.on('error', () => { session.alive = false; SESSIONS.delete(chatId) })
+  function rejectAllQueued(reason) {
+    session.alive = false
+    SESSIONS.delete(chatId)
+    // Reject все ожидающие jobs — иначе Promise'ы зависнут навсегда
+    for (const pending of session.queue) {
+      try { pending.reject(new Error(reason)) } catch { /* ignore */ }
+    }
+    session.queue = []
+  }
+  proc.on('exit', (code) => rejectAllQueued(`bash session exited (code ${code})`))
+  proc.on('error', (e) => rejectAllQueued(`bash session error: ${e.message}`))
   // Disable readline-style echo so we never see our own commands back.
-  proc.stdin.write('stty -echo 2>/dev/null; export PS1=""; export PROMPT_COMMAND=""\n')
+  // Отправляем sentinel после stty чтобы убедиться что echo отключён до первой команды
+  const initSentinel = makeSentinel()
+  proc.stdin.write(`stty -echo 2>/dev/null; export PS1=''; export PROMPT_COMMAND=''; printf '\\n${initSentinel}\\n'\n`)
+  // Проглатываем init sentinel из stdout (не ждём его — сессия готова к работе)
   SESSIONS.set(chatId, session)
   scheduleIdleClose(session)
   return session
@@ -85,7 +99,8 @@ function scheduleIdleClose(session) {
   if (session.closeTimer) clearTimeout(session.closeTimer)
   session.closeTimer = setTimeout(() => {
     if (!session.alive) return
-    if (Date.now() - session.lastUsed < IDLE_TIMEOUT_MS) {
+    if (Date.now() - session.lastUsed < IDLE_TIMEOUT_MS || session.busy) {
+      // Ещё активна или выполняется команда — перепланируем
       scheduleIdleClose(session)
       return
     }
@@ -108,7 +123,9 @@ export async function runInSession(opts = {}) {
 
   let session = SESSIONS.get(chatId)
   if (!session || !session.alive) {
-    const sessionCwd = cwd || `/workspace/chats/${chatId}`
+    // Санируем chatId перед вставкой в путь — защита от path traversal
+    const safeChatId = String(chatId).replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 80)
+    const sessionCwd = cwd || `/workspace/chats/${safeChatId}`
     session = await openSession(chatId, sessionCwd)
   }
 
@@ -130,6 +147,7 @@ function processQueue(session) {
   const startedAt = Date.now()
 
   let outBuf = ''
+  const OUT_BUF_MAX = 2 * 1024 * 1024 // 2 MB cap на sentinel-detection буфер
   let stdoutClipped = ''
   let stderrClipped = ''
   let killed = false
@@ -139,6 +157,8 @@ function processQueue(session) {
   const onStdoutData = (chunk) => {
     const s = chunk.toString('utf8')
     outBuf += s
+    // Cap outBuf — защита от OOM при большом stdout до sentinel
+    if (outBuf.length > OUT_BUF_MAX) outBuf = outBuf.slice(-OUT_BUF_MAX)
     // Pass live output to caller, but strip our sentinel if it lands
     // inside this chunk so the user never sees it on screen.
     const visible = s.replace(new RegExp(sentOut + '\\d+', 'g'), '')
@@ -221,8 +241,26 @@ function processQueue(session) {
   let onAbort = null
   if (job.signal) {
     onAbort = () => {
+      if (resolved) return
       cancelled = true
       try { session.proc.stdin.write('\x03') } catch { /* ignore */ }
+      // Запускаем hard-resolve через 2s если sentinel не придёт
+      setTimeout(() => {
+        if (resolved) return
+        resolved = true
+        cleanup()
+        job.resolve({
+          stdout: stdoutClipped,
+          stderr: stderrClipped + '\n[shellSession] cancelled by signal',
+          exitCode: -1,
+          durationMs: Date.now() - startedAt,
+          sessionId: session.chatId,
+          cancelled: true,
+          killed: false,
+        })
+        session.busy = false
+        processQueue(session)
+      }, 2000)
     }
     if (job.signal.aborted) onAbort()
     else job.signal.addEventListener('abort', onAbort, { once: true })
@@ -271,15 +309,16 @@ export async function startBackgroundTask({ chatId = '', command, name = '', cwd
   const taskId = genTaskId()
   const sandboxContainer = await getSandboxContainer()
   const envs = getSandboxEnv()
+  const safeBgCwd = String(cwd || '/workspace').replace(/\.\./g, '').replace(/\/+/g, '/') || '/workspace'
   const args = [
     'exec',
-    '--user', process.env.AGENT_SANDBOX_USER || '0:0',
+    '--user', process.env.AGENT_SANDBOX_USER || '1000:1000',
   ]
   for (const [k, v] of Object.entries(envs)) {
     args.push('-e', `${k}=${v}`)
   }
   args.push(
-    '-w', cwd,
+    '-w', safeBgCwd,
     sandboxContainer,
     'sh', '-c', command,
   )
@@ -308,6 +347,11 @@ export async function startBackgroundTask({ chatId = '', command, name = '', cwd
     task.finishedAt = Date.now()
   })
   BG_TASKS.set(taskId, task)
+  // Очищаем завершённые задачи старше 1 часа — защита от memory leak
+  const BG_TTL_MS = 60 * 60 * 1000
+  for (const [id, t] of BG_TASKS) {
+    if (t.finishedAt && Date.now() - t.finishedAt > BG_TTL_MS) BG_TASKS.delete(id)
+  }
   return { taskId, name: task.name, command: task.command, startedAt: task.startedAt }
 }
 
@@ -341,10 +385,12 @@ export function listBackgroundTasks(chatId = null) {
   const arr = []
   for (const task of BG_TASKS.values()) {
     if (chatId && task.chatId !== chatId) continue
+    // Маскируем потенциальные секреты в command (export KEY=val, --token=...)
+    const safeCmd = task.command.replace(/((?:export\s+)?[A-Z_]{3,}=|--(?:token|key|secret|password)=)\S+/gi, '$1<redacted>')
     arr.push({
       id: task.id,
       name: task.name,
-      command: task.command,
+      command: safeCmd,
       chatId: task.chatId,
       running: task.exitCode == null,
       exitCode: task.exitCode,

@@ -63,13 +63,19 @@ function allAutomaticAgentTools() {
   return [...new Set(names)]
 }
 
-export function toolProfileForTask() {
-  // Product decision: BrowserAI's main surface is an automatic Arena-like
-  // agent, not a profile-limited mode picker. Specialized profiles caused real
-  // failures (e.g. GitHub download routed to browser profile with no git_clone).
-  // Keep profiles as internal documentation/tests, but the runtime uses a
-  // broad main_agent profile so safe universal tools are always available.
-  return 'main_agent'
+export function toolProfileForTask(task = {}) {
+  const goal = String(task?.goal || '').toLowerCase();
+  
+  if (/(deploy|restart|docker|nginx|service|systemctl|postgres|db_query|database|база данных)/i.test(goal)) {
+    return 'ops';
+  }
+  if (/(browser|open url|screenshot|click|type|кукловод|скриншот|веб-просмотр)/i.test(goal)) {
+    return 'browser';
+  }
+  if (/(search|find|news|weather|погода|курс|поищи в интернете|гугл|google)/i.test(goal)) {
+    return 'research';
+  }
+  return 'code';
 }
 
 export function profileToolNames(profile = 'main_agent') {

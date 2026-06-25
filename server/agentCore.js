@@ -86,7 +86,7 @@ function hasNegatedCodingIntent(text = '') {
 export function classifyAgentTask(text = '', { history = [] } = {}) {
   // Image-only сообщение (без текста) — не simple_answer, требует анализа изображения
   if (lastUserHasImageOnly(history)) {
-    return { type: 'browser_task', complexity: 'medium', suggestedMaxSteps: 20 }
+    return { type: 'browser_task', complexity: 'medium', suggestedMaxSteps: 40 }
   }
   const t = String(text || '').toLowerCase()
   const has = (...words) => words.some((w) => t.includes(w))
@@ -114,34 +114,48 @@ export function classifyAgentTask(text = '', { history = [] } = {}) {
   // not just high-complexity requests.
   
   if (hasAffirmativeDeployIntent(t) || has('сервер', 'timeweb', 'docker', 'nginx', 'ssl', 'ci/cd', 'github actions', 'workflow failed', 'логи', 'logs')) {
-    return { type: 'deploy_ops', complexity: 'high', suggestedMaxSteps: 60 }
+    return { type: 'deploy_ops', complexity: 'high', suggestedMaxSteps: 80 }
   }
   // Проверяем отрицание перед coding_change, чтобы «не исправляй код»
   // не попадало в тяжёлый 50-шаговый coding-цикл.
-  if (!hasNegatedCodingIntent(t) && has('исправ', 'почини', 'реализуй', 'добавь', 'перепиши', 'refactor', 'fix ', 'implement', 'bug', 'баг', 'ошибк', 'код', 'скрипт', 'script', 'function', 'тест', 'test')) {
-    return { type: 'coding_change', complexity: 'high', suggestedMaxSteps: 50 }
+  // Расширенное определение coding_change: если в тексте упомянут файл с
+  // расширением кода (.py, .js и т.д.) — это явно работа с кодом, не small talk.
+  const codeFileExt = /\.py|\.js|\.ts|\.tsx|\.jsx|\.go|\.rs|\.java|\.rb|\.c|\.cpp|\.h|\.sh|\.json|\.ya?ml|\.toml/.test(t)
+  // Multi-file: либо перечислено 3+ имени файлов, либо явно «N файлов».
+  const listCodeFiles = /[\w_-]+\.(?:py|js|ts|tsx|jsx|go|rs|java|rb|c|cpp|h|sh)(?:\s*[,и]?\s+[\w_-]+\.(?:py|js|ts|tsx|jsx|go|rs|java|rb|c|cpp|h|sh)){2,}/i.test(t)
+  const mentionsMultipleFiles = listCodeFiles || /(\d+\s+файл|нескольк|много\s+файл|массово|по\s+списку|создай\s+\d+|сделай\s+\d+)/i.test(t)
+  if (!hasNegatedCodingIntent(t) && (has('исправ', 'почини', 'реализуй', 'добавь', 'перепиши', 'refactor', 'fix ', 'implement', 'bug', 'баг', 'ошибк', 'код', 'скрипт', 'script', 'function', 'тест', 'test') || codeFileExt)) {
+    return mentionsMultipleFiles
+      ? { type: 'coding_change', complexity: 'high', suggestedMaxSteps: 80 }
+      : { type: 'coding_change', complexity: 'high', suggestedMaxSteps: 50 }
   }
   // NB: plain «файл»/«папка» removed — «создай файл hello.txt» is a simple
   // file op (general_agent_task below), not a 40-step repo audit.
   if (has('изучи', 'проанализируй', 'сравни', 'аудит', 'архитектур', 'структур', 'ревью', 'review')) {
-    return { type: 'repo_analysis', complexity: 'high', suggestedMaxSteps: 40 }
+    return { type: 'repo_analysis', complexity: 'high', suggestedMaxSteps: 60 }
   }
   if (has('найди в интернете', 'актуальн', 'новост', 'документац', 'research', 'web search', 'поиск')) {
-    return { type: 'research', complexity: 'medium', suggestedMaxSteps: 25 }
+    return { type: 'research', complexity: 'medium', suggestedMaxSteps: 35 }
   }
   if (has('браузер', 'открой сайт', 'скриншот', 'кликни', 'url') || /(^|\s)browser(\s|$)/i.test(t) || /https?:\/\//i.test(t)) {
-    return { type: 'browser_task', complexity: 'medium', suggestedMaxSteps: 35 }
+    return { type: 'browser_task', complexity: 'medium', suggestedMaxSteps: 50 }
   }
+  // Product-building tasks (games, sites, browser apps) need enough budget
+  // for inspect → implement → verify → polish, otherwise they hit max-steps.
+  if (has('игра', 'игру', 'шашки', 'сайт', 'лендинг', 'браузерн', 'интерфейс', 'проект', 'приложение', 'html')) {
+    return { type: 'coding_change', complexity: 'high', suggestedMaxSteps: 70 }
+  }
+
   // Action verbs that did not match a more specific bucket above
   // (including гитхаб/repo fetches without deploy context).
   if (hasActionVerb || has('гитхаб', 'репозиторий', 'репо ')) {
-    return { type: 'general_agent_task', complexity: 'medium', suggestedMaxSteps: 20 }
+    return { type: 'general_agent_task', complexity: 'medium', suggestedMaxSteps: 45 }
   }
 
   // Long free-form text probably describes real work; short text without a
   // single action verb is a plain question — answer it cheaply.
   if (t.length > 100) {
-    return { type: 'general_agent_task', complexity: 'medium', suggestedMaxSteps: 20 }
+    return { type: 'general_agent_task', complexity: 'medium', suggestedMaxSteps: 45 }
   }
 
   return { type: 'simple_answer', complexity: 'low', suggestedMaxSteps: 6 }
@@ -154,7 +168,7 @@ export function detectGoalObligations(text = '', task = {}) {
   const codeChange = task?.type === 'coding_change' || has('исправ', 'почини', 'реализ', 'добав', 'измен', 'перепиш', 'refactor', 'fix ', 'implement', 'bug', 'feature')
   const deploy = task?.type === 'deploy_ops' || hasAffirmativeDeployIntent(t)
   const commit = has('коммит', 'commit', 'сохрани в git', 'закоммить')
-  const push = commit || has('пуш', 'push', 'github', 'гитхаб', 'отправь в репозитор', 'залей')
+  const push = commit || has('пуш', 'push', 'отправь в репозитор', 'залей в репозитор', 'запуш', 'запушь')
   const pr = has('pull request', 'pr ', 'пиар', 'создай pr', 'создай pull')
   const verify = codeChange || deploy || has('проверь', 'протест', 'test', 'tests', 'build', 'сборк', 'verify')
   const healthCheck = deploy || has('health', 'здоров', 'проверь сайт', 'проверь прод')

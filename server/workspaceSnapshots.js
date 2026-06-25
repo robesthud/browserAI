@@ -59,7 +59,13 @@ export async function restoreWorkspaceSnapshot({ id } = {}) {
   if (!id) throw new Error('id required')
   const metaPath = safePath(`${SNAP_DIR}/${path.basename(id)}.json`)
   const meta = JSON.parse(await fs.readFile(metaPath, 'utf8'))
-  const zip = new AdmZip(safePath(meta.file))
+  // A — verify meta.file is inside .snapshots/ (prevent reading arbitrary files via tampered meta)
+  const resolvedFile = safePath(String(meta.file || ''))
+  const snapDir = safePath(SNAP_DIR)
+  if (!resolvedFile.startsWith(snapDir + '/') && !resolvedFile.startsWith(snapDir + path.sep)) {
+    throw new Error('Snapshot meta.file points outside snapshots directory (tampered metadata)')
+  }
+  const zip = new AdmZip(resolvedFile)
   await cleanWorkspaceRoot()
   zip.extractAllTo(safePath(''), true)
   return { restored: true, ...meta }

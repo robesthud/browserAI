@@ -17,6 +17,7 @@
 // price = USD per 1M tokens, [input, output]. Rough, public as of 2025-Q2.
 // Used by costTracker; missing entry → cost shown as $0 (best-effort).
 const RULES = [
+  { match: /autopilot/i,                         ctx: 128_000,   tier: 'expensive', vision: true,  price: [0, 0] },
   // OpenAI
   { match: /gpt-4o-mini/i,                       ctx: 128_000,   tier: 'cheap',     vision: true,  price: [0.15, 0.60] },
   { match: /gpt-4o(?!-mini)/i,                   ctx: 128_000,   tier: 'expensive', vision: true,  price: [2.50, 10.00] },
@@ -75,6 +76,7 @@ export function suggestCheapSibling(modelId = '') {
   if (/deepseek.*(reasoner|r1)/.test(id))            return 'deepseek-chat'
   if (/qwen.*(72b|max|plus)/.test(id))               return id.replace(/(72b|max|plus)/, 'turbo')
   if (/o1\b|o3\b/.test(id))                          return 'gpt-4o-mini'
+  if (/glm-4\.[567]|glm-5/.test(id))                 return 'glm-4.7-flash'
   return null
 }
 
@@ -92,6 +94,7 @@ export function suggestStrongSibling(modelId = '') {
   if (/deepseek-(chat|coder)/.test(id))         return 'deepseek-reasoner'
   if (/qwen.*(turbo|small|7b)/.test(id))        return id.replace(/(turbo|small|7b)/, 'plus')
   if (/llama.*(8b|small)/.test(id))             return id.replace(/(8b|small)/, '70b')
+  if (/glm-4(-flash|\.[567]-flash|v-flash|\.6v-flash)/.test(id)) return 'glm-5.2'
   return null
 }
 

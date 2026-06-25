@@ -92,15 +92,17 @@ async function summarizeWorkflowLogs(repo, runId, maxChars = 18000) {
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || '/workspace'
 const PROJECTS_ROOT = path.join(WORKSPACE_ROOT, 'projects')
 
+const RUN_OUTPUT_LIMIT = 4 * 1024 * 1024  // 4 MB per stream — prevents OOM on huge builds
 function run(command, { cwd = WORKSPACE_ROOT, timeoutMs = 10 * 60_000 } = {}) {
   return new Promise((resolve) => {
     const proc = spawn('sh', ['-lc', command], { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
     const out = []
     const err = []
+    let outLen = 0; let errLen = 0
     let killed = false
     const timer = setTimeout(() => { killed = true; try { proc.kill('SIGKILL') } catch { /* already exited */ } }, timeoutMs)
-    proc.stdout.on('data', (c) => out.push(c))
-    proc.stderr.on('data', (c) => err.push(c))
+    proc.stdout.on('data', (c) => { if (outLen < RUN_OUTPUT_LIMIT) { out.push(c); outLen += c.length } })
+    proc.stderr.on('data', (c) => { if (errLen < RUN_OUTPUT_LIMIT) { err.push(c); errLen += c.length } })
     proc.on('close', (code) => {
       clearTimeout(timer)
       resolve({ exitCode: killed ? 124 : (code ?? 1), stdout: clip(Buffer.concat(out).toString()), stderr: clip(Buffer.concat(err).toString()) + (killed ? '\n[killed by timeout]' : '') })
@@ -213,7 +215,16 @@ function commandFromProject(task = {}, name, fallback = '') {
   const meta = projectMetaFromTask(task)
   const cmd = meta?.commands?.[name]
   if (cmd === false || cmd === null) return ''
-  return String(cmd || fallback || '').trim()
+  const raw = String(cmd || fallback || '').trim()
+  // A — guard against shell injection in project-configured commands:
+  //   reject commands that open a subshell, redirect to arbitrary paths,
+  //   or use process substitution. Legitimate build commands (npm/pnpm/yarn/
+  //   cargo/go/make) don't need these features.
+  if (raw && /\$\(|`|\beval\b|>\s*\/(?!dev\/null)|\|\s*(sh|bash|zsh|dash|ksh|csh)\b/i.test(raw)) {
+    console.warn(`[operatorCode] commandFromProject blocked suspicious command for "${name}": ${raw.slice(0, 80)}`)
+    return fallback ? String(fallback).trim() : ''
+  }
+  return raw
 }
 
 async function prepareCheckout(task) {

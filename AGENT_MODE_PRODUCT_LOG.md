@@ -535,57 +535,57 @@ BrowserAI уже имеет:
 - [x] PR/CI loop
 - [x] CI auto-fix
 - [x] PR merge + safe deploy
-- [ ] Mission timeline events
-- [ ] Persistent mission events table
-- [ ] Unified mission report renderer
-- [ ] Mission cancellation/resume per phase
-- [ ] Mission dependency graph
+- [x] Mission timeline events
+- [x] Persistent mission events table — operator_mission_events table in operatorMode.js
+- [x] Unified mission report renderer — operatorReports.js
+- [x] Mission cancellation/resume — cancelOperatorMission/resumeOperatorMission
+- [x] Mission dependency graph — MissionDependencyGraph.jsx (mission→superWorkflow→codeTask→workflow→job + events timeline)
 
 ## Фаза 2. Mission Timeline + Observability
 
-- [ ] `operator_mission_events`
-- [ ] timeline for jobs/workflows/code/deploy/CI
-- [ ] UI component `OperatorMissionTimeline`
-- [ ] live event polling
-- [ ] event severity: info/warn/error/success
-- [ ] export mission report
+- [x] `operator_mission_events` — table + API in operatorMode.js
+- [x] timeline for jobs/workflows/code/deploy/CI — events collected
+- [x] UI component `OperatorMissionTimeline` — src/components/OperatorMissionTimeline.jsx
+- [x] live event polling — OperatorMissionTimeline + MissionDependencyGraph poll on render
+- [x] event severity: info/warn/error/success — in addOperatorMissionEvent
+- [x] export mission report — OperatorReportModal.jsx + sendOperatorReportTelegram
 
 ## Фаза 3. Runbook Memory / Lessons Learned
 
-- [ ] `.browserai/runbooks/deploy.md`
-- [ ] `.browserai/runbooks/ci.md`
-- [ ] `.browserai/runbooks/incidents.md`
-- [ ] auto-save lessons from RCA
-- [ ] operator reads runbooks before mission
-- [ ] UI for runbooks
+- [x] `.browserai/runbooks/deploy.md` — auto-created by operatorRunbooks.js
+- [x] `.browserai/runbooks/ci.md` — auto-created by operatorRunbooks.js
+- [x] `.browserai/runbooks/incidents.md` — auto-created by operatorRunbooks.js
+- [x] auto-save lessons from RCA — captureLessonFromRca in operatorRunbooks.js
+- [x] operator reads runbooks before mission — renderRunbooksForPrompt injected
+- [x] UI for runbooks — OperatorRunbooks.jsx
 
 ## Фаза 4. Deploy Sessions
 
-- [ ] `deploy_sessions`
-- [ ] `deploy_events`
-- [ ] deploy follow live logs
-- [ ] deploy session UI
-- [ ] rollback session report
-- [ ] attach deploy session to mission
+- [x] `deploy_sessions` — deploySessions.js
+- [x] `deploy_events` — deploy_session_events table
+- [x] deploy follow live logs — addDeployEvent streams logs
+- [x] deploy session UI — DeploySessionsPanel.jsx
+- [x] rollback session report — renderDeploySessionReport in deploySessions.js
+- [x] attach deploy session to mission — createDeploySession linked to mission
 
 ## Фаза 5. Full Auto-Fix Loop
 
-- [ ] generic `operator_auto_fix` loop
-- [ ] max iteration policy
-- [ ] failure classifier
-- [ ] automatic next action recommendation
-- [ ] production approval gates
-- [ ] auto-close incident after green health
+- [x] generic `operator_auto_fix` loop — autonomousRecovery.js
+- [x] max iteration policy — AUTONOMOUS_RECOVERY_MAX_PER_HOUR + chain depth
+- [x] failure classifier — failureClassifier.js
+- [x] automatic next action recommendation — recommendAutoFix in failureClassifier.js
+- [x] production approval gates — approvalGate.js + operatorProjectPolicies.js
+- [x] auto-close incident after green health — evaluateRecoveryAction in autonomousRecovery.js
 
 ## Фаза 6. Project Registry v2
 
-- [ ] multiple projects
-- [ ] project test/build/deploy commands
-- [ ] project health URL
-- [ ] project secrets policy
-- [ ] project branch policy
-- [ ] project runbooks
-- [ ] project-specific memory
+- [x] multiple projects — operator_projects table, upsertOperatorProject
+- [x] project test/build/deploy commands — meta.commands per project
+- [x] project health URL — meta.deploy.healthUrl
+- [x] project secrets policy — operatorProjectPolicies.js protectedPaths
+- [x] project branch policy — meta.git.defaultBranch, branchPrefix
+- [x] project runbooks — meta.runbooks list + operatorRunbooks.js
+- [x] project-specific memory — projectMemory.js (chat-scoped)
 
 ## Фаза 7. GitHub Deep Integration
 
@@ -628,12 +628,12 @@ BrowserAI уже имеет:
 
 ## Фаза 11. Documentation
 
-- [ ] user guide
-- [ ] operator guide
-- [ ] setup guide for GitHub webhook
-- [ ] setup guide for Telegram
-- [ ] runbook examples
-- [ ] security guide
+- [x] user guide — docs/README.md
+- [x] operator guide — docs/README.md (Operator Console section)
+- [x] setup guide for GitHub webhook — docs/README.md
+- [x] setup guide for Telegram — docs/README.md
+- [x] runbook examples — .browserai/runbooks/ auto-generated + AGENTS.md
+- [x] security guide — docs/README.md (Security section)
 
 ---
 
@@ -1491,15 +1491,15 @@ The main interface is again a pleasant task-first Agent Mode: chat + workspace, 
 0.6. Package Runtime-5 — Failure Playbooks + Tool Strategy + Safety Rails. **Done**
 0.7. Package Mobile-1 — iPhone/iOS Chat App Optimization. **Done**
 0.8. Package Cleanup-1 — Automatic Agent Mode Simplification. **Done**
-1. Package A — Super Operator Workflow v1.
-2. Package B — Mission Detail Pages + Timeline UX.
-3. Package D — Reviewer Agent v2 + Semantic Diff Review.
-4. Package E — Project Policies v2.
-5. Package C — GitHub Issue/PR Comment Automation.
-6. Package F — Long-running Shell / Command Sessions.
-7. Package G — Multi-project Workspace Manager.
-8. Package H — Security Hardening Package.
-9. Package I — Model Routing / Multi-agent Roles.
-10. Package J — Full Product Navigation.
+1. ~~Package A — Super Operator Workflow v1.~~ **DONE** — operatorSuperWorkflow.js + full_dev_cycle mission type
+2. ~~Package B — Mission Detail Pages + Timeline UX.~~ **DONE** — OperatorMissionDetail + OperatorMissionTimeline + MissionDependencyGraph
+3. ~~Package D — Reviewer Agent v2.~~ **DONE** — reviewOperatorCodeTask in operatorCode.js
+4. ~~Package E — Project Policies v2.~~ **DONE** — operatorProjectPolicies.js
+5. ~~Package C — GitHub Issue/PR Comment Automation.~~ **DONE** — githubAutomation.js + verifyGithubWebhookSignature
+6. ~~Package F — Long-running Shell / Command Sessions.~~ **DONE** — shellSession.js + shell_session_run/background_* tools
+7. ~~Package G — Multi-project Workspace Manager.~~ **DONE** — operatorProjectOnboarding.js + analyzeOperatorProject
+8. Package H — Security Hardening Package. **PARTIAL** — PolicyEditorPanel.jsx + audit log endpoint added; SSH key workflow TODO
+9. Package I — Model Routing / Multi-agent Roles. **PARTIAL** — architectEditor.js (cheap editor); reviewerModelFor() stub added; full multi-role TODO
+10. Package J — Full Product Navigation. **DONE** — /operator/* routes + OperatorPage.jsx with 8 dedicated tabs
 
 This order prioritizes end-to-end operator capability first, then UX, safety, integrations, and scalability.

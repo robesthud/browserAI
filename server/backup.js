@@ -138,7 +138,7 @@ export function startBackupScheduler() {
   // First run 90 s after boot, then every 24 h.
   setTimeout(() => {
     runBackup().catch((e) => console.warn('[backup] failed:', e.message))
-  }, 90_000)
+  }, 90_000).unref?.()  // C — don't hold process open 90 s waiting for first backup
   timer = setInterval(() => {
     runBackup().catch((e) => console.warn('[backup] failed:', e.message))
   }, 24 * 60 * 60 * 1000)

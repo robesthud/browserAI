@@ -23,6 +23,7 @@
  *   - oldest pruned on overflow
  */
 import db from './db.js'
+import { workspaceScope } from './workspace.js'
 
 let initialized = false
 function init() {
@@ -101,6 +102,12 @@ async function providerEmbed(text, provider) {
   if (provider.baseUrl.includes('ollama') || provider.baseUrl.includes(':11434')) return null
 
   const url = `${String(provider.baseUrl).replace(/\/$/, '')}/embeddings`
+  // A — SSRF guard: don't embed via internal/loopback hosts
+  try {
+    const { isBlockedHost } = await import('./ssrf.js')
+    const _u = new URL(url)
+    if (isBlockedHost(_u.hostname)) return null
+  } catch { /* URL parse error → let fetch fail naturally */ }
   try {
     const r = await fetch(url, {
       method: 'POST',
@@ -171,24 +178,33 @@ export async function recallMemory(userId, query, { topK = RECALL_TOP_K, provide
   const qv = await embed(query, { provider })
 
   // Fast exact-keyword/FTS5 sparse pre-search to boost matches
-  let ftsIds = []
+  let ftsIds = new Set()
   try {
+    // D — guard empty query after sanitize: '' + '*' = '*' matches ALL rows in FTS5
+    const ftsQuery = query.trim().replace(/[*"']/g, '').trim()
+    if (!ftsQuery) throw new Error('empty FTS query')
     const ftsRows = db.prepare(`
       SELECT mem_id FROM semantic_memory_fts WHERE text MATCH ? LIMIT 30
-    `).all(query.trim().replace(/[*"']/g, '') + '*') // wildcard safe
-    ftsIds = ftsRows.map((r) => r.mem_id)
+    `).all(ftsQuery + '*') // wildcard safe
+    ftsIds = new Set(ftsRows.map((r) => r.mem_id))
   } catch { /* FTS5 empty or wildcard syntax error */ }
 
   // Pull ALL rows whose dim matches the query vector — switching providers
   // mid-session might leave heterogeneous dims; we just ignore the rest.
-  const rows = db.prepare('SELECT id, text, vector_json, dim FROM semantic_memory WHERE user_id=?').all(userId)
+  const _scopeChat = workspaceScope.getStore()?.chatId
+    const _sql = _scopeChat
+      ? 'SELECT id, text, vector_json, dim FROM semantic_memory WHERE user_id=? AND chat_id=?'
+      : 'SELECT id, text, vector_json, dim FROM semantic_memory WHERE user_id=?'
+    const rows = _scopeChat
+      ? db.prepare(_sql).all(userId, _scopeChat)
+      : db.prepare(_sql).all(userId)
   const scored = []
   for (const r of rows) {
     if (r.dim !== qv.length) continue
     let v
     try { v = JSON.parse(r.vector_json) } catch { continue }
     let s = cosine(qv, v)
-    if (ftsIds.includes(r.id)) {
+    if (ftsIds.has(r.id)) {
       s += 0.35 // Hybrid search boost! Greatly improves exact match quality!
     }
     if (s > 0.15) scored.push({ id: r.id, text: r.text, score: s })
@@ -222,13 +238,21 @@ export function listMemories(userId, { limit = 50 } = {}) {
   init()
   if (!userId) return []
   return db.prepare(
-    'SELECT id, text, score_hits, created_at, last_used_at FROM semantic_memory WHERE user_id=? ORDER BY last_used_at DESC LIMIT ?'
-  ).all(userId, Math.max(1, Math.min(200, Number(limit) || 50)))
+    (workspaceScope.getStore()?.chatId
+      ? 'SELECT id, text, score_hits, created_at, last_used_at FROM semantic_memory WHERE user_id=? AND chat_id=? ORDER BY last_used_at DESC LIMIT ?'
+      : 'SELECT id, text, score_hits, created_at, last_used_at FROM semantic_memory WHERE user_id=? ORDER BY last_used_at DESC LIMIT ?')
+  ).all(
+      ...(workspaceScope.getStore()?.chatId ? [userId, workspaceScope.getStore().chatId] : [userId]),
+      Math.max(1, Math.min(200, Number(limit) || 50))
+    )
 }
 
 export function forgetMemory(userId, id) {
   init()
-  const r = db.prepare('DELETE FROM semantic_memory WHERE user_id=? AND id=?').run(userId, id)
+  const _scopeChat = workspaceScope.getStore()?.chatId
+    const r = _scopeChat
+      ? db.prepare('DELETE FROM semantic_memory WHERE user_id=? AND chat_id=? AND id=?').run(userId, _scopeChat, id)
+      : db.prepare('DELETE FROM semantic_memory WHERE user_id=? AND id=?').run(userId, id)
   try {
     db.prepare('DELETE FROM semantic_memory_fts WHERE mem_id=?').run(id)
   } catch { /* best-effort */ }

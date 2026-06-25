@@ -41,7 +41,7 @@ export function routeUserMessage(text = '', attachments = [], { forceAgent = fal
     return { mode: 'web', reason: 'current-info', icon: '🌐' }
   }
 
-  return { mode: 'chat', reason: raw.length <= 1200 ? 'simple-chat' : 'long-chat', icon: '💬' }
+  return { mode: 'agent', reason: raw.length <= 1200 ? 'default-agent' : 'long-agent', icon: '🤖' }
 }
 
 export function routeHistory(history = [], opts = {}) {
@@ -52,7 +52,7 @@ export async function classifyIntentAI({ provider, history }) {
   const userText = lastUserText(history)
   if (!userText.trim()) return 'CHAT'
 
-  const t = userText.toLowerCase().trim()
+  const t = userText.toLowerCase().trim().replace(/[?!.,\s]+$/, '')
   if (t.length <= 15 && /^(привет|hi|hello|как дела|кто ты|ку|здравствуй|йо|йоу|прив|дратути|тест|test)$/.test(t)) {
     return 'CHAT'
   }
@@ -92,6 +92,15 @@ export async function classifyIntentAI({ provider, history }) {
     model = 'google/gemini-2.5-flash:free'
   }
 
+  classificationProvider = { ...classificationProvider, model }
+
+  // Fallback model list for OpenRouter (free tier can change)
+  const openRouterFallbackModels = [
+    'google/gemini-2.5-flash:free',
+    'deepseek/deepseek-chat-v3-0324:free',
+    'meta-llama/llama-3.1-8b-instruct:free',
+  ]
+
   // Contextual routing: format the last 4 messages of history
   const recentMessages = (history || []).slice(-4).map((m) => {
     const role = String(m.role || 'user').toUpperCase()
@@ -99,6 +108,8 @@ export async function classifyIntentAI({ provider, history }) {
     return `${role}: ${content}`
   }).join('\n')
 
+  // A — sanitize userText to prevent prompt injection (closing quote + newline could inject Output: AGENT)
+  const safeUserText = String(userText || '').replace(/[\r\n]/g, ' ').replace(/"/g, '\''). slice(0, 500)
   const systemPrompt = `You are a professional supervisor router. Classify the user's latest message intent, taking the recent conversation context into account.
 Reply with exactly one word in uppercase:
 CHAT - simple greeting, casual conversation, general questions, explanations or writing text/articles not needing tools/files.
@@ -108,29 +119,75 @@ AGENT - requests to create/edit/delete files, write/fix/run code, run bash/termi
 Recent Conversation Context:
 ${recentMessages}
 
-User message to classify: "${userText}"
+User message to classify: "${safeUserText}"
 Output:`
 
-  try {
-    const reply = await Promise.race([
-      callLLM({
-        baseUrl: classificationProvider.baseUrl,
-        apiKey: classificationProvider.apiKey,
-        authType: classificationProvider.authType || 'bearer',
-        authHeader: classificationProvider.authHeader || '',
-        extraHeaders: classificationProvider.extraHeaders || {},
-        model,
-        messages: [{ role: 'system', content: systemPrompt }],
-        temperature: 0,
-      }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000))
-    ])
-    const decision = String(reply?.text || '').trim().toUpperCase()
-    if (['CHAT', 'WEB', 'AGENT'].includes(decision)) {
-      return decision
+  // Try providers in order: OpenRouter fallback chain → DeepSeek managed → Ollama local → null (heuristics)
+  const providersToTry = []
+
+  if (lowerBase.includes('openrouter')) {
+    for (const fbModel of openRouterFallbackModels) {
+      providersToTry.push({ ...classificationProvider, model: fbModel })
     }
-  } catch (e) {
-    console.warn('[intent classification failed, falling back to heuristics]:', e.message)
+  } else {
+    providersToTry.push(classificationProvider)
   }
+
+  // DeepSeek managed fallback
+  try {
+    const { getSessionState, getActiveBearer } = await import('./deepseekTokenRefresher.js')
+    const dsState = getSessionState()
+    const dsBearer = getActiveBearer()
+    if (dsState?.alive && dsBearer) {
+      providersToTry.push({
+        baseUrl: 'https://chat.deepseek.com/api/v0',
+        apiKey: dsBearer,
+        authType: 'bearer',
+        extraHeaders: {
+          'Referer': 'https://chat.deepseek.com/',
+          'Origin': 'https://chat.deepseek.com',
+          'Cookie': dsState.cookies || '',
+        },
+        model: 'deepseek-chat',
+      })
+    }
+  } catch { /* ignore */ }
+
+  // Ollama local fallback
+  providersToTry.push({
+    baseUrl: 'http://127.0.0.1:11434/v1',
+    apiKey: 'ollama',
+    authType: 'bearer',
+    model: 'qwen2.5:3b',
+  })
+
+  for (const p of providersToTry) {
+    try {
+      const reply = await Promise.race([
+        callLLM({
+          baseUrl: p.baseUrl,
+          apiKey: p.apiKey,
+          authType: p.authType || 'bearer',
+          authHeader: p.authHeader || '',
+          extraHeaders: p.extraHeaders || {},
+          model: p.model,
+          messages: [
+            { role: 'system', content: 'You are a professional supervisor router.' },
+            { role: 'user', content: systemPrompt }
+          ],
+          temperature: 0,
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 120000))
+      ])
+      const decision = String(reply?.text || '').trim().toUpperCase()
+      if (['CHAT', 'WEB', 'AGENT'].includes(decision)) {
+        return decision
+      }
+    } catch (e) {
+      console.warn(`[intent classification failed for ${p.model || 'unknown'}, trying next]:`, e.message)
+    }
+  }
+
+  console.warn('[intent classification exhausted all providers, falling back to heuristics]')
   return null
 }

@@ -106,7 +106,11 @@ function loadFromDisk() {
   try {
     if (fs.existsSync(STATE_FILE)) {
       const raw = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'))
-      state = { ...state, ...raw }
+      // Whitelist полей — не позволяем перезаписать произвольные поля
+      const allowed = ['userToken','cookies','expiresAt','lastRefreshAt','lastSeenAt','lastError','alive','user','updatedBy']
+      for (const k of allowed) {
+        if (k in raw) state[k] = raw[k]
+      }
       log('Loaded persisted session for user:', state?.user?.email || state?.user?.username || '(unknown)')
     }
   } catch (e) {
@@ -119,6 +123,8 @@ function saveToDisk() {
     const dir = path.dirname(STATE_FILE)
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2))
+    // chmod 600 — только owner может читать (содержит Bearer token)
+    try { fs.chmodSync(STATE_FILE, 0o600) } catch { /* ignore on systems without chmod */ }
   } catch (e) {
     warn('saveToDisk error:', e.message)
   }
@@ -359,11 +365,14 @@ export async function setSession({ userToken = '', cookies = null, source = 'api
     state.expiresAt = decodeJwtExp(state.userToken)
   }
   if (cookies) {
+    // Принимаем только известные cookie имена для DeepSeek
+    const KNOWN_COOKIES = ['cf_clearance', 'ds_session_id', 'smidV2', 'intercom-id', '__cf_bm', 'intercom-session']
+    const filterCookies = (obj) => Object.fromEntries(Object.entries(obj).filter(([k]) => KNOWN_COOKIES.some(kn => k.startsWith(kn.split('-')[0]))))
     if (typeof cookies === 'string') {
       const parsed = parseCookieString(cookies)
-      state.cookies = { ...state.cookies, ...parsed }
+      state.cookies = { ...state.cookies, ...filterCookies(parsed) }
     } else if (typeof cookies === 'object') {
-      state.cookies = { ...state.cookies, ...cookies }
+      state.cookies = { ...state.cookies, ...filterCookies(cookies) }
     }
   }
   state.updatedBy = source
@@ -426,7 +435,7 @@ export function bootstrap() {
 
   // Periodic heartbeat
   if (heartbeatTimer) clearInterval(heartbeatTimer)
-  heartbeatTimer = setInterval(() => { heartbeat({ silent: false }).catch(() => {}) }, HEARTBEAT_INTERVAL_MS)
+  heartbeatTimer = setInterval(() => { heartbeat({ silent: false }).catch(e => warn('heartbeat crash:', e.message)) }, HEARTBEAT_INTERVAL_MS)
   heartbeatTimer.unref?.()
 
   // Periodic models refresh

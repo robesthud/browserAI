@@ -125,15 +125,17 @@ export function addDocument(userId, { title, source = '', text }) {
 
   const id = `doc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const ts = Date.now()
-  db.prepare('INSERT INTO kb_documents (id,user_id,title,source,created_at,bytes) VALUES (?,?,?,?,?,?)')
-    .run(id, userId, title.slice(0, 200), source.slice(0, 400), ts, Buffer.byteLength(body, 'utf-8'))
-
+  // B — wrap document + chunks insert in a transaction to prevent partial state
+  const insertDoc = db.prepare('INSERT INTO kb_documents (id,user_id,title,source,created_at,bytes) VALUES (?,?,?,?,?,?)')
   const chunks = chunkText(body)
   const ins = db.prepare('INSERT INTO kb_chunks (id,doc_id,user_id,ord,text,tfidf_json) VALUES (?,?,?,?,?,?)')
-  chunks.forEach((c, i) => {
-    const map = tf(tokenize(c))
-    ins.run(`${id}-c${i}`, id, userId, i, c, JSON.stringify([...map]))
-  })
+  db.transaction(() => {
+    insertDoc.run(id, userId, title.slice(0, 200), source.slice(0, 400), ts, Buffer.byteLength(body, 'utf-8'))
+    chunks.forEach((ch, i) => {
+      const map = tf(tokenize(ch))
+      ins.run(`${id}-c${i}`, id, userId, i, ch, JSON.stringify([...map]))
+    })
+  })()
   return { id, chunks: chunks.length }
 }
 

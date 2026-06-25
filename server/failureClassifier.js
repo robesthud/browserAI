@@ -118,8 +118,8 @@ function normalizeEvidence(input = {}) {
     input.title,
     input.kind,
     input.status,
-    input.details ? JSON.stringify(input.details) : '',
-    input.result ? JSON.stringify(input.result) : '',
+    input.details ? (() => { try { return JSON.stringify(input.details) } catch { return '' } })() : '',
+    input.result ? (() => { try { return JSON.stringify(input.result) } catch { return '' } })() : '',
   ].filter(Boolean).join('\n')
 }
 

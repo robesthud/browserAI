@@ -19,7 +19,7 @@
 // Каждая запись: { action: underlyingToolName }
 const GROUPS = {
   file: {
-    description: `File & workspace operations. First call action:"list" to discover what's available, then read/write/edit files.
+    description: `File & workspace operations for simple one-off file actions. For multi-step inspect/read/write/verify workflows, prefer shell action:"run" so the chat shows one compact command instead of many tiny file tools. Use file actions when you need fuzzy edit, snapshots, zip, upload/download, binary/media files, or a single exact read/write.
 Actions:
 - list [path?] [show_hidden?] — list files/folders as a tree
 - read <path> — read a text file's full contents
@@ -50,7 +50,7 @@ Actions:
   },
 
   shell: {
-    description: `Run shell commands in a persistent Linux sandbox. cwd, env, cd, exported paths persist across calls. The sandbox has git, npm, node, python, docker, kubectl, terraform, ssh, curl, and more.
+    description: `Default for multi-step workspace work. Run shell commands in a persistent Linux sandbox. Use action:"run" to combine related inspect/read/write/verify commands in one call (find/grep/cat/python heredoc/npm test). cwd, env, cd, exported paths persist across calls. The sandbox has git, npm, node, python, docker, kubectl, terraform, ssh, curl, and more.
 Actions:
 - run <command> [timeout_sec?] — run a command (stateful per chat). Default timeout 60s.
 - background_start <command> [name?] [cwd?] — start a long-running command in the background (dev servers, watchers, builds)
@@ -274,6 +274,8 @@ Actions:
 
 // Инструменты, которые остаются как есть (не объединяются).
 // Их params/description уже компактны, либо они принципиально самостоятельны.
+const TOOL_PRESENTATION_ORDER = ['shell', 'file', 'verify', 'git', 'web', 'browser', 'computer', 'media', 'plan', 'memory', 'kb', 'docker', 'ops', 'operator']
+
 const STANDALONE_TOOLS = [
   'ask_user',
   'read_project_rules',
@@ -301,7 +303,7 @@ export function isConsolidatedTool(name) {
   // (ask_user, read_project_rules, etc.). This must match
   // CONSOLIDATED_TOOL_NAMES — otherwise the allowlist will incorrectly
   // reject standalones as legacy.
-  if (Boolean(GROUPS[name])) return true
+  if (GROUPS[name]) return true
   if (STANDALONE_TOOLS.includes(name)) return true
   return false
 }
@@ -341,7 +343,8 @@ export function expandConsolidatedCall(name, args) {
  */
 export function renderConsolidatedTools() {
   const lines = []
-  for (const [name, def] of Object.entries(GROUPS)) {
+  for (const name of TOOL_PRESENTATION_ORDER.filter((n) => GROUPS[n])) {
+    const def = GROUPS[name]
     lines.push(`### ${name}`)
     lines.push(def.description)
     lines.push('')
@@ -366,7 +369,8 @@ export function buildConsolidatedNativeSpec(extraTools = null) {
   const specs = []
 
   // Consolidated groups (file, shell, git, …)
-  for (const [name, def] of Object.entries(GROUPS)) {
+  for (const name of TOOL_PRESENTATION_ORDER.filter((n) => GROUPS[n])) {
+    const def = GROUPS[name]
     specs.push({
       type: 'function',
       function: {

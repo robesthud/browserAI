@@ -1,12 +1,13 @@
 // Минимальный безопасный рендер Markdown без внешних зависимостей.
-// Поддержка: заголовки, **жирный**, *курсив*, `inline code`, ```блоки кода```,
-// списки (- / 1.), ссылки, переносы строк. HTML экранируется.
+// Кодовые блоки — сворачиваемые окошки CodeBlock (можно свернуть/развернуть/редактировать).
+// Работает правильно и во время стриминга (незакрытый ``` тоже рендерится как CodeBlock).
 
 import DOMPurify from 'dompurify'
 import { useMemo } from 'react'
+import CodeBlock from '../components/CodeBlock.jsx'
 
 function escapeHtml(s) {
-  return s
+  return String(s || '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -14,179 +15,223 @@ function escapeHtml(s) {
 
 function renderInline(text) {
   let t = escapeHtml(text)
-  // inline code
   t = t.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>')
-  // bold
   t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   t = t.replace(/__([^_]+)__/g, '<strong>$1</strong>')
-  // italic
   t = t.replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
-  // ссылки обрабатываются отдельно в linkify()
   return t
 }
 
-// Аккуратная сборка ссылок (regex выше упрощён) — делаем явно
 function linkify(html) {
   let out = html.replace(
     /!\[([^\]]*)\]\((data:image\/[^\s)]+|https?:\/\/[^\s)]+)\)/g,
-    (_m, alt, url) =>
-      `<img src="${url}" alt="${alt || 'generated image'}" loading="lazy" class="md-img preserve-color" />`,
+    (_m, alt, url) => `<img src="${url}" alt="${alt || 'image'}" loading="lazy" class="md-img preserve-color" />`,
   )
   out = out.replace(
     /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-    (_m, label, url) =>
-      `<a href="${url}" target="_blank" rel="noopener noreferrer" class="md-link">${label}</a>`,
+    (_m, label, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer" class="md-link">${label}</a>`,
   )
   return out
 }
 
-function toHtml(md) {
+function splitTableRow(line = '') {
+  const trimmed = String(line).trim().replace(/^\|/, '').replace(/\|$/, '')
+  return trimmed.split('|').map((cell) => cell.trim())
+}
+
+function isTableSeparator(line = '') {
+  const cells = splitTableRow(line)
+  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell))
+}
+
+function looksLikeTableRow(line = '') {
+  return /\|/.test(line) && splitTableRow(line).length > 1
+}
+
+// Разбивает Markdown на сегменты: { type:'html', content } | { type:'code', lang, code, streaming }
+// streaming=true — блок ещё не закрыт (идёт стрим) — рендерится как CodeBlock сразу,
+// чтобы код не высыпался в чат как обычный текст
+function parseSegments(md) {
   const lines = md.split('\n')
-  const out = []
+  const segments = []
+
   let i = 0
   let inCode = false
   let codeLang = ''
   let codeBuf = []
+  let htmlBuf = []
   let listBuf = []
-  let listType = null // 'ul' | 'ol'
+  let listType = null
 
   const flushList = () => {
-    if (listBuf.length) {
-      out.push(
-        `<${listType} class="md-list">${listBuf
-          .map((li) => `<li>${linkify(renderInline(li))}</li>`)
-          .join('')}</${listType}>`,
-      )
-      listBuf = []
-      listType = null
-    }
+    if (!listBuf.length) return
+    htmlBuf.push(
+      `<${listType} class="md-list">${listBuf
+        .map((li) => {
+          const task = String(li).match(/^\[([ xX])\]\s+(.*)$/)
+          if (task) {
+            const checked = task[1].toLowerCase() === 'x'
+            return `<li class="md-task"><span class="md-task-box">${checked ? '✓' : ''}</span>${linkify(renderInline(task[2]))}</li>`
+          }
+          return `<li>${linkify(renderInline(li))}</li>`
+        })
+        .join('')}</${listType}>`,
+    )
+    listBuf = []
+    listType = null
+  }
+
+  const flushHtml = () => {
+    if (!htmlBuf.length) return
+    segments.push({ type: 'html', content: htmlBuf.join('') })
+    htmlBuf = []
   }
 
   while (i < lines.length) {
     const line = lines[i]
 
-    // блок кода
-    const fence = line.match(/^```(\w*)\s*$/)
-    if (fence) {
-      if (!inCode) {
-        flushList()
-        inCode = true
-        codeLang = fence[1] || ''
-        codeBuf = []
-      } else {
-        const codeText = codeBuf.join('\n')
-        out.push(
-          `<pre class="md-pre code-block-wrap" data-code="${encodeURIComponent(codeText)}"><div class="md-pre-head">${escapeHtml(
-            codeLang || 'code',
-          )}</div><button type="button" class="code-copy-btn" data-copy-btn>Копировать</button><code>${escapeHtml(codeText)}</code></pre>`,
-        )
-        inCode = false
-      }
-      i++
-      continue
+    // ── fence: начало или конец блока кода ──────────────────────────────
+    // Принимаем и ``` и ~~~, с любым языком после открывашки
+    const fenceOpen  = !inCode && line.match(/^(`{3,}|~{3,})(\S*)\s*$/)
+    const fenceClose =  inCode && line.match(/^(`{3,}|~{3,})\s*$/)
+
+    if (fenceOpen) {
+      flushList(); flushHtml()
+      inCode = true
+      codeLang = fenceOpen[2] || ''
+      codeBuf = []
+      i++; continue
     }
+
+    if (fenceClose) {
+      segments.push({ type: 'code', lang: codeLang, code: codeBuf.join('\n'), streaming: false })
+      inCode = false; codeLang = ''; codeBuf = []
+      i++; continue
+    }
+
     if (inCode) {
       codeBuf.push(line)
-      i++
+      i++; continue
+    }
+
+    // ── tables: header row + separator + body rows ──────────────────────
+    if (looksLikeTableRow(line) && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      flushList()
+      const header = splitTableRow(line)
+      i += 2
+      const rows = []
+      while (i < lines.length && looksLikeTableRow(lines[i])) {
+        rows.push(splitTableRow(lines[i]))
+        i++
+      }
+      htmlBuf.push(
+        `<div class="md-table-wrap"><table class="md-table"><thead><tr>${header
+          .map((cell) => `<th>${linkify(renderInline(cell))}</th>`)
+          .join('')}</tr></thead><tbody>${rows
+          .map((row) => `<tr>${header.map((_, idx) => `<td>${linkify(renderInline(row[idx] || ''))}</td>`).join('')}</tr>`)
+          .join('')}</tbody></table></div>`,
+      )
       continue
     }
 
-    // горизонтальная линия
+    // ── blockquote ───────────────────────────────────────────────────────
+    const quote = line.match(/^>\s?(.*)$/)
+    if (quote) {
+      flushList()
+      const parts = []
+      while (i < lines.length) {
+        const q = lines[i].match(/^>\s?(.*)$/)
+        if (!q) break
+        parts.push(q[1])
+        i++
+      }
+      htmlBuf.push(`<blockquote class="md-quote">${parts.map((part) => `<p class="md-p">${linkify(renderInline(part))}</p>`).join('')}</blockquote>`)
+      continue
+    }
+
+    // ── горизонтальная линия ─────────────────────────────────────────────
     if (line.match(/^---+\s*$/)) {
       flushList()
-      out.push('<hr class="md-hr" />')
-      i++
-      continue
+      htmlBuf.push('<hr class="md-hr" />')
+      i++; continue
     }
 
-    // заголовки
+    // ── заголовки ────────────────────────────────────────────────────────
     const h = line.match(/^(#{1,4})\s+(.*)$/)
     if (h) {
       flushList()
-      const level = h[1].length
-      out.push(
-        `<h${level} class="md-h md-h${level}">${linkify(
-          renderInline(h[2]),
-        )}</h${level}>`,
-      )
-      i++
-      continue
+      const lvl = h[1].length
+      htmlBuf.push(`<h${lvl} class="md-h md-h${lvl}">${linkify(renderInline(h[2]))}</h${lvl}>`)
+      i++; continue
     }
 
-    // списки
+    // ── списки ───────────────────────────────────────────────────────────
     const ul = line.match(/^\s*[-*]\s+(.*)$/)
     const ol = line.match(/^\s*\d+\.\s+(.*)$/)
     if (ul) {
       if (listType && listType !== 'ul') flushList()
-      listType = 'ul'
-      listBuf.push(ul[1])
-      i++
-      continue
+      listType = 'ul'; listBuf.push(ul[1])
+      i++; continue
     }
     if (ol) {
       if (listType && listType !== 'ol') flushList()
-      listType = 'ol'
-      listBuf.push(ol[1])
-      i++
-      continue
+      listType = 'ol'; listBuf.push(ol[1])
+      i++; continue
     }
 
-    // пустая строка
+    // ── пустая строка ────────────────────────────────────────────────────
     if (line.trim() === '') {
-      flushList()
-      i++
-      continue
+      flushList(); i++; continue
     }
 
-    // обычный абзац
+    // ── обычный абзац ────────────────────────────────────────────────────
     flushList()
-    out.push(`<p class="md-p">${linkify(renderInline(line))}</p>`)
+    htmlBuf.push(`<p class="md-p">${linkify(renderInline(line))}</p>`)
     i++
   }
 
-  // #22 FIX: незакрытый code-блок отображается с визуальным предупреждением
+  // Незакрытый блок (стрим ещё идёт) — рендерим как CodeBlock с пометкой streaming
+  // чтобы код НЕ высыпался в чат как обычный текст
   if (inCode) {
-    out.push(
-      `<pre class="md-pre md-pre--unclosed"><div class="md-pre-head">${escapeHtml(codeLang || 'code')} ⚠ незакрытый блок</div><code>${escapeHtml(codeBuf.join('\n'))}</code></pre>`,
-    )
+    flushList(); flushHtml()
+    segments.push({ type: 'code', lang: codeLang, code: codeBuf.join('\n'), streaming: true })
+    return segments
   }
-  flushList()
-  return out.join('')
+
+  flushList(); flushHtml()
+  return segments
+}
+
+function SafeHtml({ html }) {
+  const clean = useMemo(() => {
+    const sanitized = DOMPurify.sanitize(html, {
+      ALLOWED_TAGS: ['h1','h2','h3','h4','strong','em','code','a','li','ul','ol','p','div','span','br','img','hr','blockquote','table','thead','tbody','tr','th','td'],
+      ALLOWED_ATTR: ['href','target','rel','class','src','alt','loading'],
+    })
+    return { __html: sanitized }
+  }, [html])
+
+  return <div className="md" dangerouslySetInnerHTML={clean} />
 }
 
 export default function Markdown({ text }) {
-  const html = useMemo(() => {
-    const raw = toHtml(text || '')
-    const clean = DOMPurify.sanitize(raw, {
-      // 'button' added so the per-codeblock Copy button can render.
-      // data-* attrs let the delegated click handler find the source code.
-      ALLOWED_TAGS: ['h1','h2','h3','strong','em','code','pre','a','li','ul','ol','p','div','span','br','button','img','hr'],
-      ALLOWED_ATTR: ['href','target','rel','class','data-code','data-copy-btn','type','src','alt','loading'],
-    })
-    return { __html: clean }
-  }, [text])
+  const segments = useMemo(() => parseSegments(text || ''), [text])
 
-  // Event delegation: any click on a [data-copy-btn] copies the
-  // sibling <pre>'s data-code attribute. Avoids attaching a listener
-  // per code block while keeping the markdown render purely string-based.
-  const onClick = (e) => {
-    const btn = e.target?.closest?.('[data-copy-btn]')
-    if (!btn) return
-    const pre = btn.closest('pre')
-    const encoded = pre?.getAttribute('data-code') || ''
-    let codeText
-    try { codeText = decodeURIComponent(encoded) } catch { codeText = encoded }
-    if (navigator?.clipboard?.writeText) {
-      navigator.clipboard.writeText(codeText).then(() => {
-        btn.textContent = 'Скопировано'
-        btn.classList.add('copied')
-        setTimeout(() => {
-          btn.textContent = 'Копировать'
-          btn.classList.remove('copied')
-        }, 1500)
-      }).catch(() => { btn.textContent = 'Ошибка' })
-    }
-  }
-
-  return <div className="md" onClick={onClick} dangerouslySetInnerHTML={html} />
+  return (
+    <div>
+      {segments.map((seg, idx) => {
+        if (seg.type === 'code') {
+          return (
+            <CodeBlock
+              key={idx}
+              lang={seg.lang}
+              code={seg.code}
+              streaming={seg.streaming}
+            />
+          )
+        }
+        return <SafeHtml key={idx} html={seg.content} />
+      })}
+    </div>
+  )
 }

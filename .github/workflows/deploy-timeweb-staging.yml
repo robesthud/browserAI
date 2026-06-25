@@ -26,7 +26,7 @@ jobs:
 
     steps:
       - name: Checkout (for audit only)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure SSH
         if: env.HAS_TIMEWEB_STAGING_SECRETS == 'true'
@@ -40,7 +40,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: git pull + docker compose up -d --build
+      - name: targeted staging deploy via deploy.sh
         if: env.HAS_TIMEWEB_STAGING_SECRETS == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.TIMEWEB_STAGING_HOST }}
@@ -49,15 +49,24 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=accept-new \
               "${DEPLOY_USER}@${DEPLOY_HOST}" \
-              "set -euo pipefail
-               cd '${APP_DIR}'
-               git fetch --quiet origin staging
-               git reset --hard origin/staging
-               docker compose build
-               docker compose up -d
-               docker image prune -f
-               sleep 5
-               curl -fsS http://localhost/api/health"
+              "APP_DIR='${APP_DIR}' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "$APP_DIR"
+          git fetch --quiet origin staging
+          changed=$(git diff --name-only HEAD..origin/staging || true)
+          printf '%s\n' "$changed"
+
+          rebuild_agent_sandbox=0
+          if printf '%s\n' "$changed" | grep -Eq '^(docker/agent-sandbox/|docker-compose.yml|Dockerfile)'; then
+            rebuild_agent_sandbox=1
+          fi
+          if ! docker image inspect browserai-agent-sandbox:latest >/dev/null 2>&1; then
+            rebuild_agent_sandbox=1
+          fi
+
+          APP_DIR="$APP_DIR" DEPLOY_BRANCH=staging REBUILD_AGENT_SANDBOX="$rebuild_agent_sandbox" bash ./deploy.sh
+          curl -fsS http://localhost/api/health
+          REMOTE
 
       - name: Skip staging deploy notice
         if: env.HAS_TIMEWEB_STAGING_SECRETS != 'true'

@@ -55,7 +55,8 @@ export function recordSpend({ userId = '', chatId = '', model = '', usage = {} }
   try {
     const promptTokens     = Number(usage.prompt || usage.prompt_tokens || 0)
     const completionTokens = Number(usage.completion || usage.completion_tokens || 0)
-    const { cost } = priceFor(model, promptTokens, completionTokens)
+    const priceResult = priceFor(model, promptTokens, completionTokens)
+    const { cost = 0 } = priceResult || {}  // B — guard if priceFor returns undefined
     db().prepare(`INSERT INTO llm_spend
       (user_id, chat_id, ts, model, prompt_tokens, completion_tokens, cost_usd)
       VALUES (?, ?, ?, ?, ?, ?, ?)`).run(

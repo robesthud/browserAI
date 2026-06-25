@@ -64,9 +64,11 @@ export function upsertFact(userId, key, value) {
   `).run(userId, k, v, ts)
 
   // Enforce per-user cap by trimming the oldest.
+  // D — LIMIT -1 is implementation-defined in some SQLite builds; use subquery COUNT instead
+  //   We simply delete all rows beyond the cap ordered by oldest.
   const over = db.prepare(
-    'SELECT key FROM user_facts WHERE user_id = ? ORDER BY updated_at DESC LIMIT -1 OFFSET ?'
-  ).all(userId, MAX_FACTS_PER_USER)
+    'SELECT key FROM user_facts WHERE user_id = ? ORDER BY updated_at ASC LIMIT max(0, (SELECT COUNT(*) FROM user_facts WHERE user_id=?) - ?)'
+  ).all(userId, userId, MAX_FACTS_PER_USER)
   for (const r of over) {
     db.prepare('DELETE FROM user_facts WHERE user_id = ? AND key = ?').run(userId, r.key)
   }

@@ -86,6 +86,8 @@ export async function getPublicVapidKey() {
 export async function saveSubscription(userId, sub) {
   init()
   if (!userId || !sub?.endpoint) throw new Error('userId + subscription required')
+  // PU-1: cap endpoint length to prevent DoS via huge endpoint strings
+  if (String(sub.endpoint).length > 2048) throw new Error('push endpoint URL too long (max 2048)')
   const keys = sub.keys || {}
   db.prepare(`
     INSERT INTO push_subscriptions (user_id, endpoint, keys_json, created_at)

@@ -35,7 +35,7 @@ async function walk(abs, rel, out, { maxFiles, maxBytes }) {
   out.scannedFiles += 1
   if (SENSITIVE_FILE_RE.test(rel)) out.findings.push({ path: rel, type: 'sensitive_filename', severity: 'high', match: path.basename(rel) })
   if (st.size > maxBytes) return
-  let text = ''
+  let text
   try { text = await fs.readFile(abs, 'utf8') } catch { return }
   for (const p of PATTERNS) {
     let m

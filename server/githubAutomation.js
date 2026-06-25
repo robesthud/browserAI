@@ -176,8 +176,31 @@ function statusBody() {
   return lines.join('\n')
 }
 
-export async function handleGithubAutomationWebhook({ event = '', delivery = '', payload = {} } = {}) {
+// A — verify GitHub webhook HMAC-SHA256 signature before processing any payload.
+// rawBody (Buffer) and signature (X-Hub-Signature-256 header value) must be
+// supplied by the Express route that calls this function.
+export async function verifyGithubWebhookSignature(rawBody, signature = '') {
+  const secret = process.env.GITHUB_WEBHOOK_SECRET || ''
+  if (!secret) return true  // No secret configured → allow (but warn in production)
+  if (!rawBody || !signature) return false
+  const { createHmac, timingSafeEqual } = await import('node:crypto')
+  const expected = 'sha256=' + createHmac('sha256', secret).update(rawBody).digest('hex')
+  // timingSafeEqual requires same length buffers
+  try {
+    const a = Buffer.from(expected, 'utf8')
+    const b = Buffer.from(String(signature), 'utf8')
+    if (a.length !== b.length) return false
+    return timingSafeEqual(a, b)
+  } catch { return false }
+}
+
+export async function handleGithubAutomationWebhook({ event = '', delivery = '', payload = {}, rawBody = null, signature = '' } = {}) {
   initGithubAutomation()
+  // A — reject webhooks with invalid signature (prevents arbitrary mission injection)
+  if (!await verifyGithubWebhookSignature(rawBody, signature)) {
+    console.warn('[githubAutomation] webhook signature verification failed — rejected')
+    return { rejected: true, reason: 'invalid_signature' }
+  }
   const action = payload.action || ''
   const repo = payload.repository?.full_name || ''
   const sender = payload.sender?.login || ''

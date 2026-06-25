@@ -11,28 +11,34 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "vitest run --no-file-parallelism"
+    "test": "vitest run --no-file-parallelism --passWithNoTests",
+    "agent": "node ./bin/browserai-agent.js",
+    "agent:jsonl": "node ./bin/browserai-agent.js --jsonl"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.80.2",
+    "@earendil-works/pi-ai": "^0.80.2",
     "adm-zip": "^0.5.16",
     "better-sqlite3": "^12.10.0",
     "cheerio": "^1.2.0",
     "cors": "^2.8.6",
     "docx": "^9.7.1",
-    "dompurify": "^3.1.6",
+    "dompurify": "^3.4.11",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "express-rate-limit": "^7.4.0",
     "helmet": "^7.1.0",
     "ipaddr.js": "^2.2.0",
     "is-ip": "^5.0.1",
-    "nodemailer": "^8.0.10",
+    "nodemailer": "^9.0.1",
     "pdfkit": "^0.19.0",
     "playwright-core": "^1.60.0",
     "pptxgenjs": "^4.0.1",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "tar": "^7.5.16",
+    "typebox": "^1.1.38",
+    "undici": "^7.28.0",
     "web-push": "^3.6.7"
   },
   "devDependencies": {
@@ -58,5 +64,9 @@
     "exceljs": {
       "uuid": "^11.1.1"
     }
+  },
+  "bin": {
+    "browserai": "./bin/browserai-agent.js",
+    "browserai-agent": "./bin/browserai-agent.js"
   }
 }

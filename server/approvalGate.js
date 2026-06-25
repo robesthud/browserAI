@@ -97,6 +97,8 @@ const TOOL_CATEGORY = {
   bash_stop: 'bash',
   bash_list: 'bash',
   verify_code: 'bash',
+  spawn_agent: 'bash',
+  get_agent_result: 'read',
   verify_task: 'bash',
   run_tests: 'bash',
   run_python_with_plot: 'bash',
@@ -160,21 +162,77 @@ export function savePolicy(userId = '', policy = {}) {
 /**
  * Returns the logical category of a tool for the UI.
  */
-export function categoryOf(toolName = '') {
+// Approach 2 — Runtime Unification parity: categoryOf dispatches by semantic
+// family+action so that consolidated tool names (`file`, `shell`, `verify`,
+// `git`, `docker`, `ops`, `web`, `browser`) AND any family-equivalent legacy
+// names (`npm_test`, `docker_ps`, `read_file`, `write_file`, ...) are
+// categorized identically.
+import { runtimeSemantics as _runtimeSemantics } from './agentRuntimeSemantics.js'
+
+const FAMILY_TO_CATEGORY = {
+  file: 'write',     // default to 'write'; read-only actions are overridden below
+  verify: 'bash',
+  shell: 'bash',
+  git: 'git',
+  docker: 'deploy',
+  ops: 'deploy',
+  web: 'net',
+  browser: 'net',
+}
+
+const FILE_READ_ACTIONS = new Set(['list', 'read', 'search', 'snapshot_list'])
+const OPS_READ_ACTIONS = new Set(['list'])
+
+function categoryByFamily(toolName = '', args = {}) {
+  // Normalise args: if caller passed a JSON string, parse it; if object, use directly.
+  // Wrap JSON.stringify in try/catch to guard against circular objects.
+  let argsStr
+  if (typeof args === 'string') {
+    argsStr = args
+  } else {
+    try { argsStr = JSON.stringify(args || {}) } catch { argsStr = '{}' }
+  }
+  const semantic = _runtimeSemantics({ tool: toolName, args: argsStr, outcome: '' })
+  const family = semantic.family
+  const action = semantic.action
+  if (!Object.prototype.hasOwnProperty.call(FAMILY_TO_CATEGORY, family)) return null
+  // File family: read-only actions should map to 'read', not 'write'.
+  if (family === 'file' && FILE_READ_ACTIONS.has(action)) return 'read'
+  // Ops family: list action is a read, others (run) are deploy.
+  if (family === 'ops' && OPS_READ_ACTIONS.has(action)) return 'read'
+  return FAMILY_TO_CATEGORY[family]
+}
+
+export function categoryOf(toolName = '', args = {}) {
   const name = String(toolName || '')
   if (name.startsWith('mcp__')) return 'mcp'
-  return TOOL_CATEGORY[name] || 'net'
+
+  // 1) Explicit legacy lookup wins for tools that have a unique category.
+  const direct = TOOL_CATEGORY[name]
+  if (direct) return direct
+
+  // 2) Family-based dispatch — works for both consolidated and legacy forms.
+  const byFamily = categoryByFamily(name, args)
+  if (byFamily) return byFamily
+
+  return 'net'
 }
 
 function commandLooksDangerous(command = '') {
-  const c = String(command || '').toLowerCase()
-  return /\brm\s+-rf\b|\bdd\s+if=|mkfs\.|chmod\s+-r\s+777|chown\s+-r\b|docker\s+compose\s+up|docker-compose\s+up|docker\s+rm\b|docker\s+restart\b|systemctl\s+(restart|stop|start)|service\s+\w+\s+(restart|stop|start)|kubectl\s+(apply|delete|rollout)|deploy\.sh|\bdeploy\b|git\s+push\b|git\s+reset\s+--hard|git\s+clean\s+-fd|curl\s+.*\|\s*(sh|bash)|wget\s+.*\|\s*(sh|bash)/i.test(c)
+  // Catastrophic host/workspace destruction guard only. Deployment/productive
+  // operations (docker compose up, git push, systemctl restart, kubectl apply,
+  // deploy.sh, etc.) now follow the user's approval policy and default to auto.
+  // Set BROWSERAI_DISABLE_CATASTROPHIC_APPROVAL=1 only in fully disposable envs.
+  if (String(process.env.BROWSERAI_DISABLE_CATASTROPHIC_APPROVAL || '').toLowerCase() === '1') return false
+  const c = String(command || '').toLowerCase().replace(/\s+/g, ' ').trim()
+  return /\bdd\s+if=|\bmkfs\.|\brm\s+-rf\s+(\/|~|\$home|\*)(\s|$)|\bchmod\s+-r\s+777\s+(\/|~|\$home)(\s|$)|\bchown\s+-r\b\s+\S+\s+(\/|~|\$home)(\s|$)|curl\s+.*\|\s*(sh|bash)|wget\s+.*\|\s*(sh|bash)/i.test(c)
 }
 
 /**
  * Checks if a tool call requires explicit user confirmation according to the
  * current user's policy. Unknown tools default to net policy (safe-ish but
- * visible in strict mode). Dangerous shell commands always require approval.
+ * visible in strict mode). Catastrophic shell commands still require approval
+ * unless explicitly disabled by env; deploy/git/docker operations default auto.
  */
 export function requiresApproval(toolName, userId = '', args = {}) {
   // ask_user is itself the approval/question mechanism; never require approval

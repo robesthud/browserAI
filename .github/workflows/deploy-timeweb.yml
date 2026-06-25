@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Checkout (for audit only)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure SSH
         if: env.HAS_TIMEWEB_SECRETS == 'true'
@@ -42,7 +42,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: git pull + docker compose up -d --build
+      - name: targeted deploy via deploy.sh
         if: env.HAS_TIMEWEB_SECRETS == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.TIMEWEB_HOST }}
@@ -51,46 +51,47 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=accept-new \
               "${DEPLOY_USER}@${DEPLOY_HOST}" \
-              "bash -c '
-               set -euo pipefail
-               cd \"${APP_DIR}\"
-               
-               export \$(grep -v \"^#\" .env | grep -v \"^$\" | xargs)
-               send_tg() {
-                 if [ -n \"\${TG_BOT_TOKEN:-}\" ] && [ -n \"\${TG_ADMIN_CHAT_ID:-}\" ]; then
-                   curl -s -X POST \"https://api.telegram.org/bot\${TG_BOT_TOKEN}/sendMessage\" \
-                        -d chat_id=\"\${TG_ADMIN_CHAT_ID}\" \
-                        -d parse_mode=\"HTML\" \
-                        --data-urlencode \"text=\$1\" > /dev/null || true
-                 fi
-               }
-               
-               trap '\''send_tg \"❌ <b>BrowserAI</b>: Ошибка деплоя! (коммит <code>${{ github.sha }}</code>)\"'\'' ERR
-               send_tg \"🚀 <b>BrowserAI</b>: Начат деплой (коммит <code>${{ github.sha }}</code>)...\"
-               
-               echo \"── git pull ──\"
-               git fetch --quiet origin main
-               # If the server repo was ever left in sparse-checkout mode, tracked
-               # files can be absent from the Docker build context while GitHub
-               # still reports a successful checkout. Disable sparse mode before
-               # reset so files imported by Node really exist in the image.
-               git sparse-checkout disable 2>/dev/null || true
-               git reset --hard origin/main
-               git clean -fd
-               echo \"── verify required files ──\"
-               test -f server/telegramBot.js
-               test -f server/index.js
-               echo \"── docker compose up -d --build --force-recreate --remove-orphans ──\"
-               docker compose up -d --build --force-recreate --remove-orphans browserai
-               echo \"── prune dangling images ──\"
-               docker image prune -f
-               echo \"── health ──\"
-               sleep 10
-               curl -fsS http://localhost/api/health || curl -fsS http://localhost:8080/api/health
-               docker ps --filter name=browserai || true
-               
-               send_tg \"✅ <b>BrowserAI</b>: Деплой успешно завершен! (коммит <code>${{ github.sha }}</code>)\"
-               '"
+              "APP_DIR='${APP_DIR}' DEPLOY_SHA='${{ github.sha }}' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "$APP_DIR"
+
+          export $(grep -v '^#' .env | grep -v '^$' | xargs)
+          send_tg() {
+            if [ -n "${TG_BOT_TOKEN:-}" ] && [ -n "${TG_ADMIN_CHAT_ID:-}" ]; then
+              curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+                   -d chat_id="${TG_ADMIN_CHAT_ID}" \
+                   -d parse_mode="HTML" \
+                   --data-urlencode "text=$1" > /dev/null || true
+            fi
+          }
+
+          trap 'send_tg "❌ <b>BrowserAI</b>: Ошибка деплоя! (коммит <code>${DEPLOY_SHA}</code>)"' ERR
+          send_tg "🚀 <b>BrowserAI</b>: Начат деплой (коммит <code>${DEPLOY_SHA}</code>)..."
+
+          echo "── preflight fetch ──"
+          git fetch --quiet origin main
+          changed=$(git diff --name-only HEAD..origin/main || true)
+          printf '%s\n' "$changed"
+
+          rebuild_agent_sandbox=0
+          if printf '%s\n' "$changed" | grep -Eq '^(docker/agent-sandbox/|docker-compose.yml|Dockerfile)'; then
+            rebuild_agent_sandbox=1
+          fi
+          if ! docker image inspect browserai-agent-sandbox:latest >/dev/null 2>&1; then
+            rebuild_agent_sandbox=1
+          fi
+
+          echo "── targeted deploy ──"
+          APP_DIR="$APP_DIR" DEPLOY_BRANCH=main REBUILD_AGENT_SANDBOX="$rebuild_agent_sandbox" bash ./deploy.sh
+
+          echo "── verify required files ──"
+          test -f server/telegramBot.js
+          test -f server/index.js
+          curl -fsS http://localhost/api/health || curl -fsS http://localhost:8080/api/health
+          docker ps --filter name=browserai || true
+
+          send_tg "✅ <b>BrowserAI</b>: Деплой успешно завершен! (коммит <code>${DEPLOY_SHA}</code>)"
+          REMOTE
 
       - name: Skip deploy notice
         if: env.HAS_TIMEWEB_SECRETS != 'true'

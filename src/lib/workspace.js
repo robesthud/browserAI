@@ -46,6 +46,20 @@ export const workspaceApi = {
 
   readFile: (path) => req(`/file?path=${encodeURIComponent(path)}`),
 
+  getEvents: (limit = 200, opts = {}) => {
+    const params = [`limit=${encodeURIComponent(limit)}`]
+    if (opts.runId) params.push(`runId=${encodeURIComponent(opts.runId)}`)
+    if (opts.path) params.push(`path=${encodeURIComponent(opts.path)}`)
+    return req(`/events?${params.join('&')}`)
+  },
+
+  getDiffs: (path = '', limit = 500, opts = {}) => {
+    const params = [`limit=${encodeURIComponent(limit)}`]
+    if (path) params.push(`path=${encodeURIComponent(path)}`)
+    if (opts.runId) params.push(`runId=${encodeURIComponent(opts.runId)}`)
+    return req(`/diff?${params.join('&')}`)
+  },
+
   searchContent: (query, showHidden = false) =>
     req(`/search?q=${encodeURIComponent(query)}&hidden=${showHidden ? '1' : '0'}`),
 

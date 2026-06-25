@@ -50,6 +50,8 @@ export function streamAgent({ chatId = '', history, provider, extraSystem = '', 
           extraSystem,
           // Provider config — flatten into the body so /api/agent/chat
           // can apply the same SSRF / managed-injection rules /api/chat uses.
+          keyId:        provider.keyId || '',
+          useStoredSecret: Boolean(provider.useStoredSecret),
           baseUrl:      provider.baseUrl,
           apiKey:       provider.apiKey || '',
           authType:     provider.authType || 'bearer',

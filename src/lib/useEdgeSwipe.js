@@ -19,6 +19,9 @@ const SLOPE_RATIO = 1.5    // |dx| must exceed |dy| * ratio to count as horizont
 export default function useEdgeSwipe({ side = 'left', enabled = true, onTrigger }) {
   useEffect(() => {
     if (!enabled || typeof window === 'undefined' || typeof onTrigger !== 'function') return undefined
+    // Native touch scrolling must win on mobile/coarse devices. Edge-swipe
+    // navigation is nice-to-have, but not at the cost of broken touch UX.
+    if (window.matchMedia?.('(pointer: coarse)').matches) return undefined
 
     let startX = 0
     let startY = 0

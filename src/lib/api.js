@@ -209,6 +209,8 @@ function extractTextFromResponse(payload, responsePath = '') {
 }
 
 async function requestChat({
+  keyId = '',
+  useStoredSecret = false,
   baseUrl,
   apiKey,
   authType = 'bearer',
@@ -229,6 +231,8 @@ async function requestChat({
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
+      keyId,
+      useStoredSecret: Boolean(useStoredSecret),
       baseUrl: normalizeBaseUrl(baseUrl),
       apiKey,
       authType,
@@ -251,6 +255,8 @@ async function requestChat({
 }
 
 export async function streamChat({
+  keyId = '',
+  useStoredSecret = false,
   baseUrl,
   apiKey,
   authType = 'bearer',
@@ -264,6 +270,8 @@ export async function streamChat({
   signal,
 }) {
   const response = await requestChat({
+    keyId,
+    useStoredSecret,
     baseUrl,
     apiKey,
     authType,
@@ -327,6 +335,8 @@ export async function streamChat({
 }
 
 async function requestChatText({
+  keyId = '',
+  useStoredSecret = false,
   baseUrl,
   apiKey,
   authType = 'bearer',
@@ -339,6 +349,8 @@ async function requestChatText({
   signal,
 }) {
   const response = await requestChat({
+    keyId,
+    useStoredSecret,
     baseUrl,
     apiKey,
     authType,
@@ -425,6 +437,8 @@ export async function sendChat({
   onToken,
 }) {
   const baseUrl = normalizeBaseUrl(settings?.baseUrl)
+  const keyId = String(settings?.keyId || '')
+  const useStoredSecret = Boolean(settings?.useStoredSecret)
   const apiKey = String(settings?.apiKey || '')
   const model = String(settings?.model || '')
   const temperature = Number(settings?.temperature ?? 0.7)
@@ -433,7 +447,7 @@ export async function sendChat({
   const responsePath = settings?.responsePath || ''
   const extraHeaders = settings?.extraHeaders || {}
 
-  if (!baseUrl || !apiKey || !model) {
+  if (!baseUrl || (!apiKey && !useStoredSecret) || !model) {
     throw new Error('Сначала настрой API-ключ и выбери модель')
   }
 
@@ -449,6 +463,8 @@ export async function sendChat({
 
   if (shouldStream) {
     return streamChat({
+      keyId,
+      useStoredSecret,
       baseUrl,
       apiKey,
       authType,
@@ -464,6 +480,8 @@ export async function sendChat({
   }
 
   return requestChatText({
+    keyId,
+    useStoredSecret,
     baseUrl,
     apiKey,
     authType,

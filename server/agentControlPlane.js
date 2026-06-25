@@ -6,8 +6,13 @@ import { listIncidents } from './incidents.js'
 import { listJobs } from './jobs.js'
 import { listPendingQuestions } from './askUserRegistry.js'
 
+// Cache prepared statements at module level to avoid re-preparing on every call
+const _stmtCache = new Map()
 function count(sql, ...args) {
-  try { return db.prepare(sql).get(...args).c || 0 } catch { return 0 }
+  try {
+    if (!_stmtCache.has(sql)) _stmtCache.set(sql, db.prepare(sql))
+    return _stmtCache.get(sql).get(...args).c || 0
+  } catch { return 0 }
 }
 
 function statusFromSignals(signals = {}) {
@@ -53,7 +58,8 @@ export function getAgentControlPlane({ userId = '' } = {}) {
       policyEvents,
     },
     database: {
-      workflowsTotal: count('SELECT COUNT(*) c FROM agent_workflows WHERE user_id=?', uid),
+      // B — when uid is empty, count across ALL users (not just user_id='')
+      workflowsTotal: uid ? count('SELECT COUNT(*) c FROM agent_workflows WHERE user_id=?', uid) : count('SELECT COUNT(*) c FROM agent_workflows'),
       workflowStepsTotal: count('SELECT COUNT(*) c FROM agent_workflow_steps'),
       ledgerTotal: count('SELECT COUNT(*) c FROM agent_tool_ledger'),
       incidentsTotal: uid ? count(`SELECT COUNT(*) c FROM incidents WHERE (user_id=? OR user_id='')`, uid) : count('SELECT COUNT(*) c FROM incidents'),

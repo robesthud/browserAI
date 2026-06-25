@@ -256,7 +256,7 @@ export function useSettings() {
 
   const refreshModelsForKey = useCallback(
     async (key) => {
-      if (!key?.baseUrl || !key?.apiKey) return
+      if (!key?.baseUrl || (!key?.apiKey && !key?.hasSecret)) return
 
       try {
         const result = await validateKey(key)
@@ -389,10 +389,10 @@ export function useSettings() {
 
   useEffect(() => {
     const active = getActiveKey(settings)
-    if (!active?.id || !active.baseUrl || !active.apiKey) return
+    if (!active?.id || !active.baseUrl || (!active.apiKey && !active.hasSecret)) return
     if (active.availableModels?.length > 0) return
 
-    const signature = `${active.id}|${active.baseUrl}|${active.apiKey}`
+    const signature = `${active.id}|${active.baseUrl}|${active.apiKey || ''}|${active.hasSecret ? 'stored' : 'inline'}`
     if (autoRefreshRef.current === signature) return
     autoRefreshRef.current = signature
     void refreshModelsForKey(active)

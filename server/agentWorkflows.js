@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import db from './db.js'
+import log from './logger.js'
 import { invokeTool } from './agentTools.js'
 import { runOpsAction } from './ops.js'
 import { withWorkspaceScope } from './workspace.js'
@@ -13,9 +14,11 @@ const cancelled = new Set()
 function now() { return Date.now() }
 function id(prefix = 'wf') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }
 function parse(raw, fallback) { try { return JSON.parse(raw || '') } catch { return fallback } }
-function hashJson(value) { return crypto.createHash('sha256').update(JSON.stringify(value || {})).digest('hex') }
+function hashJson(value) { try { return crypto.createHash('sha256').update(JSON.stringify(value || {})).digest('hex') } catch { return crypto.createHash('sha256').update(String(value)).digest('hex') } }
 function clip(value, max = 24000) {
-  const s = typeof value === 'string' ? value : JSON.stringify(value ?? null, null, 2)
+  let s
+  if (typeof value === 'string') { s = value }
+  else { try { s = JSON.stringify(value ?? null, null, 2) } catch { s = String(value) } }
   return s.length > max ? s.slice(0, max) + `\n…[truncated ${s.length - max} chars]` : s
 }
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0))) }
@@ -170,6 +173,20 @@ export function initAgentWorkflows() {
   const resumable = db.prepare(`SELECT id FROM agent_workflows WHERE status IN ('queued','running') ORDER BY created_at ASC`).all()
   if (resumable.length) {
     console.log(`[workflows] resuming ${resumable.length} workflow(s)`)
+    // B — reset steps still stuck in 'running' state from a crashed process:
+    //   - idempotent steps → reset to 'queued' so they are retried
+    //   - nonIdempotent steps → mark 'failed' (cannot safely re-run)
+    for (const r of resumable) {
+      const stuck = db.prepare(`SELECT * FROM agent_workflow_steps WHERE workflow_id=? AND status='running'`).all(r.id)
+      for (const s of stuck) {
+        const spec = parse(s.input_json, {})
+        if (spec.nonIdempotent) {
+          db.prepare(`UPDATE agent_workflow_steps SET status='failed', error='interrupted (non-idempotent)', updated_at=?, finished_at=? WHERE id=?`).run(now(), now(), s.id)
+        } else {
+          db.prepare(`UPDATE agent_workflow_steps SET status='queued', attempts=0, error='', updated_at=? WHERE id=?`).run(now(), s.id)
+        }
+      }
+    }
     setTimeout(() => { for (const r of resumable) startWorkflow(r.id) }, 1000).unref?.()
   }
 }
@@ -359,7 +376,10 @@ export function startWorkflow(workflowId) {
         const spec = step.input || {}
         const retry = retryPolicyForStep(spec)
         let out = null
-        for (let attempt = Number(step.attempts || 0) + 1; attempt <= retry.attempts; attempt += 1) {
+        // D — if prior attempts already exhausted budget (e.g. crash-resume), reset to ensure ≥1 attempt
+        const priorAttempts = Number(step.attempts || 0)
+        const startAttempt = priorAttempts >= retry.attempts ? 1 : priorAttempts + 1
+        for (let attempt = startAttempt; attempt <= retry.attempts; attempt += 1) {
           if (cancelled.has(workflowId)) break
           patchStep(step.id, { status: 'running', attempts: attempt, startedAt: step.startedAt || now(), error: attempt > 1 ? `retry ${attempt}/${retry.attempts}` : '' })
           workflow = getWorkflow(workflowId)

@@ -9,7 +9,9 @@ function now() { return Date.now() }
 function id(prefix = 'dep') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }
 function parse(raw, fallback) { try { return JSON.parse(raw || '') } catch { return fallback } }
 function clip(value, max = 6000) {
-  const s = typeof value === 'string' ? value : JSON.stringify(value ?? null, null, 2)
+  let s
+  if (typeof value === 'string') { s = value }
+  else { try { s = JSON.stringify(value ?? null, null, 2) } catch { s = String(value) } }
   return s.length > max ? s.slice(0, max) + `\n…[truncated ${s.length - max} chars]` : s
 }
 
@@ -91,7 +93,7 @@ function patchSession(sessionId, patch = {}) {
   const next = { ...cur, ...patch }
   db.prepare(`UPDATE deploy_sessions SET status=?, result_json=?, error=?, progress=?, updated_at=?, finished_at=? WHERE id=?`).run(
     next.status || cur.status,
-    JSON.stringify(next.result || cur.result || {}),
+    (() => { try { return JSON.stringify(next.result || cur.result || {}) } catch { return cur.result_json || '{}' } })(),
     next.error || '',
     Math.max(0, Math.min(100, Number(next.progress ?? cur.progress ?? 0))),
     now(),
@@ -105,7 +107,7 @@ export function addDeployEvent(sessionId, { type = 'info', phase = '', message =
   initDeploySessions()
   const eventId = id('depevt')
   db.prepare('INSERT INTO deploy_session_events (id,session_id,type,phase,message,data_json,created_at) VALUES (?,?,?,?,?,?,?)')
-    .run(eventId, sessionId, String(type || 'info'), String(phase || ''), String(message || '').slice(0, 4000), JSON.stringify(data || {}), now())
+    .run(eventId, sessionId, String(type || 'info'), String(phase || ''), String(message || '').slice(0, 4000), (() => { try { return JSON.stringify(data || {}) } catch { return '{}' } })(), now())
   return eventId
 }
 

@@ -1,3 +1,7 @@
+// === Privileged Agent Runtime Platform (Agent Runtime) ===
+// === Privileged Agent Runtime Platform (Agent Runtime) ===
+// LLM decides. Runtime executes with real host privileges.
+
 /**
  * agentLoop.js
  *
@@ -28,28 +32,22 @@ import { searchWeb, fetchWebPage } from './web.js'
 import { routeHistory, classifyIntentAI } from './smartRouter.js'
 import { routeDeterministicAction } from './deterministicActionRouter.js'
 import { toolProfileForTask, profileToolNames, isToolAllowed } from './toolAllowlist.js'
-import { expandConsolidatedCall, isConsolidatedTool } from './toolConsolidation.js'
+import { expandConsolidatedCall, isConsolidatedTool, buildConsolidatedNativeSpec } from './toolConsolidation.js'
 import { getRecoveryAction, getRecoveryHint as recoveryHint } from './recoveryEngine.js'
 import { buildToolStrategyDirective } from './failurePlaybooks.js'
 import { createWorkspaceSnapshot } from './workspaceSnapshots.js'
-import { deriveTaskPhase, allowedToolsForPhase, createRetryBudget, recordToolCall, guardToolCall, detectStuck, shouldEscalate, buildEscalationPrompt, nextPhase, PHASES } from './taskStateMachine.js'
+import { deriveTaskPhase, allowedToolsForPhase, createRetryBudget, recordToolCall, guardToolCall, detectStuck, shouldEscalate, buildEscalationPrompt } from './taskStateMachine.js'
 import { createAgentTask, updateAgentTask, finishAgentTask } from './agentTasks.js'
 import {
   clipToolOutput, manageContext, applyAnthropicCacheHints,
   upsertAgentStateDigest,
 } from './contextManager.js'
 import { safeErrorMessage, safeProviderError } from './errorSanitizer.js'
+import { redactSecrets } from './sandboxPolicy.js'
+import { renderProjectMemoryForPrompt, upsertProjectFact } from './projectMemory.js'
 import log from './logger.js'
 import {
-  historyArgs,
-  historyAction,
-  historyPath,
-  isFileToolAction,
-  isVerificationHistoryEntry,
   needsVerificationSinceLastEdit,
-  commandLooksLikeHealthCheck,
-  toolCommand,
-  commandMatches,
   askedForExplicitLocalTest,
   hasLocalTestAttempt,
   hasSuccessfulLocalTest,
@@ -63,7 +61,21 @@ import {
 import { buildFinalStatus, isBlocked } from './agentFinalStatus.js'
 import { createRunLog as _createRunLog, newRunId as _newRunId } from './runLogs.js'
 import { buildReplayArtifact as _buildReplayArtifact, saveReplay as _saveReplay } from './replayArtifact.js'
-import { classifyError as _classifyError } from './errorTaxonomy.js'
+import { validateFinalClaims } from './finalClaimValidator.js'
+import {
+  DIRECT_TOOL_NAMES,
+  extractMarkdownShellCommand,
+  isDirectToolTag,
+  parseXmlToolBody,
+} from './agentDecision.js'
+import { resolveAgentTurn } from './agentTurnOrchestrator.js'
+import {
+  shouldPushShellFirst,
+  shellFirstPushbackMessage,
+} from './agentActionPolicy.js'
+import { composeEvidenceBackedFinal } from './agentFinalComposer.js'
+import { recordToolWorkspaceEvents } from './workspaceEventLog.js'
+// (errorTaxonomy not imported — reserved for future structured crash classification)
 import {
   normalizeRuntimeCall,
   narrateRuntimeCall,
@@ -73,8 +85,11 @@ import {
 import { toolSucceeded, summarizeToolOutcome } from './runtimeToolResultSemantics.js'
 import { buildAgentSystemPrompt } from './agentPrompt.js'
 import { recordSpend, checkCap } from './costTracker.js'
-import { shouldUseCheapEditor, wrapProviderForEditor, routingLabel } from './architectEditor.js'
-import { requiresApproval, categoryOf } from './approvalGate.js'
+import { resolveNextProvider, isTransientProviderError } from './providerFallback.js'
+import { shouldUseCheapEditor, wrapProviderForEditor, routingLabel, reviewerModelFor, getAutopilotModelForTurn } from './architectEditor.js'
+import { suggestStrongSibling } from './modelKnowledge.js'
+// Privileged Agent Runtime Platform - no approval system
+import { isPrivilegedMode } from '../runtime/RUNTIME_MODE.js';
 import {
   buildAgentContext, normalizeToolResult, createAgentState,
   buildPlanningDirective, buildAutonomousRuntimeDirective, buildGuidedRailsDirective, buildDoneCriteriaDirective, updateAgentStateFromTool,
@@ -82,14 +97,20 @@ import {
 } from './agentCore.js'
 
 // Все таймауты читаются из env, чтобы можно было настроить без пересборки.
-// BROWSERAI_MAX_STEPS       — лимит шагов агента (default: 15)
+// BROWSERAI_MAX_STEPS       — лимит шагов агента (default: 50)
 // BROWSERAI_DEADLINE_MS     — общий дедлайн run в мс (default: 20 мин)
 // BROWSERAI_IDLE_NOTICE_MS  — через сколько мс без события показывать watchdog-статус (default: 75с)
 // BROWSERAI_LLM_IDLE_MS     — через сколько мс молчания LLM считается зависшим (default: 120с)
-const DEFAULT_MAX_STEPS   = Number(process.env.BROWSERAI_MAX_STEPS)    || 15
-const DEFAULT_DEADLINE_MS = Number(process.env.BROWSERAI_DEADLINE_MS)  || 20 * 60 * 1000
-const IDLE_NOTICE_MS      = Number(process.env.BROWSERAI_IDLE_NOTICE_MS) || 75 * 1000
-const LLM_HARD_IDLE_MS    = Number(process.env.BROWSERAI_LLM_IDLE_MS)  || 2 * 60 * 1000
+// envNum: читает env как число, использует fallback ТОЛЬКО если переменная не задана или NaN.
+// Number("0") || 15 === 15 — это ложный fallback; явная проверка !v устраняет баг.
+function envNum(key, fallback) { const v = Number(process.env[key]); return (process.env[key] !== undefined && Number.isFinite(v)) ? v : fallback }
+const DEFAULT_MAX_STEPS   = envNum('BROWSERAI_MAX_STEPS',      50) // agentCore suggestedMaxSteps can raise per complexity
+const DEFAULT_DEADLINE_MS = envNum('BROWSERAI_DEADLINE_MS',  20 * 60 * 1000)
+const IDLE_NOTICE_MS      = envNum('BROWSERAI_IDLE_NOTICE_MS', 75 * 1000)
+// LLM hard idle timeout: 5 минут (default). Поднято с 2 мин потому что
+// финальный ответ может долго стримиться assistant_delta чанками,
+// особенно для длинных задач с тяжёлым summary + Runtime evidence блоком.
+const LLM_HARD_IDLE_MS    = envNum('BROWSERAI_LLM_IDLE_MS',  5 * 60 * 1000)
 const activeRunsByChat = new Map()
 
 export function listActiveAgentRuns() {
@@ -120,6 +141,12 @@ const TOOL_NAME_ALIASES = {
   'modify_file':   'edit_file',
   'change_file':   'edit_file',
   'patch_file':    'edit_file',
+  'file_write':    'write_file',
+  'file_read':     'read_file',
+  'file_edit':     'edit_file',
+  'file_delete':   'delete_file',
+  'file_list':     'list_files',
+  'file_search':   'search_files',
   'show_files':    'list_files',
   'list_folder':   'list_files',
   'dir':           'list_files',
@@ -188,7 +215,7 @@ async function buildSystemPrompt({ extraSystem = '', native = false, extraTools 
   ])
 
   // repoMap: берём из кэша для этого chatId, строим только один раз.
-  let repoMap = ''
+  let repoMap
   if (repoMapCache.has(chatId)) {
     repoMap = repoMapCache.get(chatId)
   } else {
@@ -277,15 +304,59 @@ function callFingerprint(call) {
   if (!call) return ''
   const args = call.args || {}
   let normalised
-  try { normalised = JSON.stringify(args, Object.keys(args).sort()) } catch { normalised = '{}' }
+  // Сортируем ключи для детерминированного fingerprint.
+  // JSON.stringify(v, replacer-array) — второй аргумент как массив строк работает как allowlist ключей.
+  // Чтобы ВКЛЮЧИТЬ все ключи (не фильтровать) и при этом отсортировать их,
+  // используем replacer-функцию или предварительно строим отсортированный объект.
+  try {
+    const sorted = Object.keys(args).sort().reduce((o, k) => { o[k] = args[k]; return o }, {})
+    normalised = JSON.stringify(sorted)
+  } catch { normalised = '{}' }
   return `${call.tool}::${normalised}`
+}
+
+// Семейство для similarity detection — группирует вызовы по tool + ключевому аргументу
+// чтобы поймать "ls /workspace", "ls /workspace/chats", "ls -la /workspace/chats/foo" как одну семью.
+function callFamily(call) {
+  if (!call) return ''
+  const args = call.args || {}
+  // Берём только аргументы из allowlist — остальные игнорируем для similarity
+  const sig = ['path', 'file_path', 'url', 'command', 'query', 'service', 'task_id', 'action']
+    .filter((k) => args[k] != null)
+    .map((k) => {
+      let v = String(args[k])
+      // Нормализуем пути и команды для similarity
+      if (k === 'path' || k === 'file_path' || k === 'url') {
+        v = v.replace(/\/[^/\s]+$/, '/*') // обрезаем имя файла для группировки
+      }
+      if (k === 'command') {
+        // Нормализуем shell команды с путями: "ls /workspace/foo" → "ls /workspace/*"
+        // Берём первое слово (бинарь) и путь если есть
+        const cmdTrim = v.replace(/\s+/g, ' ').slice(0, 120)
+        const m = cmdTrim.match(/^(\S+)\s+(\S+)/)
+        if (m) {
+          const binary = m[1].split('/').pop() // имя бинаря без пути
+          const path = m[2].replace(/\/[^/\s]+$/, '/*')
+          v = `${binary} ${path}`
+        } else {
+          v = cmdTrim.split(' ')[0]
+        }
+      }
+      return `${k}=${v}`
+    })
+    .sort()
+    .join('|')
+  return `${call.tool}::${sig}`
 }
 
 // STUCK_THRESHOLD = 4: два одинаковых read_file подряд — нормальная ситуация
 // (агент перечитывает файл после правки). Три подряд — уже признак петли.
 // Четыре — надёжный сигнал для прерывания без ложных срабатываний.
 const STUCK_THRESHOLD = 4
-function isStuckLoop(recentCalls, currentFingerprint) {
+// Similarity threshold: вызовы из одного семейства (разные пути в одной директории)
+// считаются петлёй если их 6+ за последние 12 шагов.
+const SIMILAR_STUCK_THRESHOLD = 6
+function isStuckLoop(recentCalls, currentFingerprint, recentFamilies, currentFamily) {
   if (!currentFingerprint) return false
   let consecutive = 0
   for (let i = recentCalls.length - 1; i >= 0; i -= 1) {
@@ -296,15 +367,30 @@ function isStuckLoop(recentCalls, currentFingerprint) {
 
   const recentWindow = recentCalls.slice(-10)
   const totalInWindow = recentWindow.filter((x) => x === currentFingerprint).length
-  return totalInWindow + 1 >= STUCK_THRESHOLD
+  if (totalInWindow + 1 >= STUCK_THRESHOLD) return true
+
+  // Similarity detection: если 6+ вызовов из одного семейства за 12 — это петля
+  // (агент пробует разные пути в одной директории, ls /workspace, ls /workspace/chats, и т.д.)
+  if (currentFamily && recentFamilies) {
+    const familyWindow = recentFamilies.slice(-12)
+    const totalFamily = familyWindow.filter((f) => f === currentFamily).length
+    if (totalFamily + 1 >= SIMILAR_STUCK_THRESHOLD) return true
+  }
+  return false
 }
 
 function summarizeCallArgsForDigest(args = {}) {
   if (!args || typeof args !== 'object') return ''
   const pick = {}
-  for (const k of ['action', 'path', 'file_path', 'source_path', 'output_path', 'url', 'query', 'command', 'message', 'service', 'task_id']) {
-    if (args[k] != null) pick[k] = String(args[k]).slice(0, 160)
+  // Команды обрезаем на 1000 символов (а не 160!) чтобы obligation tracker
+  // мог распознать git commit / git push в длинных &&-цепочках.
+  // Остальные поля — 160 символов достаточно для summary.
+  const LIMIT_COMMAND = 1000
+  const LIMIT_SHORT = 160
+  for (const k of ['action', 'path', 'file_path', 'source_path', 'output_path', 'url', 'query', 'message', 'service', 'task_id']) {
+    if (args[k] != null) pick[k] = String(args[k]).slice(0, LIMIT_SHORT)
   }
+  if (args.command != null) pick.command = String(args.command).slice(0, LIMIT_COMMAND)
   if (Array.isArray(args.indices)) pick.indices = args.indices.slice(0, 10)
   try { return JSON.stringify(pick) } catch { return '' }
 }
@@ -337,56 +423,6 @@ function unmetGoalObligation(agentContext = {}, recentToolHistory = []) {
   return null
 }
 
-function buildRuntimeEvidenceReport(agentContext = {}, recentToolHistory = [], agentState = {}) {
-  const real = (recentToolHistory || []).filter((h) => !['plan_set', 'plan_check', 'recall_facts', 'remember_fact', 'kb_search'].includes(h.tool))
-  if (!real.length) return ''
-  const obligations = agentContext?.task?.obligations || {}
-  const status = obligationCompletionStatus(obligations, recentToolHistory)
-  const changedFiles = []
-  const readFiles = []
-  const commands = []
-  const checks = []
-  const git = []
-  const deploy = []
-  const errors = []
-  for (const h of real) {
-    const semantic = runtimeSemantics(h)
-    const args = semantic.args || historyArgs(h)
-    const p = semantic.path || historyPath(h)
-    if (h.ok && (semantic.isWrite || semantic.isEdit) && p && !changedFiles.includes(p)) changedFiles.push(p)
-    if (h.ok && semantic.isRead && p && !readFiles.includes(p)) readFiles.push(p)
-    if (semantic.family === 'shell') commands.push(`${h.ok ? '✓' : '✗'} ${h.tool}: ${semantic.command || args.command || ''} → ${h.outcome || ''}`.slice(0, 500))
-    if (semantic.isVerify || /test|build|verify|exit=0|passed/i.test(String(h.outcome || ''))) checks.push(`${h.ok ? '✓' : '✗'} ${h.tool}: ${h.outcome || ''}`)
-    if (semantic.family === 'git' || /git\s+(status|diff|commit|push)/i.test(semantic.command || args.command || '')) git.push(`${h.ok ? '✓' : '✗'} ${h.tool}: ${h.outcome || semantic.command || args.command || ''}`)
-    if (semantic.family === 'ops' || semantic.family === 'docker' || semantic.isDeploy || semantic.isHealthCheck || semantic.isLogsCheck) deploy.push(`${h.ok ? '✓' : '✗'} ${h.tool}: ${h.outcome || semantic.command || args.command || ''}`)
-    if (!h.ok) errors.push(`✗ ${h.tool}: ${h.outcome || 'failed'}`)
-  }
-  const missing = Object.entries(obligations).filter(([k, v]) => v && k !== 'finalReport' && !status[k]).map(([k]) => k)
-  const lines = ['\n\n---', '### Runtime evidence']
-  if (changedFiles.length) lines.push('**Изменённые файлы:**', ...changedFiles.slice(0, 20).map((f) => `- ${f}`))
-  if (!changedFiles.length && readFiles.length) lines.push('**Прочитанные файлы:**', ...readFiles.slice(0, 10).map((f) => `- ${f}`))
-  if (commands.length) lines.push('**Команды:**', ...commands.slice(-12).map((c) => `- ${c}`))
-  if (checks.length) lines.push('**Проверки:**', ...checks.slice(-8).map((c) => `- ${c}`))
-  if (git.length) lines.push('**Git:**', ...git.slice(-8).map((c) => `- ${c}`))
-  if (deploy.length) lines.push('**Deploy/ops/health/logs:**', ...deploy.slice(-10).map((c) => `- ${c}`))
-  if (errors.length) lines.push('**Ошибки/восстановление:**', ...errors.slice(-8).map((e) => `- ${e}`))
-  if (Object.keys(obligations).some((k) => obligations[k])) {
-    lines.push('**Статус обязательств:**')
-    for (const [k, v] of Object.entries(obligations)) if (v && k !== 'finalReport') lines.push(`- ${status[k] ? '✓' : '⚠'} ${k}`)
-  }
-  if (missing.length) lines.push(`**Незакрытые обязательства:** ${missing.join(', ')} — см. blockers/ограничения выше.`)
-  agentState.obligationStatus = status
-  return lines.join('\n')
-}
-
-function appendRuntimeEvidence(text = '', agentContext = {}, recentToolHistory = [], agentState = {}) {
-  const report = buildRuntimeEvidenceReport(agentContext, recentToolHistory, agentState)
-  if (!report) return String(text || '')
-  const base = String(text || '').trim()
-  if (/### Runtime evidence|Runtime evidence/i.test(base)) return base
-  return `${base}${report}`.trim()
-}
-
 function makeReadBackForEdits(calls) {
   const out = []
   const seen = new Set()
@@ -410,50 +446,6 @@ function dedupePlanCheck(call, planState) {
   const unique = [...new Set(indices.map(Number).filter((n) => Number.isInteger(n)))]
   const fresh = unique.filter((n) => !planState.done.has(n))
   return { ...call, args: { ...call.args, indices: fresh } }
-}
-
-const XML_TOOL_CALL_RE = /<(?:x?ai:function_call|tool_use|function_call)([^>]*)>([\s\S]*?)<\/(?:x?ai:function_call|tool_use|function_call)>/gi
-const XML_PARAM_RE = /<parameter\s+name="([^"]+)"\s*>([\s\S]*?)<\/parameter>/gi
-
-function parseXmlFunctionCalls(text) {
-  let cleaned = String(text || '')
-  // Strip DeepSeek R1 <think>...</think> blocks to prevent false parses from thinking phase
-  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '')
-
-  const calls = []
-  XML_TOOL_CALL_RE.lastIndex = 0
-  let match
-  while ((match = XML_TOOL_CALL_RE.exec(cleaned)) !== null) {
-    const openAttrs = match[1] || ''
-    const content = match[2] || ''
-    const nameMatch =
-      content.match(/<(?:x?ai:)?tool_name>([^<]+)<\/(?:x?ai:)?tool_name>/i) ||
-      content.match(/<tool_name>([^<]+)<\/tool_name>/i) ||
-      content.match(/<name>([^<]+)<\/name>/i) ||
-      openAttrs.match(/name\s*=\s*["']([^"']+)["']/i)
-    if (!nameMatch) continue
-    const name = nameMatch[1].trim()
-    const args = {}
-    XML_PARAM_RE.lastIndex = 0
-    let paramMatch
-    while ((paramMatch = XML_PARAM_RE.exec(content)) !== null) {
-      args[paramMatch[1]] = paramMatch[2].trim()
-    }
-    const invokeJsonMatch = content.match(/<invoke[^>]*>([\s\S]*?)<\/invoke>/i)
-    if (invokeJsonMatch) {
-      try { Object.assign(args, JSON.parse(invokeJsonMatch[1].trim())) } catch { /* best-effort: ignore */ }
-    }
-    calls.push({ tool: name, args })
-  }
-  return calls
-}
-
-function looksLikeUnapplliedCodeReply(text = '', history = []) {
-  const reply = String(text || '')
-  if (!/```[a-z0-9_+-]*\n[\s\S]{120,}?\n```/i.test(reply)) return false
-  const lastUser = [...history].reverse().find((m) => m.role === 'user')
-  const askText = String(lastUser?.content || '')
-  return /(созда|напиши|сделай|реализуй|исправ|поправ|почини|refactor|fix|create|new)/i.test(askText)
 }
 
 // ── SSE helpers ─────────────────────────────────────────────────────────────
@@ -483,16 +475,28 @@ function sseKeepAlive(target) {
 
 // ── Reflection ──────────────────────────────────────────────────────────────
 async function runReflectionCheck({ provider, ask, draft, toolHistory }) {
+  // Automated Reviewer Sibling Upgrade (like Arena.ai):
+  const strongModel = suggestStrongSibling(provider.model)
+  let reviewProvider = provider
+  if (strongModel) {
+    const { listKeys } = await import('./db.js')
+    const keys = listKeys()
+    const matchedKey = keys.find(k => k.model === strongModel)
+    if (matchedKey) {
+      reviewProvider = matchedKey
+      console.log(`[Reviewer] Upgraded to strong sibling ${strongModel} for code-review turn!`);
+    }
+  }
   const toolSummary = (toolHistory || []).slice(-12).map((h) => `${h.ok ? '✓' : '✗'} ${h.tool}`).join(', ')
   const prompt = `Review if the task is done.\nGoal: ${ask}\nTools: ${toolSummary}\nDraft: ${draft}\nReply DONE or TODO: reason.`
   
   // Use a slightly lower temperature for consistent critique
   const reply = await callLLM({
-    baseUrl: provider.baseUrl, apiKey: provider.apiKey,
-    authType: provider.authType || 'bearer',
-    authHeader: provider.authHeader || '',
-    extraHeaders: provider.extraHeaders || {},
-    model: provider.model,
+    baseUrl: reviewProvider.baseUrl, apiKey: reviewProvider.apiKey,
+    authType: reviewProvider.authType || 'bearer',
+    authHeader: reviewProvider.authHeader || '',
+    extraHeaders: reviewProvider.extraHeaders || {},
+    model: reviewProvider.model,
     messages: [
       { role: 'system', content: 'You are a critical reviewer. Reply DONE if the goal is fully met and verified. Otherwise reply TODO: <reason>.' },
       { role: 'user', content: prompt }
@@ -517,55 +521,101 @@ async function streamFinalAnswer(wrappedRes, fullText) {
     .replace(/^(?:to respond with|according to|the user just said|thus output|i should state|i will now|in summary)[\s\S]*?(?=[\n\p{Script=Cyrillic}"'«#\-\d*]|✅|❌|⚠️|$)/ui, '')
     .trim()
 
-  const parts = cleaned.match(/.{1,32}/g) || [cleaned]
-  for (const chunk of parts) {
-    sse(wrappedRes, 'assistant_delta', { chunk })
-    await new Promise((r) => setTimeout(r, 10))
-  }
+  if (!cleaned) { sse(wrappedRes, 'assistant', { text: '' }); return }
+  // Текст уже полный — шлём одним куском, не дробим по 32 символа.
+  // Клиент буферизует на 60ms, лишние roundtrip только мешают.
+  sse(wrappedRes, 'assistant_delta', { chunk: cleaned })
   sse(wrappedRes, 'assistant', { text: cleaned })
 }
 
 // ── LLM Streaming call ──────────────────────────────────────────────────────
 async function streamingLLMCall(wrappedRes, step, opts, hooks = {}) {
-  const OPEN_RE  = /<(?:x?ai:function_call|tool_use|function_call|thinking|thought)([^>]*)>/i
-  const CLOSE_RE = /<\/(?:x?ai:function_call|tool_use|function_call|thinking|thought)>/i
+  const directToolNameRe = DIRECT_TOOL_NAMES.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+  const OPEN_RE  = new RegExp(`<(?:x?ai:function_call|tool_use|function_call|thinking|thought|think|${directToolNameRe})([^>]*)>`, 'i')
+  const DIRECT_OPEN_RE = new RegExp(`<(${directToolNameRe})([^>]*)>`, 'i')
+  const GENERIC_CLOSE_RE = /<\/(?:x?ai:function_call|tool_use|function_call|thinking|thought|think)>/i
   let scanBuf = '', visibleTextBuf = '', insideXml = false, xmlTagName = '', xmlOpenAttrs = ''
   const preParsedCalls = []
   const nativePreviewed = new Set()
 
   function safeJson(text) { try { return JSON.parse(text) } catch { return {} } }
 
-  function parseXmlBody(body, tagName, openAttrs) {
-    if (tagName === 'thinking' || tagName === 'thought') return { kind: 'thinking', text: body.trim() }
-    const nameMatch = body.match(/<(?:x?ai:)?tool_name>([^<]+)<\/(?:x?ai:)?tool_name>/i) || body.match(/<name>([^<]+)<\/name>/i)
-    let tool = nameMatch ? nameMatch[1].trim() : ''
-    if (!tool) {
-      const m = openAttrs.match(/name="([^"]+)"/i)
-      if (m) tool = m[1].trim()
-    }
-    if (!tool) {
-      const line1 = body.trim().split('\n')[0]
-      if (line1 && /^[a-z_]+$/.test(line1)) tool = line1
-    }
-    if (!tool) return null
-    const params = {}
-    const paramRe = /<parameter\s+name="([^"]+)">([\s\S]*?)<\/parameter>/gi
-    let pm
-    while ((pm = paramRe.exec(body)) != null) params[pm[1]] = pm[2]
-    return { kind: 'tool', tool, args: params }
+  function emitBufferedThought(extra = '') {
+    if (_textFlushTimer) { clearTimeout(_textFlushTimer); _textFlushTimer = null }
+    const text = `${visibleTextBuf || ''}${extra || ''}`
+    visibleTextBuf = ''
+    if (text.trim()) sse(wrappedRes, 'thought', { step, text })
   }
 
-  function flushVisibleText() {
+  function tryConsumeMarkdownShellFence() {
+    const open = scanBuf.search(/```(?:bash|sh|shell)\s*\n/i)
+    if (open < 0) return false
+    const before = scanBuf.slice(0, open)
+    const rest = scanBuf.slice(open)
+    const openMatch = rest.match(/^```(?:bash|sh|shell)\s*\n/i)
+    if (!openMatch) return false
+
+    if (before) emitBufferedThought(before)
+    else if (visibleTextBuf) emitBufferedThought()
+
+    const closeIdx = rest.indexOf('```', openMatch[0].length)
+    if (closeIdx < 0) {
+      // Hold the partial markdown command until the closing fence arrives;
+      // do not leak it as assistant_delta.
+      scanBuf = rest
+      return true
+    }
+
+    const fullFence = rest.slice(0, closeIdx + 3)
+    const command = extractMarkdownShellCommand(fullFence)
+    scanBuf = rest.slice(closeIdx + 3)
+    if (command) {
+      const parsed = { kind: 'tool', tool: 'shell', args: { action: 'run', command } }
+      preParsedCalls.push(parsed)
+      sse(wrappedRes, 'tool_preview', { step, name: parsed.tool, args: parsed.args })
+      hooks.onParsedCall?.(parsed)
+      return true
+    }
+
+    // Not a real command after all — render it normally.
+    visibleTextBuf += fullFence
+    flushVisibleText(true)
+    return true
+  }
+
+  function parseXmlBody(body, tagName, openAttrs) {
+    return parseXmlToolBody(body, tagName, openAttrs)
+  }
+
+  // Server-side text buffer: accumulate small chunks before emitting SSE.
+  // DeepSeek and some providers emit 1-4 char chunks; flushing each one
+  // creates a separate SSE frame → client renders as separate messages on
+  // slow mobile connections. Buffer at least 20 chars OR 30ms, whichever first.
+  let _textFlushTimer = null
+  const TEXT_FLUSH_MIN_CHARS = 50   // минимум символов перед отправкой SSE
+  const TEXT_FLUSH_MAX_MS    = 220  // hold briefly so pre-tool narration can be emitted as thought, not final text
+
+  function flushVisibleText(force = false) {
     if (!visibleTextBuf) return
-    if (preParsedCalls.length > 0 || insideXml) sse(wrappedRes, 'thought', { step, text: visibleTextBuf })
-    else sse(wrappedRes, 'assistant_delta', { step, chunk: visibleTextBuf })
+    if (!force && visibleTextBuf.length < TEXT_FLUSH_MIN_CHARS) {
+      // Schedule a forced flush so we never hold longer than MAX_MS
+      if (!_textFlushTimer) {
+        _textFlushTimer = setTimeout(() => { _textFlushTimer = null; flushVisibleText(true) }, TEXT_FLUSH_MAX_MS)
+      }
+      return
+    }
+    if (_textFlushTimer) { clearTimeout(_textFlushTimer); _textFlushTimer = null }
+    const text = visibleTextBuf
     visibleTextBuf = ''
+    if (preParsedCalls.length > 0 || insideXml || nativePreviewed.size > 0) sse(wrappedRes, 'thought', { step, text })
+    else sse(wrappedRes, 'assistant_delta', { step, chunk: text })
   }
 
   function consumeChunk(chunk) {
     scanBuf += chunk
     while (true) {
       if (!insideXml) {
+        if (tryConsumeMarkdownShellFence()) continue
         const m = scanBuf.match(OPEN_RE)
         if (!m) {
           const lastLt = scanBuf.lastIndexOf('<')
@@ -578,15 +628,27 @@ async function streamingLLMCall(wrappedRes, step, opts, hooks = {}) {
           }
         }
         const before = scanBuf.slice(0, m.index)
-        if (before) { visibleTextBuf += before; flushVisibleText() }
+        if (before) emitBufferedThought(before)
         xmlTagName = m[0].replace(/[<>]/g, '').split(' ')[0]
         xmlOpenAttrs = m[1] || ''
         insideXml = true; scanBuf = scanBuf.slice(m.index + m[0].length)
       } else {
-        const m = scanBuf.match(CLOSE_RE)
+        const direct = isDirectToolTag(xmlTagName)
+        const closeRe = direct
+          ? new RegExp(`</${String(xmlTagName).replace(/^x?ai:/i, '')}>`, 'i')
+          : GENERIC_CLOSE_RE
+        let m = scanBuf.match(closeRe)
+        let autoClosedByNextTool = false
+        if (!m && direct) {
+          const next = scanBuf.match(DIRECT_OPEN_RE)
+          if (next && next.index > 0) {
+            m = { index: next.index, 0: '' }
+            autoClosedByNextTool = true
+          }
+        }
         if (!m) return
         const body = scanBuf.slice(0, m.index)
-        scanBuf = scanBuf.slice(m.index + m[0].length)
+        scanBuf = scanBuf.slice(m.index + (autoClosedByNextTool ? 0 : m[0].length))
         insideXml = false
         const parsed = parseXmlBody(body, xmlTagName, xmlOpenAttrs)
         xmlTagName = ''; xmlOpenAttrs = ''
@@ -615,12 +677,23 @@ async function streamingLLMCall(wrappedRes, step, opts, hooks = {}) {
       const key = `${idx}:${name}`
       if (nativePreviewed.has(key)) return
       nativePreviewed.add(key)
+      if (visibleTextBuf) flushVisibleText(true)
       sse(wrappedRes, 'tool_preview', { step, sub: idx, name, args: safeJson(tc.argsBuf || '{}') })
     },
     onUsage: (u) => hooks.onUsage?.(u),
   })
+  if (insideXml && isDirectToolTag(xmlTagName)) {
+    const parsed = parseXmlBody(scanBuf, xmlTagName, xmlOpenAttrs)
+    scanBuf = ''; insideXml = false; xmlTagName = ''; xmlOpenAttrs = ''
+    if (parsed?.kind === 'tool') {
+      preParsedCalls.push(parsed)
+      sse(wrappedRes, 'tool_preview', { step, name: parsed.tool, args: parsed.args })
+      hooks.onParsedCall?.(parsed)
+    }
+  }
   if (scanBuf) { visibleTextBuf += scanBuf; scanBuf = '' }
-  if (visibleTextBuf) flushVisibleText()
+  if (visibleTextBuf) flushVisibleText(true)  // force-flush remaining buffer
+  if (_textFlushTimer) { clearTimeout(_textFlushTimer); _textFlushTimer = null }
   return { ...result, preParsedCalls }
 }
 
@@ -707,37 +780,18 @@ async function runLightweightChat({ res, wrappedRes, provider, history, userId, 
 
 async function runDeterministicAction({ action, res, wrappedRes, userId, chatId }) {
   const tokens = { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: 0 }
-  sse(wrappedRes, 'agent_context', { deterministicAction: { id: action.id, tool: action.tool, reason: action.reason, risk: action.risk, requiresApproval: action.requiresApproval }, task: { type: action.id, complexity: 'low' } })
-  if (action.requiresApproval) {
-    const { id: aqId, promise: aqPromise, expiresAt } = registerQuestion({
-      kind: 'tool_approval', userId, chatId, step: 0, sub: 0,
-      tool: action.tool, category: categoryOf(action.tool),
-      question: action.approvalQuestion || `Разрешить ${action.tool}?`,
-      options: [{ id: 'approve', label: 'Разрешить' }, { id: 'deny', label: 'Запретить' }],
-    })
-    sse(wrappedRes, 'tool_approval', { step: 0, sub: 0, question_id: aqId, expiresAt, tool: action.tool, category: categoryOf(action.tool), args: action.args || {} })
-    let approved = false
-    try {
-      const ans = await aqPromise
-      const pick = Array.isArray(ans?.selected) ? String(ans.selected[0]) : String(ans?.text || ans)
-      approved = ['approve', 'yes', 'ok', 'allow', 'true', 'разрешить'].includes(pick.toLowerCase().trim())
-    } catch { /* denied/expired */ }
-    if (!approved) {
-      await streamFinalAnswer(wrappedRes, '❌ Действие отменено: нет подтверждения.')
-      sseDone(wrappedRes, { steps: 0, reason: `${action.id}-denied` }, tokens)
-      res.end()
-      return
-    }
-  }
-  // Deterministic actions are intentionally compact: no visible tool_start card,
-  // no LLM thinking. We still emit tool_result so the workspace panel refreshes.
+  sse(wrappedRes, 'agent_context', { deterministicAction: { id: action.id, tool: action.tool, reason: action.reason, risk: action.risk }, task: { type: action.id, complexity: 'low' } })
+  // Privileged Agent Runtime Platform — approvals permanently disabled
   const r = await invokeTool(action.tool, action.args || {}, { userId, chatId })
   sse(wrappedRes, 'tool_result', { step: 0, sub: 0, name: action.tool, ok: !!r.ok, result: r.result, error: r.error, structured: normalizeToolResult(action.tool, r, { step: 0, sub: 0 }), compact: true })
+  const fileEvents = await recordToolWorkspaceEvents({ tool: action.tool, args: action.args || {}, result: r.result || {}, ok: !!r.ok, step: 0, sub: 0 }).catch(() => [])
+  if (fileEvents.length) sse(wrappedRes, 'file_change', { step: 0, sub: 0, name: action.tool, events: fileEvents, summary: { count: fileEvents.length, paths: fileEvents.map((e) => e.path).slice(0, 20) } })
   const text = r.ok ? action.successText?.(r) : action.errorText?.(r)
   await streamFinalAnswer(wrappedRes, text || (r.ok ? '✅ Готово.' : `❌ Ошибка: ${r.error || 'unknown error'}`))
   sseDone(wrappedRes, { steps: 0, reason: r.ok ? (action.successReason || `${action.id}-done`) : (action.errorReason || `${action.id}-error`) }, tokens)
   res.end()
 }
+
 
 // ── Error recovery helpers ──────────────────────────────────────────────────
 function getRecoveryHint(tool, error, args = {}, recentToolHistory = []) {
@@ -780,7 +834,7 @@ function wrapResForSseTrace(realRes, trace) {
 
 // Approach 6 — finalize a run: emit finalization + run_end on the runLog,
 // persist to disk, build + save the replay artifact.
-function finalizeRun({ runLog, sseTrace, history, finalStatus, reason, step, maxSteps, recentToolHistory, agentContext, res, startTime, route = '/api/agent/chat' }) {
+function finalizeRun({ runLog, sseTrace, history, finalStatus, reason, step, maxSteps: _maxSteps, recentToolHistory, agentContext: _agentContext, res: _res, startTime, route = '/api/agent/chat', userId = '', chatId = '', activeProvider = null }) {
   try {
     if (!runLog) return
     runLog.finalization({
@@ -799,7 +853,12 @@ function finalizeRun({ runLog, sseTrace, history, finalStatus, reason, step, max
         context: { reason },
       })
     }
-    if (['deadline', 'max-steps', 'crash', 'llm-error', 'no-provider', 'cap-reached'].includes(reason)) {
+    // D — save useful memories after a successful run
+  if (reason === 'final' && userId) {
+    const _userText = ([...history].reverse().find(m => m?.role === 'user')?.content || '').slice(0, 200)
+    autoSaveMemory(userId, recentToolHistory, _userText, { chatId, provider: activeProvider, history }).catch(() => {})
+  }
+  if (['deadline', 'max-steps', 'crash', 'llm-error', 'no-provider', 'cap-reached'].includes(reason)) {
       runLog.error({ reason: 'termination: ' + reason, exitReason: reason, route, context: { reason } })
     }
     runLog.run_end({ durationMs: Date.now() - startTime, endedStep: step })
@@ -827,7 +886,12 @@ export async function runAgent(opts) {
   })
 }
 
-async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_STEPS, extraSystem = '', userId = '', workspaceScope = '', res, runId: runIdOpt = '', taskType: taskTypeOpt = '' }) {
+async function runAgentInner({ provider, history = [], maxSteps: maxStepsArg = 0, extraSystem = '', userId = '', workspaceScope = '', res, runId: runIdOpt = '', taskType: taskTypeOpt = '' }) {
+  // UI slider overrides DEFAULT_MAX_STEPS when user set it explicitly (maxSteps > 0)
+  const { getParams } = await import('./db.js').then(m => m)
+  const _params = (() => { try { return getParams() } catch { return {} } })()
+  const _uiMaxSteps = Number(_params.maxSteps || 0)
+  const maxSteps = _uiMaxSteps > 0 ? _uiMaxSteps : (maxStepsArg > 0 ? maxStepsArg : DEFAULT_MAX_STEPS)
   const chatId = String(workspaceScope || '')
   const startTime = Date.now()
   log.info('agent_start', { chatId, model: provider?.model, taskType: (typeof taskTypeOpt === 'string' && taskTypeOpt) ? taskTypeOpt : 'task', maxSteps })
@@ -857,7 +921,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   const currentAbortCtl = new AbortController()
 
   // Moved after headers sent
-  sse(wrappedRes, 'stream_protocol', { version: 1, events: ['stream_protocol', 'agent_context', 'agent_task', 'agent_state', 'thinking', 'thinking_delta', 'assistant_delta', 'assistant', 'thought', 'tool_preview', 'tool_router', 'tool_start', 'tool_progress', 'tool_result', 'tool_diagnostic', 'ask_user', 'tool_approval', 'usage', 'done', 'error'] })
+  sse(wrappedRes, 'stream_protocol', { version: 1, events: ['stream_protocol', 'agent_context', 'agent_task', 'agent_state', 'thinking', 'thinking_delta', 'assistant_delta', 'assistant', 'thought', 'tool_preview', 'tool_router', 'tool_start', 'tool_progress', 'tool_result', 'file_change', 'tool_diagnostic', 'ask_user', 'usage', 'done', 'error'] })
 
   if (chatId) {
     const existing = activeRunsByChat.get(chatId)
@@ -866,7 +930,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       // and start the new one. This prevents the "Request already running" error.
       try {
         existing.abortCtl.abort('superseded by new request')
-      } catch (e) { /* ignore */ }
+      } catch { /* ignore */ }
       activeRunsByChat.delete(chatId)
     }
     activeRunsByChat.set(chatId, { startedAt: Date.now(), abortCtl: currentAbortCtl })
@@ -881,7 +945,12 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
   if (!provider?.baseUrl || !provider?.apiKey) {
     const finalStatus = buildFinalStatus({ agentContext: {}, recentToolHistory: [], agentState: {}, aborted: false, step: 0, maxSteps: 0, reason: 'no-provider', userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths: new Set(), okReadPaths: new Set() })
-    sse(wrappedRes, 'error', { message: 'Provider not configured', finalStatus }); sseDone(wrappedRes, { steps: 0, reason: 'no-provider', finalStatus }, tokens); finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'no-provider', step: 0, maxSteps: 0, recentToolHistory: [], agentContext: {}, res, startTime, route: '/api/agent/chat' }); res.end(); if (chatId) activeRunsByChat.delete(chatId); return
+    sse(wrappedRes, 'error', { message: 'Provider not configured', finalStatus })
+    sseDone(wrappedRes, { steps: 0, reason: 'no-provider', finalStatus }, tokens)
+    finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'no-provider', step: 0, maxSteps: 0, recentToolHistory: [], agentContext: {}, res, startTime, route: '/api/agent/chat' })
+    res.end()
+    if (chatId) activeRunsByChat.delete(chatId)
+    return
   }
 
   const deterministicAction = routeDeterministicAction(history)
@@ -897,7 +966,8 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   let extraTools = null
   try {
     const { loadCustomToolsFor } = await import('./customTools.js')
-    const map = loadCustomToolsFor(userId); if (Object.keys(map).length) extraTools = map
+    const map = loadCustomToolsFor(userId)
+    if (map && typeof map === 'object' && !Array.isArray(map) && Object.keys(map).length) extraTools = map
   } catch { /* best-effort: ignore */ }
 
   // Classify FIRST so the system prompt can match the task weight:
@@ -905,6 +975,21 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   // (~2.5k tokens) instead of the full 16k-token engineering prompt.
   const agentContext = buildAgentContext({ provider, history, extraSystem, userId, workspaceScope, maxSteps })
   let serverRoute = routeHistory(history, { forceAgent: Boolean(provider.forceAgent) })
+
+  // Dynamic Autopilot Routing (Initial Plan Turn) - like Arena.ai:
+  const isAutopilot = provider && (provider.model === 'autopilot' || provider.isAutopilot)
+  if (isAutopilot) {
+    const autoModel = getAutopilotModelForTurn({ step: 1, recentToolHistory: [], userId })
+    if (autoModel) {
+      const { listKeys } = await import('./db.js')
+      const keys = listKeys()
+      const matchedKey = keys.find(k => k.model === autoModel || (k.availableModels && k.availableModels.includes(autoModel)))
+      if (matchedKey) {
+        provider = { ...matchedKey, model: autoModel, isAutopilot: true }
+        sse(wrappedRes, 'thought', { text: `🤖 [Autopilot] Автоматически выбрана оптимальная модель для планирования: ${autoModel}` })
+      }
+    }
+  }
 
   // ── AI Supervisor Intent Classification ──
   // If we are not forcing the agent manually, we let the AI Supervisor determine the optimal mode
@@ -919,7 +1004,12 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
     }
   }
 
-  if (provider.baseUrl !== 'mock' && !provider.forceAgent && (serverRoute.mode === 'chat' || serverRoute.mode === 'web')) {
+  // Full Agent Mode is the default runtime: even CHAT/WEB-classified turns enter
+  // the agent loop and keep tool access. The lightweight no-tools route is kept
+  // only as an explicit opt-in escape hatch for deployments that want cheaper
+  // simple chat turns.
+  const lightweightRouteEnabled = String(process.env.BROWSERAI_LIGHTWEIGHT_ROUTE || '0').toLowerCase() === '1'
+  if (lightweightRouteEnabled && provider.baseUrl !== 'mock' && !provider.forceAgent && (serverRoute.mode === 'chat' || serverRoute.mode === 'web')) {
     sse(wrappedRes, 'agent_context', { ...agentContext, serverRoute })
     let escalated = false
     try {
@@ -928,7 +1018,6 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       if (err.message === 'escalate-to-agent') {
         escalated = true
         sse(wrappedRes, 'thought', { step: 0, text: '🔄 Автоматическая эскалация: Обнаружен вызов инструментов в режиме чата. Повышаю режим до полноценного Режима Агента для безопасного выполнения!' })
-        serverRoute = { mode: 'agent', reason: 'escalated-from-chat', icon: '🤖' }
       } else {
         if (chatId) activeRunsByChat.delete(chatId)
         throw err
@@ -940,21 +1029,25 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
     }
   }
 
-  const liteRun = agentContext?.task?.complexity === 'low' || isDeepSeekWebUrl(provider?.baseUrl || '')
+  const liteRun = agentContext?.task?.complexity === 'low'
   const toolProfile = toolProfileForTask(agentContext?.task)
   const activeToolNames = liteRun ? null : profileToolNames(toolProfile)
   const allowedToolSet = activeToolNames ? new Set(activeToolNames) : null
 
   let useNativeTools = supportsNativeTools(provider.baseUrl)
   let systemPrompt = await buildSystemPrompt({ extraSystem, native: useNativeTools, extraTools, chatId, lite: liteRun, toolNames: activeToolNames })
-  let toolsSpec = useNativeTools ? (liteRun ? buildNativeToolsSpec(extraTools, { lite: true, toolNames: activeToolNames }) : (await import('./toolConsolidation.js')).buildConsolidatedNativeSpec()) : undefined
+  // buildConsolidatedNativeSpec уже импортирован статически (см. импорты вверху файла).
+  // Передаём extraTools чтобы кастомные инструменты попали в native spec.
+  let toolsSpec = useNativeTools ? (liteRun ? buildNativeToolsSpec(extraTools, { lite: true, toolNames: activeToolNames }) : buildConsolidatedNativeSpec(extraTools)) : undefined
 
   const convo = [{ role: 'system', content: systemPrompt }, ...history]
   const deadline = Date.now() + DEFAULT_DEADLINE_MS
   let step = 0, aborted = false
   res.on('close', () => { aborted = true; currentAbortCtl.abort('client closed') })
 
-  if (agentContext.runtime.effectiveMaxSteps > maxSteps) maxSteps = agentContext.runtime.effectiveMaxSteps
+  // effectiveMaxSteps может быть больше запрошенного (задача классифицирована как сложная).
+  // Создаём отдельную переменную, чтобы не мутировать параметр функции.
+  let effectiveMaxSteps = Math.max(maxSteps, agentContext.runtime.effectiveMaxSteps || 0)
   const agentState = createAgentState({ agentContext, history })
   let persistedTask = null
   try {
@@ -1033,18 +1126,51 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   if (userId && !aborted && !liteRun) {
     try {
       const lessons = await withWorkspaceScope(chatId, () => readWorkspaceFile('.browserai/lessons.md').catch(() => null))
-      if (lessons?.text) convo.push({ role: 'user', content: `<arena-system-message>\nLessons Learned (from .browserai/lessons.md):\n${lessons.text}\n</arena-system-message>` })
+      if (lessons?.text) {
+        // A — strip closing tag from lessons.md content (agent-written, could contain injection)
+        const safeLessonsText = String(lessons.text).replace(/<\/arena-system-message>/gi, '')
+        convo.push({ role: 'user', content: `<arena-system-message>\nLessons Learned (from .browserai/lessons.md):\n${safeLessonsText}\n</arena-system-message>` })
+      }
     } catch { /* ignore */ }
   }
 
-  const keepAliveInterval = setInterval(() => sseKeepAlive(res), 15_000)
+  // wrappedRes: keep-alive пинги должны проходить через trace-wrapper
+  // чтобы попадать в sseTrace и replay artifact.
+  const keepAliveInterval = setInterval(() => sseKeepAlive(wrappedRes), 15_000)
   res.on('close', () => clearInterval(keepAliveInterval))
 
   // recentToolHistory: хранит до TOOL_HISTORY_MAX записей.
+  // D — Auto-recall: inject relevant memories from past sessions before step 1
+  if (userId && !liteRun) {
+    try {
+      const { recallMemory } = await import('./semanticMemory.js')
+      const lastUserMsg = String(([...history].reverse().find(m => m?.role === 'user')?.content) || '').slice(0, 400)
+      const memBlocks = []
+      // Project-memory (chat-scoped): stack, server, deploy commands etc.
+      const projectMem = renderProjectMemoryForPrompt(userId, chatId)
+      if (projectMem) memBlocks.push(projectMem)
+      // Semantic cross-session recall
+      if (lastUserMsg) {
+        const recalled = await recallMemory(userId, lastUserMsg, { topK: 3 })
+        if (recalled.length > 0) {
+          memBlocks.push(`# Из памяти предыдущих сессий
+${recalled.map(r => '- ' + r.text).join('\n')}`)
+        }
+      }
+      if (memBlocks.length > 0) {
+        const memBlock = memBlocks.join('\n\n')
+        const firstUserIdx = convo.findIndex(m => m.role === 'user')
+        if (firstUserIdx >= 0) {
+          convo[firstUserIdx] = { ...convo[firstUserIdx], content: memBlock + '\n\n' + String(convo[firstUserIdx].content || '') }
+        }
+      }
+    } catch { /* best-effort: memory unavailable */ }
+  }
+
   // Без ограничения на runs с maxSteps=60 список мог вырасти до 60×N записей.
   // Obligation/stuck/evidence checks используют последние записи — cap не теряет важного контекста.
   const TOOL_HISTORY_MAX = 120
-  const recentCallFingerprints = [], recentToolHistory = [], planState = { done: new Set() }
+  const recentCallFingerprints = [], recentCallFamilies = [], recentToolHistory = [], planState = { done: new Set() }
   function pushToolHistory(entry) {
     recentToolHistory.push(entry)
     if (recentToolHistory.length > TOOL_HISTORY_MAX) recentToolHistory.shift()
@@ -1061,6 +1187,15 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   let explicitLocalTestPushback = false
   let localTestSuccessClaimPushback = false
   let unsupportedEnvClaimPushback = false
+  let shellFirstPushbackCount = 0
+  // Capped pushback counters — previously these fired EVERY step when
+  // triggered, which caused infinite loops with models that re-stated
+  // their answer without tool calls. Now each pushback is bounded.
+  const MAX_PUSHBACK_PER_KIND = 2
+  let unappliedCodePushbackCount = 0
+  let noToolsPushbackCount = 0
+  // reflectionDone: флаг вместо O(N) convo.some() на каждом шаге
+  let reflectionDone = false
   const obligationPushbacks = new Map()
   let pushedBackThisTurn = false
   let consecutiveFailures = 0
@@ -1068,10 +1203,10 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
   let lastPhaseChangeStep = 0
 
   try {
-    while (step < maxSteps) {
+    while (step < effectiveMaxSteps) {
 
       if (Date.now() > deadline) {
-        const finalStatus = buildFinalStatus({ agentContext, recentToolHistory, agentState, aborted, step, maxSteps, reason: 'deadline', userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths, okReadPaths })
+        const finalStatus = buildFinalStatus({ agentContext, recentToolHistory, agentState, aborted, step, maxSteps: effectiveMaxSteps, reason: 'deadline', userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths, okReadPaths })
         sse(wrappedRes, 'error', { message: 'Deadline exceeded', finalStatus }); sseDone(wrappedRes, { steps: step, reason: 'deadline', finalStatus }, tokens); finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'deadline', step, maxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' }); break
       }
       step += 1
@@ -1089,7 +1224,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
       // State machine: stuck detection + escalation pushback
       const stuck = detectStuck({ recentToolHistory, budget, phase: currentPhase, step, planState, lastPhaseChangeStep })
-      const escalation = shouldEscalate({ stuck, budget, step, maxSteps })
+      const escalation = shouldEscalate({ stuck, budget, step, maxSteps: effectiveMaxSteps })
       if (escalation.escalate && !pushedBackThisTurn) {
         pushedBackThisTurn = true
         const escText = buildEscalationPrompt({ stuck, currentPhase, step })
@@ -1114,12 +1249,32 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
 
       const capCheck = checkCap(userId)
       if (!capCheck.ok) {
-        const finalStatus = buildFinalStatus({ agentContext, recentToolHistory, agentState, aborted, step, maxSteps, reason: 'cap-reached', userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths, okReadPaths })
-        sse(wrappedRes, 'error', { message: capCheck.reason, finalStatus }); sseDone(wrappedRes, { steps: step, reason: 'cap-reached', finalStatus }, tokens); finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'cap-reached', step, maxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' }); res.end(); return
+        const finalStatus = buildFinalStatus({ agentContext, recentToolHistory, agentState, aborted, step, maxSteps: effectiveMaxSteps, reason: 'cap-reached', userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths, okReadPaths })
+        sse(wrappedRes, 'error', { message: capCheck.reason, finalStatus })
+        sseDone(wrappedRes, { steps: step, reason: 'cap-reached', finalStatus }, tokens)
+        finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'cap-reached', step, maxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' })
+        clearInterval(idleWatchdog)
+        clearInterval(keepAliveInterval)
+        res.end()
+        return
+      }
+
+      // Dynamic Autopilot Sibling Routing (Turn-by-turn Cascade) - like Arena.ai:
+      if (isAutopilot) {
+        const autoModel = getAutopilotModelForTurn({ step, recentToolHistory, userId })
+        if (autoModel && provider.model !== autoModel) {
+          const { listKeys } = await import('./db.js')
+          const keys = listKeys()
+          const matchedKey = keys.find(k => k.model === autoModel || (k.availableModels && k.availableModels.includes(autoModel)))
+          if (matchedKey) {
+            provider = { ...matchedKey, model: autoModel, isAutopilot: true }
+            sse(wrappedRes, 'thought', { step, text: `🤖 [Autopilot] Переключаюсь на оптимальную модель для этого шага: ${autoModel}` })
+          }
+        }
       }
 
       const routing = shouldUseCheapEditor({ provider, step, recentToolHistory, userId })
-      const activeProvider = routing.useCheap ? wrapProviderForEditor(provider, routing.cheapModel) : provider
+      let activeProvider = routing.useCheap ? wrapProviderForEditor(provider, routing.cheapModel) : provider
       if (routing.useCheap) sse(wrappedRes, 'thought', { step, text: routingLabel(routing) })
 
       let currentModel = activeProvider.model
@@ -1128,7 +1283,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
         sse(wrappedRes, 'thought', { step, text: '🔄 Автоматическое самоисцеление: Обнаружено 3 последовательных сбоя. Временно повышаю уровень интеллекта модели до deepseek-reasoner для выхода из тупика!' })
       }
 
-      let reply, streamedFinalAnswer = false
+    let reply, streamedFinalAnswer = false
       try {
         const useStream = supportsStreaming(activeProvider.baseUrl)
         const messagesWithCache = applyAnthropicCacheHints(convo, activeProvider.baseUrl)
@@ -1139,7 +1294,7 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
           authHeader: activeProvider.authHeader || '',
           extraHeaders: activeProvider.extraHeaders || {},
           model: currentModel,
-          messages: messagesWithCache,
+          messages: redactConvo(messagesWithCache),  // mask tokens before LLM
           temperature: Number(activeProvider.temperature ?? 0.3),
           signal: currentAbortCtl.signal,
           ...(useNativeTools ? { tools: toolsSpec, toolChoice: 'auto' } : {})
@@ -1148,12 +1303,64 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
           reply = await streamingLLMCall(wrappedRes, step, llmArgs, { onUsage: (u) => accumulateUsage(u) })
           streamedFinalAnswer = !reply.toolCalls?.length && !reply.preParsedCalls?.length
         } else {
-          reply = await callLLM(llmArgs); accumulateUsage(reply?.usage)
+          // A4 — heartbeat for non-streaming providers (DeepSeek, Gemini):
+          // send agent_state every 3s so user sees the model is thinking, not frozen
+          const _hbInterval = setInterval(() => {
+            try {
+              sse(wrappedRes, 'agent_state', {
+                ...agentState,
+                status: 'thinking',
+                currentStep: `⏳ Модель обрабатывает запрос… (шаг ${step})`,
+                watchdog: true,
+              })
+            } catch { /* best-effort — connection may have closed */ }
+          }, 3000)
+          _hbInterval?.unref?.()  // S1-D1: don't hold process open for heartbeat timer
+          try {
+            reply = await callLLM(llmArgs)
+          } finally {
+            clearInterval(_hbInterval)
+          }
+          accumulateUsage(reply?.usage)
         }
       } catch (e) {
         const providerError = normalizeProviderError(e, { baseUrl: provider.baseUrl, model: provider.model, phase: 'agent-llm-call' })
-        const finalStatus = buildFinalStatus({ agentContext, recentToolHistory, agentState, aborted, step, maxSteps, reason: 'llm-error', error: providerError, userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths, okReadPaths })
-        sse(wrappedRes, 'error', { message: 'LLM failed: ' + safeErrorMessage(providerError.message), providerError: safeProviderError(providerError), finalStatus }); sseDone(wrappedRes, { steps: step, reason: 'llm-error', finalStatus }, tokens); finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'llm-error', step, maxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' }); res.end(); return
+        // C — try fallback provider before giving up
+        if (isTransientProviderError(providerError) && !aborted) {
+          try {
+            const fallback = await resolveNextProvider(activeProvider, providerError)
+            if (fallback) {
+              const src = fallback._fallbackSource || 'fallback'
+              sse(wrappedRes, 'thought', { step, text: `⚡ Провайдер ${activeProvider.model} недоступен. Переключаюсь на ${fallback.model || src}…` })
+              activeProvider = fallback
+              currentModel = fallback.model || currentModel
+              pushedBackThisTurn = false  // S2-C1: reset pushback state for retry on new provider
+              continue  // retry this step with the new provider
+            }
+          } catch { /* fallback resolution failed — fall through to error */ }
+        }
+        const finalStatus = buildFinalStatus({ agentContext, recentToolHistory, agentState, aborted, step, maxSteps: effectiveMaxSteps, reason: 'llm-error', error: providerError, userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths, okReadPaths })
+        // LLM-timeout recovery: если watchdog сработал, но ВСЕ obligations
+        // уже закрыты и был реальный progress — считаем задачу выполненной.
+        // Иначе UI показывает "error" хотя фактически работа сделана.
+        const isWatchdogTimeout = /idle watchdog timeout|aborted/i.test(String(providerError?.message || ''))
+        const obligationsSatisfied = (() => {
+          const obs = agentState?.obligationStatus || {}
+          const required = agentContext?.task?.obligations || {}
+          return Object.entries(required).every(([k, v]) => !v || obs[k] === true)
+        })()
+        if (isWatchdogTimeout && obligationsSatisfied && (finalStatus.evidenceSummary?.filesChanged > 0 || finalStatus.evidenceSummary?.commandsRun > 0)) {
+          finalStatus.taskCompleted = true
+          finalStatus.blockers = []
+          sse(wrappedRes, 'thought', { step, text: 'LLM-таймаут после выполненной работы — закрываю как успех (obligations все ✓).' })
+        }
+        sse(wrappedRes, 'error', { message: 'LLM failed: ' + safeErrorMessage(providerError.message), providerError: safeProviderError(providerError), finalStatus })
+        sseDone(wrappedRes, { steps: step, reason: 'llm-error', finalStatus }, tokens)
+        finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'llm-error', step, maxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' })
+        clearInterval(idleWatchdog)
+        clearInterval(keepAliveInterval)
+        res.end()
+        return
       }
 
       res.__agentPhase = 'agent'
@@ -1163,43 +1370,30 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
       try { spendNote = recordSpend({ userId, chatId, model: activeProvider.model, usage: reply?.usage || {} }) } catch { /* best-effort: ignore */ }
       if (reply?.usage) sse(wrappedRes, 'usage', { step, ...reply.usage, totals: { ...tokens }, cost: spendNote?.cost || 0 })
 
-      let calls = []
-      if (useNativeTools && Array.isArray(reply.toolCalls)) {
-        for (const tc of reply.toolCalls) {
-          const corrected = correctToolName(tc.name)
-          const exists = TOOLS[corrected] || (extraTools && extraTools[corrected]) || isConsolidatedTool(corrected)
-          calls.push({ 
-            tool: corrected, 
-            args: tc.args || {}, 
-            nativeId: tc.id, 
-            nativeRaw: tc.raw,
-            unknown: !exists
-          })
-        }
-      }
-      if (calls.length === 0) {
-        const xmlCalls = parseXmlFunctionCalls(reply.text || '')
-        for (const c of xmlCalls) {
-          const corrected = correctToolName(c.tool)
-          const exists = TOOLS[corrected] || (extraTools && extraTools[corrected]) || isConsolidatedTool(corrected)
-          calls.push({
-            tool: corrected,
-            args: c.args || {},
-            unknown: !exists
-          })
-        }
-      }
+      const toolExists = (name) => Boolean(TOOLS[name] || (extraTools && extraTools[name]) || isConsolidatedTool(name))
+      const turn = resolveAgentTurn({
+        reply,
+        useNativeTools,
+        correctToolName,
+        toolExists,
+        agentContext,
+        recentToolHistory,
+        history,
+        noToolsPushbackCount,
+        unappliedCodePushbackCount,
+        maxPushbacks: MAX_PUSHBACK_PER_KIND,
+        pushedBackThisTurn,
+        aborted,
+      })
+      let calls = turn.kind === 'tool_calls' ? [...turn.calls] : []
 
       if (calls.length === 0) {
-        if (looksLikeUnapplliedCodeReply(reply.text, history) && !aborted && !pushedBackThisTurn) {
+        if (turn.kind === 'pushback') {
+          if (turn.code === 'unapplied_code') unappliedCodePushbackCount++
+          else noToolsPushbackCount++
           pushedBackThisTurn = true
-          sse(wrappedRes, 'thought', { step, text: 'Code not applied. Requesting fix.' })
-          convo.push({ role: 'user', content: 'You provided code without tool calls. Apply changes with write_file/edit_file now.' }); continue
-        }
-        if (step === 1 && !pushedBackThisTurn && !aborted) {
-          pushedBackThisTurn = true
-          sse(wrappedRes, 'thought', { step, text: 'No tools called. Forcing action.' })
-          convo.push({ role: 'user', content: 'ACT now by calling a tool.' }); continue
+          if (turn.thought) sse(wrappedRes, 'thought', { step, text: turn.thought })
+          convo.push({ role: 'user', content: turn.userPrompt }); continue
         }
 
         // Fabrication gate: the draft cites concrete file paths — verify each
@@ -1223,13 +1417,14 @@ async function runAgentInner({ provider, history = [], maxSteps = DEFAULT_MAX_ST
         const explicitLocalTestRequested = askedForExplicitLocalTest(lastUserAsk)
         const localTestAttempted = hasLocalTestAttempt(recentToolHistory)
         const localTestPassed = hasSuccessfulLocalTest(recentToolHistory)
-        if (didRealWork && !convo.some(m => m.role === 'user' && String(m.content).startsWith('[reflection]')) && !aborted) {
+        if (didRealWork && !reflectionDone && !aborted) {
           // Hard 20s cap: reflection is advisory — a hanging provider call
           // here must never block stream completion (same spinner-hang class).
           const verdict = await Promise.race([
             runReflectionCheck({ provider, ask: lastUserAsk, draft: reply.text || '', toolHistory: recentToolHistory }),
             new Promise((r) => setTimeout(() => r(null), 20_000)),
           ]).catch(() => null)
+          reflectionDone = true
           if (verdict?.needsMoreWork) {
             sse(wrappedRes, 'thought', { step, text: `Самопроверка: ${verdict.reason}` })
             convo.push({ role: 'user', content: `[reflection] Gaps identified:\n${verdict.reason}` }); continue
@@ -1293,9 +1488,50 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
           continue
         }
 
-        const finalTextWithEvidence = didRealWork ? appendRuntimeEvidence(reply.text || '', agentContext, recentToolHistory, agentState) : (reply.text || '')
-        if (streamedFinalAnswer) sse(wrappedRes, 'assistant', { text: finalTextWithEvidence })
-        else await streamFinalAnswer(wrappedRes, finalTextWithEvidence)
+        const preFinalStatus = buildFinalStatus({
+          agentContext,
+          recentToolHistory,
+          agentState,
+          aborted,
+          step,
+          maxSteps: effectiveMaxSteps,
+          reason: 'final',
+          userText: [...history].reverse().find((m) => m.role === 'user')?.content || '',
+          failedReadPaths,
+          okReadPaths,
+          claimIssues: null,
+        })
+        const finalTextWithEvidence = didRealWork ? composeEvidenceBackedFinal({ draft: reply.text || '', agentContext, recentToolHistory, agentState, finalStatus: preFinalStatus }) : (reply.text || '')
+        // Anti-hallucination: проверяем claims финального ответа против реальных tool results.
+        // Если найдены серьёзные расхождения (severity=error) — добавляем в финал блок предупреждения.
+        const failedCommands = new Set(recentToolHistory.filter((h) => !h.ok).map((h, i) => `${i}:${h.tool}`))
+        const claimCheck = validateFinalClaims(finalTextWithEvidence, {
+          okReadPaths,
+          failedReadPaths,
+          touchedFiles: agentState.touchedFiles || new Set(),
+          recentToolHistory,
+          failedCommands,
+        })
+        if (!claimCheck.verified && claimCheck.issues.length > 0) {
+          // Keep self-check findings structured in finalStatus/evidence. Do not
+          // append raw anti-hallucination diagnostics into the user-visible
+          // final answer; that made the chat look like an internal debug log.
+          if (streamedFinalAnswer) {
+            sse(wrappedRes, 'assistant', { text: finalTextWithEvidence })
+          } else {
+            await streamFinalAnswer(wrappedRes, finalTextWithEvidence)
+          }
+          agentState.claimIssues = claimCheck.issues
+        } else {
+          if (streamedFinalAnswer) {
+            // Текст уже был отправлен дельтами во время стриминга.
+            // Отправляем финальный assistant-ивент с полным текстом + evidence,
+            // чтобы UI мог обновить сообщение (добавить runtime evidence блок).
+            sse(wrappedRes, 'assistant', { text: finalTextWithEvidence })
+          } else {
+            await streamFinalAnswer(wrappedRes, finalTextWithEvidence)
+          }
+        }
 
         // CRITICAL ORDER: send 'done' and close the stream FIRST. The
         // lesson-extraction below makes an extra LLM call — if it hangs
@@ -1309,14 +1545,17 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
           agentState,
           aborted,
           step,
-          maxSteps: DEFAULT_MAX_STEPS,
+          maxSteps: effectiveMaxSteps,
           reason: 'final',
           userText: [...history].reverse().find((m) => m.role === 'user')?.content || '',
           failedReadPaths,
           okReadPaths,
+          claimIssues: agentState.claimIssues || null,
         })
         try { if (persistedTask) finishAgentTask(persistedTask.id, { status: finalStatus.taskCompleted ? 'succeeded' : (isBlocked(finalStatus) ? 'blocked' : 'partial'), state: agentState, history: convo, finalStatus }) } catch { /* best-effort */ }
-        sseDone(wrappedRes, { steps: step, reason: 'final', finalStatus }, tokens); finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'final', step, maxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' }); res.end()
+        sseDone(wrappedRes, { steps: step, reason: 'final', finalStatus }, tokens)
+        finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'final', step, maxSteps: effectiveMaxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' })
+        res.end()
         if (didRealWork && !aborted && userId) {
           void (async () => {
             try {
@@ -1351,36 +1590,87 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
       const readBacks = makeReadBackForEdits(calls)
       for (const rb of readBacks) calls.push(normalizeRuntimeCall(rb))
 
-      // Execute tool calls sequentially, not in parallel. Some models emit
-      // write_file + read_file in the same assistant turn; running them with
-      // Promise.all lets read_file race ahead of write_file and produces a
-      // false "File not found" even though the file is created milliseconds
-      // later. Sequential execution also preserves the observation order that
-      // OpenAI-compatible providers expect after assistant.tool_calls.
-      const results = []
-      for (let idx = 0; idx < calls.length; idx++) {
-        const call = calls[idx]
-        results.push(await (async () => {
-        recentCallFingerprints.push(callFingerprint(call)); if (recentCallFingerprints.length > 20) recentCallFingerprints.shift()
+      if (!aborted && shouldPushShellFirst({ calls, agentContext, already: shellFirstPushbackCount })) {
+        shellFirstPushbackCount++
+        sse(wrappedRes, 'thought', { step, text: 'Слишком много мелких file/verify вызовов. Перехожу на один компактный shell-шаг.' })
+        convo.push({
+          role: 'user',
+          content: shellFirstPushbackMessage(),
+        })
+        continue
+      }
+
+      // ── Parallel safe reads (Arena-style) ─────────────────────────────────
+      // Pure read-only tools (read_file, search_files, list_files, web_search,
+      // web_fetch, recall_facts, kb_search) have no shared mutable state.
+      // When ALL calls in a turn are read-only we run them in parallel, matching
+      // Arena's behaviour and cutting wall-clock latency for multi-file reads.
+      // ANY write/shell/git/ops call in the batch forces full sequential mode
+      // to preserve the write→read ordering invariant.
+      const SAFE_PARALLEL_TOOLS = new Set([
+        'read_file','list_files','search_files','web_search','web_fetch',
+        'recall_facts','kb_search','kb_list','git_status','docker_ps',
+        'docker_logs','ops_list_services','file_history','secret_scan',
+        'get_agent_result','shell_background_read','shell_background_list',
+      ])
+      const SAFE_PARALLEL_FAMILIES = new Set(['web', 'kb', 'memory'])
+      const allSafeParallel = calls.every((c2) => {
+        if (c2.unknown) return false
+        const sem = c2.semantic || runtimeSemantics({ tool: c2.tool, args: (() => { try { return JSON.stringify(c2.args || {}) } catch { return '{}' } })(), outcome: '' })
+        if (SAFE_PARALLEL_TOOLS.has(c2.tool)) return true
+        if (SAFE_PARALLEL_FAMILIES.has(sem.family) && sem.action !== 'write' && sem.action !== 'edit' && sem.action !== 'delete') return true
+        // consolidated file read
+        if (c2.tool === 'file' && ['read','list','search','snapshot_list'].includes(c2.args?.action)) return true
+        return false
+      })
+
+      // Кешируем на уровне шага (не вызова) — экономия I/O при нескольких tool calls за шаг
+      const [stepProjectRules, stepRecentActivity] = await Promise.all([
+        withWorkspaceScope(chatId, () => readProjectRules().catch(() => '')),
+        withWorkspaceScope(chatId, () => listRecentWorkspaceActivity({ sinceMs: 24 * 60 * 60 * 1000 }).catch(() => [])),
+      ])
+  const stepRecentActivityStr = stepRecentActivity.map(a => `${a.reason} ${a.path}`).join(', ')
+  const results = []
+
+  // Executor for a single call — extracted to reuse in both parallel/sequential paths
+      const executeOneCall = async (call, idx, { isParallel = false } = {}) => {
+        const currentFingerprint = callFingerprint(call)
+        const currentFamily = callFamily(call)
+        recentCallFingerprints.push(currentFingerprint); if (recentCallFingerprints.length > 20) recentCallFingerprints.shift()
+        recentCallFamilies.push(currentFamily); if (recentCallFamilies.length > 20) recentCallFamilies.shift()
         if (violatesPreDeployVerifyCall(call, recentToolHistory)) return { call, r: makeToolErrorResult('Blocked: verify_code required.'), pushedBack: true }
-        if (isStuckLoop(recentCallFingerprints, callFingerprint(call))) return { call, r: makeToolErrorResult('Stuck in loop.'), pushedBack: true }
+        if (isStuckLoop(recentCallFingerprints, currentFingerprint, recentCallFamilies, currentFamily)) {
+          return {
+            call,
+            r: {
+              ok: false,
+              error: `Stuck in loop: ты уже ${SIMILAR_STUCK_THRESHOLD}+ раз вызываешь похожие команды (${currentFamily.slice(0, 80)}). Попробуй ДРУГОЙ подход: прочитай документацию, спроси пользователя через ask_user, или сделай вывод о blocker.`,
+              result: null,
+            },
+            pushedBack: true,
+          }
+        }
 
         if (call.unknown) {
-          const rErr = makeToolErrorResult(`Инструмент "${call.tool}" не существует. Пожалуйста, используйте только разрешенные инструменты: ${[...allowedToolSet].join(', ')}`)
+          // allowedToolSet может быть null (liteRun без профиля) — защищаем spread
+          const toolList = allowedToolSet ? [...allowedToolSet].join(', ') : Object.keys(TOOLS).join(', ')
+          const rErr = makeToolErrorResult(`Инструмент "${call.tool}" не существует. Пожалуйста, используйте только разрешенные инструменты: ${toolList}`)
           sse(wrappedRes, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
           return { call, r: rErr, pushedBack: true }
         }
 
-        if (!isToolAllowed(call.tool, allowedToolSet, extraTools)) {
-          const rErr = makeToolErrorResult(`Tool ${call.tool} is not available in the current ${toolProfile} tool profile. Use one of: ${[...allowedToolSet].join(', ')}`)
+        const checkTool = call.semantic?.tool || call.tool
+        if (!isToolAllowed(checkTool, allowedToolSet, extraTools)) {
+          const toolList = allowedToolSet ? [...allowedToolSet].join(', ') : 'all tools'
+          const rErr = makeToolErrorResult(`Tool ${checkTool} is not available in the current ${toolProfile} tool profile. Use one of: ${toolList}`)
           sse(wrappedRes, 'tool_router', { step, sub: idx, name: call.tool, warnings: [rErr.error] })
           sse(wrappedRes, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
           return { call, r: rErr, pushedBack: true }
         }
 
-        if (!isToolAllowed(call.tool, currentPhaseAllowedSet, extraTools)) {
+        if (!isToolAllowed(checkTool, currentPhaseAllowedSet, extraTools)) {
           const allowed = currentPhaseAllowedSet ? [...currentPhaseAllowedSet].join(', ') : 'all profile tools'
-          const rErr = makeToolErrorResult(`Tool ${call.tool} is blocked in phase ${currentPhase}. Use one of: ${allowed}`)
+          const rErr = makeToolErrorResult(`Tool ${checkTool} is blocked in phase ${currentPhase}. Use one of: ${allowed}`)
           sse(wrappedRes, 'tool_router', { step, sub: idx, name: call.tool, warnings: [rErr.error], phase: currentPhase })
           sse(wrappedRes, 'tool_result', { step, sub: idx, name: call.tool, ok: false, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
           return { call, r: rErr, pushedBack: true }
@@ -1389,7 +1679,7 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
         const validation = validateToolCall(call.tool, call.args || {}, { ...TOOLS, ...extraTools }[call.tool])
         if (!validation.ok) {
           if (!pushedBackThisTurn && !aborted) {
-            pushedBackThisTurn = true
+            if (!isParallel) pushedBackThisTurn = true  // P1: don't mutate shared state in parallel
             // v2.24: surface schema errors as a visible thought + tool_result so
             // the UI (and tests) see the self-healing push-back explicitly.
             sse(wrappedRes, 'thought', { step, sub: idx, text: `ОШИБКА СХЕМЫ: ${call.tool} — ${validation.error}. Исправляю вызов инструмента.` })
@@ -1409,29 +1699,21 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
             sse(wrappedRes, 'thought', { step, sub: idx, text: `Не удалось создать snapshot перед ${call.tool}: ${safeErrorMessage(e)}` })
           }
         }
-        if (call.tool !== 'ask_user' && requiresApproval(call.tool, userId, call.args || {})) {
-          const { id: aqId, promise: aqPromise, expiresAt } = registerQuestion({ kind: 'tool_approval', userId, chatId, step, sub: idx, tool: call.tool, category: categoryOf(call.tool), question: `Approve ${call.tool}?`, options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }] })
-          sse(wrappedRes, 'tool_approval', { step, sub: idx, question_id: aqId, expiresAt, tool: call.tool, args: call.args })
-          let approved = false; try { const ans = await aqPromise; const pick = Array.isArray(ans?.selected) ? String(ans.selected[0]) : String(ans?.text || ans); approved = ['approve', 'yes', 'ok', 'allow', 'true'].includes(pick.toLowerCase().trim()) } catch { /* best-effort: ignore */ }
-          if (!approved) return { call, r: { ok: false, error: 'User denied.' } }
-        }
-
-        res.__agentPhase = 'tool'
-        res.__agentActiveTool = call.tool
-        sse(wrappedRes, 'thought', { step, sub: idx, text: narrateRuntimeCall(call, agentContext), generated: true })
-        sse(wrappedRes, 'tool_start', { step, sub: idx, name: call.tool, args: call.args })
-
-        // State machine: record retry budget + advisory guard
-        recordToolCall(budget, call.tool, call.args || {}, step)
-        const guard = guardToolCall({ tool: call.tool, phase: currentPhase, budget, recentToolHistory, step })
-        if (guard.advisory && guard.blocked) {
-          sse(wrappedRes, 'thought', { step, sub: idx, text: `⚠️ ${guard.reason} Proceeding with advisory only.`, generated: true })
-        }
-        let r
-        if (call.tool === 'ask_user') {
-          const aArgs = call.args || {}, rawList = Array.isArray(aArgs.questions) ? aArgs.questions : [{ id: 'q1', question: aArgs.question || '?', options: aArgs.options || [], allowCustomResponse: aArgs.allow_custom !== false, multi: aArgs.multi !== false }]
-          const answers = await Promise.all(rawList.slice(0, 6).map(q => { const { id, promise, expiresAt } = registerQuestion({ kind: 'ask_user', userId, chatId, step, sub: idx, question: q.question, options: q.options, multi: q.multi, allowCustom: q.allowCustomResponse }); sse(wrappedRes, 'ask_user', { step, sub: idx, question_id: id, expiresAt, question: q.question, options: q.options }); return promise.then(a => ({ ok: true, answer: a }), e => ({ ok: false, error: e.message })) }))
-          r = { ok: true, result: answers.length === 1 ? answers[0].answer : { answers } }
+        if (false) { /* Privileged Runtime — approvals OFF */
+          // approval disabled, question: `Approve ${call.tool}?`, options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }] })
+          
+          // Если ЛЮБОЙ ответ истёк по таймауту — считаем tool неуспешным,
+          // чтобы агент пошёл в recovery / pushback, а не завис на 10 минут.
+          const timedOut = answers.some((a) => a && a.timedOut)
+          const anyError = answers.some((a) => a && a.ok === false)
+          if (timedOut || anyError) {
+            const errMsg = timedOut
+              ? 'ask_user timeout: пользователь не ответил. Продолжай с разумным default (например, выбери самый безопасный вариант или отметь ask_user как blocked) — НЕ повторяй ask_user снова для этого же вопроса.'
+              : `ask_user error: ${answers.find((a) => a && a.ok === false)?.error || 'unknown'}`
+            r = { ok: false, error: errMsg, result: { answers, timedOut } }
+          } else {
+            r = { ok: true, result: answers.length === 1 ? answers[0].answer : { answers } }
+          }
         } else {
           // Expand consolidated tool calls (file→read_file, shell→bash, etc.)
           // The SSE events above keep the consolidated name (what the model sees),
@@ -1443,8 +1725,8 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
             r = await invokeTool(exp.name, { 
               ...exp.args, 
               _provider: provider,
-              _projectRules: (await withWorkspaceScope(chatId, () => readProjectRules().catch(() => ''))),
-              _recentActivity: (await withWorkspaceScope(chatId, () => listRecentWorkspaceActivity({ sinceMs: 24 * 60 * 60 * 1000 }).catch(() => []))).map(a => `${a.reason} ${a.path}`).join(', ')
+              _projectRules: stepProjectRules,
+              _recentActivity: stepRecentActivityStr
             }, { 
               signal: currentAbortCtl.signal, 
               onStdout: (c) => sse(wrappedRes, 'tool_progress', { step, sub: idx, name: call.tool, kind: 'stdout', chunk: String(c).slice(0, 2000) }), 
@@ -1454,26 +1736,26 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
           }
         }
         const semanticOk = toolSucceeded(call.tool, r, call.args)
-        if (categoryOf(call.tool) !== 'ask') {
+        if ('privileged' !== 'ask') {
           if (!semanticOk) {
             consecutiveFailures++
           } else {
             consecutiveFailures = 0
           }
         }
-        if (!semanticOk && !pushedBackThisTurn && !aborted && categoryOf(call.tool) !== 'ask') {
+        if (!semanticOk && !pushedBackThisTurn && !aborted && 'privileged' !== 'ask') {
           const semanticError = r.ok ? summarizeToolOutcome(call.tool, r, call.args) : r.error
           const recovery = getRecoveryAction({ tool: call.tool, error: semanticError, result: r.result, args: call.args, recentToolHistory })
           const hint = recovery?.message || getRecoveryHint(call.tool, semanticError, call.args, recentToolHistory)
           if (hint) {
-            pushedBackThisTurn = true
+            if (!isParallel) pushedBackThisTurn = true  // P1
             sse(wrappedRes, 'thought', { step, sub: idx, text: `ОШИБКА: ${call.tool} — ${semanticError}. Исправляю…` })
             const rErr = makeToolErrorResult(`[exec_error] ${semanticError}.\n\nREQUIRED ACTION TO RECOVER:\n${hint}\n\nExecute this action now.`)
             rErr.result = r.result
             sse(wrappedRes, 'tool_result', { step, sub: idx, name: call.tool, ok: false, result: r.result, error: rErr.error, structured: normalizeToolResult(call.tool, rErr, { step, sub: idx }) })
             return { call, r: rErr, pushedBack: true }
           }
-          pushedBackThisTurn = true
+          if (!isParallel) pushedBackThisTurn = true  // P1
           sse(wrappedRes, 'thought', { step, sub: idx, text: `Ошибка выполнения: ${call.tool} — ${semanticError}. Пробую восстановиться.` })
           const rErr = makeToolErrorResult(`[exec_error] ${semanticError}`)
           rErr.result = r.result
@@ -1481,15 +1763,61 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
           return { call, r: rErr, pushedBack: true }
         }
         const stateResult = semanticOk ? r : { ...r, ok: false, error: r.error || summarizeToolOutcome(call.tool, r, call.args) }
-        updateAgentStateFromTool(agentState, call.tool, stateResult, call.args); agentState.obligationStatus = obligationCompletionStatus(agentState.obligations || {}, recentToolHistory); try { if (persistedTask) updateAgentTask(persistedTask.id, { phase: agentState.phase || currentPhase, state: agentState, history: convo }) } catch { /* best-effort */ }; sse(wrappedRes, 'tool_result', { step, sub: idx, name: call.tool, ok: semanticOk, result: r.result, error: semanticOk ? r.error : (r.error || summarizeToolOutcome(call.tool, r, call.args)), structured: normalizeToolResult(call.tool, stateResult, { step, sub: idx }) }); sse(wrappedRes, 'agent_state', agentState)
+        // updateAgentStateFromTool handles underlying names (plan_set, plan_check),
+        // but the loop receives the consolidated 'plan' name. Expand here so
+        // agentState.plan / .plan.done stay in sync with the actual tool outcome.
+        const expForState = expandConsolidatedCall(call.tool, call.args)
+        const stateToolName = (expForState && !expForState.error && expForState.name) ? expForState.name : call.tool
+        updateAgentStateFromTool(agentState, stateToolName, stateResult, call.args)
+        agentState.obligationStatus = obligationCompletionStatus(agentState.obligations || {}, recentToolHistory)
+        try { if (persistedTask) updateAgentTask(persistedTask.id, { phase: agentState.phase || currentPhase, state: agentState, history: convo }) } catch { /* best-effort */ }
+        sse(wrappedRes, 'tool_result', { step, sub: idx, name: call.tool, ok: semanticOk, result: r.result, error: semanticOk ? r.error : (r.error || summarizeToolOutcome(call.tool, r, call.args)), structured: normalizeToolResult(call.tool, stateResult, { step, sub: idx }) })
+        const fileEvents = await recordToolWorkspaceEvents({ tool: call.tool, args: call.args || {}, result: r.result || {}, ok: semanticOk, step, sub: idx, runId: runLog?.runId || '' }).catch(() => [])
+        if (fileEvents.length) {
+          sse(wrappedRes, 'file_change', { step, sub: idx, name: call.tool, runId: runLog?.runId || '', events: fileEvents, summary: { count: fileEvents.length, paths: fileEvents.map((e) => e.path).slice(0, 20) } })
+        }
+        sse(wrappedRes, 'agent_state', agentState)
         res.__agentPhase = 'agent'
         res.__agentActiveTool = ''
         return { call, r, semanticOk }
-        })())
+      }
+
+      // ── Dispatch: parallel for safe-reads, sequential otherwise ────────────
+      if (allSafeParallel && calls.length > 1) {
+        // Run all read-only calls concurrently
+        const parallel = await Promise.all(calls.map((call, idx) => executeOneCall(call, idx, { isParallel: true })))
+        // P1: after parallel batch, set pushedBackThisTurn if any call pushed back
+        if (parallel.some(r => r?.pushedBack)) pushedBackThisTurn = true
+        results.push(...parallel)
+      } else {
+        // Sequential (default) — preserves write→read ordering
+        for (let idx = 0; idx < calls.length; idx++) {
+          results.push(await executeOneCall(calls[idx], idx))
+        }
       }
 
       let sawPushBack = false
-      for (const res of results) { if (res?.pushedBack) sawPushBack = true; if (res?.call && res?.r) { const semanticOk = typeof res.semanticOk === 'boolean' ? res.semanticOk : !!res.r.ok; const historyEntry = normalizeRuntimeHistoryEntry({ tool: res.call.tool, ok: semanticOk, at: Date.now(), args: summarizeCallArgsForDigest(res.call.args || {}), outcome: summarizeToolOutcome(res.call.tool, res.r, res.call.args || {}) }); pushToolHistory(historyEntry); const semantic = historyEntry.semantic || runtimeSemantics(historyEntry); if (semantic.isRead && semantic.path) { (semanticOk ? okReadPaths : failedReadPaths).add(String(semantic.path)) } if ((res.call.tool === 'plan_set' || (res.call.tool === 'plan' && res.call.args?.action === 'set')) && semanticOk) planState.done = new Set(); else if ((res.call.tool === 'plan_check' || (res.call.tool === 'plan' && res.call.args?.action === 'check')) && semanticOk) (res.r.result?.checked || []).forEach(idx => planState.done.add(Number(idx))) }; try { if (res?.call && runLog) { const sem = runtimeSemantics({ tool: res.call.tool, args: JSON.stringify(res.call.args || {}), outcome: '' }); runLog.toolCall({ tool: res.call.tool, args: summarizeCallArgsForDigest(res.call.args || {}), ok: typeof res.semanticOk === 'boolean' ? res.semanticOk : !!res.r?.ok, semantic: sem, outcome: summarizeToolOutcome(res.call.tool, res.r || {}, res.call.args || {}), error: res.r?.ok ? null : (res.r?.error || null) }) } } catch { /* ignore log failures */ } }
+      // Переименовываем итератор: `res` — занято внешним Express response объектом.
+      // Shadowing вызывал бы неочевидные баги если бы внутри понадобился res.end().
+      for (const toolRes of results) {
+        if (toolRes?.pushedBack) sawPushBack = true
+        if (toolRes?.call && toolRes?.r) {
+          const semanticOk = typeof toolRes.semanticOk === 'boolean' ? toolRes.semanticOk : !!toolRes.r.ok
+          const historyEntry = normalizeRuntimeHistoryEntry({ tool: toolRes.call.tool, ok: semanticOk, at: Date.now(), args: summarizeCallArgsForDigest(toolRes.call.args || {}), outcome: summarizeToolOutcome(toolRes.call.tool, toolRes.r, toolRes.call.args || {}) })
+          pushToolHistory(historyEntry)
+          const semantic = historyEntry.semantic || runtimeSemantics(historyEntry)
+          if (semantic.isRead && semantic.path) { (semanticOk ? okReadPaths : failedReadPaths).add(String(semantic.path)) }
+          if ((toolRes.call.tool === 'plan_set' || (toolRes.call.tool === 'plan' && toolRes.call.args?.action === 'set')) && semanticOk) planState.done = new Set()
+          // Переименовано checkedIdx — иначе затеняет внешний for-loop idx (строка ~1383)
+          else if ((toolRes.call.tool === 'plan_check' || (toolRes.call.tool === 'plan' && toolRes.call.args?.action === 'check')) && semanticOk) (toolRes.r.result?.checked || []).forEach(checkedIdx => planState.done.add(Number(checkedIdx)))
+        }
+        try {
+          if (toolRes?.call && runLog) {
+            const sem = runtimeSemantics({ tool: toolRes.call.tool, args: JSON.stringify(toolRes.call.args || {}), outcome: '' })
+            runLog.toolCall({ tool: toolRes.call.tool, args: summarizeCallArgsForDigest(toolRes.call.args || {}), ok: typeof toolRes.semanticOk === 'boolean' ? toolRes.semanticOk : !!toolRes.r?.ok, semantic: sem, outcome: summarizeToolOutcome(toolRes.call.tool, toolRes.r || {}, toolRes.call.args || {}), error: toolRes.r?.ok ? null : (toolRes.r?.error || null) })
+          }
+        } catch { /* ignore log failures */ }
+      }
       agentState.obligationStatus = obligationCompletionStatus(agentState.obligations || {}, recentToolHistory)
 
       // Always feed observations back into the conversation, even for
@@ -1498,30 +1826,131 @@ Continue with tool calls. If a step is actually done, call plan_check for it fir
       for (const { call, r } of results) {
         let obsRaw = r.ok ? (typeof r.result === 'string' ? r.result : JSON.stringify(r.result, null, 2)) : 'ERROR: ' + r.error
         let obsContent = clipToolOutput(call.tool, obsRaw, provider?.model)
-        if (r.ok && r.result?.dataUrl && useNativeTools) obsContent = [{ type: 'text', text: clipToolOutput(call.tool, { ...obsRaw, dataUrl: undefined }, provider?.model) }, { type: 'image_url', image_url: { url: r.result.dataUrl } }]
+        // r.result?.dataUrl: для multimodal — передаём объект без dataUrl (не строку obsRaw)
+        if (r.ok && r.result?.dataUrl && useNativeTools) {
+          const resultWithoutDataUrl = typeof r.result === 'object' ? { ...r.result, dataUrl: undefined } : r.result
+          obsContent = [
+            { type: 'text', text: clipToolOutput(call.tool, resultWithoutDataUrl, provider?.model) },
+            { type: 'image_url', image_url: { url: r.result.dataUrl } },
+          ]
+        }
         if (call.nativeId) convo.push({ role: 'tool', tool_call_id: call.nativeId, name: call.tool, content: obsContent })
-        else convo.push({ role: 'user', content: `<arena-system-message>
-Tool result for ${call.tool}:
-ok: ${r.ok}
-</arena-system-message>
-${obsContent}` })
+        else {
+          // A — sanitize obsContent: strip closing tag to prevent tool-output-based system-message injection
+          const safeObs = typeof obsContent === 'string'
+            ? obsContent.replace(/<\/arena-system-message>/gi, '')
+            : obsContent  // array (multimodal) — no injection path
+          convo.push({ role: 'user', content: `<arena-system-message>\nTool result for ${call.tool}:\nok: ${r.ok}\n</arena-system-message>\n${safeObs}` })
+        }
       }
       if (sawPushBack) continue
 
     }
-    if (step >= maxSteps) {
-      const finalStatus = buildFinalStatus({ agentContext, recentToolHistory, agentState, aborted, step, maxSteps, reason: 'max-steps', userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths, okReadPaths })
+    if (step >= effectiveMaxSteps) {
+      const finalStatus = buildFinalStatus({ agentContext, recentToolHistory, agentState, aborted, step, maxSteps: effectiveMaxSteps, reason: 'max-steps', userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths, okReadPaths })
       try { if (persistedTask) finishAgentTask(persistedTask.id, { status: 'blocked', state: agentState, history: convo, finalStatus }) } catch { /* best-effort */ }
-      sse(wrappedRes, 'error', { message: `Stopped after ${maxSteps} steps`, finalStatus }); sseDone(wrappedRes, { steps: step, reason: 'max-steps', finalStatus }, tokens); finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'max-steps', step, maxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' })
+      sse(wrappedRes, 'assistant_delta', {
+        chunk: `
+
+Я дошёл до лимита выполнения (${effectiveMaxSteps} шагов), но текущее состояние и файлы сохранены. Можно продолжить с этого места — я не буду начинать заново.`,
+      })
+      sseDone(wrappedRes, { steps: step, reason: 'max-steps', finalStatus }, tokens)
+      finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'max-steps', step, maxSteps: effectiveMaxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' })
     }
   } catch (e) {
-    const finalStatus = buildFinalStatus({ agentContext, recentToolHistory, agentState, aborted, step, maxSteps, reason: 'crash', error: e, userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths, okReadPaths })
+    const finalStatus = buildFinalStatus({ agentContext, recentToolHistory, agentState, aborted, step, maxSteps: effectiveMaxSteps, reason: 'crash', error: e, userText: [...history].reverse().find((m) => m.role === 'user')?.content || '', failedReadPaths, okReadPaths })
     try { if (persistedTask) finishAgentTask(persistedTask.id, { status: 'failed', state: agentState, history: convo, finalStatus }) } catch { /* best-effort */ }
-    sse(wrappedRes, 'error', { message: safeErrorMessage(e), finalStatus }); sseDone(wrappedRes, { steps: step, reason: 'crash', finalStatus }, tokens); finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'crash', step, maxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' })
-  } finally { clearInterval(idleWatchdog); if (chatId) activeRunsByChat.delete(chatId); try { res.end() } catch { /* best-effort: ignore */ } }
+    sse(wrappedRes, 'error', { message: safeErrorMessage(e), finalStatus })
+    sseDone(wrappedRes, { steps: step, reason: 'crash', finalStatus }, tokens)
+    finalizeRun({ runLog, sseTrace, history, finalStatus, reason: 'crash', step, maxSteps: effectiveMaxSteps, recentToolHistory, agentContext, res, startTime, route: '/api/agent/chat' })
+  } finally {
+    clearInterval(idleWatchdog)
+    clearInterval(keepAliveInterval)
+    if (chatId) activeRunsByChat.delete(chatId)
+    try { res.end() } catch { /* best-effort: ignore */ }
+  }
+}
+
+// ── Token masking for LLM history ────────────────────────────────────────
+// Redact secrets (API keys, tokens, passwords) from assistant and system
+// messages before sending to LLM. Prevents leaking tokens the LLM might
+// "remember" from earlier turns (e.g. if user pasted a token, agent saw
+// it once, then we DON'T want it echoed back to the LLM provider repeatedly).
+//
+// IMPORTANT: user messages are NOT redacted — when the user explicitly
+// pastes a token in chat and asks the agent to use it (e.g. "push to GitHub
+// with my token ghp_..."), we MUST let the LLM see the real token so it
+// can use it in shell commands. Otherwise the agent will write commands
+// with <redacted:...> placeholders which fail at execution.
+function redactConvo(messages) {
+  return messages.map((m) => {
+    // user role: пропускаем без изменений — пользователь САМ вставил токен
+    if (m.role === 'user') return m
+    // assistant + system: маскируем на случай если LLM "запомнил" токен
+    if (typeof m.content === 'string') {
+      const redacted = redactSecrets(m.content)
+      if (redacted === m.content) return m
+      return { ...m, content: redacted }
+    }
+    if (Array.isArray(m.content)) {
+      const parts = m.content.map((part) => {
+        if (part?.type === 'text' && typeof part.text === 'string') {
+          const redacted = redactSecrets(part.text)
+          return redacted === part.text ? part : { ...part, text: redacted }
+        }
+        return part
+      })
+      return { ...m, content: parts }
+    }
+    return m
+  })
 }
 
 function sseDone(wrappedRes, payload, tokens) { sse(wrappedRes, 'done', { ...payload, tokens }) }
+
+// D — Auto-save memory: extract useful facts from a completed run
+//     Also runs factExtractor (LLM-based) to distill project context into project_memory
+async function autoSaveMemory(userId, recentToolHistory, userText, { chatId = '', provider = null, history = [] } = {}) {
+  if (!userId || !recentToolHistory?.length) return
+  try {
+    const { rememberMemory } = await import('./semanticMemory.js')
+    const facts = []
+    // Remember successful deploy patterns
+    const deployOk = recentToolHistory.filter(h => h.ok && h.semantic?.isDeploy)
+    if (deployOk.length) {
+      const cmd = deployOk[deployOk.length - 1]?.semantic?.command || deployOk[deployOk.length - 1]?.tool || ''
+      if (cmd) facts.push(`Деплой сработал: ${cmd.slice(0, 120)}`)
+    }
+    // Remember what recovered after failures
+    const failures = recentToolHistory.filter(h => !h.ok)
+    const lastOk = [...recentToolHistory].reverse().find(h => h.ok)
+    if (failures.length >= 2 && lastOk && userText) {
+      facts.push(`Для задачи "${userText.slice(0, 80)}" помогло: ${lastOk.tool}`)
+    }
+    for (const fact of facts.slice(0, 3)) {
+      await rememberMemory(userId, fact)
+    }
+  } catch { /* best-effort */ }
+
+  // factExtractor: LLM-based extraction of project context facts
+  if (provider?.baseUrl && provider?.apiKey && history.length > 0 && chatId) {
+    try {
+      const { extractAndStore } = await import('./factExtractor.js')
+      const result = await extractAndStore({ userId, chatId, provider, history: history.slice(-6) })
+      // Also store extracted facts in project_memory (chat-scoped, fast recall)
+      if (result?.facts?.length && chatId) {
+        for (const fact of result.facts) {
+          const m = fact.match(/^(?:Fact|Decision):\s*(.+)$/i)
+          const text = m ? m[1].trim() : fact.trim()
+          if (text.length > 10) {
+            const key = text.slice(0, 40).replace(/[^a-zA-Z0-9_а-яА-Я\s]/g, '').trim().replace(/\s+/g, '_').toLowerCase()
+            if (key) upsertProjectFact(userId, chatId, key, text)
+          }
+        }
+      }
+    } catch { /* best-effort */ }
+  }
+}
 
 export const __test = {
   askedForExplicitLocalTest,
@@ -1529,4 +1958,9 @@ export const __test = {
   hasSuccessfulLocalTest,
   needsVerificationSinceLastEdit,
   obligationCompletionStatus,
+  callFingerprint,
+  callFamily,
+  isStuckLoop,
+  summarizeCallArgsForDigest,
+  redactConvo,
 }

@@ -26,13 +26,14 @@ function repoToUrl(repo = '') {
 function repoToDir(repo = '') { return safeId(repoSlug(repo).split('/').pop() || repo || 'project') }
 
 function run(command, { cwd = WORKSPACE_ROOT, timeoutMs = 5 * 60_000 } = {}) {
+  const RUN_LIMIT = 4 * 1024 * 1024  // OPO-2: 4 MB per stream
   return new Promise((resolve) => {
     const proc = spawn('sh', ['-lc', command], { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
-    const out = []; const err = []
+    const out = []; const err = []; let outLen = 0; let errLen = 0
     let killed = false
     const timer = setTimeout(() => { killed = true; try { proc.kill('SIGKILL') } catch { /* gone */ } }, timeoutMs)
-    proc.stdout.on('data', (c) => out.push(c))
-    proc.stderr.on('data', (c) => err.push(c))
+    proc.stdout.on('data', (c) => { if (outLen < RUN_LIMIT) { out.push(c); outLen += c.length } })
+    proc.stderr.on('data', (c) => { if (errLen < RUN_LIMIT) { err.push(c); errLen += c.length } })
     proc.on('close', (code) => { clearTimeout(timer); resolve({ exitCode: killed ? 124 : (code ?? 1), stdout: clip(Buffer.concat(out).toString()), stderr: clip(Buffer.concat(err).toString()) + (killed ? '\n[killed]' : '') }) })
     proc.on('error', (e) => { clearTimeout(timer); resolve({ exitCode: 1, stdout: '', stderr: e.message }) })
   })
@@ -124,6 +125,13 @@ Generated: ${new Date().toISOString()}
 
 export async function analyzeOperatorProject({ userId = '', repo = '', id = '', name = '', localPath = '', productionPath = '', defaultBranch = 'main', generateRunbook = true } = {}) {
   if (!repo) throw new Error('repo is required')
+  // OPO-1: SSRF guard — block git clone to internal/loopback hosts
+  const repoUrlStr = repoToUrl(repo)
+  try {
+    const { isBlockedHost } = await import('./ssrf.js')
+    const _u = new URL(repoUrlStr)
+    if (isBlockedHost(_u.hostname)) throw new Error(`Blocked internal host in repo URL: ${_u.hostname}`)
+  } catch (e) { if (e.message?.includes('Blocked')) throw e /* re-throw SSRF errors */ }
   const projectId = safeId(id || repoSlug(repo).replace('/', '-'))
   const projectName = name || repoSlug(repo).split('/').pop() || projectId
   const target = localPath || path.join(PROJECTS_ROOT, repoToDir(repo))

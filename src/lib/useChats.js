@@ -13,6 +13,7 @@ import { sendChat, summarizeConversation } from './api.js'
 import { resolveActive } from './settings.js'
 import haptics from './haptics.js'
 import { workspaceApi } from './workspace.js'
+import { sanitizeAssistantDelta, sanitizeAssistantFinal } from './sanitizeAgentText.js'
 import { createJob, createAgentJob, detectLongJobType, cancelJob } from './jobs.js'
 
 const SUMMARY_TRIGGER_MESSAGES = 14
@@ -313,12 +314,19 @@ export function useChats(settings) {
       abortRef.current.abort()
       abortRef.current = null
     }
+    
+    // #43 FIX: Explicitly notify server to reset the agent run
+    if (activeId) {
+      fetch(`/api/agent/runs/${encodeURIComponent(activeId)}/reset`, { method: 'POST', credentials: 'include' })
+        .catch(e => console.warn('Failed to reset server agent run:', e))
+    }
+
     setActiveJobs((prev) => {
       prev.forEach((id) => { void cancelJob(id).catch(() => {}) })
       return []
     })
     setIsStreaming(false)
-  }, [])
+  }, [activeId])
 
   // Отправка сообщения. text + attachments[] + overrideModel (для авторежима)
   const sendMessage = useCallback(
@@ -577,7 +585,7 @@ export function useChats(settings) {
         assistantFlushTimer = setTimeout(() => {
           assistantFlushTimer = null
           flushAssistantBuffer()
-        }, 60)
+        }, 80)  // 80ms — склеиваем мелкие чанки от DeepSeek в одно обновление React
       }
       const flushAssistantBuffer = () => {
         if (assistantFlushTimer) clearTimeout(assistantFlushTimer)
@@ -585,7 +593,12 @@ export function useChats(settings) {
         const chunk = assistantDeltaBuffer
         assistantDeltaBuffer = ''
         if (!chunk) return
-        patchAssistant((m) => ({ ...m, content: (m.content || '') + chunk }))
+        // Санитизация: убираем сырой XML tool_call и thinking из потока.
+        // Помечаем сообщение как "грязное" чтобы финальный render тоже прошёл
+        // через sanitizeAssistantFinal (для надёжности на медленных стримах).
+        const { text: clean } = sanitizeAssistantDelta(chunk)
+        if (!clean) return
+        patchAssistant((m) => ({ ...m, content: (m.content || '') + clean, streamedRaw: true }))
       }
 
       const scheduleThinkingFlush = () => {
@@ -706,6 +719,8 @@ export function useChats(settings) {
             history: llmHistory,
             extraSystem: extraSystemParts.join('\n\n'),
             provider: {
+              keyId:        active.keyId || '',
+              useStoredSecret: Boolean(active.useStoredSecret),
               baseUrl:      active.baseUrl,
               apiKey:       active.apiKey,
               authType:     active.authType || 'bearer',
@@ -802,6 +817,21 @@ export function useChats(settings) {
                   // Small haptic so the user can feel progress in long
                   // agent runs even without looking at the screen.
                   haptics.tap()
+                  break
+                case 'file_change':
+                  patchAssistant((m) => ({
+                    ...m,
+                    fileChanges: [
+                      ...(m.fileChanges || []),
+                      { step: data.step, sub: data.sub, name: data.name, events: data.events || [], summary: data.summary || null, at: Date.now() },
+                    ],
+                    toolCalls: (m.toolCalls || []).map((tc) =>
+                      tc.step === data.step && (tc.sub === data.sub || (data.sub == null && tc.name === data.name))
+                        ? { ...tc, fileChanges: data.events || [], fileChangeSummary: data.summary || null }
+                        : tc,
+                    ),
+                  }))
+                  if ((data.events || []).length) setWorkspaceRevision(Date.now())
                   break
                 case 'tool_diagnostic':
                   // Inline syntax-check failed after a write/edit — flag
@@ -909,7 +939,9 @@ export function useChats(settings) {
                   // Snap to the canonical final string (may differ from
                   // the concatenated deltas by 1-2 chars due to chunk-split).
                   flushAllStreamBuffers()
-                  patchAssistant({ content: data.text || '', pending: false })
+                  // Финальная санитизация: на случай если XML проскочил через стрим
+                  // (например, закрывающий тег пришёл в последнем чанке).
+                  patchAssistant({ content: sanitizeAssistantFinal(data.text || ''), pending: false })
                   saveGeneratedMediaToWorkspace(chatId, data.text || '').catch(() => {})
                   haptics.success()
                   break
@@ -950,6 +982,10 @@ export function useChats(settings) {
                     pending: false,
                     tokens: data.tokens || m.tokens,
                     finishReason: data.reason || m.finishReason,
+                    // Approach 7 — Trust UX. Stash the structured finalStatus
+                    // on the message so MessageList can render an
+                    // evidence block (changed files / tests / blockers).
+                    finalStatus: data.finalStatus || m.finalStatus || null,
                   }))
                   resolve()
                   break
@@ -971,9 +1007,6 @@ export function useChats(settings) {
         }
       } finally {
         cancelAllStreamBuffers()
-        if (abortRef.current === controller) {
-          abortRef.current = null
-        }
         setIsStreaming(false)
       }
     },
@@ -1038,6 +1071,8 @@ export function useChats(settings) {
           prompt: trimmed,
           title: deriveTitle(trimmed) || 'Фоновый агент',
           extraSystem: extraSystemParts.join('\n\n'),
+          keyId:        active.keyId || '',
+          useStoredSecret: Boolean(active.useStoredSecret),
           baseUrl:      active.baseUrl,
           apiKey:       active.apiKey,
           authType:     active.authType || 'bearer',

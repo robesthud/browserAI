@@ -58,7 +58,7 @@ export default function DeepSeekAdmin() {
     // for the admin dashboard. The eslint rule warns about cascading
     // renders but in this case the cascade is exactly what we want
     // (server state -> React state).
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+     
     load()
     const id = setInterval(load, 30_000)
     return () => clearInterval(id)

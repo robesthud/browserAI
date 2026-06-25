@@ -23,11 +23,14 @@
  * fall back to JSON-in-text there.
  */
 import { isDeepSeekWebUrl, handleDeepSeekWebChat } from './deepseekWeb.js'
+import { isZaiWebUrl, handleZaiWebChat } from './zaiWeb.js'
 import { buildSessionHeaders } from './stealthHeaders.js'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function joinUrl(base, path) {
-  return String(base).replace(/\/+$/, '') + '/' + String(path).replace(/^\/+/, '')
+  const b = String(base || '').trim()
+  if (!b) throw new Error('joinUrl: baseUrl is empty — provider not configured')
+  return b.replace(/\/+$/, '') + '/' + String(path).replace(/^\/+/, '')
 }
 
 function safeJsonParse(text) {
@@ -43,7 +46,7 @@ function normalizeHeaders(headers) {
 }
 
 export async function fetchViaProxy({ url, method = 'GET', headers = {}, body = null, proxyUrl = '', proxySecret = '', timeoutMs = 120_000, signal = null }) {
-  const effSignal = signal || AbortSignal.timeout(timeoutMs)
+  const effSignal = signal || AbortSignal.timeout(Math.max(1000, Number(timeoutMs) || 120_000))
   if (!proxyUrl) {
     const init = { method, headers: normalizeHeaders(headers), signal: effSignal }
     if (body && method !== 'GET' && method !== 'HEAD') {
@@ -122,7 +125,7 @@ async function callDeepSeekManaged({ baseUrl, apiKey, model, messages, extraHead
   })
 
   if (statusCode >= 400 || !captured) {
-    throw new Error(`DeepSeek returned ${statusCode}: ${JSON.stringify(captured)?.slice(0, 400)}`)
+    throw new Error(`DeepSeek returned ${statusCode}: ${JSON.stringify(captured).slice(0, 400)}`)
   }
   const text = captured?.choices?.[0]?.message?.content || ''
   return { text: String(text || ''), toolCalls: [], usage: null }
@@ -145,7 +148,7 @@ function normalizeOpenAIMessages(messages = []) {
         // Merge extra system into existing system
         const target = out[0]
         if (typeof target.content === 'string' && typeof m.content === 'string') {
-          target.content += '\n\n' + m.content
+          target.content += '\n\n' + String(m.content || '')
         } else {
           // If either is complex, merge as parts
           const tParts = Array.isArray(target.content) ? target.content : [{ type: 'text', text: String(target.content || '') }]
@@ -223,9 +226,18 @@ async function callOpenAICompatible({
   }
 
   const url = joinUrl(baseUrl, 'chat/completions')
+  const safeUrl = url.replace(/([?&]key=)[^&]+/gi, '$1<redacted>')
   const proxyUrl = process.env.CF_PROXY_URL || ''
   const proxySecret = process.env.CF_PROXY_SECRET || ''
-  const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('browserai-ollama') || baseUrl.includes('ollama')
+  // isLocal: точная проверка hostname чтобы 'exampleollama.com' не матчился
+  const isLocal = (() => {
+    try {
+      const _h = new URL(baseUrl).hostname
+      return _h === 'localhost' || _h === '127.0.0.1' || _h === 'browserai-ollama' || _h.endsWith('.ollama') || _h === 'ollama'
+    } catch {
+      return baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1')
+    }
+  })()
   const r = await fetchViaProxy({
     url,
     method: 'POST',
@@ -238,7 +250,7 @@ async function callOpenAICompatible({
 
   const raw = await r.text()
   if (!r.ok) {
-    throw new Error(`Provider HTTP ${r.status} from ${url}: ${raw.slice(0, 400)}`)
+    throw new Error(`Provider HTTP ${r.status} from ${safeUrl}: ${raw.slice(0, 400)}`)
   }
 
   const data = safeJsonParse(raw)
@@ -251,11 +263,7 @@ async function callOpenAICompatible({
 
   // #13 FIX: Extract reasoning/thinking if present (DeepSeek R1 / OpenAI o1)
   let text = typeof msg.content === 'string' ? msg.content : ''
-  if (msg.reasoning_content) {
-    // We prepending reasoning to the text if it's not already there,
-    // though the agent loop prefers a separate field.
-    // For simplicity, we just return the text but could store reasoning separately.
-  }
+  const reasoning = msg.reasoning_content || msg.reasoning || ''
 
   // OpenAI native tool calls: [{id, type:"function", function:{name, arguments}}]
   const nativeToolCalls = Array.isArray(msg.tool_calls)
@@ -271,7 +279,7 @@ async function callOpenAICompatible({
 
   return {
     text,
-    reasoning: msg.reasoning_content || msg.reasoning || '',
+    reasoning,
     toolCalls: nativeToolCalls,
     // Pass through provider-side token accounting so the agent loop can
     // surface running cost in the UI ('1.2k → 800 tok ≈ $0.003').
@@ -306,6 +314,9 @@ function toAnthropicContent(content) {
         else out.push({ type: 'text', text: '[image_url omitted: Anthropic official API accepts base64 data URLs only here]' })
       } else if (part?.type === 'image' && part.source) {
         out.push(part)
+      } else if (part?.type && !['text', 'image_url', 'image'].includes(part.type)) {
+        // Passthrough pre-built Anthropic blocks (tool_result, tool_use, etc.)
+        out.push(part)
       }
     }
     return out.length ? out : [{ type: 'text', text: '' }]
@@ -320,9 +331,9 @@ function toAnthropicBlockArray(content) {
 
 function toAnthropicTools(tools = []) {
   return tools.map(t => ({
-    name: t.function.name,
-    description: t.function.description || '',
-    input_schema: t.function.parameters || { type: 'object', properties: {} }
+    name: t?.function?.name || t?.name || 'unknown_tool',
+    description: t?.function?.description || t?.description || '',
+    input_schema: t?.function?.parameters || { type: 'object', properties: {} }
   }))
 }
 
@@ -334,11 +345,16 @@ function toAnthropicMessages(messages = []) {
     if (m.role === 'tool') {
       const block = {
         type: 'tool_result',
-        tool_use_id: m.tool_call_id,
+        // tool_use_id обязателен для Anthropic — fallback на name или 'unknown'
+        tool_use_id: m.tool_call_id || m.name || 'unknown',
         content: String(m.content || '')
       }
       const prev = out[out.length - 1]
       if (prev?.role === 'user') {
+        // prev.content может быть строкой — преобразуем в массив блоков
+        if (!Array.isArray(prev.content)) {
+          prev.content = [{ type: 'text', text: String(prev.content || '') }]
+        }
         prev.content.push(block)
       } else {
         out.push({ role: 'user', content: [block] })
@@ -356,7 +372,7 @@ function toAnthropicMessages(messages = []) {
     if (m.tool_calls && Array.isArray(m.tool_calls)) {
       for (const tc of m.tool_calls) {
         let input = {}
-        try { input = JSON.parse(tc.function.arguments) } catch { /* ignore */ }
+        try { input = JSON.parse(tc?.function?.arguments || '{}') } catch { /* ignore */ }
         blocks.push({
           type: 'tool_use',
           id: tc.id,
@@ -372,6 +388,10 @@ function toAnthropicMessages(messages = []) {
 
     const prev = out[out.length - 1]
     if (prev?.role === role) {
+      // Гарантируем что prev.content — массив блоков
+      if (!Array.isArray(prev.content)) {
+        prev.content = [{ type: 'text', text: String(prev.content || '') }]
+      }
       if (blocks.length > 0 && blocks[0].type === 'text') {
          prev.content.push({ type: 'text', text: '\n\n' })
       }
@@ -384,12 +404,16 @@ function toAnthropicMessages(messages = []) {
 }
 
 async function callAnthropicOfficial({
-  baseUrl, apiKey, model, messages, temperature = 0.7, tools
+  baseUrl, apiKey, model, messages, temperature = 0.7, tools, signal
 }) {
   const { system, rest } = splitSystemMessages(messages)
+  const anthropicMessages = toAnthropicMessages(rest)
+  if (anthropicMessages.length === 0) {
+    throw new Error('callAnthropicOfficial: no user/assistant messages after filtering system — Anthropic requires at least one message')
+  }
   const body = {
     model,
-    messages: toAnthropicMessages(rest),
+    messages: anthropicMessages,
     max_tokens: Number(process.env.BROWSERAI_MAX_OUTPUT_TOKENS || 4096),
     temperature,
   }
@@ -413,6 +437,7 @@ async function callAnthropicOfficial({
     proxyUrl,
     proxySecret,
     timeoutMs: 120_000,
+    signal,
   })
   const raw = await r.text()
   if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${raw.slice(0, 500)}`)
@@ -424,12 +449,16 @@ async function callAnthropicOfficial({
   const nativeToolCalls = Array.isArray(data.content)
     ? data.content
         .filter((b) => b?.type === 'tool_use' && b?.name)
-        .map((b) => ({
-          id: b.id || `${b.name}-${Math.random().toString(36).slice(2)}`,
-          name: b.name,
-          args: b.input || {},
-          raw: { id: b.id || `${b.name}-${Math.random().toString(36).slice(2)}`, type: 'function', function: { name: b.name, arguments: JSON.stringify(b.input || {}) } },
-        }))
+        .map((b) => {
+          // Вычисляем id один раз — raw.id должен совпадать с id для history replay
+          const tcId = b.id || `${b.name}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+          return {
+            id: tcId,
+            name: b.name,
+            args: b.input || {},
+            raw: { id: tcId, type: 'function', function: { name: b.name, arguments: JSON.stringify(b.input || {}) } },
+          }
+        })
     : []
   return {
     text,
@@ -447,9 +476,13 @@ async function callAnthropicOfficialStream({
   tools, onTextDelta, onToolCallDelta, onUsage,
 }) {
   const { system, rest } = splitSystemMessages(messages)
+  const anthropicStreamMessages = toAnthropicMessages(rest)
+  if (anthropicStreamMessages.length === 0) {
+    throw new Error('callAnthropicOfficialStream: no messages after filtering system — Anthropic requires at least one message')
+  }
   const body = {
     model,
-    messages: toAnthropicMessages(rest),
+    messages: anthropicStreamMessages,
     max_tokens: Number(process.env.BROWSERAI_MAX_OUTPUT_TOKENS || 4096),
     temperature,
     stream: true,
@@ -500,7 +533,7 @@ async function callAnthropicOfficialStream({
     
     if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
       currentTool = {
-        id: evt.content_block.id,
+        id: evt.content_block.id || `${evt.content_block.name || 'tool'}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,6)}`,
         name: evt.content_block.name,
         inputArgs: ''
       }
@@ -670,8 +703,9 @@ async function callGeminiOfficial({ baseUrl, apiKey, model, messages, temperatur
     },
   }
   if (system) body.systemInstruction = { parts: [{ text: system }] }
-  if (tools && tools.length > 0) {
-    body.tools = toGeminiTools(tools)
+  if (!body.contents.length) {
+    // Gemini требует хотя бы одно сообщение — добавляем пустой placeholder
+    body.contents = [{ role: 'user', parts: [{ text: '' }] }]
   }
   if (tools && tools.length > 0) {
     body.tools = toGeminiTools(tools)
@@ -679,25 +713,28 @@ async function callGeminiOfficial({ baseUrl, apiKey, model, messages, temperatur
   const url = `${joinUrl(baseUrl, normalizeGeminiModel(model) + ':generateContent')}?key=${encodeURIComponent(apiKey)}`
   const proxyUrl = process.env.CF_PROXY_URL || ''
   const proxySecret = process.env.CF_PROXY_SECRET || ''
-  console.log('[Gemini] URL:', url, 'body keys:', Object.keys(body), 'proxyUrl:', proxyUrl ? 'yes' : 'no')
   const r = await fetchViaProxy({ url, method: 'POST', headers: { 'Content-Type': 'application/json' }, body, proxyUrl, proxySecret, timeoutMs: 120_000 })
-  console.log('[Gemini] Response status:', r.status)
   const raw = await r.text()
-  console.log('[Gemini] Raw response:', raw.slice(0, 400))
   if (!r.ok) throw new Error(`Gemini HTTP ${r.status}: ${raw.slice(0, 500)}`)
   const data = safeJsonParse(raw)
   if (!data) throw new Error(`Gemini returned non-JSON: ${raw.slice(0, 400)}`)
   const text = []
   const nativeToolCalls = []
+  // Проверяем блокировку по safety фильтру
+  const _finishReason = data?.candidates?.[0]?.finishReason
+  const _blockReason = data?.promptFeedback?.blockReason
+  if (_blockReason) text.push(`[Gemini blocked: ${_blockReason}]`)
+  else if (_finishReason && !['STOP','MAX_TOKENS'].includes(_finishReason)) text.push(`[Gemini stopped: ${_finishReason}]`)
   if (data?.candidates?.[0]?.content?.parts) {
     for (const p of data.candidates[0].content.parts) {
       if (p.text) text.push(p.text)
       if (p.functionCall) {
+        const _tcId = p.functionCall.name + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7)
         nativeToolCalls.push({
-          id: p.functionCall.name + '-' + Math.random().toString(36).slice(2),
+          id: _tcId,
           name: p.functionCall.name,
           args: p.functionCall.args,
-          raw: { id: p.functionCall.name + '-' + Math.random().toString(36).slice(2), type: 'function', function: { name: p.functionCall.name, arguments: JSON.stringify(p.functionCall.args) } }
+          raw: { id: _tcId, type: 'function', function: { name: p.functionCall.name, arguments: JSON.stringify(p.functionCall.args) } }
         })
       }
     }
@@ -723,13 +760,19 @@ async function callGeminiOfficialStream({
     },
   }
   if (system) body.systemInstruction = { parts: [{ text: system }] }
+  if (!body.contents.length) {
+    body.contents = [{ role: 'user', parts: [{ text: '' }] }]
+  }
   if (tools && tools.length > 0) {
     body.tools = toGeminiTools(tools)
   }
   const url = `${joinUrl(baseUrl, normalizeGeminiModel(model) + ':streamGenerateContent')}?alt=sse&key=${encodeURIComponent(apiKey)}`
   const proxyUrl = process.env.CF_PROXY_URL || ''
   const proxySecret = process.env.CF_PROXY_SECRET || ''
-  const r = await fetchViaProxy({ url, method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' }, body, proxyUrl, proxySecret, timeoutMs: 1_800_000, signal })
+  // Timeout: slightly above DEFAULT_DEADLINE_MS (20min) so we don't abort a running agent turn.
+  // Was 1_800_000 (30 min) — excessive and masks hung streams.
+  const _geminiStreamTimeout = Math.min(1_500_000, Math.max(300_000, Number(process.env.BROWSERAI_DEADLINE_MS || 1_200_000) + 180_000))
+  const r = await fetchViaProxy({ url, method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' }, body, proxyUrl, proxySecret, timeoutMs: _geminiStreamTimeout, signal })
   if (!r.ok) {
     const raw = await r.text().catch(() => '')
     throw new Error(`Gemini HTTP ${r.status}: ${raw.slice(0, 500)}`)
@@ -754,13 +797,21 @@ async function callGeminiOfficialStream({
         try { onTextDelta?.(p.text) } catch { /* ignore */ }
       }
       if (p.functionCall) {
+        const _stcId = p.functionCall.name + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7)
         nativeToolCalls.push({
-          id: p.functionCall.name + '-' + Math.random().toString(36).slice(2),
+          id: _stcId,
           name: p.functionCall.name,
           args: p.functionCall.args,
-          raw: { id: p.functionCall.name + '-' + Math.random().toString(36).slice(2), type: 'function', function: { name: p.functionCall.name, arguments: JSON.stringify(p.functionCall.args) } }
+          raw: { id: _stcId, type: 'function', function: { name: p.functionCall.name, arguments: JSON.stringify(p.functionCall.args) } }
         })
-        try { onToolCallDelta?.() } catch { /* ignore */ }
+        try {
+          onToolCallDelta?.({
+            idx: nativeToolCalls.length - 1,
+            id: _stcId,
+            name: p.functionCall.name,
+            argsBuf: JSON.stringify(p.functionCall.args || {}),
+          })
+        } catch { /* ignore */ }
       }
     }
     if (chunk.usageMetadata) {
@@ -772,18 +823,23 @@ async function callGeminiOfficialStream({
     }
   }
 
-  while (true) {
-    const { value, done } = await reader.read()
-    if (done) break
-    buf += dec.decode(value, { stream: true })
-    const blocks = buf.split('\n\n')
-    buf = blocks.pop() || ''
-    for (const block of blocks) {
-      for (const line of block.split('\n')) {
-        const trimmed = line.trim()
-        if (trimmed.startsWith('data:')) handleData(trimmed.slice(5).trim())
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      const blocks = buf.split('\n\n')
+      buf = blocks.pop() || ''
+      for (const block of blocks) {
+        for (const line of block.split('\n')) {
+          const trimmed = line.trim()
+          if (trimmed.startsWith('data:')) handleData(trimmed.slice(5).trim())
+        }
       }
     }
+  } catch (streamErr) {
+    try { reader.cancel() } catch { /* best-effort */ }
+    throw streamErr
   }
   if (usage) {
     try { onUsage?.(usage) } catch { /* ignore */ }
@@ -834,7 +890,14 @@ async function callOpenAICompatibleStream({
   const url = joinUrl(baseUrl, 'chat/completions')
   const proxyUrl = process.env.CF_PROXY_URL || ''
   const proxySecret = process.env.CF_PROXY_SECRET || ''
-  const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('browserai-ollama') || baseUrl.includes('ollama')
+  const isLocal = (() => {
+    try {
+      const _hs = new URL(baseUrl).hostname
+      return _hs === 'localhost' || _hs === '127.0.0.1' || _hs === 'browserai-ollama' || _hs.endsWith('.ollama') || _hs === 'ollama'
+    } catch {
+      return baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1')
+    }
+  })()
   const r = await fetchViaProxy({
     url,
     method: 'POST',
@@ -924,7 +987,7 @@ async function callOpenAICompatibleStream({
       let thinkingChunk = ''
       if (typeof delta.reasoning === 'string'        && delta.reasoning)         thinkingChunk += delta.reasoning
       else if (delta.reasoning && typeof delta.reasoning.content === 'string')   thinkingChunk += delta.reasoning.content
-      if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) thinkingChunk += delta.reasoning_content
+      else if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) thinkingChunk += delta.reasoning_content
       if (typeof delta.thinking === 'string'         && delta.thinking)          thinkingChunk += delta.thinking
       if (thinkingChunk) {
         try { onTextDelta?.(thinkingChunk, { kind: 'thinking' }) } catch { /* ignore */ }
@@ -944,10 +1007,14 @@ async function callOpenAICompatibleStream({
             || 0
           ),
         }
-        try { onUsage?.(usage) } catch { /* ignore */ }
+        // Не вызываем onUsage здесь — может прийти несколько chunks с usage.
+        // Финальный вызов onUsage — после while loop.
       }
     }
   }
+
+  // Вызываем onUsage один раз с финальными данными
+  if (usage) { try { onUsage?.(usage) } catch { /* ignore */ } }
 
   const toolCalls = [...toolByIdx.entries()]
     .sort(([a], [b]) => a - b)
@@ -979,7 +1046,7 @@ async function callOpenAICompatibleStream({
  * @returns {Promise<{text: string, toolCalls: Array}>}
  */
 export async function callLLM(opts) {
-  if (!opts?.baseUrl || !opts?.apiKey) {
+  if (!opts?.baseUrl?.trim() || !opts?.apiKey?.trim()) {
     throw new Error('callLLM: baseUrl and apiKey are required')
   }
   if (isDeepSeekWebUrl(opts.baseUrl)) {
@@ -1007,26 +1074,50 @@ export async function callLLM(opts) {
  * end to keep the caller's interface uniform.
  */
 export async function callLLMStream(opts) {
-  if (!opts?.baseUrl || !opts?.apiKey) {
+  if (!opts?.baseUrl?.trim() || !opts?.apiKey?.trim()) {
     throw new Error('callLLMStream: baseUrl and apiKey are required')
   }
   if (isDeepSeekWebUrl(opts.baseUrl)) {
-    const res = await callDeepSeekManaged({
-      baseUrl: opts.baseUrl, apiKey: opts.apiKey,
-      model: opts.model, messages: opts.messages,
-      extraHeaders: opts.extraHeaders || {},
+    // #41 FIX: Use enhanced handleDeepSeekWebChat for Agent Mode.
+    // Supports real-time callback-based streaming.
+    return await handleDeepSeekWebChat({
+      reqBody: {
+        baseUrl: opts.baseUrl,
+        apiKey: opts.apiKey,
+        authType: opts.authType || 'bearer',
+        authHeader: opts.authHeader || '',
+        extraHeaders: opts.extraHeaders || {},
+        model: opts.model,
+        messages: opts.messages,
+        temperature: opts.temperature,
+        stream: true,
+      },
+      onTextDelta: opts.onTextDelta,
     })
-    try { if (res?.text) opts.onTextDelta?.(res.text) } catch { /* ignore */ }
-    try { if (res?.usage) opts.onUsage?.(res.usage) } catch { /* ignore */ }
-    return res
+
+  if (isZaiWebUrl(opts.baseUrl)) {
+    return await handleZaiWebChat({
+      reqBody: {
+        baseUrl: opts.baseUrl,
+        model: opts.model,
+        messages: opts.messages,
+        temperature: opts.temperature,
+        stream: true,
+      },
+      onTextDelta: opts.onTextDelta,
+    })
   }
-  if (!supportsStreaming(opts.baseUrl)) {
-    // Fallback to non-streaming for providers whose SSE is broken or unsupported.
+
+  }
+  
+  const useStream = supportsStreaming(opts.baseUrl)
+  if (!useStream) {
     const res = await callLLM(opts)
-    try { if (res?.text) opts.onTextDelta?.(res.text) } catch { /* ignore */ }
-    try { if (res?.usage) opts.onUsage?.(res.usage) } catch { /* ignore */ }
+    if (res?.text) opts.onTextDelta?.(res.text)
+    if (res?.usage) opts.onUsage?.(res.usage)
     return res
   }
+  
   if (isAnthropicOfficialUrl(opts.baseUrl)) return callAnthropicOfficialStream(opts)
   if (isGoogleGenerativeNativeUrl(opts.baseUrl)) return callGeminiOfficialStream(opts)
   return callOpenAICompatibleStream(opts)
@@ -1038,9 +1129,15 @@ export async function callLLMStream(opts) {
  * the response and break streaming; we expose a hook to opt out via env.
  */
 export function supportsStreaming(baseUrl = '') {
-  if (isDeepSeekWebUrl(baseUrl)) return false // soft-fallback handled inside callLLMStream
-  if (isGoogleGenerativeNativeUrl(baseUrl)) return false // Gemini SSE via proxy is flaky; use non-streaming
-  if (String(process.env.BROWSERAI_DISABLE_STREAMING || '').trim()) return false
+  // B1 — DeepSeek Managed has a real SSE streaming path (handleDeepSeekWebChat with onTextDelta).
+  // callLLMStream already routes DeepSeek through it — just need supportsStreaming to return true
+  // so agentLoop uses callLLMStream instead of callLLM.
+  if (isDeepSeekWebUrl(baseUrl)) return process.env.DEEPSEEK_STREAMING !== '0'  // default: ON
+  // Gemini official API has working SSE stream (callGeminiOfficialStream), enable it
+  if (isGoogleGenerativeNativeUrl(baseUrl)) return process.env.GEMINI_STREAMING !== '0'  // default: ON
+  // Принимаем только '1' или 'true' — строка 'false' не должна отключать streaming
+  const _dsEnv = String(process.env.BROWSERAI_DISABLE_STREAMING || '').trim().toLowerCase()
+  if (_dsEnv === '1' || _dsEnv === 'true' || _dsEnv === 'yes') return false
   return true
 }
 
@@ -1055,7 +1152,9 @@ export function supportsNativeTools(baseUrl = '') {
   const u = String(baseUrl).toLowerCase()
   return (
     u.includes('api.openai.com')    ||
-    u.includes('open.bigmodel.cn')  ||
+    u.includes('open.bigmodel.cn') ||
+    u.includes(chat.z.ai) ||
+    u.includes(chatglm.cn)  ||
     u.includes('api.deepseek.com')  ||
     u.includes('api.groq.com')      ||
     u.includes('api.mistral.ai')    ||
@@ -1078,7 +1177,8 @@ export function getProviderKind(baseUrl = '') {
     host = u.hostname.toLowerCase()
     pathname = u.pathname.toLowerCase()
   } catch { return 'unknown' }
-  if (/chatgpt\.com|grok\.com|claude\.ai|perplexity\.ai|tongyi\.aliyun\.com/.test(host)) return 'browser-session'
+  // Точный матч корневых доменов — api.chatgpt.com и подобные не являются browser-session
+  if (/^(www\.)?chatgpt\.com$|^(www\.)?grok\.com$|^(www\.)?claude\.ai$|^(www\.)?perplexity\.ai$|^tongyi\.aliyun\.com$/.test(host)) return 'browser-session'
   if (pathname.includes('/openai') || pathname.includes('/v1') || pathname.includes('/api/v1')) return 'openai-compatible'
   return 'openai-compatible'
 }
@@ -1088,7 +1188,7 @@ function modelHasVision(model = '') {
 }
 
 function modelHasReasoning(model = '') {
-  return /reason|thinking|deepthink|r1|o1|o3|o4|qwq|grok-3-mini/i.test(String(model || ''))
+  return /reason|thinking|deepthink|\br1\b|\bo1\b|\bo3\b|\bo4\b|qwq|grok-3-mini/i.test(String(model || ''))
 }
 
 export function getProviderCapabilities(baseUrl = '', model = '') {
@@ -1123,7 +1223,7 @@ export function getProviderCapabilities(baseUrl = '', model = '') {
 }
 
 export function normalizeProviderError(error, { baseUrl = '', model = '', phase = 'llm-call' } = {}) {
-  const raw = error?.message || String(error || 'unknown provider error')
+  const raw = (error?.message || '').trim() || error?.toString?.() || String(error || 'unknown provider error')
   const statusMatch = raw.match(/(?:HTTP|status|ответил)\s*(\d{3})/i)
   const status = statusMatch ? Number(statusMatch[1]) : 0
   const lower = raw.toLowerCase()

@@ -49,7 +49,7 @@ export function renderIncidentReport(incident) {
       '### Recommended actions',
       ...(rca.recommendedActions || []).map((a) => `- ${a}`),
     ] : 'No RCA attached yet.'),
-    section('Details', mdCode(JSON.stringify(incident.details || {}, null, 2), 'json')),
+    section('Details', mdCode((() => { try { return JSON.stringify(incident.details || {}, null, 2) } catch { return '(circular)' } })(), 'json')),
   ].filter(Boolean).join('\n')
 }
 

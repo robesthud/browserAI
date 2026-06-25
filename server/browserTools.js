@@ -27,7 +27,8 @@ async function getBrowser() {
       executablePath,
       headless: true,
       args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
-    })
+    // C — clear cached rejected promise so next call retries the launch
+    }).catch((e) => { browserPromise = null; throw e })
   }
   return browserPromise
 }
@@ -77,6 +78,12 @@ async function saveScreenshot(page, relPath = '') {
 
 export async function browserOpen({ url, waitMs = 1500, screenshot = true } = {}) {
   if (!url || !/^https?:\/\//i.test(String(url))) throw new Error('url must start with http(s)')
+  // A — SSRF guard: block requests to internal/loopback addresses from Chromium
+  const { isBlockedHost } = await import('./ssrf.js')
+  try {
+    const u = new URL(String(url))
+    if (isBlockedHost(u.hostname)) throw new Error('URL points to a blocked internal host (SSRF guard)')
+  } catch (e) { if (e.message.includes('SSRF')) throw e }
   const browser = await getBrowser()
   const context = await browser.newContext({ viewport: { width: 1365, height: 900 }, ignoreHTTPSErrors: true })
   const page = await context.newPage()

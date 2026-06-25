@@ -35,3 +35,5 @@ diagnose.sh
 fix_and_restart.sh
 setup_server.sh
 cloud_init*.sh
+undefined/
+undefined/

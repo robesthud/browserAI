@@ -85,12 +85,16 @@ export async function runAgentSelfTest({ userId, chatId } = {}) {
 
   // 6. Workspace Scoping
   if (chatId) {
-    check('workspace_scoped_io', async () => {
-      const testFile = `self-test-${Date.now()}.txt`
-      await writeFileContent(testFile, 'hello')
-      const read = await readWorkspaceFile(testFile)
-      if (read.text !== 'hello') throw new Error('Read/Write failed')
-      await deleteItem(testFile)
+    await check('workspace_scoped_io', async () => {
+      const { withWorkspaceScope } = await import('./workspace.js')
+      await withWorkspaceScope(chatId, async () => {
+        // ST-2: must run inside scope so files land in the chat's workspace dir
+        const testFile = `self-test-${Date.now()}.txt`
+        await writeFileContent(testFile, 'hello')
+        const read = await readWorkspaceFile(testFile)
+        if (read.text !== 'hello') throw new Error('Read/Write failed')
+        await deleteItem(testFile)
+      })
     })
   }
 
@@ -102,7 +106,8 @@ export async function extendedSelfTest() {
   const { invokeTool } = await import('./agentTools.js')
   
   // Test new tools
-  const newTools = ['get_system_info', 'npm_install', 'run_tests', 'git_log', 'docker_ps', 'generate_password']
+  // ST-1: only test tools that actually exist in TOOLS registry
+  const newTools = ['npm_install', 'docker_ps', 'git_status', 'web_search', 'recall_facts']
   for (const tool of newTools) {
     try {
       const res = await invokeTool(tool, {})

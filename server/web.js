@@ -65,6 +65,7 @@ async function searchWeb(query, limit = 5) {
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; BrowserAI/1.0)',
       },
+      signal: AbortSignal.timeout(15_000),  // C — 15s timeout on web search
     })
 
     if (!response.ok) {
@@ -128,7 +129,14 @@ async function fetchWebPage(url) {
       throw new Error(`HTTP ${response.status}`)
     }
 
-    const html = await response.text()
+    // C — cap response size to 5 MB to prevent OOM on huge pages
+    const MAX_FETCH_BYTES = 5 * 1024 * 1024
+    const buf = await response.arrayBuffer()
+    if (buf.byteLength > MAX_FETCH_BYTES) {
+      const truncated = new TextDecoder().decode(buf.slice(0, MAX_FETCH_BYTES))
+      return { url, content: stripHtml(truncated) + '\n...[truncated: response exceeded 5 MB]' }
+    }
+    const html = new TextDecoder().decode(buf)
     return {
       url,
       content: stripHtml(html),

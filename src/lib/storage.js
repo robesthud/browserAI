@@ -35,14 +35,72 @@ function trimToolResult(name, result) {
   return result
 }
 
+// UI-side token masking — mirrors server's redactSecrets in agentLoop.js
+// Prevents tokens typed in chat from persisting in localStorage / DOM
+const TOKEN_PATTERNS = [
+  /github_pat_[A-Za-z0-9_]+/g,
+  /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
+  /\bsk-[A-Za-z0-9_-]{20,}/g,
+  /\bsk-ant-[A-Za-z0-9_-]{20,}/g,
+  /\bAIza[0-9A-Za-z_-]{20,}/g,
+  /\b\d{8,12}:[A-Za-z0-9_-]{30,}\b/g,
+  /\bfff[0-9a-f]{5}-[0-9a-f-]{30,}/g,  // Railway-style UUID tokens
+]
+function redactForStorage(text = '') {
+  let s = String(text || '')
+  for (const re of TOKEN_PATTERNS) {
+    s = s.replace(re, '<redacted>')
+    re.lastIndex = 0
+  }
+  return s
+}
+function redactMessageContent(m) {
+  if (!m || m.role !== 'user') return m
+  if (typeof m.content === 'string') {
+    const r = redactForStorage(m.content)
+    return r === m.content ? m : { ...m, content: r }
+  }
+  return m
+}
+
+const MAX_STORED_ATTACHMENT_TEXT = 32 * 1024
+const MAX_STORED_DATA_URL = 256 * 1024
+
+function trimAttachmentForStorage(a) {
+  if (!a || typeof a !== 'object') return a
+  const next = { ...a }
+
+  if (typeof next.text === 'string') {
+    const redacted = redactForStorage(next.text)
+    next.text = redacted.length > MAX_STORED_ATTACHMENT_TEXT
+      ? redacted.slice(0, MAX_STORED_ATTACHMENT_TEXT) + `\n... [attachment text clipped for local storage, ${redacted.length - MAX_STORED_ATTACHMENT_TEXT} chars omitted]`
+      : redacted
+    next.truncated = Boolean(next.truncated || redacted.length > MAX_STORED_ATTACHMENT_TEXT)
+  }
+
+  if (typeof next.dataUrl === 'string' && next.dataUrl.length > MAX_STORED_DATA_URL) {
+    // Keep metadata/path visible in chat history, but do not persist multi-MB
+    // base64 blobs in localStorage. The in-memory message still contains the
+    // dataUrl during the current send; only the saved history is compacted.
+    next.dataUrl = null
+    next.omittedFromStorage = true
+  }
+
+  return next
+}
+
 function trimChatsForStorage(chats) {
   return chats.map((c) => ({
     ...c,
     messages: (c.messages || []).map((m) => {
-      if (!Array.isArray(m.toolCalls) || m.toolCalls.length === 0) return m
+      const rm = redactMessageContent(m)  // mask tokens in user messages before localStorage
+      const base = Array.isArray(rm.attachments) && rm.attachments.length > 0
+        ? { ...rm, attachments: rm.attachments.map(trimAttachmentForStorage) }
+        : rm
+      if (!Array.isArray(base.toolCalls) || base.toolCalls.length === 0) return base
       return {
-        ...m,
-        toolCalls: m.toolCalls.map((tc) => ({
+        ...base,
+        toolCalls: base.toolCalls.map((tc) => ({
           ...tc,
           result: trimToolResult(tc.name, tc.result),
         })),

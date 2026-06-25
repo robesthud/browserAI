@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import {
   IconPaperclip,
   IconArrowRight,
@@ -123,7 +123,7 @@ function WorkspacePickerModal({ open, onClose, onPick }) {
   )
 }
 
-export default function Composer({
+const Composer = forwardRef(function Composer({
   hasMessages,
   isStreaming,
   onSend,
@@ -140,7 +140,7 @@ export default function Composer({
   onSlashSetModel,
   onSlashFetchCost,
   onFlash,
-}) {
+}, ref) {
   const [text, setText] = useState('')
   const [caret, setCaret] = useState(0)
   const [attachments, setAttachments] = useState([])
@@ -151,6 +151,27 @@ export default function Composer({
   const fileInputRef = useRef(null)
   const taRef = useRef(null)
   const isDev = devtoolsEnabled()
+
+
+  useImperativeHandle(ref, () => ({
+    setDraft(value = '') {
+      const next = String(value || '')
+      setText(next)
+      setCaret(next.length)
+      setAutocompleteOpen(false)
+      requestAnimationFrame(() => {
+        const el = taRef.current
+        if (!el) return
+        el.value = next
+        el.style.height = 'auto'
+        el.style.height = Math.min(el.scrollHeight, 220) + 'px'
+        el.focus()
+      })
+    },
+    focus() {
+      taRef.current?.focus()
+    },
+  }), [])
 
   const addFiles = async (fileList) => {
     if (!fileList || fileList.length === 0) return
@@ -175,6 +196,10 @@ export default function Composer({
   }
 
   const [isRecording, setIsRecording] = useState(false)
+  const [sttSupported] = useState(() => {
+    if (typeof window === 'undefined') return false
+    return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition)
+  })  // E — show mic only when STT available
   const recognitionRef = useRef(null)
   const baseTextRef = useRef('')
 
@@ -403,7 +428,7 @@ export default function Composer({
   }
 
   const wrapperClass = hasMessages
-    ? 'w-full border-t border-white/5 bg-graphite-900/80 px-2 pt-2 pb-2 backdrop-blur pb-safe md:px-4 md:pt-4 md:pb-4'
+    ? 'w-full border-t border-white/5 bg-graphite-900/80 px-2 pt-1.5 pb-1.5 backdrop-blur pb-safe md:px-4 md:pt-4 md:pb-4'
     : 'flex flex-1 flex-col items-center justify-center px-4 md:px-6'
 
   const innerClass = hasMessages ? 'mx-auto w-full max-w-2xl' : 'w-full max-w-2xl'
@@ -515,17 +540,18 @@ export default function Composer({
               }}
               rows={1}
               placeholder="Напишите задачу для агента…"
-              className="block w-full resize-none border-0 bg-transparent px-2 pb-2 pt-1 text-[14px]
+              className="block w-full resize-none border-0 bg-transparent px-2 pb-1.5 pt-1 text-[14px]
                          text-cream placeholder:text-cream-faint focus:outline-none focus:ring-0 md:pb-3 md:text-[15px]"
             />
 
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1 md:gap-2">
                 <button
+                  type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={busyFiles}
                   title={busyFiles ? 'Чтение…' : 'Прикрепить файл'}
-                  className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 text-[13px]
+                  className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-[13px]
                            text-cream-soft transition-colors hover:border-white/20 hover:bg-graphite-750 hover:text-cream
                            disabled:opacity-50 md:h-auto md:w-auto md:gap-2 md:px-3.5 md:py-2"
                 >
@@ -534,9 +560,10 @@ export default function Composer({
                 </button>
 
                 <button
+                  type="button"
                   onClick={() => setWorkspacePickerOpen(true)}
                   title="Прикрепить из Workspace"
-                  className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 text-[13px]
+                  className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-[13px]
                            text-cream-soft transition-colors hover:border-white/20 hover:bg-graphite-750 hover:text-cream
                            md:h-auto md:w-auto md:gap-2 md:px-3.5 md:py-2"
                 >
@@ -544,14 +571,17 @@ export default function Composer({
                   <span className="hidden md:inline">Из файлов</span>
                 </button>
 
+                {sttSupported && (
                 <button
+                  type="button"
                   onClick={toggleRecording}
-                  className={`grid h-9 w-9 place-items-center rounded-full border border-white/10 text-[13px] transition-colors md:h-[38px] md:w-[38px]
+                  className={`grid h-8 w-8 place-items-center rounded-full border border-white/10 text-[13px] transition-colors md:h-[38px] md:w-[38px]
                            ${isRecording ? 'bg-red-500/20 text-red-400 border-red-500/30 animate-pulse' : 'text-cream-soft hover:border-white/20 hover:bg-graphite-750 hover:text-cream'}`}
-                  title={isRecording ? "Остановить запись" : "Голосовой ввод"}
+                  title={isRecording ? 'Остановить запись' : 'Голосовой ввод (🎤)'}
                 >
                   <IconMic />
                 </button>
+                )}
               </div>
 
               <input
@@ -568,8 +598,9 @@ export default function Composer({
               <div className="flex items-center gap-2">
                 {isDev && !isStreaming && onSendBackground && (
                   <button
+                  type="button"
                     onClick={() => submit({ background: true })}
-                    disabled={!text.trim() && attachments.length === 0}
+                    disabled={isSubmitting || (!text.trim() && attachments.length === 0)}
                     className="hidden items-center gap-1.5 rounded-full border border-amber-300/30 bg-amber-400/10 px-3 py-2 text-[12px] text-amber-100 transition-colors hover:bg-amber-400/20 disabled:opacity-40 md:flex"
                     title="Devtools: запустить агентскую задачу в фоне"
                   >
@@ -579,16 +610,19 @@ export default function Composer({
                 )}
                 {isDev && !isStreaming && onSendBackground && (
                   <button
+                  type="button"
                     onClick={() => submit({ background: true })}
-                    disabled={!text.trim() && attachments.length === 0}
-                    className="grid h-9 w-9 place-items-center rounded-full border border-amber-300/30 bg-amber-400/10 text-amber-100 transition-colors hover:bg-amber-400/20 disabled:opacity-40 md:hidden"
+                    disabled={isSubmitting || (!text.trim() && attachments.length === 0)}
+                    className="grid h-8 w-8 place-items-center rounded-full border border-amber-300/30 bg-amber-400/10 text-amber-100 transition-colors hover:bg-amber-400/20 disabled:opacity-40 md:hidden"
                     title="Devtools: запустить в фоне"
                   >↗</button>
                 )}
                 {isStreaming ? (
                   <button
+                    type="button"
                     onClick={onStop}
-                    className="grid h-9 w-9 place-items-center rounded-full bg-cream text-graphite-900
+                    aria-label="Остановить генерацию"
+                    className="grid h-8 w-8 place-items-center rounded-full bg-cream text-graphite-900
                                transition-transform hover:scale-105 active:scale-95"
                     title="Остановить"
                   >
@@ -596,13 +630,15 @@ export default function Composer({
                   </button>
                 ) : (
                   <button
+                  type="button"
                     onClick={submit}
-                    disabled={!text.trim() && attachments.length === 0}
-                    className="grid h-9 w-9 place-items-center rounded-full bg-cream text-graphite-900
+                    disabled={isSubmitting || (!text.trim() && attachments.length === 0)}
+                    className="grid h-8 w-8 place-items-center rounded-full bg-cream text-graphite-900
                                transition-transform hover:scale-105 active:scale-95 disabled:opacity-40 disabled:hover:scale-100"
-                    title="Отправить (Enter)"
+                    title={isSubmitting ? 'Отправляю…' : 'Отправить (Enter)'}
+                    aria-label={isSubmitting ? 'Отправляю сообщение' : 'Отправить сообщение'}
                   >
-                    <IconArrowRight />
+                    {isSubmitting ? <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-graphite-900/30 border-t-graphite-900" /> : <IconArrowRight />}
                   </button>
                 )}
               </div>
@@ -625,4 +661,6 @@ export default function Composer({
       />
     </>
   )
-}
+})
+
+export default Composer

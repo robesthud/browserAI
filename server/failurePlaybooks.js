@@ -19,6 +19,8 @@ export function classifyToolFailure({ tool = '', error = '', result = null, args
   if (/fatal:|git@github|could not read from remote|permission denied \(publickey\)|authentication failed|unable to access|rejected|non-fast-forward/i.test(raw)) add('git_failure', 'high', 'Git failure')
   if (/401|403|unauthorized|forbidden|invalid token|bad credentials|permission denied/i.test(raw)) add('credentials_or_permissions', 'high', 'Credentials/permissions')
   if (/docker|container|compose|health|connection refused|502|503|504|unhealthy|exited \(|restart/i.test(raw) || /docker|curl .*health|deploy/i.test(command)) add('deploy_or_runtime_failure', 'high', 'Deploy/runtime failure')
+  if (/EACCES|permission denied|exit.*243|failed to build due to|railway.*error|railway up/i.test(raw) && /railway|vercel|netlify|fly\.io|render|digitalocean/i.test(raw)) add('platform_cli_failure', 'high', 'Platform CLI failed — use API instead')
+  if (/git.*push.*failed|rejected.*remote|fatal.*push|authentication failed.*push|could not read from remote/i.test(raw)) add('git_push_failure', 'high', 'Git push failed')
   if (/timeout|timed out|killed after|exitCode":\s*124|\[killed/i.test(raw)) add('timeout', 'medium', 'Timeout/long command')
   if (/enoent|no such file|not found/i.test(raw)) add('path_not_found', 'medium', 'Path not found')
   if (!categories.length) add('generic_failure', 'medium', 'Generic tool failure')
@@ -78,6 +80,17 @@ export function buildFailurePlaybook(classification = {}) {
   if (ids.has('timeout')) {
     add('shell_background_start', { command: classification.command || '<long command>' }, 'Move long-running command to background and poll logs instead of blocking')
     add('shell_background_read', { task_id: '<task id>' }, 'Read background command output')
+  }
+  if (ids.has('platform_cli_failure')) {
+    add('bash', { command: 'echo "Using API instead of CLI"' }, 'Platform CLI failed — switch to API approach')
+    add('bash', { command: 'git status --short && git remote -v' }, 'Check git state before pushing to GitHub')
+    add('bash', { command: 'git remote set-url origin https://TOKEN@github.com/USER/REPO.git && git push origin main' }, 'Push to GitHub with HTTPS token — replace TOKEN/USER/REPO')
+    add('bash', { command: 'curl -s -X POST https://backboard.railway.app/graphql/v2 -H "Authorization: Bearer RAILWAY_TOKEN" -H "Content-Type: application/json" -d \'{"query":"{ me { workspaces { id name } } "}\'' }, 'Connect platform via API after GitHub push — see AGENTS.md for full Railway API sequence')
+  }
+  if (ids.has('git_push_failure')) {
+    add('bash', { command: 'git remote -v && git status --short' }, 'Check current remote and branch state')
+    add('bash', { command: 'git remote set-url origin https://TOKEN@github.com/USER/REPO.git' }, 'Switch to HTTPS with token — replace TOKEN/USER/REPO with real values from user')
+    add('bash', { command: 'git push -f origin main 2>&1' }, 'Retry push with token-based HTTPS remote')
   }
   if (ids.has('credentials_or_permissions')) {
     add('ask_user', { question: 'Нужен актуальный доступ/подтверждение для продолжения. Обновить credentials или пропустить этот шаг?', options: ['Обновить доступ', 'Пропустить'] }, 'Credentials/permissions cannot be safely guessed')

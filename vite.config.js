@@ -6,8 +6,7 @@ export default defineConfig({
   base: '/',
   build: {
     // Android System WebView on some devices can lag behind Chrome.
-    // Emit a more compatible bundle to avoid a blank screen in the APK WebView.
-    target: 'es2015',
+    // JS target is controlled by @vitejs/plugin-legacy.targets below.
     cssTarget: 'chrome61',
   },
   plugins: [

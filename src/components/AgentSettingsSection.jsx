@@ -32,11 +32,15 @@ function policyMatchesPreset(p, preset) {
   return Object.keys(preset.values).every((k) => p[k] === preset.values[k])
 }
 
+import McpMarketplace from './McpMarketplace.jsx'
+import MemoryPanel from './MemoryPanel.jsx'
+
 export default function AgentSettingsSection() {
 
   // ── Approval policy ─────────────────────────────────────────────────
   const [policy, setPolicy] = useState(null)
   const [savingPolicy, setSavingPolicy] = useState(false)
+  const [maxSteps, setMaxSteps] = useState(0)  // 0 = auto (dynamic)
   const [selfTest, setSelfTest] = useState(null)
   const [selfTestRunning, setSelfTestRunning] = useState(false)
   useEffect(() => {
@@ -44,7 +48,21 @@ export default function AgentSettingsSection() {
       .then((r) => r.ok ? r.json() : null)
       .then((j) => { if (j?.policy) setPolicy(j.policy) })
       .catch(() => { /* ignore */ })
+    // Load max steps setting (BUG-6: use /api/params directly, graceful on 403)
+    fetch('/api/params', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(j => { if (j?.params?.maxSteps !== undefined) setMaxSteps(j.params.maxSteps || 0) })
+      .catch(() => { /* non-owner: stays at 0 = auto */ })
   }, [])
+
+  const saveMaxSteps = async (val) => {
+    setMaxSteps(val)
+    try {
+      await fetch('/api/params', { method: 'PUT', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxSteps: val }) })
+    } catch { /* best-effort */ }
+  }
 
   const savePolicy = async (nextPolicy = policy) => {
     if (!nextPolicy) return
@@ -331,6 +349,44 @@ export default function AgentSettingsSection() {
             className="rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-cream-soft hover:bg-graphite-750 hover:text-cream disabled:opacity-50"
           >{restarting ? 'Перезапуск…' : '↻ применить'}</button>
         </div>
+        {/* Max Steps slider */}
+        <div className="rounded-xl border border-white/10 bg-graphite-900/30 p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[12px] font-medium text-cream">⚡ Максимум шагов агента</span>
+            <span className="rounded-full border border-white/10 px-2 py-0.5 text-[11px] text-cream-faint">
+              {maxSteps === 0 ? 'Авто' : maxSteps}
+            </span>
+          </div>
+          <input
+            type="range" min={0} max={100} step={5}
+            value={maxSteps}
+            onChange={e => saveMaxSteps(Number(e.target.value))}
+            className="w-full h-1.5 rounded-lg appearance-none cursor-pointer accent-emerald-400 bg-graphite-700"
+          />
+          <div className="flex justify-between text-[10px] text-cream-faint">
+            <span>Авто (по задаче)</span>
+            <span>100 шагов</span>
+          </div>
+          <p className="text-[10px] text-cream-faint/70">
+            0 = автоматически (простые задачи 6, деплой 60, код 50). Слайдер перекрывает авто-значение.
+          </p>
+        </div>
+
+        {/* Memory Panel */}
+        <div className="rounded-xl border border-white/10 bg-graphite-900/30 p-3">
+          <MemoryPanel />
+        </div>
+
+        {/* Sprint 5C — MCP Marketplace toggle */}
+        <details className="mb-2 rounded-lg border border-blue-500/20 bg-blue-500/5">
+          <summary className="cursor-pointer px-3 py-2 text-[12px] font-medium text-blue-400 hover:text-blue-300">
+            🧩 Marketplace — установить из каталога
+          </summary>
+          <div className="px-3 pb-3 pt-1">
+            <McpMarketplace installedServers={Object.values(mcpConfig || {})} />
+          </div>
+        </details>
+
         <div className="space-y-1">
           {mcp.servers.length === 0 ? (
             <div className="rounded-lg border border-dashed border-white/10 px-3 py-3 text-[11px] text-cream-faint">

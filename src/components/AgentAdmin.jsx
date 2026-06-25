@@ -144,11 +144,16 @@ export default function AgentAdmin() {
             <h1 className="text-lg font-semibold">Agent Lab</h1>
             <p className="text-[12px] text-cream-faint">Developer diagnostics for BrowserAI Agent Mode</p>
           </div>
-          <button
-            type="button"
-            onClick={() => { window.location.href = '/' }}
-            className="rounded-lg border border-white/10 px-3 py-1.5 text-[12px] text-cream-soft hover:bg-graphite-750 hover:text-cream"
-          >← В чат</button>
+          <div className="flex items-center gap-2">
+            <a href="/operator"
+              className="rounded-lg border border-violet-400/30 bg-violet-500/10 px-3 py-1.5 text-[12px] text-violet-300 hover:bg-violet-500/20 transition-colors"
+            >🎯 Operator Console</a>
+            <button
+              type="button"
+              onClick={() => { window.location.href = '/' }}
+              className="rounded-lg border border-white/10 px-3 py-1.5 text-[12px] text-cream-soft hover:bg-graphite-750 hover:text-cream"
+            >← В чат</button>
+          </div>
         </div>
         <nav className="mx-auto mt-3 flex max-w-6xl gap-1 overflow-x-auto pb-1">
           {tabs.map((t) => (

@@ -220,7 +220,7 @@ export function startCronWorker() {
   tickHandle = setInterval(tick, 60_000)
   // Fire once shortly after boot too, in case the server was down through
   // a scheduled run.
-  setTimeout(tick, 5_000)
+  setTimeout(tick, 5_000).unref?.()  // C — don't hold process open for this warm-up tick
   console.log('[cron] worker started, polling every 60 s')
 }
 

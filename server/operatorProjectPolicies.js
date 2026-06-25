@@ -35,6 +35,8 @@ const DEFAULT_RISK = { blockCritical: true, blockHighDeploy: true, blockSemantic
 function deepMerge(a = {}, b = {}) {
   const out = { ...(a || {}) }
   for (const [k, v] of Object.entries(b || {})) {
+    // PP-1: guard against prototype pollution via __proto__ / constructor / prototype keys
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue
     if (v && typeof v === 'object' && !Array.isArray(v)) out[k] = deepMerge(out[k] || {}, v)
     else out[k] = v
   }

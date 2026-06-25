@@ -103,8 +103,17 @@ export function buildToolEntry(descriptor) {
     description: descriptor.description,
     params: descriptor.params || {},
     handler: async (args = {}) => {
+      // A — whitelist of env-var name patterns allowed in auth_env (no AUTH_SECRET, DB_*, etc.)
+      const AUTH_ENV_ALLOW = /^[A-Z][A-Z0-9_]{0,63}$/
+      const safeAuthEnv = descriptor.auth_env && AUTH_ENV_ALLOW.test(String(descriptor.auth_env))
+        // Only allow vars that look like external API keys (contain KEY, TOKEN, SECRET, API, ID)
+        // AND are not known internal BrowserAI secrets
+        && /KEY|TOKEN|SECRET|API|ID/i.test(String(descriptor.auth_env))
+        && !/^(AUTH_SECRET|DB_|SCRYPT_|GITHUB_WEBHOOK|BROWSERAI_ADMIN|ADMIN_PASS)/.test(String(descriptor.auth_env))
+        ? String(descriptor.auth_env) : null
+
       const subst = (s) => String(s || '').replace(/{{([a-zA-Z0-9_]+)}}/g, (_, k) => {
-        if (k === 'auth' && descriptor.auth_env) return process.env[descriptor.auth_env] || ''
+        if (k === 'auth' && safeAuthEnv) return process.env[safeAuthEnv] || ''
         const v = args[k]
         return v == null ? '' : String(v)
       })
@@ -116,14 +125,20 @@ export function buildToolEntry(descriptor) {
       } catch (e) { return { ok: false, error: `bad URL after substitution: ${e.message}` } }
 
       const headers = { 'Content-Type': 'application/json', Accept: 'application/json' }
-      for (const [k, v] of Object.entries(descriptor.headers || {})) headers[k] = subst(v)
+      // A — strip CRLF from header keys+values (HTTP header injection guard)
+      for (const [k, v] of Object.entries(descriptor.headers || {})) {
+        const sk = String(k || '').replace(/[\r\n]/g, '').slice(0, 128)
+        if (sk) headers[sk] = subst(v).replace(/[\r\n]/g, '')
+      }
       if (descriptor.auth_env && process.env[descriptor.auth_env] && !headers.Authorization) {
         headers.Authorization = `Bearer ${process.env[descriptor.auth_env]}`
       }
 
       let body = null
       if (descriptor.body != null) {
-        body = typeof descriptor.body === 'string' ? subst(descriptor.body) : JSON.stringify(JSON.parse(subst(JSON.stringify(descriptor.body))))
+        try {
+          body = typeof descriptor.body === 'string' ? subst(descriptor.body) : JSON.stringify(JSON.parse(subst(JSON.stringify(descriptor.body))))
+        } catch (e) { return { ok: false, error: `body serialization failed: ${e.message}` } }
       } else if (descriptor.type === 'http' && descriptor.method && descriptor.method !== 'GET') {
         body = JSON.stringify(args)
       }

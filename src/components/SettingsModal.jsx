@@ -1,3 +1,4 @@
+import { lookupProviderTier, providerBadgeClass, providerBadgeText } from '../lib/providerSupport.js'
 import { useEffect, useRef, useState, useMemo } from 'react'
 import {
   IconClose,
@@ -117,10 +118,12 @@ const PROVIDER_PRESETS = [
     baseUrl: 'http://browserai-ollama:11434/v1',
     model: 'qwen2.5-coder:1.5b',
     apiKey: 'ollama',
-    // NOTE: qwen2.5-coder:7b was removed — it requires ~5GB RAM and gets
-    // OOM-killed ("signal: killed") on the 3.8GB Timeweb VPS. Only list
-    // models that actually fit in memory here.
-    availableModels: ['qwen2.5-coder:1.5b', 'llama3.2:1b', 'moondream'],
+    // NOTE: installed models on this 3.8GB VPS:
+    //   qwen2.5-coder:1.5b — main coding model (~986MB on disk, ~1.2GB RAM)
+    //   moondream:latest   — vision model (~1.7GB, only for image tasks)
+    // qwen2.5-coder:7b was REMOVED — it requires ~3.2GB RAM and gets
+    // OOM-killed on this VPS. Keep KEEP_ALIVE=0 so model unloads after use.
+    availableModels: ['qwen2.5-coder:1.5b', 'moondream:latest'],
     hint: 'Локальный суверенный ИИ на твоем VPS. Требуется предварительный запуск контейнера Ollama и загрузка модели.',
   },
 ]
@@ -138,7 +141,7 @@ function Field({ label, hint, children }) {
 }
 
 // Поле ключа с кнопкой-глазом
-function SecretField({ label, hint, value, onChange }) {
+function SecretField({ label, hint, value, onChange, placeholder = 'sk-...' }) {
   const [show, setShow] = useState(false)
   return (
     <label className="block">
@@ -149,7 +152,7 @@ function SecretField({ label, hint, value, onChange }) {
           type={show ? 'text' : 'password'}
           value={value}
           onChange={onChange}
-          placeholder="sk-..."
+          placeholder={placeholder}
           autoComplete="off"
         />
         <button
@@ -198,9 +201,9 @@ function KeyRow({ k, active, onSelect, onEdit, onDelete }) {
             <span className="truncate text-[11px] text-cream-faint font-mono">
               {getSelectedModel(k) || 'модель не выбрана'}
             </span>
-            {k.apiKey && (
+            {(k.maskedApiKey || k.apiKey) && (
               <span className="shrink-0 rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-cream-faint">
-                {k.apiKey.slice(0, 4)}...{k.apiKey.slice(-4)}
+                {k.maskedApiKey || `${k.apiKey.slice(0, 4)}...${k.apiKey.slice(-4)}`}
               </span>
             )}
           </div>
@@ -356,6 +359,8 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
     setResult(null)
     try {
       const r = await onValidate({
+        keyId: form.id,
+        useStoredSecret: Boolean(form.hasSecret && !form.apiKey),
         baseUrl: form.baseUrl,
         apiKey: form.apiKey,
         model: form.model,
@@ -371,7 +376,7 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
   }
 
   const canSave =
-    form.apiKey.trim() &&
+    (form.apiKey.trim() || form.hasSecret) &&
     form.baseUrl.trim() &&
     (form.model.trim() || form.availableModels?.length > 0)
 
@@ -414,6 +419,10 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
                   className={`rounded-lg border px-2.5 py-1.5 text-[12px] transition-colors ${group.cls}`}
                 >
                   {preset.label}
+                  {(() => {
+                    const t = lookupProviderTier({ id: preset.id, baseUrl: preset.baseUrl })
+                    return <span className={providerBadgeClass(t.tier)} title={(t.knownLimitations || []).join(' / ') || 'No known limitations'}>{providerBadgeText(t.tier)}</span>
+                  })()}
                 </button>
               ))}
             </div>
@@ -429,9 +438,10 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
       ) : (
         <SecretField
           label={form.authType === 'cookie' ? 'Cookie / сессия' : 'Токен / API-ключ'}
-          hint="Вставь ключ — модели подтянутся автоматически после проверки."
+          hint={form.hasSecret && !form.apiKey ? 'Секрет уже сохранён на сервере. Оставь поле пустым, чтобы его не менять.' : 'Вставь ключ — модели подтянутся автоматически после проверки.'}
           value={form.apiKey}
           onChange={set('apiKey')}
+          placeholder={form.hasSecret && !form.apiKey ? (form.maskedApiKey || 'секрет сохранён на сервере') : 'sk-...'}
         />
       )}
 
@@ -614,7 +624,7 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
       <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
         <button
           onClick={check}
-          disabled={checking || !form.apiKey.trim() || !form.baseUrl.trim()}
+          disabled={checking || !(form.apiKey.trim() || form.hasSecret) || !form.baseUrl.trim()}
           className="rounded-lg border border-white/10 px-3 py-1.5 text-[12px] text-cream-soft transition-colors hover:border-white/20 hover:bg-graphite-750 hover:text-cream disabled:opacity-50"
         >
           {checking ? 'Проверяю…' : 'Проверить'}
@@ -627,7 +637,7 @@ function KeyEditor({ initial, onSave, onCancel, onValidate }) {
             Отмена
           </button>
           <button
-            onClick={() => canSave && onSave(prepareForSave(form))}
+            onClick={() => canSave && onSave({ ...prepareForSave(form), keepExistingSecret: Boolean(form.hasSecret && !form.apiKey) })}
             disabled={!canSave}
             className="rounded-lg bg-cream px-3 py-1.5 text-[12px] font-medium text-graphite-900 transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-40 disabled:hover:scale-100"
           >
@@ -1075,6 +1085,51 @@ export default function SettingsModal({
               automatic Agent Mode; regular users should not see manual agent
               plumbing in Settings. */}
           {isDevTools && <AgentSettingsSection />}
+
+          {/* ---- Администрирование (только для владельца/dev) ---- */}
+          <section className="space-y-3 border-t border-white/5 pt-4">
+            <h3 className="text-[13px] font-medium text-cream">
+              🛠️ Администрирование
+            </h3>
+            <div className="grid grid-cols-2 gap-2">
+              <a
+                href="/admin/deepseek"
+                target="_blank"
+                className="flex flex-col items-center justify-center rounded-xl border border-white/10 bg-graphite-900/40 p-3 text-center transition-colors hover:bg-graphite-750 hover:text-cream"
+              >
+                <span className="text-[18px] mb-1">🐳</span>
+                <span className="text-[11px] text-cream-soft">DeepSeek Session</span>
+              </a>
+              <a
+                href="/admin/ops"
+                target="_blank"
+                className="flex flex-col items-center justify-center rounded-xl border border-white/10 bg-graphite-900/40 p-3 text-center transition-colors hover:bg-graphite-750 hover:text-cream"
+              >
+                <span className="text-[18px] mb-1">⚙️</span>
+                <span className="text-[11px] text-cream-soft">Server Ops</span>
+              </a>
+              <a
+                href="/admin/agent"
+                target="_blank"
+                className="flex flex-col items-center justify-center rounded-xl border border-white/10 bg-graphite-900/40 p-3 text-center transition-colors hover:bg-graphite-750 hover:text-cream"
+              >
+                <span className="text-[18px] mb-1">🤖</span>
+                <span className="text-[11px] text-cream-soft">Agent Status</span>
+              </a>
+              <button
+                onClick={() => {
+                   localStorage.setItem('browserai.devtools', localStorage.getItem('browserai.devtools') === '1' ? '0' : '1');
+                   window.location.reload();
+                }}
+                className="flex flex-col items-center justify-center rounded-xl border border-white/10 bg-graphite-900/40 p-3 text-center transition-colors hover:bg-graphite-750 hover:text-cream"
+              >
+                <span className="text-[18px] mb-1">🧪</span>
+                <span className="text-[11px] text-cream-soft">
+                  {isDevTools ? 'Disable Dev Mode' : 'Enable Dev Mode'}
+                </span>
+              </button>
+            </div>
+          </section>
 
           {/* ---- Шифрование (только при доступном сервере) ---- */}
           {online && (

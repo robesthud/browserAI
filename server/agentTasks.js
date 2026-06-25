@@ -77,9 +77,12 @@ export function updateAgentTask(id, patch = {}) {
   return getAgentTask(id)
 }
 
-export function finishAgentTask(id, { status = 'succeeded', state = null, history = null } = {}) {
+export function finishAgentTask(id, { status = 'succeeded', state = null, history = null, finalStatus = null } = {}) {
   const patch = { status, finishedAt: Date.now() }
-  if (state) patch.state = state
+  // D — finalStatus must be embedded inside state (rowToTask only maps DB columns + state_json)
+  const cur = getAgentTask(id)
+  const baseState = state || cur?.state || {}
+  patch.state = finalStatus ? { ...baseState, finalStatus } : baseState
   if (history) patch.history = history
   return updateAgentTask(id, patch)
 }
@@ -89,12 +92,26 @@ export function getAgentTask(id) {
   return rowToTask(db.prepare('SELECT * FROM agent_tasks WHERE id=?').get(String(id || '')))
 }
 
+// Pre-built parameterized queries for latestAgentTask (avoids string interpolation into SQL)
+const _latestTaskStmts = {
+  chatAll:  null, chatActive:  null,
+  userAll:  null, userActive:  null,
+}
+function _getLatestStmt(byChatId, includeDone) {
+  const key = (byChatId ? 'chat' : 'user') + (includeDone ? 'All' : 'Active')
+  if (!_latestTaskStmts[key]) {
+    const col = byChatId ? 'chat_id' : 'user_id'
+    const inClause = includeDone ? "('running','failed','succeeded','cancelled')" : "('running','failed')"
+    _latestTaskStmts[key] = db.prepare(`SELECT * FROM agent_tasks WHERE ${col}=? AND status IN ${inClause} ORDER BY updated_at DESC LIMIT 1`)
+  }
+  return _latestTaskStmts[key]
+}
+
 export function latestAgentTask({ chatId = '', userId = '', includeDone = true } = {}) {
   init()
-  const statuses = includeDone ? "'running','failed','succeeded','cancelled'" : "'running','failed'"
   const row = chatId
-    ? db.prepare(`SELECT * FROM agent_tasks WHERE chat_id=? AND status IN (${statuses}) ORDER BY updated_at DESC LIMIT 1`).get(String(chatId))
-    : db.prepare(`SELECT * FROM agent_tasks WHERE user_id=? AND status IN (${statuses}) ORDER BY updated_at DESC LIMIT 1`).get(String(userId || ''))
+    ? _getLatestStmt(true, includeDone).get(String(chatId))
+    : _getLatestStmt(false, includeDone).get(String(userId || ''))
   return rowToTask(row)
 }
 
@@ -110,7 +127,13 @@ export function listAgentTasks({ chatId = '', userId = '', limit = 20 } = {}) {
 export function buildResumeSystemMessage(task) {
   if (!task) return ''
   const state = task.state || {}
-  return `<arena-system-message>\nResume previous BrowserAI task.\nTask id: ${task.id}\nStatus: ${task.status}\nGoal: ${task.goal}\nType: ${task.taskType}\nPhase: ${task.phase}\nCurrent step: ${state.currentStep || ''}\nPlan: ${(state.plan?.steps || []).map(s => `${s.done ? '[x]' : '[ ]'} ${s.idx}. ${s.text}`).join('\n')}\nTouched files: ${(state.touchedFiles || []).join(', ')}\nLast errors: ${(state.lastErrors || []).join(' | ')}\nContinue from this state. Do not restart from scratch unless necessary.\n</arena-system-message>`
+  // B — strip closing tag from any user-controlled content to prevent system-message injection
+  const sanitize = (s) => String(s || '').replace(/<\/arena-system-message>/gi, '')
+  const goal = sanitize(task.goal)
+  const planLines = (state.plan?.steps || []).map(s => sanitize(`${s.done ? '[x]' : '[ ]'} ${s.idx}. ${s.text}`)).join('\n')
+  const touched = (state.touchedFiles || []).map(sanitize).join(', ')
+  const errors = (state.lastErrors || []).map(sanitize).join(' | ')
+  return `<arena-system-message>\nResume previous BrowserAI task.\nTask id: ${task.id}\nStatus: ${task.status}\nGoal: ${goal}\nType: ${task.taskType}\nPhase: ${task.phase}\nCurrent step: ${sanitize(String(state.currentStep || ''))}\nPlan: ${planLines}\nTouched files: ${touched}\nLast errors: ${errors}\nContinue from this state. Do not restart from scratch unless necessary.\n</arena-system-message>`
 }
 
 export default { createAgentTask, updateAgentTask, finishAgentTask, getAgentTask, latestAgentTask, listAgentTasks, buildResumeSystemMessage }

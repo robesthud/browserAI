@@ -2,8 +2,9 @@ import PDFDocument from 'pdfkit'
 import pptxgen from 'pptxgenjs'
 import ExcelJS from 'exceljs'
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx'
-import { EventEmitter } from 'node:events'
 import db, { getActiveKeyDecrypted } from './db.js'
+import { createAgentSseCapture } from './agentSseCapture.js'
+import { resolveProviderFromInput } from './providerResolution.js'
 import { withWorkspaceScope, uploadFiles } from './workspace.js'
 import { callLLM } from './llmClient.js'
 
@@ -41,6 +42,7 @@ export function initJobs() {
   `)
   // Lightweight schema migration for structured background traces.
   try { db.prepare(`ALTER TABLE jobs ADD COLUMN trace_json TEXT NOT NULL DEFAULT '[]'`).run() } catch { /* already exists */ }
+  try { db.prepare(`ALTER TABLE jobs ADD COLUMN parent_job_id TEXT NOT NULL DEFAULT ''`).run() } catch { /* already exists */ }
 
   const bootTs = Date.now()
   // On boot, most in-memory workers are gone and cannot continue. Background
@@ -102,16 +104,36 @@ function reapStaleJob(row) {
   const idle = Date.now() - Number(row.updated_at || row.created_at || 0)
   if (idle <= ORPHAN_TIMEOUT_MS) return row
   // Mark stale.
+  const staleTs = Date.now()
   db.prepare(`
     UPDATE jobs
        SET status = 'failed',
-           error  = COALESCE(NULLIF(error, ''), 'Задача не обновляла статус более 10 минут — вероятно, воркер упал.'),
+           error  = COALESCE(NULLIF(error, ''), 'Задача не обновляла статус — вероятно, воркер упал.'),
            progress = 100,
            updated_at = ?,
            finished_at = ?
      WHERE id = ?
-  `).run(Date.now(), Date.now(), row.id)
-  return { ...row, status: 'failed', error: 'Задача не обновляла статус более 10 минут — вероятно, воркер упал.', progress: 100, finished_at: Date.now() }
+  `).run(staleTs, staleTs, row.id)
+  return { ...row, status: 'failed', error: 'Задача не обновляла статус — вероятно, воркер упал.', progress: 100, finished_at: staleTs }
+}
+
+function sanitizeJobInput(value, depth = 0) {
+  if (depth > 5) return '[truncated]'
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value == null) return value
+  if (Array.isArray(value)) return value.slice(0, 500).map((v) => sanitizeJobInput(v, depth + 1))
+  if (typeof value === 'object') {
+    const out = {}
+    for (const [k, v] of Object.entries(value)) {
+      if (/api[_-]?key|token|password|secret|cookie|authorization|credentials?|private[_-]?key|client[_-]?secret|refresh[_-]?token/i.test(k)) {
+        if (k === 'useStoredSecret') out[k] = Boolean(v)
+        else continue
+      } else {
+        out[k] = sanitizeJobInput(v, depth + 1)
+      }
+    }
+    return out
+  }
+  return String(value)
 }
 
 function rowToJob(row) {
@@ -123,12 +145,13 @@ function rowToJob(row) {
     type: row.type,
     status: row.status,
     title: row.title,
-    input: safeJsonParse(row.input_json, {}),
+    input: sanitizeJobInput(safeJsonParse(row.input_json, {})),
     result: safeJsonParse(row.result_json, {}),
     error: row.error || '',
     progress: row.progress || 0,
     logs: safeJsonParse(row.logs, []),
     trace: safeJsonParse(row.trace_json, []),
+    parentJobId: row.parent_job_id || '',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     finishedAt: row.finished_at,
@@ -141,34 +164,42 @@ export function getJob(id) {
   return rowToJob(reapStaleJob(row))
 }
 
-export function listJobs({ chatId = '', userId = '', limit = 50 } = {}) {
+export function listJobs({ chatId = '', userId = '', limit = 50, parentJobId = '' } = {}) {
   initJobs()
   const max = Math.min(100, Math.max(1, Number(limit) || 50))
   let rows
-  if (chatId) rows = db.prepare('SELECT * FROM jobs WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?').all(chatId, max)
+  if (parentJobId) rows = db.prepare('SELECT * FROM jobs WHERE parent_job_id = ? ORDER BY created_at ASC LIMIT ?').all(parentJobId, max)
+  else if (chatId) rows = db.prepare('SELECT * FROM jobs WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?').all(chatId, max)
   else if (userId) rows = db.prepare('SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?').all(userId, max)
   else rows = db.prepare('SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?').all(max)
   return rows.map(reapStaleJob).map(rowToJob)
 }
 
-export function createJob({ userId = '', chatId = '', type, title = '', input = {} } = {}) {
+export function createJob({ userId = '', chatId = '', type, title = '', input = {}, parentJobId = '' } = {}) {
   initJobs()
   if (!type) throw new Error('job type required')
   const id = uid('job')
   const ts = now()
+  const inputJson = (() => {
+    try { return JSON.stringify(input || {}) }
+    catch { return JSON.stringify({ _serializeError: 'input contained non-serializable values' }) }
+  })()
   db.prepare(`
-    INSERT INTO jobs (id, user_id, chat_id, type, status, title, input_json, result_json, logs, trace_json, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 'queued', ?, ?, '{}', '[]', '[]', ?, ?)
-  `).run(id, userId || '', chatId || '', type, title || type, JSON.stringify(input || {}), ts, ts)
+    INSERT INTO jobs (id, user_id, chat_id, type, status, title, input_json, result_json, logs, trace_json, parent_job_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'queued', ?, ?, '{}', '[]', '[]', ?, ?, ?)
+  `).run(id, userId || '', chatId || '', type, title || type, inputJson, String(parentJobId || ''), ts, ts)
   return getJob(id)
 }
 
 export function registerRuntimeInput(id, data = {}) {
-  if (id) runtimeInputs.set(id, data || {})
+  if (id && typeof id === 'string' && id.length > 0) runtimeInputs.set(id, data || {})
 }
 
 function setJobPatch(id, patch = {}) {
-  const current = getJob(id)
+  // Используем прямой SELECT без reapStaleJob — иначе reap может перезаписать
+  // статус на 'failed' прямо перед тем как мы записываем 'succeeded'.
+  const rawRow = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id)
+  const current = rowToJob(rawRow)
   if (!current) throw new Error('job not found')
   const next = { ...current, ...patch, updatedAt: now() }
   db.prepare(`
@@ -204,10 +235,17 @@ export function isCancelled(id) {
 }
 
 export function appendJobLog(id, message) {
-  const job = getJob(id)
-  if (!job) return null
-  const logs = [...(job.logs || []), { ts: new Date().toISOString(), message: String(message || '') }].slice(-200)
-  return setJobPatch(id, { logs })
+  // Прямой UPDATE logs без SELECT всего job — экономия round-trip.
+  try {
+    const row = db.prepare('SELECT logs FROM jobs WHERE id = ?').get(id)
+    if (!row) return null
+    const logs = [...(safeJsonParse(row.logs, []) || []),
+      { ts: new Date().toISOString(), message: String(message || '') },
+    ].slice(-200)
+    db.prepare('UPDATE jobs SET logs = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(logs), Date.now(), id)
+    return true
+  } catch { return null }
 }
 
 function clipTraceValue(value, max = 2400) {
@@ -225,19 +263,25 @@ function clipTraceValue(value, max = 2400) {
 }
 
 export function appendJobTrace(id, event, payload = {}) {
-  const job = getJob(id)
-  if (!job) return null
-  const trace = [
-    ...(job.trace || []),
-    { ts: Date.now(), iso: new Date().toISOString(), event: String(event || 'event'), payload: clipTraceValue(payload || {}) },
-  ].slice(-500)
-  return setJobPatch(id, { trace })
+  // Прямой UPDATE без SELECT всего job — экономия round-trip на каждое SSE событие.
+  // json_patch + json_insert не поддерживается в SQLite < 3.38, используем read-modify-write
+  // но только trace_json и updated_at, не весь job.
+  try {
+    const row = db.prepare('SELECT trace_json FROM jobs WHERE id = ?').get(id)
+    if (!row) return null
+    const trace = [...(safeJsonParse(row.trace_json, []) || []),
+      { ts: Date.now(), iso: new Date().toISOString(), event: String(event || 'event'), payload: clipTraceValue(payload || {}) },
+    ].slice(-500)
+    db.prepare('UPDATE jobs SET trace_json = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(trace), Date.now(), id)
+    return true
+  } catch { return null }
 }
 
 
 function stripCodeFence(text = '') {
   const s = String(text || '').trim()
-  const m = s.match(/^```(?:json|markdown|md)?\s*\n([\s\S]*?)\n```$/i)
+  const m = s.match(/^```(?:json|markdown|md)?\s*\r?\n([\s\S]*?)\r?\n```$/i)
   return m ? m[1].trim() : s
 }
 
@@ -253,89 +297,70 @@ function parseJsonLoose(text = '', fallback = null) {
 }
 
 function uploadFileFromBuffer(name, mime, buffer) {
+  if (!buffer) throw new Error(`uploadFileFromBuffer: buffer is empty for '${name}'`)
   return { path: name, name, type: mime, content: Buffer.from(buffer).toString('base64') }
 }
 
 async function saveGeneratedFile(chatId, file) {
-  await withWorkspaceScope(chatId, async () => uploadFiles('generated', [file]))
+  if (!chatId) console.warn('[jobs] saveGeneratedFile: chatId empty — file saved to shared workspace')
+  await withWorkspaceScope(chatId || '', async () => uploadFiles('generated', [file]))
   return `generated/${file.name}`
 }
 
-function parseSseBlock(block = '') {
-  let event = 'message'
-  const data = []
-  for (const line of String(block || '').split('\n')) {
-    if (line.startsWith('event:')) event = line.slice(6).trim()
-    else if (line.startsWith('data:')) data.push(line.slice(5).trim())
-  }
-  const raw = data.join('\n')
-  try { return { event, data: JSON.parse(raw) } } catch { return { event, data: raw } }
-}
-
 function createJobSseRes(job) {
-  const emitter = new EventEmitter()
-  let buffer = ''
-  let assistant = ''
   let deltaSeq = 0
-  return {
-    setHeader() {},
-    flushHeaders() {},
-    on: (...args) => emitter.on(...args),
-    emitClose: () => emitter.emit('close'),
-    write(chunk) {
-      buffer += String(chunk || '')
-      const blocks = buffer.split('\n\n')
-      buffer = blocks.pop() || ''
-      for (const block of blocks) {
-        if (!block.trim() || block.startsWith(':')) continue
-        const evt = parseSseBlock(block)
-        const payload = evt.data?.payload || evt.data || {}
-        if (evt.event === 'assistant_delta') {
-          deltaSeq += 1
-          if (deltaSeq % 25 === 0) appendJobTrace(job.id, evt.event, { chunkLength: String(payload.chunk || '').length, deltaSeq })
-        } else {
-          appendJobTrace(job.id, evt.event, payload)
-        }
-        if (evt.event === 'assistant_delta') assistant += String(payload.chunk || '')
-        else if (evt.event === 'assistant') assistant = String(payload.text || assistant || '')
-        else if (evt.event === 'tool_start') appendJobLog(job.id, `tool_start: ${payload.name || ''}`)
-        else if (evt.event === 'tool_result') appendJobLog(job.id, `tool_result: ${payload.name || ''} ${payload.ok ? 'ok' : 'fail'}`)
-        else if (evt.event === 'thought') appendJobLog(job.id, `thought: ${String(payload.text || '').slice(0, 180)}`)
-        else if (evt.event === 'error') appendJobLog(job.id, `error: ${payload.message || ''}`)
-        else if (evt.event === 'done') setJobPatch(job.id, { progress: 95, result: { ...(getJob(job.id)?.result || {}), done: payload } })
+  return createAgentSseCapture({
+    onEvent: ({ event, payload }) => {
+      if (event === 'assistant_delta') {
+        deltaSeq += 1
+        if (deltaSeq % 25 === 0) appendJobTrace(job.id, event, { chunkLength: String(payload.chunk || '').length, deltaSeq })
+        return
       }
+      appendJobTrace(job.id, event, payload)
+      if (event === 'tool_start') appendJobLog(job.id, `tool_start: ${payload.name || ''}`)
+      else if (event === 'tool_result') appendJobLog(job.id, `tool_result: ${payload.name || ''} ${payload.ok ? 'ok' : 'fail'}`)
+      else if (event === 'thought') appendJobLog(job.id, `thought: ${String(payload.text || '').slice(0, 180)}`)
+      else if (event === 'error') appendJobLog(job.id, `error: ${payload.message || ''}`)
+      else if (event === 'done') { try { setJobPatch(job.id, { progress: 95, result: { ...(getJob(job.id)?.result || {}), done: payload } }) } catch { /* job may have been deleted */ } }
     },
-    end() { emitter.emit('close') },
-    status() { return this },
-    json(obj) { this.write(`event: json\ndata: ${JSON.stringify(obj)}\n\n`); this.end(); return this },
-    getAssistantText: () => assistant,
-  }
+  })
 }
 
 async function runAgentJob(job) {
   const runtime = runtimeInputs.get(job.id) || {}
   const input = job.input || {}
-  const savedProvider = input.provider || {}
-  const activeProvider = getActiveKeyDecrypted(null) || {}
   const runtimeProvider = runtime.provider || {}
-  const provider = runtimeProvider?.apiKey
-    ? runtimeProvider
-    : (savedProvider?.baseUrl && savedProvider?.model && activeProvider?.apiKey
-        ? { ...activeProvider, ...savedProvider, apiKey: activeProvider.apiKey }
-        : activeProvider)
+  const provider = (runtimeProvider?.apiKey != null && runtimeProvider?.apiKey !== '') || runtimeProvider?.useStoredSecret
+    ? resolveProviderFromInput(runtimeProvider, { requireBearer: true })
+    : resolveProviderFromInput(input.provider || input || {}, { requireBearer: true })
   if (!provider?.baseUrl || !provider?.apiKey || !provider?.model) throw new Error('No provider available for background agent job')
   setJobPatch(job.id, { status: 'running', progress: 5 })
   appendJobLog(job.id, 'Запускаю фонового агента')
   const { runAgent } = await import('./agentLoop.js')
   const res = createJobSseRes(job)
-  await runAgent({
-    provider: { ...provider, forceAgent: true },
-    history: input.history || [{ role: 'user', content: input.prompt || 'continue' }],
-    extraSystem: input.extraSystem || '[background-agent-job] Run as a background task. Persist progress in the job trace. If this is a resumed job after restart, continue from the persisted history/summary and avoid repeating completed destructive actions when possible. If blocked by approval or user input, stop and report what is needed.',
-    workspaceScope: job.chatId,
-    userId: job.userId,
-    res,
-  })
+  if (isCancelled(job.id)) return
+  // Опрашиваем cancelled set каждые 2с и эмитим 'close' на res чтобы
+  // agentLoop прервал своё выполнение через AbortController.
+  const cancelPoller = setInterval(() => {
+    if (isCancelled(job.id)) {
+      clearInterval(cancelPoller)
+      try { res.emitClose?.() || res.emit?.('close') } catch { /* ignore */ }
+    }
+  }, 2000)
+  try {
+    await runAgent({
+      provider: { ...provider, forceAgent: true },
+      history: input.history || [{ role: 'user', content: input.prompt || 'continue' }],
+      extraSystem: input.extraSystem || '[background-agent-job] Run as a background task. Persist progress in the job trace. If this is a resumed job after restart, continue from the persisted history/summary and avoid repeating completed destructive actions when possible. If blocked by approval or user input, stop and report what is needed.',
+      workspaceScope: job.chatId,
+      userId: job.userId,
+      res,
+    })
+  } finally {
+    clearInterval(cancelPoller)
+  }
+  // Не ставим succeeded если задача была отменена пока агент работал
+  if (isCancelled(job.id)) return
   const text = res.getAssistantText()
   setJobPatch(job.id, { status: 'succeeded', progress: 100, result: { content: text || 'Agent job completed' }, finishedAt: now() })
 }
@@ -348,7 +373,19 @@ async function runToolJob(job) {
   appendJobLog(job.id, `Запускаю tool: ${tool}`)
   setJobPatch(job.id, { status: 'running', progress: 10 })
   if (isCancelled(job.id)) return
-  const result = await withWorkspaceScope(job.chatId, () => invokeTool(tool, args, { userId: job.userId, chatId: job.chatId }))
+  // Создаём AbortController чтобы прервать долгие tools при cancel
+  const toolAbort = new AbortController()
+  // Немедленная проверка до старта tool
+  if (isCancelled(job.id)) { toolAbort.abort('job cancelled') }
+  const toolCancelPoller = setInterval(() => {
+    if (isCancelled(job.id)) { clearInterval(toolCancelPoller); toolAbort.abort('job cancelled') }
+  }, 1000)
+  let result
+  try {
+    result = await withWorkspaceScope(job.chatId, () => invokeTool(tool, args, { userId: job.userId, chatId: job.chatId, signal: toolAbort.signal }))
+  } finally {
+    clearInterval(toolCancelPoller)
+  }
   if (isCancelled(job.id)) return
   if (!result?.ok) {
     appendJobLog(job.id, `Ошибка tool ${tool}: ${result?.error || 'unknown error'}`)
@@ -360,22 +397,29 @@ async function runToolJob(job) {
 }
 
 // Find ANY active LLM key in the DB and use it for short text-generation
-// tasks (PDF / DOCX / XLSX / PPTX document body generation). Picks the
-// first active row; falls back to the first row if none active.
-// Returns the fallback string on any failure (network, no keys, etc.) so
-// callers can degrade gracefully — these jobs aren't worth crashing for.
+// tasks (PDF / DOCX / XLSX / PPTX document body generation).
+// Uses getActiveKeyDecrypted() to support vault-encrypted keys.
+// Returns the fallback string on any failure so callers degrade gracefully.
 async function callAnyLLM(prompt, fallback = '') {
   try {
-    const row =
-      db.prepare("SELECT base_url, api_key, model, auth_type, auth_header, extra_headers FROM keys WHERE is_active = 1 LIMIT 1").get()
-      || db.prepare("SELECT base_url, api_key, model, auth_type, auth_header, extra_headers FROM keys LIMIT 1").get()
+    // getActiveKeyDecrypted handles vault decryption; falls back to first key if none active
+    // getActiveKeyDecrypted(null) — без vault пароля, расшифровывает если vault открыт
+    const row = getActiveKeyDecrypted(null)
+      || db.prepare('SELECT base_url, api_key, model, auth_type, auth_header, extra_headers FROM keys ORDER BY is_active DESC LIMIT 1').get()
     if (!row || !row.base_url || !row.api_key) return fallback
-    const extraHeaders = (() => { try { return JSON.parse(row.extra_headers || '{}') } catch { return {} } })()
+    // Если api_key выглядит как зашифрованный blob (не начинается с обычных префиксов) —
+    // vault заблокирован, не передаём ciphertext в API
+    const apiKey = row.api_key || row.apiKey || ''
+    if (apiKey.startsWith('{') || apiKey.startsWith('enc:') || apiKey.length > 512) {
+      console.warn('[jobs] callAnyLLM: api_key appears encrypted (vault locked) — skipping')
+      return fallback
+    }
+    const extraHeaders = (() => { try { return JSON.parse(row.extra_headers || row.extraHeaders || '{}') } catch { return {} } })()
     const reply = await callLLM({
-      baseUrl:      row.base_url,
-      apiKey:       row.api_key,
-      authType:     row.auth_type || 'bearer',
-      authHeader:   row.auth_header || '',
+      baseUrl:      row.base_url   || row.baseUrl,
+      apiKey:       row.api_key    || row.apiKey,
+      authType:     row.auth_type  || row.authType  || 'bearer',
+      authHeader:   row.auth_header|| row.authHeader || '',
       extraHeaders,
       model:        row.model,
       messages:     [{ role: 'user', content: String(prompt || '') }],
@@ -399,9 +443,10 @@ function markdownToPlainBlocks(markdown = '') {
   for (const line of lines) {
     const t = line.trim()
     if (!t) continue
-    if (t.startsWith('# ')) blocks.push({ type: 'h1', text: t.replace(/^#\s+/, '') })
+    if (t.startsWith('### ')) blocks.push({ type: 'h2', text: t.replace(/^###\s+/, '') })
     else if (t.startsWith('## ')) blocks.push({ type: 'h2', text: t.replace(/^##\s+/, '') })
-    else if (/^[-*]\s+/.test(t)) blocks.push({ type: 'bullet', text: t.replace(/^[-*]\s+/, '') })
+    else if (t.startsWith('# ')) blocks.push({ type: 'h1', text: t.replace(/^#\s+/, '') })
+    else if (/^[-*+]\s+/.test(t)) blocks.push({ type: 'bullet', text: t.replace(/^[-*+]\s+/, '') })
     else blocks.push({ type: 'p', text: t.replace(/[*_`]/g, '') })
   }
   return blocks.length ? blocks : [{ type: 'p', text: String(markdown || 'Document') }]
@@ -411,17 +456,25 @@ async function createPdf({ title, markdown }) {
   const chunks = []
   const doc = new PDFDocument({ size: 'A4', margin: 54, bufferPages: true })
   doc.on('data', (c) => chunks.push(c))
-  const done = new Promise((resolve) => doc.on('end', () => resolve(Buffer.concat(chunks))))
-  try { doc.font('/usr/share/fonts/TTF/DejaVuSans.ttf') } catch { /* font may be unavailable in dev */ }
-  doc.fontSize(22).text(title || 'Document', { underline: false })
-  doc.moveDown()
-  for (const block of markdownToPlainBlocks(markdown)) {
-    if (block.type === 'h1') doc.moveDown(0.4).fontSize(18).text(block.text).moveDown(0.3)
-    else if (block.type === 'h2') doc.moveDown(0.3).fontSize(15).text(block.text).moveDown(0.2)
-    else if (block.type === 'bullet') doc.fontSize(11).text(`• ${block.text}`, { indent: 14 }).moveDown(0.15)
-    else doc.fontSize(11).text(block.text, { lineGap: 3 }).moveDown(0.35)
+  let docEnded = false
+  const done = new Promise((resolve, reject) => {
+    doc.on('end', () => { docEnded = true; resolve(Buffer.concat(chunks)) })
+    doc.on('error', (e) => { docEnded = true; reject(e) })
+  })
+  try { doc.font('/usr/share/fonts/TTF/DejaVuSans.ttf') } catch { console.warn('[jobs] DejaVuSans.ttf not found — PDF will lack Cyrillic support') }
+  try {
+    doc.fontSize(22).text(title || 'Document', { underline: false })
+    doc.moveDown()
+    for (const block of markdownToPlainBlocks(markdown)) {
+      if (block.type === 'h1') doc.moveDown(0.4).fontSize(18).text(block.text).moveDown(0.3)
+      else if (block.type === 'h2') doc.moveDown(0.3).fontSize(15).text(block.text).moveDown(0.2)
+      else if (block.type === 'bullet') doc.fontSize(11).text(`• ${block.text}`, { indent: 14 }).moveDown(0.15)
+      else doc.fontSize(11).text(block.text, { lineGap: 3 }).moveDown(0.35)
+    }
+  } finally {
+    // Всегда закрываем документ — иначе Promise `done` зависнет
+    if (!docEnded) doc.end()
   }
-  doc.end()
   return done
 }
 
@@ -525,7 +578,11 @@ async function runLocalDocumentJob(job) {
     return
   }
 
-  // default: PDF
+  // default: PDF (generate_pdf или любой другой generate_* тип)
+  const knownGenerateTypes = ['generate_pdf', 'generate_docx', 'generate_xlsx', 'generate_presentation']
+  if (!knownGenerateTypes.includes(job.type)) {
+    console.warn(`[jobs] Unknown generate type '${job.type}' — falling back to PDF`)
+  }
   const buffer = await createPdf({ title, markdown })
   const name = `document-${Date.now()}.pdf`
   const saved = await saveGeneratedFile(job.chatId, uploadFileFromBuffer(name, 'application/pdf', buffer))
@@ -537,6 +594,9 @@ export function retryJob(id) {
   const old = getJob(id)
   if (!old) return null
   const next = createJob({ userId: old.userId, chatId: old.chatId, type: old.type, title: old.title || old.type, input: old.input || {} })
+  // Копируем runtimeInputs (provider keys) — иначе retry agent_run без сохранённого ключа упадёт
+  const prevRuntime = runtimeInputs.get(id)
+  if (prevRuntime) runtimeInputs.set(next.id, { ...prevRuntime })
   startJob(next.id)
   return getJob(next.id)
 }
@@ -544,6 +604,8 @@ export function retryJob(id) {
 export function startJob(id) {
   const job = getJob(id)
   if (!job || running.has(id)) return job
+  // Не перезапускать завершённые задачи
+  if (['succeeded', 'failed', 'cancelled'].includes(job.status)) return job
   running.add(id)
   ;(async () => {
     try {
@@ -553,10 +615,20 @@ export function startJob(id) {
       else throw new Error(`Unknown job type: ${job.type}`)
     } catch (e) {
       appendJobLog(id, `Ошибка: ${e.message || String(e)}`)
-      const failed = setJobPatch(id, { status: 'failed', error: e.message || String(e), finishedAt: now() })
+      let failed = null
+      try { failed = setJobPatch(id, { status: 'failed', error: e.message || String(e), finishedAt: now() }) } catch { /* job may already be deleted */ }
       try {
         const { routeFailure } = await import('./autonomousFailureRouter.js')
-        const routed = routeFailure({ userId: failed?.userId || job.userId || '', source: 'job', title: `Job failed: ${failed?.title || job.title || job.type}`, error: e.message || String(e), entityType: 'job', entityId: id, data: { job: failed || job }, incident: job.type === 'agent_run' || job.type.startsWith('tool_') })
+        const routed = routeFailure({
+          userId: failed?.userId || job.userId || '',
+          source: 'job',
+          title: `Job failed: ${failed?.title || job.title || job.type}`,
+          error: e.message || String(e),
+          entityType: 'job',
+          entityId: id,
+          data: { job: failed || job },
+          incident: job.type === 'agent_run' || job.type.startsWith('tool_'),
+        })
         if (routed?.classification) setJobPatch(id, { result: { ...(failed?.result || {}), failure: routed } })
       } catch { /* best-effort failure routing */ }
     } finally {

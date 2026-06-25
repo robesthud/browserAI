@@ -18,7 +18,6 @@ function textFromAttachments(attachments = []) {
 
 export function routeUserMessage(text = '', attachments = [], { forceAgent = false } = {}) {
   const raw = String(text || '').trim()
-  const t = raw.toLowerCase()
   const att = textFromAttachments(attachments).toLowerCase()
 
   if (forceAgent) {

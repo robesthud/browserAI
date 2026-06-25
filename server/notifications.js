@@ -94,10 +94,15 @@ export function createNotification({ userId = '', kind = '', severity = 'info', 
   initNotifications()
   const notificationId = id('ntf')
   const ts = now()
+  // B — guard against circular-ref in data (JSON.stringify would throw)
+  const dataJson = (() => {
+    try { return JSON.stringify(data || {}) }
+    catch { return '{}' }
+  })()
   db.prepare(`INSERT INTO notifications (id,user_id,kind,severity,status,title,message,entity_type,entity_id,data_json,created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
     notificationId, String(userId || ''), String(kind || ''), String(severity || 'info'), 'unread',
-    String(title || '').slice(0, 240), String(message || '').slice(0, 2000), String(entityType || ''), String(entityId || ''), JSON.stringify(data || {}), ts,
+    String(title || '').slice(0, 240), String(message || '').slice(0, 2000), String(entityType || ''), String(entityId || ''), dataJson, ts,
   )
   const n = rowToNotification(db.prepare('SELECT * FROM notifications WHERE id=?').get(notificationId))
   maybeSendChannels(n, channels).catch(() => {})

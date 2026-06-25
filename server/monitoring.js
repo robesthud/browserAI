@@ -14,6 +14,7 @@
  * rolling hash so a tight crash loop doesn't pager-storm the admin.
  */
 import { appendFileSync, mkdirSync, existsSync } from 'node:fs'
+import log from './logger.js'
 import path from 'node:path'
 import os from 'node:os'
 
@@ -33,7 +34,11 @@ function ensureDir() {
 }
 
 function hashEvent(kind, payload) {
-  const s = `${kind}::${(payload?.stack || payload?.message || JSON.stringify(payload) || '').slice(0, 400)}`
+  const _payloadJson = (() => {
+    try { return JSON.stringify(payload) }
+    catch { return String(payload?.message || payload || '') }
+  })()
+  const s = `${kind}::${(payload?.stack || payload?.message || _payloadJson || '').slice(0, 400)}`
   let h = 5381
   for (let i = 0; i < s.length; i += 1) h = (h * 33) ^ s.charCodeAt(i)
   return (h >>> 0).toString(16)

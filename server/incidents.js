@@ -8,7 +8,7 @@ let initialized = false
 function now() { return Date.now() }
 function id() { return `inc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }
 function parse(raw, fallback) { try { return JSON.parse(raw || '') } catch { return fallback } }
-function stableHash(value = {}) { return crypto.createHash('sha256').update(JSON.stringify(value || {})).digest('hex').slice(0, 16) }
+function stableHash(value = {}) { try { return crypto.createHash('sha256').update(JSON.stringify(value || {})).digest('hex').slice(0, 16) } catch { return crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 16) } }
 
 export function initIncidents() {
   if (initialized) return
@@ -99,7 +99,7 @@ export function updateIncident(incidentId, patch = {}) {
     next.status || cur.status,
     next.severity || cur.severity,
     String(next.title || cur.title).slice(0, 240),
-    JSON.stringify(next.details || cur.details || {}),
+    (() => { try { return JSON.stringify(next.details || cur.details || {}) } catch { return JSON.stringify(cur.details || {}) || '{}' } })(),
     next.workflowId || cur.workflowId || '',
     now(),
     resolvedAt,

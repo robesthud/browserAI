@@ -90,8 +90,14 @@ function startStdioServer(name, cfg) {
   servers.set(name, slot)
 
   proc.stdout.setEncoding('utf8')
+  const MCP_BUFFER_MAX = 8 * 1024 * 1024  // 8 MB — guard against runaway stdout OOM
   proc.stdout.on('data', (chunk) => {
     rpc.buffer += chunk
+    // C — hard cap: if a single line exceeds the limit, drop the buffer (malformed server output)
+    if (rpc.buffer.length > MCP_BUFFER_MAX) {
+      console.warn(`[mcp] ${name}: stdout buffer overflow (${rpc.buffer.length} bytes) — clearing`)
+      rpc.buffer = ''
+    }
     let nlIdx
     while ((nlIdx = rpc.buffer.indexOf('\n')) >= 0) {
       const line = rpc.buffer.slice(0, nlIdx).trim()
@@ -133,6 +139,7 @@ function rpcCall(slot, method, params, { timeoutMs = 20_000 } = {}) {
       slot.rpc.pending.delete(id)
       reject(new Error(`mcp ${slot.name} timeout on ${method}`))
     }, timeoutMs)
+    timer?.unref?.()  // C — don't hold process open waiting for MCP timeouts
     slot.rpc.pending.set(id, { resolve, reject, timer })
     try {
       if (slot.transport === 'stdio') {
@@ -189,6 +196,9 @@ async function startSseServer(name, cfg) {
   const slot = { name, transport: 'sse', proc: null, rpc, status: 'starting', tools: [], capabilities: {}, error: null, cfg }
   servers.set(name, slot)
   try {
+    // A — SSRF guard: block SSE connections to internal hosts
+    const { isBlockedHost } = await import('./ssrf.js')
+    try { const _sseU = new URL(cfg.url); if (isBlockedHost(_sseU.hostname)) throw new Error(`MCP SSE URL is a blocked internal host: ${cfg.url}`) } catch (e) { if (e.message.includes('blocked')) throw e }
     const res = await fetch(cfg.url, { headers: { accept: 'text/event-stream' } })
     if (!res.ok || !res.body) throw new Error(`SSE connect failed ${res.status}`)
     ;(async () => {
@@ -306,9 +316,17 @@ export function listMcpTools() {
 }
 
 export async function invokeMcpTool(fullName, args = {}) {
-  const m = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(fullName)
-  if (!m) throw new Error(`not an mcp tool: ${fullName}`)
-  const [, serverName, toolName] = m
+  // D — split on FIRST occurrence of __ after the mcp__ prefix only
+  // (server names may contain single underscores; __ separates server from tool)
+  const prefix = 'mcp__'
+  if (!fullName.startsWith(prefix)) throw new Error(`not an mcp tool: ${fullName}`)
+  const rest = fullName.slice(prefix.length)
+  const sep = rest.indexOf('__')
+  if (sep < 0) throw new Error(`not an mcp tool: ${fullName}`)
+  const serverName = rest.slice(0, sep)
+  const toolName   = rest.slice(sep + 2)
+  if (!serverName || !toolName) throw new Error(`not an mcp tool: ${fullName}`)
+  const m = true  // keep downstream code happy
   const slot = servers.get(serverName)
   if (!slot) throw new Error(`mcp server not loaded: ${serverName}`)
   if (slot.status !== 'ready') throw new Error(`mcp server not ready: ${serverName} (${slot.error || slot.status})`)

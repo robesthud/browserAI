@@ -270,7 +270,7 @@ export function addOperatorMissionEvent({ missionId = '', userId = '', type = 'i
   initOperatorMode()
   const eventId = id('evt')
   db.prepare(`INSERT INTO operator_mission_events (id,mission_id,user_id,type,title,message,data_json,created_at) VALUES (?,?,?,?,?,?,?,?)`).run(
-    eventId, String(missionId || ''), String(userId || ''), String(type || 'info'), String(title || '').slice(0, 200), String(message || '').slice(0, 4000), JSON.stringify(data || {}), now(),
+    eventId, String(missionId || ''), String(userId || ''), String(type || 'info'), String(title || '').slice(0, 200), String(message || '').slice(0, 4000), (() => { try { return JSON.stringify(data || {}) } catch { return '{}' } })(), now(),
   )
   return eventId
 }
@@ -292,7 +292,7 @@ function patchMission(missionId, patch = {}) {
     next.status || cur.status,
     next.workflow_id ?? next.workflowId ?? cur.workflow_id ?? '',
     next.job_id ?? next.jobId ?? cur.job_id ?? '',
-    JSON.stringify(next.result || parse(cur.result_json, {})),
+    (() => { try { return JSON.stringify(next.result || parse(cur.result_json, {})) } catch { return cur.result_json || '{}' } })(),
     next.error || '',
     now(),
     next.finished_at ?? next.finishedAt ?? cur.finished_at ?? null,

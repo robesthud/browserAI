@@ -29,11 +29,16 @@ import { spawn } from 'node:child_process'
 import { redactSecrets } from './sandboxPolicy.js'
 
 let resolvedSandboxContainer = null
+let sandboxContainerResolvedAt = 0
+const SANDBOX_CONTAINER_TTL_MS = 5 * 60 * 1000 // 5 мин — re-resolve если контейнер перезапустился
 const MAX_STDOUT = 16 * 1024
 const MAX_STDERR = 4 * 1024
 
 export async function getSandboxContainer() {
-  if (resolvedSandboxContainer) return resolvedSandboxContainer
+  // TTL: если кеш устарел — re-resolve (sandbox мог перезапуститься)
+  if (resolvedSandboxContainer && Date.now() - sandboxContainerResolvedAt < SANDBOX_CONTAINER_TTL_MS) {
+    return resolvedSandboxContainer
+  }
   return new Promise((resolve) => {
     const defaultName = process.env.AGENT_SANDBOX_CONTAINER || 'agent-sandbox'
     const proc = spawn('docker', ['ps', '--format', '{{.Names}}'], { stdio: ['ignore', 'pipe', 'pipe'] })
@@ -43,35 +48,35 @@ export async function getSandboxContainer() {
       const names = stdout.split('\n').map(n => n.trim()).filter(Boolean)
       const found = names.find(n => n.endsWith('agent-sandbox') || n === 'agent-sandbox')
       resolvedSandboxContainer = found || defaultName
+      sandboxContainerResolvedAt = Date.now()
       resolve(resolvedSandboxContainer)
     })
     proc.on('error', () => {
       resolvedSandboxContainer = defaultName
+      sandboxContainerResolvedAt = Date.now()
       resolve(resolvedSandboxContainer)
     })
   })
 }
 
 export function getSandboxEnv() {
+  // Явный whitelist только нужных переменных — не используем /URL/i, /TOKEN/i, /SECRET/i
+  // которые раскрывают внутренние URLs и секреты в sandbox где выполняется LLM-код.
+  const EXPLICIT_KEYS = new Set([
+    'GEMINI_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
+    'LUMA_API_KEY', 'ELEVENLABS_API_KEY',
+    'GITHUB_TOKEN', 'GITHUB_REPO',
+    'NODE_ENV', 'WORKSPACE_ROOT',
+    'CF_PROXY_URL',       // без CF_PROXY_SECRET
+    'BROWSERAI_MAX_OUTPUT_TOKENS',
+  ])
+  const PREFIX_PATTERNS = [/^CUSTOM_TOOL_/, /^AGENT_ENV_/]
   const env = {}
-  const whitelistPatterns = [
-    /API_KEY/i,
-    /TOKEN/i,
-    /SECRET/i,
-    /PASSWORD/i,
-    /URL/i,
-    /^TG_/i,
-    /^GITHUB_/i,
-    /^GEMINI_/i,
-    /^ANTHROPIC_/i,
-    /^OPENAI_/i,
-    /^LUMA_/i,
-    /^ELEVENLABS_/i
-  ]
-
   for (const [key, val] of Object.entries(process.env)) {
-    if (whitelistPatterns.some(pat => pat.test(key))) {
-      env[key] = val
+    if (!val) continue
+    if (EXPLICIT_KEYS.has(key) || PREFIX_PATTERNS.some(p => p.test(key))) {
+      // Санируем значения — убираем переносы строк
+      env[key] = String(val).replace(/[\r\n]/g, ' ')
     }
   }
   return env
@@ -94,20 +99,20 @@ function clip(buf, max) {
  * @param {string} [opts.cwd='/workspace'] working directory inside container
  * @returns {Promise<{stdout, stderr, exitCode, truncated}>}
  */
-export function runSandboxCommand({ command, timeoutMs = 120_000, cwd = '/workspace', signal, onStdout, onStderr } = {}) {
-  return new Promise(async (resolve, reject) => {
-    if (!command || typeof command !== 'string') {
-      return reject(new Error('command must be a non-empty string'))
-    }
-
-    const sandboxContainer = await getSandboxContainer()
+export async function runSandboxCommand({ command, timeoutMs = 120_000, cwd = '/workspace', signal, onStdout, onStderr } = {}) {
+  if (!command || typeof command !== 'string') {
+    throw new Error('command must be a non-empty string')
+  }
+  const sandboxContainer = await getSandboxContainer()
+  return new Promise((resolve, reject) => {
+    // Все async операции завершены до Promise — executor синхронный
     const envs = getSandboxEnv()
     const args = [
       'exec',
-      '--user', process.env.AGENT_SANDBOX_USER || '0:0',
+      '--user', process.env.AGENT_SANDBOX_USER || '1000:1000',
     ]
     for (const [k, v] of Object.entries(envs)) {
-      args.push('-e', `${k}=${v}`)
+      args.push('-e', `${k}=${String(v).replace(/[\r\n]/g, ' ')}`)
     }
     args.push(
       '-w', cwd,

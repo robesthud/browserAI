@@ -89,8 +89,8 @@ function patchSuper(id, patch = {}) {
   const next = { ...cur, ...patch }
   db.prepare(`UPDATE operator_super_workflows SET status=?, state_json=?, result_json=?, error=?, updated_at=?, finished_at=? WHERE id=?`).run(
     next.status || cur.status,
-    JSON.stringify(next.state || cur.state || {}),
-    JSON.stringify(next.result || cur.result || {}),
+    (() => { try { return JSON.stringify(next.state || cur.state || {}) } catch { return cur.state_json || '{}' } })(),
+    (() => { try { return JSON.stringify(next.result || cur.result || {}) } catch { return cur.result_json || '{}' } })(),
     next.error || '',
     now(),
     next.finishedAt || null,

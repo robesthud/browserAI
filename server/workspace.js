@@ -11,13 +11,16 @@ import { isPrivateIp as isPrivateIpAddress } from './ssrf.js'
 import { publicWorkspacePolicy, WORKSPACE_EXCLUDED_DIRS } from './sandboxPolicy.js'
 
 const DEFAULT_DATA_DIR = '/data'
-const baseWorkspaceRoot = path.resolve(
-  process.env.WORKSPACE_ROOT
-    || (fsSync.existsSync(DEFAULT_DATA_DIR)
-      ? path.join(DEFAULT_DATA_DIR, 'workspace')
-      : path.join(process.cwd(), 'workspace')),
-)
 const workspaceScope = new AsyncLocalStorage()
+
+function getBaseWorkspaceRoot() {
+  return path.resolve(
+    process.env.WORKSPACE_ROOT
+      || (fsSync.existsSync(DEFAULT_DATA_DIR)
+        ? path.join(DEFAULT_DATA_DIR, 'workspace')
+        : path.join(process.cwd(), 'workspace')),
+  )
+}
 
 function sanitizeScopeId(id = '') {
   return String(id || '')
@@ -29,8 +32,8 @@ function sanitizeScopeId(id = '') {
 
 function getScopedWorkspaceRoot() {
   const chatId = workspaceScope.getStore()?.chatId
-  if (chatId) return path.join(baseWorkspaceRoot, 'chats', chatId)
-  return baseWorkspaceRoot
+  if (chatId) return path.join(getBaseWorkspaceRoot(), 'chats', chatId)
+  return getBaseWorkspaceRoot()
 }
 
 function getContainerWorkspaceRoot() {
@@ -52,8 +55,9 @@ function withWorkspaceScope(chatId, fn) {
 async function deleteWorkspaceScope(chatId) {
   const clean = sanitizeScopeId(chatId)
   if (!clean) throw new Error('chatId required')
-  const target = path.join(baseWorkspaceRoot, 'chats', clean)
-  if (!isInsideRoot(target, path.join(baseWorkspaceRoot, 'chats'))) {
+  const base = getBaseWorkspaceRoot()
+  const target = path.join(base, 'chats', clean)
+  if (!isInsideRoot(target, path.join(base, 'chats'))) {
     throw new Error('Path traversal detected')
   }
   await fs.rm(target, { recursive: true, force: true })
@@ -67,7 +71,8 @@ const MAX_SEARCH_TEXT_BYTES = 512 * 1024
 const WORKSPACE_QUOTA_BYTES = (Number(process.env.WORKSPACE_QUOTA_MB) || 500) * 1024 * 1024
 const MAX_SINGLE_FILE_BYTES = (Number(process.env.WORKSPACE_MAX_FILE_MB) || 50) * 1024 * 1024
 
-async function getWorkspaceSizeBytes(dir = getScopedWorkspaceRoot()) {
+async function getWorkspaceSizeBytes(dir = getScopedWorkspaceRoot(), _depth = 0) {
+  if (_depth > 30) return 0 // ограничение глубины — защита от stack overflow
   let total = 0
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true })
@@ -76,7 +81,7 @@ async function getWorkspaceSizeBytes(dir = getScopedWorkspaceRoot()) {
       if (WORKSPACE_EXCLUDED_DIRS.includes(entry.name)) continue
       const full = path.join(dir, entry.name)
       if (entry.isDirectory()) {
-        total += await getWorkspaceSizeBytes(full)
+        total += await getWorkspaceSizeBytes(full, _depth + 1)
       } else {
         const stat = await fs.stat(full).catch(() => null)
         if (stat) total += stat.size
@@ -96,6 +101,17 @@ async function assertQuota(additionalBytes = 0) {
   if (used + additionalBytes > WORKSPACE_QUOTA_BYTES) {
     throw new Error(`Превышена квота workspace: максимум ${Math.round(WORKSPACE_QUOTA_BYTES / 1024 / 1024)} МБ`)
   }
+}
+
+const AGENT_UID = Number(process.env.AGENT_WORKSPACE_UID || 1000)
+const AGENT_GID = Number(process.env.AGENT_WORKSPACE_GID || 1000)
+
+export async function makeAgentWritable(fullPath) {
+  // The API container writes files as root while agent-sandbox commands run as
+  // uid 1000. Keep workspace paths writable for the sandbox to avoid EACCES on
+  // npm install/build/test after file tools created files/directories.
+  try { await fs.chown(fullPath, AGENT_UID, AGENT_GID) } catch { /* not root / fs does not support chown */ }
+  try { await fs.chmod(fullPath, 0o775) } catch { /* ignore */ }
 }
 
 const TEXT_EXT = new Set([
@@ -150,19 +166,36 @@ function normalizeRelativePath(relativePath = '') {
   // Отбрасываем null bytes
   if (raw.includes('\0')) throw new Error('Invalid path: null bytes not allowed')
   if (raw.length > 1024) throw new Error('Invalid path: too long')
+  // Пробуем декодировать URL-encoding и проверяем результат
+  try {
+    const decoded = decodeURIComponent(raw)
+    if (decoded !== raw && (decoded.includes('..') || decoded.includes('/') || decoded.includes('\\') || decoded.includes('\0'))) {
+      throw new Error('Path traversal detected: URL-encoded traversal')
+    }
+  } catch (e) {
+    if (e.message.includes('traversal')) throw e
+    // decodeURIComponent бросил URIError — raw содержит невалидный encoding, блокируем
+    throw new Error('Path traversal detected: invalid URL encoding', { cause: e })
+  }
   if (/%2e/i.test(raw) || /%2f/i.test(raw) || /%5c/i.test(raw)) {
     throw new Error('Path traversal detected: encoded path segments are not allowed')
   }
 
   // #13 FIX: Если агент передал абсолютный путь, который ссылается на корень контейнера /workspace
   // или на текущий scoped root (например, /workspace/chats/ID/...), отрезаем этот префикс.
+  let cleanRaw = String(raw || '').replace(/\\/g, '/').trim()
   const containerRoot = getContainerWorkspaceRoot() // e.g. /workspace/chats/mq75yz6nac13wk1q
-  if (raw.startsWith(containerRoot + '/')) {
-    raw = raw.slice(containerRoot.length + 1)
-  } else if (raw.startsWith('/workspace/')) {
-    raw = raw.slice(11) // strip "/workspace/"
-  } else if (raw === containerRoot || raw === '/workspace') {
+  const lowerRaw = cleanRaw.toLowerCase()
+  const lowerRoot = containerRoot.toLowerCase()
+
+  if (lowerRaw === lowerRoot || lowerRaw === '/workspace' || lowerRaw === '/workspace/') {
     raw = ''
+  } else if (lowerRaw.startsWith(lowerRoot + '/')) {
+    raw = cleanRaw.slice(containerRoot.length + 1)
+  } else if (lowerRaw.startsWith('/workspace/')) {
+    raw = cleanRaw.slice(11) // strip "/workspace/"
+  } else {
+    raw = cleanRaw
   }
 
   const normalized = path.posix.normalize(raw).replace(/^\/+/, '')
@@ -192,9 +225,11 @@ function safePath(relativePath) {
         current = target
         resolvedSegments.push(segment)
       } else {
-        // Try case-insensitive match in current directory
+        // Case-insensitive match — читаем директорию синхронно (safePath sync по дизайну)
+        // Ограничиваем до 2000 записей чтобы не блокировать event loop в node_modules
         try {
           const entries = fsSync.readdirSync(current)
+          if (entries.length > 2000) { failed = true; break } // too large dir — skip resolution
           const lower = segment.toLowerCase()
           const match = entries.find(e => e.toLowerCase() === lower)
           if (match) {
@@ -216,10 +251,23 @@ function safePath(relativePath) {
     }
   }
 
-  if (!isInsideRoot(full, getScopedWorkspaceRoot())) {
-    throw new Error('Path traversal detected')
+  // Проверяем реальный путь (после разрешения symlinks) — защита от symlink traversal
+  try {
+    const real = fsSync.realpathSync(full)
+    if (!isInsideRoot(real, getScopedWorkspaceRoot())) {
+      throw new Error('Path traversal detected (symlink)')
+    }
+    return real
+  } catch (e) {
+    if (e.code === 'ENOENT') {
+      // Файл не существует — проверяем строковый путь (для новых файлов)
+      if (!isInsideRoot(full, getScopedWorkspaceRoot())) {
+        throw new Error('Path traversal detected', { cause: e })
+      }
+      return full
+    }
+    throw e
   }
-  return full
 }
 
 function safeHistoryPath(relativePath = '') {
@@ -294,8 +342,12 @@ function parseRevisionMeta(baseName, fileName) {
 }
 
 async function ensureWorkspaceRoot() {
-  await fs.mkdir(getScopedWorkspaceRoot(), { recursive: true })
-  await fs.mkdir(getScopedHistoryRoot(), { recursive: true })
+  const root = getScopedWorkspaceRoot()
+  const history = getScopedHistoryRoot()
+  await fs.mkdir(root, { recursive: true })
+  await fs.mkdir(history, { recursive: true })
+  await makeAgentWritable(root)
+  await makeAgentWritable(history)
 }
 
 async function saveRevisionSnapshot(relPath, content, reason = 'edit') {
@@ -310,12 +362,14 @@ async function saveRevisionSnapshot(relPath, content, reason = 'edit') {
   const dirRel = path.dirname(normalizedRel)
   const revisionDir = safeHistoryPath(dirRel)
   await fs.mkdir(revisionDir, { recursive: true })
+  await makeAgentWritable(revisionDir)
 
   const timestamp = Date.now()
   const hash = crypto.createHash('md5').update(buffer).digest('hex').slice(0, 8)
   const fileName = revisionFileName(baseName, timestamp, hash, reason)
   const revisionPath = safeHistoryPath(path.join(dirRel, fileName))
   await fs.writeFile(revisionPath, buffer)
+  await makeAgentWritable(revisionPath)
 
   const entries = await fs.readdir(revisionDir).catch(() => [])
   const revisions = entries
@@ -367,6 +421,7 @@ async function buildTree(currentPath, currentRel = '', showHidden = false) {
 }
 
 async function getWorkspaceTree(showHidden = false) {
+  await ensureWorkspaceRoot()
   return {
     name: 'workspace',
     path: '',
@@ -379,21 +434,9 @@ async function readWorkspaceFile(relPath) {
   const normalizedRel = normalizeRelativePath(relPath)
   if (!normalizedRel) throw new Error('path required')
 
-  let full = safePath(normalizedRel)
-  let stat
-  try {
-    stat = await fs.stat(full)
-    if (!stat.isFile()) throw new Error("Not a file")
-  } catch (e) {
-    if (e.code === "ENOENT") {
-      const fresh = normalizeRelativePath(relPath)
-      full = safePath(fresh)
-      stat = await fs.stat(full)
-      if (!stat.isFile()) throw new Error("Not a file")
-    } else {
-      throw e
-    }
-  }
+  const full = safePath(normalizedRel)
+  const stat = await fs.stat(full)
+  if (!stat.isFile()) throw new Error("Not a file")
 
   const name = path.basename(normalizedRel)
   const mime = fileNameToMime(name)
@@ -450,6 +493,7 @@ async function createFolder(parentRel, name) {
   if (!cleanName) throw new Error('Folder name required')
   const target = safePath(path.posix.join(normalizeRelativePath(parentRel), cleanName))
   await fs.mkdir(target, { recursive: true })
+  await makeAgentWritable(target)
 }
 
 async function createFile(parentRel, name, content = '') {
@@ -459,8 +503,12 @@ async function createFile(parentRel, name, content = '') {
   const rel = path.posix.join(normalizeRelativePath(parentRel), cleanName)
   const full = safePath(rel)
   await fs.mkdir(path.dirname(full), { recursive: true })
-  await fs.writeFile(full, String(content ?? ''), 'utf8')
-  await saveRevisionSnapshot(rel, String(content ?? ''), 'create')
+  await makeAgentWritable(path.dirname(full))
+  const contentStr = String(content ?? '')
+  await assertQuota(Buffer.byteLength(contentStr, 'utf8'))
+  await fs.writeFile(full, contentStr, 'utf8')
+  await makeAgentWritable(full)
+  await saveRevisionSnapshot(rel, contentStr, 'create')
 }
 
 async function writeFileContent(relPath, content = '') {
@@ -469,6 +517,7 @@ async function writeFileContent(relPath, content = '') {
 
   const full = safePath(normalizedRel)
   await fs.mkdir(path.dirname(full), { recursive: true })
+  await makeAgentWritable(path.dirname(full))
 
   const previous = await fs.readFile(full).catch(() => null)
   const nextContent = typeof content === 'string' ? content : String(content ?? '')
@@ -483,6 +532,7 @@ async function writeFileContent(relPath, content = '') {
   }
 
   await fs.writeFile(full, nextContent, 'utf8')
+  await makeAgentWritable(full)
 
   if (!previous) {
     await saveRevisionSnapshot(normalizedRel, nextContent, 'create')
@@ -525,12 +575,8 @@ async function deleteItem(relPath) {
   if (!normalizedRel) throw new Error('path required')
 
   const full = safePath(normalizedRel)
-  const stat = await fs.stat(full)
-  if (stat.isDirectory()) {
-    await fs.rm(full, { recursive: true, force: true })
-  } else {
-    await fs.unlink(full)
-  }
+  // fs.rm с force:true атомарно удаляет файл или директорию — нет TOCTOU между stat и unlink
+  await fs.rm(full, { recursive: true, force: false })
 }
 
 async function assertPublicUrl(url) {
@@ -615,7 +661,9 @@ async function writeUploadedFile(targetRel, buffer, reason = 'create') {
   await assertQuota(buffer.length)
   const full = safePath(targetRel)
   await fs.mkdir(path.dirname(full), { recursive: true })
+  await makeAgentWritable(path.dirname(full))
   await fs.writeFile(full, buffer)
+  await makeAgentWritable(full)
   await saveRevisionSnapshot(targetRel, buffer, reason)
 }
 
@@ -638,7 +686,15 @@ async function extractZipBuffer(parentRel, archiveRel, buffer, options = {}) {
       continue
     }
 
+    // Zip Bomb protection: проверяем несжатый размер
+    const uncompressedSize = entry.header?.size ?? 0
+    if (uncompressedSize > MAX_SINGLE_FILE_BYTES) {
+      throw new Error(`Archive entry too large: ${entry.entryName} (${Math.round(uncompressedSize / 1024 / 1024)} MB)`)
+    }
     const data = entry.getData()
+    if (data.length > MAX_SINGLE_FILE_BYTES) {
+      throw new Error(`Extracted file too large: ${entry.entryName}`)
+    }
     await writeUploadedFile(entryRel, data, 'create')
     written.push(entryRel)
   }
@@ -821,11 +877,28 @@ async function uploadFromUrl(parentRel, url, options = {}) {
     headers: {
       'User-Agent': 'Mozilla/5.0 (compatible; BrowserAI/1.0)',
     },
+    signal: AbortSignal.timeout(30_000),
+    redirect: 'follow',
   })
 
   if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`)
 
+  // Защита от OOM: проверяем Content-Length перед загрузкой
+  const contentLength = Number(response.headers.get('content-length') || 0)
+  if (contentLength > MAX_SINGLE_FILE_BYTES) {
+    throw new Error(`Remote file too large: ${Math.round(contentLength / 1024 / 1024)} MB (max ${Math.round(MAX_SINGLE_FILE_BYTES / 1024 / 1024)} MB)`)
+  }
+
+  // Проверяем URL после редиректа — защита от SSRF via redirect
+  const finalUrl = response.url || normalizedUrl
+  if (finalUrl !== normalizedUrl) {
+    await assertPublicUrl(finalUrl).catch((e) => { throw new Error(`SSRF via redirect blocked: ${e.message}`) })
+  }
+
   const buffer = Buffer.from(await response.arrayBuffer())
+  if (buffer.length > MAX_SINGLE_FILE_BYTES) {
+    throw new Error(`Downloaded file too large: ${Math.round(buffer.length / 1024 / 1024)} MB`)
+  }
   const filename = fileNameFromResponse(normalizedUrl, response)
   const archiveType = detectArchiveType(filename, response.headers.get('content-type') || '')
   const stripRoot = Boolean(options.stripTopLevel ?? isGithubRepositoryUrl(originalUrl))
@@ -858,6 +931,7 @@ async function searchWorkspaceContent(query, showHidden = false) {
       if (results.length >= 100) return
       if (!showHidden && entry.name.startsWith('.')) continue
       if (entry.name === '.history') continue
+      if (WORKSPACE_EXCLUDED_DIRS.includes(entry.name)) continue
 
       const rel = currentRel ? path.posix.join(currentRel, entry.name) : entry.name
       const full = safePath(rel)
@@ -968,6 +1042,8 @@ async function readProjectRules() {
       if (entry.name.startsWith('.history') || entry.name === 'node_modules' || entry.name === '.git') continue
       const abs = path.join(dir, entry.name)
       if (entry.isDirectory()) { await walk(abs, depth + 1); continue }
+      // Пропускаем symlinks — могут указывать за пределы workspace
+      if (entry.isSymbolicLink()) continue
       if (RULES_PRIORITY.includes(entry.name) && !found.has(entry.name)) {
         found.set(entry.name, abs)
       }
@@ -1056,11 +1132,13 @@ async function restoreFileRevision(relPath, revisionId) {
     await saveRevisionSnapshot(normalizedRel, current, 'restore')
   }
 
-  await fs.mkdir(path.dirname(safePath(normalizedRel)), { recursive: true })
-  await fs.writeFile(safePath(normalizedRel), content)
+  const targetFull = safePath(normalizedRel)
+  await fs.mkdir(path.dirname(targetFull), { recursive: true })
+  await fs.writeFile(targetFull, content)
 }
 
 function streamWorkspaceFile(relPath) {
+  if (!relPath) throw new Error('streamWorkspaceFile: relPath required')
   return fsSync.createReadStream(safePath(relPath))
 }
 
@@ -1088,6 +1166,7 @@ async function getWorkspaceMetadata() {
     try { entries = await fs.readdir(dir, { withFileTypes: true }) } catch { return }
     for (const entry of entries) {
       if (WORKSPACE_EXCLUDED_DIRS.includes(entry.name)) continue
+      if (entry.name === '.history') continue
       const full = path.join(dir, entry.name)
       if (entry.isDirectory()) { dirCount += 1; await walk(full) }
       else fileCount += 1
@@ -1105,7 +1184,7 @@ async function getWorkspaceMetadata() {
     dirCount,
     policy: publicWorkspacePolicy({
       root: '/workspace',
-      scoped: root !== baseWorkspaceRoot,
+      scoped: root !== getBaseWorkspaceRoot(),
       quotaMb: Math.round(WORKSPACE_QUOTA_BYTES / 1024 / 1024),
       maxFileMb: Math.round(MAX_SINGLE_FILE_BYTES / 1024 / 1024),
     }),
@@ -1135,6 +1214,7 @@ export {
   listRecentWorkspaceActivity,
   readProjectRules,
   safePath,
+  workspaceScope,
   withWorkspaceScope,
   deleteWorkspaceScope,
   sanitizeScopeId,

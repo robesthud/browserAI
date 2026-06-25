@@ -1,17 +1,28 @@
 services:
   browserai:
+    mem_limit: 1500m
+    memswap_limit: 1700m
     build: .
     image: browserai:latest
     container_name: browserai
     restart: unless-stopped
     ports:
-      - "80:8080"
+      - "127.0.0.1:8080:8080"
     environment:
+
+      - BROWSERAI_RUNTIME_MODE=privileged
+      - BROWSERAI_DISABLE_CATASTROPHIC_APPROVAL=1
       - NODE_ENV=production
       - PORT=8080
       - OPS_APP_DIR=/opt/browserai
       # DeepSeek managed-session env (optional bootstrap, can be set later via UI/TG)
       - DEEPSEEK_STATE_FILE=/data/deepseek_session.json
+      # Z.ai (chat.z.ai) managed session — same pattern as DeepSeek
+      - ZAI_STATE_FILE=/data/zai_session.json
+      - ZAI_HEARTBEAT_MS=${ZAI_HEARTBEAT_MS:-600000}
+      - ZAI_MODELS_REFRESH_MS=${ZAI_MODELS_REFRESH_MS:-3600000}
+      - ZAI_COOKIES=${ZAI_COOKIES:-}
+      - GLM_PROXY_URL=${GLM_PROXY_URL:-http://glm-free-api:8000}
       - CHAT_DEBUG_LOG=/data/chat-debug.log
       # - DEEPSEEK_USER_TOKEN=
       # - DEEPSEEK_COOKIES=
@@ -32,6 +43,8 @@ services:
       # Workspace path shared by API and agent-sandbox. Without this the API
       # defaults to /data/workspace while bash tools write to /workspace.
       - WORKSPACE_ROOT=${WORKSPACE_ROOT:-/workspace}
+      # Agent runtime defaults: full agent loop, no hard approval prompts for trusted owner deployments.
+      - BROWSERAI_LIGHTWEIGHT_ROUTE=${BROWSERAI_LIGHTWEIGHT_ROUTE:-0}
       # Agent sandbox
       - AGENT_SANDBOX_CONTAINER=agent-sandbox
       # Computer-use sandbox (Xvfb + Firefox + xdotool). Disabled by
@@ -59,6 +72,8 @@ services:
       # Allows `docker exec agent-sandbox ...` from inside this container.
       - /var/run/docker.sock:/var/run/docker.sock
       - /opt/browserai:/opt/browserai
+      - /opt/browserai/server:/app/server
+      - /opt/browserai/runtime:/app/runtime
     depends_on:
       - agent-sandbox
 
@@ -100,6 +115,8 @@ services:
     container_name: browserai-db
     restart: unless-stopped
     environment:
+
+
       - POSTGRES_USER=browserai
       - POSTGRES_PASSWORD=browserai_secret
       - POSTGRES_DB=browserai
@@ -115,10 +132,32 @@ services:
     image: ollama/ollama:latest
     container_name: browserai-ollama
     restart: unless-stopped
+    # Memory cap: 3.5GB leaves ~300MB for the rest of the VPS.
+    # Ollama will respect this; if model + context exceed it, OOM-kills.
+    mem_limit: 3500m
+    memswap_limit: 3500m   # disable swap for ollama (was eating all 2GB)
     ports:
       - "11434:11434"
     volumes:
       - ${DATA_DIR:-./data}/ollama:/root/.ollama
+    environment:
+
+
+      # ── keep model loaded (default 5m). 0 = unload IMMEDIATELY after request.
+      # On 3.8GB VPS with 7b model (~3.2GB RSS), keeping it loaded kills RAM
+      # and pushes everything else to swap. Unload after each request is safe.
+      - OLLAMA_KEEP_ALIVE=0
+      # ── only one model in RAM at a time
+      - OLLAMA_MAX_LOADED_MODELS=1
+      # ── sequential request handling (no parallel inference)
+      - OLLAMA_NUM_PARALLEL=1
+      # ── fail fast if loading takes >5min (avoid zombie processes)
+      - OLLAMA_LOAD_TIMEOUT=5m
+      # ── reduce default context from 4096 to 2048 → less RAM per request
+      - OLLAMA_CONTEXT_LENGTH=2048
+      # ── smaller batch sizes (default 512) — saves ~200MB
+      - OLLAMA_BATCH_SIZE=256
+      - OLLAMA_UBATCH_SIZE=128
 
   # ──────────────────────────────────────────────────────────────────────
   # computer-sandbox — virtual X11 desktop for Computer Use tools.
@@ -143,6 +182,8 @@ services:
     # SHM size matters for Firefox — too small and pages crash.
     shm_size: 256m
     environment:
+
+
       - DISPLAY=:99
       - SCREEN_WIDTH=${COMPUTER_SCREEN_WIDTH:-1280}
       - SCREEN_HEIGHT=${COMPUTER_SCREEN_HEIGHT:-720}
@@ -155,4 +196,18 @@ services:
     mem_limit: 400m
     cpus: 0.5
     pids_limit: 256
+
+  # ──────────────────────────────────────────────────────────────────────
+  # glm-free-api — z.ai (Zhipu AI Web) Free Reverse API Gateway
+  # ──────────────────────────────────────────────────────────────────────
+  glm-free-api:
+    image: akashrajpuroh1t/glm-free-api-fix:latest
+    container_name: glm-free-api
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Volgograd
+    ports:
+      - "127.0.0.1:8001:8000"
+    pids_limit: 64
+
 

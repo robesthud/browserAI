@@ -197,19 +197,32 @@ export async function computerOpenApp({ name = 'firefox', url = '', signal } = {
   // Run detached: nohup … & so xdotool can keep working while the app is up.
   let cmd
   if (app === 'firefox' || app === 'firefox-esr') {
-    const safeUrl = url && /^https?:\/\//i.test(url) ? url : 'about:blank'
-    // --no-remote --new-instance keeps each invocation a fresh profile
-    // so the agent doesn't trip over previous-session restore prompts.
-    cmd = `DISPLAY=:99 nohup firefox-esr --no-remote --new-instance "${safeUrl.replace(/"/g, '\\"')}" >/tmp/${app}.log 2>&1 &`
+    // A — validate URL strictly; fall back to about:blank for anything non-http(s)
+    // Never shell-interpolate user input — pass URL as a separate argument via execInContainer
+    let safeUrl = 'about:blank'
+    if (url) {
+      try {
+        const parsed = new URL(url)
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') safeUrl = parsed.toString()
+      } catch { /* keep about:blank */ }
+    }
+    // Use execInContainer directly so the URL is passed as a separate argv element (no shell interpolation)
+    const r2 = await execInContainer(
+      ['bash', '-lc', `DISPLAY=:99 nohup firefox-esr --no-remote --new-instance ${JSON.stringify(safeUrl)} >/tmp/${app}.log 2>&1 &`],
+      { signal, timeoutMs: 8_000 }
+    )
+    if (r2.exitCode !== 0) return { ok: false, error: r2.stderr || `failed to spawn ${app}` }
+    await new Promise((r3) => setTimeout(r3, 1500))
+    const shot2 = await computerScreenshot({ signal }).catch(() => null)
+    return { ok: true, action: 'open_app', app, url: safeUrl || null, dataUrl: shot2?.dataUrl || null }
   } else {
     cmd = `DISPLAY=:99 nohup ${app} >/tmp/${app}.log 2>&1 &`
+    const r = await execShell(cmd, { signal, timeoutMs: 8_000 })
+    if (r.exitCode !== 0) return { ok: false, error: r.stderr || `failed to spawn ${app}` }
+    await new Promise((r2) => setTimeout(r2, 1500))
+    const shot = await computerScreenshot({ signal }).catch(() => null)
+    return { ok: true, action: 'open_app', app, url: null, dataUrl: shot?.dataUrl || null }
   }
-  const r = await execShell(cmd, { signal, timeoutMs: 8_000 })
-  if (r.exitCode !== 0) return { ok: false, error: r.stderr || `failed to spawn ${app}` }
-  // Give the window 1.5s to render before we screenshot.
-  await new Promise((r2) => setTimeout(r2, 1500))
-  const shot = await computerScreenshot({ signal }).catch(() => null)
-  return { ok: true, action: 'open_app', app, url: url || null, dataUrl: shot?.dataUrl || null }
 }
 
 // ── Status / diagnostics ────────────────────────────────────────────────────

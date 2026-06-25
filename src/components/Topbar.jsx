@@ -1,31 +1,15 @@
 import { IconFolder, IconExpand } from '../icons.jsx'
 import MobileHeaderModelPicker from './MobileHeaderModelPicker.jsx'
+import ProviderStatusBadge from './ProviderStatusBadge.jsx'
 
-/**
- * Top bar of the chat view.
- *
- * Mobile (< md):
- *   left   : burger (rendered by App.jsx outside this component)
- *   center : compact MobileHeaderModelPicker (✱ model name ▾)
- *   right  : workspace toggle
- *
- * Desktop (>= md):
- *   left   : chat title + optional auto-model hint + "API не настроен" badge
- *   right  : status pills (Агент / Авто), workspace toggle, logout
- *
- * Mode toggles (🤖 Агент, 🌐 Web AI) and Settings live in the Sidebar
- * (see Sidebar.jsx). On mobile the title is hidden so the model picker
- * has room — title is still available as the active sidebar item.
- */
 export default function Topbar({
   collapsed,
   onToggleSidebar,
   title,
   configured,
   aiWorking,
-  autoMode,
-  autoModelHint,
   agentMode,
+  agentContext = null,
   workspaceOpen,
   onToggleWorkspace,
   onOpenSettings,
@@ -35,7 +19,6 @@ export default function Topbar({
   availableModels = [],
   selectedModel,
   onSelectModel,
-  onToggleAuto,
   onOpenSearch,
   onOpenCheckpoints,
   onExportChat,
@@ -51,12 +34,13 @@ export default function Topbar({
 
   return (
     <header className="flex items-center justify-between gap-2 px-3 pb-2 pt-safe md:gap-3 md:px-5 md:py-3.5">
-      {/* Left/Center: Model Picker (Always visible) + Title (Desktop only) */}
       <div className="flex min-w-0 flex-1 items-center justify-start gap-2 md:pl-12">
         {collapsed && (
           <button
+            type="button"
             onClick={onToggleSidebar}
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-cream-dim hover:bg-graphite-800 md:hidden"
+            aria-label="Открыть меню"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-cream-dim hover:bg-graphite-800"
             title="Открыть меню"
           >
             <IconExpand />
@@ -65,26 +49,26 @@ export default function Topbar({
         <MobileHeaderModelPicker
           models={availableModels}
           selectedModel={selectedModel}
-          autoMode={autoMode}
           onSelectModel={onSelectModel}
-          onToggleAuto={onToggleAuto}
           devtoolsEnabled={devtoolsEnabled}
+        />
+        {/* Provider status badge — shows current model + fallback indicator */}
+        <ProviderStatusBadge
+          agentContext={agentContext}
+          isBusy={aiWorking}
         />
         <span className="hidden truncate text-[14px] text-cream-soft md:inline-block">{title}</span>
 
-        {devtoolsEnabled && autoModelHint && !aiWorking && (
-          <span className="hidden shrink-0 animate-pulse rounded-full border border-violet-400/30 bg-violet-500/10 px-2 py-0.5 text-[11px] text-violet-300 md:inline-block">
-            {autoModelHint}
-          </span>
-        )}
-
-        {!configured && !autoModelHint && (
+        {!configured && (
           <button
+            type="button"
             onClick={onOpenSettings}
-            className="hidden shrink-0 rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-0.5 text-[11px] text-amber-300 transition-colors hover:bg-amber-400/20 md:inline-block"
+            className="shrink-0 rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-300 transition-colors hover:bg-amber-400/20 md:px-2.5"
             title="Введите API-ключ и выберите модель, чтобы начать чат"
+            aria-label="API не настроен — открыть настройки"
           >
-            API не настроен
+            <span className="md:hidden">API?</span>
+            <span className="hidden md:inline">API не настроен</span>
           </button>
         )}
 
@@ -95,9 +79,7 @@ export default function Topbar({
         )}
       </div>
 
-      {/* Right: search / export / tokens / workspace toggle + desktop-only logout */}
       <div className="flex shrink-0 items-center gap-1.5 md:gap-2">
-        {/* Token usage badge — only on desktop, only when there's something to show */}
         {devtoolsEnabled && totalTokens > 0 && (
           <span
             className="hidden rounded-full border border-white/10 bg-graphite-800/60 px-2 py-0.5 font-mono text-[11px] text-cream-faint md:inline"
@@ -107,7 +89,6 @@ export default function Topbar({
           </span>
         )}
 
-        {/* USD spend today — turns amber > 50% of cap, red > 90% */}
         {devtoolsEnabled && costToday > 0 && (
           <span
             className={[
@@ -128,6 +109,7 @@ export default function Topbar({
           <button
             type="button"
             onClick={onOpenSearch}
+            aria-label="Поиск по чатам"
             className="hidden h-9 w-9 place-items-center rounded-lg text-cream-dim transition-colors hover:bg-graphite-800 hover:text-cream md:grid"
             title="Поиск по чатам (Ctrl+K)"
           >🔎</button>
@@ -137,6 +119,7 @@ export default function Topbar({
           <button
             type="button"
             onClick={onOpenCheckpoints}
+            aria-label="Контрольные точки"
             className="hidden h-9 w-9 place-items-center rounded-lg text-cream-dim transition-colors hover:bg-graphite-800 hover:text-cream md:grid"
             title="Контрольные точки — откатить ход агента"
           >💾</button>
@@ -146,13 +129,16 @@ export default function Topbar({
           <button
             type="button"
             onClick={onExportChat}
+            aria-label="Скачать чат как Markdown"
             className="hidden h-9 w-9 place-items-center rounded-lg text-cream-dim transition-colors hover:bg-graphite-800 hover:text-cream md:grid"
             title="Скачать чат как Markdown"
           >⬇</button>
         )}
 
         <button
+          type="button"
           onClick={onToggleWorkspace}
+          aria-label={workspaceOpen ? 'Скрыть рабочую область' : 'Показать рабочую область'}
           className={`grid h-9 w-9 place-items-center rounded-lg transition-colors
                       ${
                         workspaceOpen
@@ -166,6 +152,7 @@ export default function Topbar({
         </button>
 
         <button
+          type="button"
           onClick={onLogout}
           className="hidden rounded-lg border border-white/10 px-2.5 py-2 text-[12px] text-cream-dim transition-colors hover:bg-graphite-800 hover:text-cream md:inline-block"
           title={user?.email ? `Выйти из аккаунта (${user.email})` : 'Выйти из аккаунта'}

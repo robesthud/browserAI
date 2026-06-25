@@ -1,6 +1,6 @@
 // Mobile viewport hardening for iPhone/iOS and Android browsers.
 // Goal: make BrowserAI behave like a native full-height chat app:
-// - no pinch/double-tap zoom;
+// - keeps browser zoom available for accessibility;
 // - correct dynamic viewport when Safari toolbars/keyboard appear;
 // - prevent iOS from scrolling the whole app upward when focusing composer;
 // - CSS variables for safe-area and keyboard-aware layouts.
@@ -35,36 +35,6 @@ function setAppViewportVars() {
   root.classList.toggle('keyboard-open', keyboardHeight > 80 || isEditable(document.activeElement))
 }
 
-function preventPinchZoom() {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return () => {}
-  const prevent = (e) => { try { e.preventDefault() } catch { /* ignore */ } }
-  const preventMultiTouch = (e) => {
-    if (e.touches && e.touches.length > 1) prevent(e)
-  }
-  let lastTouchEnd = 0
-  const preventDoubleTapZoom = (e) => {
-    const now = Date.now()
-    if (now - lastTouchEnd <= 300) prevent(e)
-    lastTouchEnd = now
-  }
-  const preventCtrlWheelZoom = (e) => { if (e.ctrlKey) prevent(e) }
-
-  document.addEventListener('gesturestart', prevent, { passive: false })
-  document.addEventListener('gesturechange', prevent, { passive: false })
-  document.addEventListener('gestureend', prevent, { passive: false })
-  document.addEventListener('touchmove', preventMultiTouch, { passive: false })
-  document.addEventListener('touchend', preventDoubleTapZoom, { passive: false })
-  document.addEventListener('wheel', preventCtrlWheelZoom, { passive: false })
-
-  return () => {
-    document.removeEventListener('gesturestart', prevent)
-    document.removeEventListener('gesturechange', prevent)
-    document.removeEventListener('gestureend', prevent)
-    document.removeEventListener('touchmove', preventMultiTouch)
-    document.removeEventListener('touchend', preventDoubleTapZoom)
-    document.removeEventListener('wheel', preventCtrlWheelZoom)
-  }
-}
 
 function setupKeyboardStability() {
   if (typeof window === 'undefined' || typeof document === 'undefined') return () => {}
@@ -113,14 +83,12 @@ export function setupMobileViewport() {
   window.addEventListener('orientationchange', onResize, { passive: true })
   vv?.addEventListener?.('resize', onResize, { passive: true })
   vv?.addEventListener?.('scroll', onResize, { passive: true })
-  const cleanupPinch = preventPinchZoom()
   const cleanupKeyboard = setupKeyboardStability()
   return () => {
     window.removeEventListener('resize', onResize)
     window.removeEventListener('orientationchange', onResize)
     vv?.removeEventListener?.('resize', onResize)
     vv?.removeEventListener?.('scroll', onResize)
-    cleanupPinch?.()
     cleanupKeyboard?.()
   }
 }

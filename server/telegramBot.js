@@ -14,6 +14,7 @@
  *   TELEGRAM_BOT       — set 'off' to disable
  */
 import db from './db.js'
+import { purgeChat } from './chatPurge.js'
 import { runAgent } from './agentLoop.js'
 import { answerQuestion, cancelQuestion } from './askUserRegistry.js'
 import { runOpsAction, listOpsServices } from './ops.js'
@@ -26,7 +27,7 @@ import {
 } from './deepseekTokenRefresher.js'
 
 const TG_TOKEN = process.env.TG_BOT_TOKEN || ''
-const ADMIN_CHAT_ID = String(process.env.TG_ADMIN_CHAT_ID || process.env.TG_CHAT_ID || '')
+const ADMIN_CHAT_ID = String(process.env.TG_ADMIN_CHAT_ID || process.env.TG_CHAT_ID || '').trim()
 const POLL_TIMEOUT_SEC = 25
 const POLL_INTERVAL_MS = 1500
 const MAX_TG = 3900
@@ -37,7 +38,8 @@ let running = false
 let offset = 0
 const activeRuns = new Map() // chatId -> { stop, startedAt, placeholderId }
 const pendingApprovalScope = new Map() // questionId -> { userId, chatId }
-const lastLogs = new Map() // chatId -> { stdout, stderr, exitCode }
+const lastLogs = new Map() // chatId -> { stdout, stderr, exitCode, ts }
+const LAST_LOGS_TTL_MS = 30 * 60 * 1000 // 30 мин
 
 function log(...a) { console.log('[tg-v2]', ...a) }
 function warn(...a) { console.warn('[tg-v2]', ...a) }
@@ -250,7 +252,13 @@ function loadHistory(chatId) {
 
 function saveHistory(chatId, history = []) {
   ensureTables()
-  const compact = history.slice(-20).map((m) => ({ role: m.role, content: String(m.content || '').slice(0, 6000) }))
+  const compact = history.slice(-20).map((m) => ({
+    role: m.role,
+    // Сохраняем структуру content (multimodal arrays) — не преобразуем в строку
+    content: Array.isArray(m.content)
+      ? m.content.map(p => p?.type === 'text' ? { type: 'text', text: String(p.text || '').slice(0, 2000) } : p).slice(0, 5)
+      : String(m.content || '').slice(0, 6000),
+  }))
   db.prepare(`INSERT INTO telegram_chats_v2 (chat_id, history_json, updated_at) VALUES (?, ?, ?)
     ON CONFLICT(chat_id) DO UPDATE SET history_json=excluded.history_json, updated_at=excluded.updated_at`)
     .run(String(chatId), JSON.stringify(compact), Date.now())
@@ -309,11 +317,16 @@ async function runAiForTelegram(chatId, userText) {
     on: (event, fn) => {
       if (event === 'close' && typeof fn === 'function') closeHandlers.push(fn)
     },
-    write: (chunk) => {
-      if (stopped) return
-      const text = String(chunk || '')
-      let event = 'message'
-      for (const block of text.split(/\n\n/)) {
+    write: (() => {
+      // SSE буфер для сборки разорванных блоков
+      let sseBuffer = ''
+      return (chunk) => {
+        if (stopped) return
+        sseBuffer += String(chunk || '')
+        const blocks = sseBuffer.split(/\n\n/)
+        sseBuffer = blocks.pop() || '' // неполный блок остаётся в буфере
+        let event = 'message'
+        for (const block of blocks) {
         if (!block.trim() || block.startsWith(':')) continue
         let data = null
         for (const line of block.split('\n')) {
@@ -367,7 +380,8 @@ async function runAiForTelegram(chatId, userText) {
           scheduleEdit(finalText, 0)
         }
       }
-    },
+      }
+    })(),
     end: () => {},
   }
 
@@ -450,6 +464,8 @@ async function handleCommand(msg) {
         '/deepseek — DeepSeek status',
         '/hidekeyboard — убрать старую нижнюю Telegram-клавиатуру',
         '',
+        '/purgechat <chatId> — полностью удалить чат (память, файлы, история)',
+        '',
         'Любой обычный текст → тот же AI/Agent pipeline, что на сайте.',
       ].join('\n'))
     case '/new':
@@ -506,6 +522,29 @@ async function handleCommand(msg) {
       return runOpsAndReply(chatId, (await sendMessage(chatId, '⏳ CI…'))?.result?.message_id, 'GitHub Actions', 'github', 'actions_status', { limit: 5 })
     case '/deploy':
       return sendMessage(chatId, '🚀 Deploy menu', { reply_markup: deployKeyboard() })
+    case '/purgechat':
+    case '/purge': {
+      if (!arg) return sendMessage(chatId, '⚠️ Использование: /purgechat <chatId>\n\nТекущий chat_id этого чата: ' + chatId)
+      try {
+        const r = await purgeChat(arg)
+        const lines = [
+          '🧹 Чат полностью очищен',
+          'chat_id: ' + r.chatId,
+          'Файлы воркспейса: ' + (r.filesDeleted ? '✅ удалены (' + Math.round((r.bytesFreed||0)/1024) + ' КБ)' : '❌ не найдены'),
+          '',
+          'Удалено из БД:',
+          '• semantic_memory: ' + (r.deleted.semantic_memory || 0),
+          '• agent_tasks: ' + (r.deleted.agent_tasks || 0),
+          '• telegram_chats_v2: ' + (r.deleted.telegram_chats_v2 || 0),
+          '• tg_chats: ' + (r.deleted.tg_chats || 0),
+          '• tg_messages: ' + (r.deleted.tg_messages || 0),
+          '• notifications: ' + (r.deleted.notifications || 0),
+        ].filter(Boolean)
+        return sendMessage(chatId, lines.join('\n'))
+      } catch (e) {
+        return sendMessage(chatId, '❌ purgeChat error: ' + (e?.message || String(e)))
+      }
+    }
     case '/deepseek':
       return sendMessage(chatId, fmtDeepSeek(), { reply_markup: deepSeekKeyboard() })
     case '/settoken':
@@ -542,14 +581,19 @@ async function handleCallback(cb) {
   }
 
   if (data.startsWith('ap:')) {
-    const [, qid, yn] = data.split(':')
+    // split(':', 3) — не более 3 частей, yn = последний элемент
+    const parts = data.split(':')
+    const qid = parts.slice(1, -1).join(':') // questionId может содержать ':'
+    const yn = parts[parts.length - 1]
     const scope = pendingApprovalScope.get(qid) || {}
     const ok = answerQuestion(qid, { selected: [yn === 'y' ? 'approve' : 'deny'] }, { userId: scope.userId })
     pendingApprovalScope.delete(qid)
     return editMessage(chatId, messageId, ok ? (yn === 'y' ? '✅ Approved' : '❌ Denied') : 'Approval expired')
   }
   if (data.startsWith('ask:')) {
-    const [, qid, ans] = data.split(':')
+    const askParts = data.split(':')
+    const qid = askParts.slice(1, -1).join(':')
+    const ans = askParts[askParts.length - 1]
     const scope = pendingApprovalScope.get(qid) || {}
     const ok = ans === 'cancel'
       ? cancelQuestion(qid, 'cancelled from telegram', { userId: scope.userId })
@@ -574,7 +618,10 @@ async function handleCallback(cb) {
     await editMessage(chatId, messageId, '⏳ Загружаю логи…').catch(() => {})
     try {
       const r = await runOpsAction({ service: 'browserai', action: 'docker_logs_recent', params: { service: 'browserai', tail: 160 }, confirm: true })
-      lastLogs.set(String(chatId), { stdout: r.stdout || '', stderr: r.stderr || '', exitCode: r.exitCode })
+      // Cleanup старых записей перед добавлением новой
+      const _now = Date.now()
+      for (const [k, v] of lastLogs) { if (_now - (v.ts || 0) > LAST_LOGS_TTL_MS) lastLogs.delete(k) }
+      lastLogs.set(String(chatId), { stdout: r.stdout || '', stderr: r.stderr || '', exitCode: r.exitCode, ts: _now })
       const text = fmtOpsResult('📜 Logs', r)
       const keyboard = {
         inline_keyboard: [
@@ -625,7 +672,8 @@ async function poll() {
         warn('getUpdates:', data.description)
         await sleep(POLL_INTERVAL_MS * 3)
       }
-    } catch {
+    } catch (e) {
+      warn('poll error:', e?.message || String(e))
       await sleep(POLL_INTERVAL_MS)
     }
   }
@@ -657,6 +705,7 @@ export async function startTelegramBot() {
     { command: 'deepseek', description: 'DeepSeek status' },
     { command: 'hidekeyboard', description: 'Убрать старую нижнюю клавиатуру' },
     { command: 'id', description: 'Показать chat_id' },
+    { command: 'purgechat', description: 'Полностью очистить чат (по chatId)' },
   ] }).catch(() => {})
   log('Telegram v2 polling started (single token)')
   poll().catch((e) => warn('poll loop crashed:', e?.message || e))

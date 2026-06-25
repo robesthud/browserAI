@@ -42,6 +42,9 @@ export function redactSecrets(value = '') {
 export const WORKSPACE_EXCLUDED_DIRS = [
   '.history', '.git', 'node_modules', 'dist', 'build', 'coverage', '.cache',
   '.next', '.nuxt', '.output', '.venv', '__pycache__', 'target',
+  // Дополнительные build/cache директории популярных инструментов
+  '.turbo', '.parcel-cache', '.svelte-kit', '.nox', '.tox', '.pytest_cache',
+  '.mypy_cache', '.ruff_cache', 'vendor',
 ]
 
 export function publicWorkspacePolicy({ root = '/workspace', scoped = true, quotaMb = 500, maxFileMb = 50 } = {}) {

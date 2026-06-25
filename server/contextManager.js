@@ -70,11 +70,39 @@ const PER_TOOL_BUDGET = {
 const DEFAULT_TOOL_BUDGET = { head: 4500, tail: 1500 }
 
 /**
+ * Smart hybrid Token Estimator supporting Cyrillic/Russian, CJK, and English/ASCII texts.
+ * Highly accurate, prevents context overflows under multi-language user conversations.
+ */
+export function estimateTokenCount(text) {
+  if (!text) return 0
+  const str = String(text)
+  
+  // Count Cyrillic characters: roughly 0.65 tokens per character in UTF-8
+  const cyrillicCount = (str.match(/[\u0400-\u04FF]/g) || []).length
+  let tokens = cyrillicCount * 0.65
+  
+  // Count CJK (Chinese, Japanese, Korean) characters: roughly 1.1 tokens per char
+  const cjkCount = (str.match(/[\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uFF00-\uFFEF\u4E00-\u9FAF\u2600-\u27BF]/g) || []).length
+  tokens += cjkCount * 1.1
+
+  // Count the remaining ASCII character length
+  const remainingLength = str.length - cyrillicCount - cjkCount
+  
+  // English words and spaces: roughly 0.25 tokens per character (chars / 4)
+  tokens += remainingLength * 0.25
+  
+  return Math.ceil(tokens)
+}
+
+/**
  * Smart per-tool clip — uses the model-aware budget as a CEILING, then
  * tightens further based on tool semantics. Always returns a string.
  */
 export function clipToolOutput(toolName, raw, modelId = '') {
-  const str = String(raw || '')
+  // Если raw — объект, используем JSON.stringify вместо '[object Object]'
+  const str = (raw !== null && typeof raw === 'object')
+    ? JSON.stringify(raw, null, 2)
+    : String(raw ?? '')
   const modelBudget = tokenBudgetFor(modelId)
   const tool = PER_TOOL_BUDGET[toolName] || DEFAULT_TOOL_BUDGET
 
@@ -95,15 +123,17 @@ export function clipToolOutput(toolName, raw, modelId = '') {
  */
 export function contextUsageFraction(convo, modelId) {
   const budget = tokenBudgetFor(modelId)
-  const budgetChars = budget.ctxTokens * 4
-  let total = 0
+  let totalTokens = 0
   for (const m of convo) {
-    if (typeof m?.content === 'string') total += m.content.length
-    else if (Array.isArray(m?.content)) {
-      for (const part of m.content) total += String(part?.text || '').length
+    if (typeof m?.content === 'string') {
+      totalTokens += estimateTokenCount(m.content)
+    } else if (Array.isArray(m?.content)) {
+      for (const part of m.content) {
+        totalTokens += estimateTokenCount(part?.text || '')
+      }
     }
   }
-  return total / Math.max(1, budgetChars)
+  return totalTokens / Math.max(1, budget.ctxTokens)
 }
 
 /**
@@ -126,10 +156,12 @@ export function shrinkOldToolMessages(convo, { keepRecent = 6 } = {}) {
   for (let k = 0; k < collapseTill; k++) {
     const i = toolIdxs[k]
     const m = convo[i]
-    const original = typeof m.content === 'string' ? m.content : ''
+    // stringContent обрабатывает и строки и массивы (multimodal) — Tier 1 работает для обоих
+    const original = typeof m.content === 'string' ? m.content
+      : Array.isArray(m.content) ? m.content.map(p => p?.text || '').join('') : ''
     if (original.length < 240) continue   // already short
-    const firstLine = original.split('\n').find((l) => l.trim()) || ''
-    const head = firstLine.slice(0, 180)
+    const firstLine = (original.split('\n').find((l) => l.trim()) || '').slice(0, 180)
+    const head = firstLine
     const sizeNote = `(was ${original.length} chars, summarised)`
     convo[i] = {
       ...m,
@@ -199,15 +231,19 @@ export function emergencyDrop(convo, { keepTail = 4 } = {}) {
  * Returns { tier, fractionAfter, changed }.
  */
 export function manageContext(convo, modelId) {
+  // Пересчитываем fraction только когда предыдущий tier что-то изменил
   let usage = contextUsageFraction(convo, modelId)
   let tier = 0
   let changed = false
-  if (usage >= 0.45 && shrinkOldToolMessages(convo)) { tier = 1; changed = true }
-  usage = contextUsageFraction(convo, modelId)
-  if (usage >= 0.65 && compactMiddle(convo))         { tier = 2; changed = true }
-  usage = contextUsageFraction(convo, modelId)
-  if (usage >= 0.85 && emergencyDrop(convo))         { tier = 3; changed = true }
-  usage = contextUsageFraction(convo, modelId)
+  if (usage >= 0.45) {
+    if (shrinkOldToolMessages(convo)) { tier = 1; changed = true; usage = contextUsageFraction(convo, modelId) }
+  }
+  if (usage >= 0.65) {
+    if (compactMiddle(convo))         { tier = 2; changed = true; usage = contextUsageFraction(convo, modelId) }
+  }
+  if (usage >= 0.85) {
+    if (emergencyDrop(convo))         { tier = 3; changed = true; usage = contextUsageFraction(convo, modelId) }
+  }
   return { tier, fractionAfter: usage, changed }
 }
 
@@ -232,7 +268,7 @@ function stringContent(m) {
  */
 export function applyAnthropicCacheHints(messages, baseUrl = '') {
   const u = String(baseUrl).toLowerCase()
-  if (!u.includes('anthropic') && !u.includes('claude')) return messages
+  if (!u.includes('anthropic')) return messages // 'claude' убран — матчил claude.ai (browser session)
   if (!Array.isArray(messages) || !messages.length) return messages
 
   // Find the SYSTEM message (Anthropic SDK expects an array of content
@@ -258,6 +294,7 @@ export default {
   emergencyDrop,
   manageContext,
   applyAnthropicCacheHints,
+  estimateTokenCount,
 }
 
 /**

@@ -90,15 +90,16 @@ export async function recordCheckpoint({ chatId, step, label, files = [] }) {
  */
 export function listCheckpoints(chatId = '') {
   try {
+    // D — use ASCII RS (\x1E) as GROUP_CONCAT delimiter — safe against '|' in file paths
     const rows = db().prepare(`SELECT step, MIN(ts) AS ts, label,
       COUNT(*) AS file_count,
-      GROUP_CONCAT(file_path, '|') AS files
+      GROUP_CONCAT(file_path, char(30)) AS files
       FROM checkpoints WHERE chat_id = ?
       GROUP BY step, label ORDER BY step DESC, ts DESC LIMIT 50`).all(String(chatId || ''))
     return rows.map((r) => ({
       step: r.step, ts: r.ts, label: r.label,
       fileCount: r.file_count,
-      files: String(r.files || '').split('|').filter(Boolean),
+      files: String(r.files || '').split('\x1e').filter(Boolean),
     }))
   } catch { return [] }
 }
