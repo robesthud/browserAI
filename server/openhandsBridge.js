@@ -2,7 +2,7 @@
  * openhandsBridge.js — Совершенный прокси-мост к OpenHands Agent Server (FastAPI)
  *
  * Осуществляет 100% глубокую интеграцию OpenHands в минималистичный React UI BrowserAI.
- * Работает в точном соответствии с официальной спецификацией OpenAPI сервера OpenHands.
+ * Выполняет автоматическую инициализацию настроек (POST /api/settings) перед стартом сессии.
  */
 
 const OPENHANDS_SERVER = process.env.OPENHANDS_AGENT_SERVER || "http://openhands:18000";
@@ -14,10 +14,48 @@ function sse(res, event, data) {
   } catch {}
 }
 
+export async function initOpenHandsSettings({ model, provider }) {
+  const url = `${OPENHANDS_SERVER}/api/settings`;
+  let baseModel = provider?.model || model || process.env.OPENHANDS_LLM_MODEL || "glm-4.5-flash";
+  const apiKey = provider?.apiKey || process.env.BIGMODEL_API_KEY || process.env.ZAI_API_KEY || "dba035e8741f4f68afdd0f58951e0ee0.zOIQpvWagZlY5r7e";
+  const baseUrl = provider?.baseUrl || process.env.OPENHANDS_LLM_BASE_URL || "https://open.bigmodel.cn/api/paas/v4";
+
+  // Для корректной работы LiteLLM со сторонними OpenAI-совместимыми провайдерами
+  if ((baseUrl.includes("bigmodel.cn") || baseUrl.includes("api.z.ai")) && !baseModel.startsWith("openai/")) {
+    baseModel = `openai/${baseModel}`;
+  }
+
+  const body = {
+    agent: "CodeActAgent",
+    llm_model: baseModel,
+    llm_api_key: apiKey,
+    llm_base_url: baseUrl,
+    max_iterations: 50,
+    confirmation_mode: false,
+    enable_default_condenser: true,
+    enable_solvability_analysis: true
+  };
+
+  console.log(`[OpenHands Bridge] Pushing settings to ${url}, model=${baseModel}`);
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000)
+  });
+  if (!r.ok) {
+    const raw = await r.text().catch(() => "");
+    console.warn(`[OpenHands Bridge] Settings push returned ${r.status}: ${raw}`);
+  }
+  return r.ok;
+}
+
 export async function createConversation({ prompt, model, workspaceScope, provider }) {
+  // 1. Сначала гарантированно инициализируем настройки в OpenHands
+  await initOpenHandsSettings({ model, provider });
+
+  // 2. Создаем сессию согласно спецификации InitSessionRequest
   const url = `${OPENHANDS_SERVER}/api/conversations`;
-  
-  // Согласно официальной OpenAPI схеме OpenHands (InitSessionRequest):
   const body = {
     initial_user_msg: prompt || "hi",
     conversation_instructions: `You are BrowserAI CodeAct Agent. Use your tools and bash terminal to solve tasks.`
@@ -43,7 +81,6 @@ export async function createConversation({ prompt, model, workspaceScope, provid
 }
 
 export async function runAgentConversation(id) {
-  // Согласно официальной OpenAPI схеме OpenHands: /api/conversations/{id}/start
   const url = `${OPENHANDS_SERVER}/api/conversations/${id}/start`;
   const r = await fetch(url, {
     method: "POST",
@@ -58,7 +95,6 @@ export async function runAgentConversation(id) {
 }
 
 export async function interruptConversation(id) {
-  // Согласно официальной OpenAPI схеме OpenHands: /api/conversations/{id}/stop
   const url = `${OPENHANDS_SERVER}/api/conversations/${id}/stop`;
   const r = await fetch(url, { method: "POST", signal: AbortSignal.timeout(10000) });
   return r.ok;
@@ -100,16 +136,13 @@ export async function streamAgentEvents({ conversationId, res, model }) {
       const observation = msg.observation || {};
       const type = msg.type || action.type || observation.type || msg.event_type || "";
 
-      // ── 1. Размышления (AgentThinkAction) ──
       if (type === "AgentThinkAction" || type === "think" || type === "thinking") {
         const text = action.thought || action.content || msg.content || "";
         if (text) {
           sse(res, "thinking_delta", { step, chunk: text });
           sse(res, "thought", { step, text });
         }
-      } 
-      // ── 2. Терминал bash / tmux (CmdRunAction / CmdOutputObservation) ──
-      else if (type === "CmdRunAction" || type === "run_command" || type === "cmd") {
+      } else if (type === "CmdRunAction" || type === "run_command" || type === "cmd") {
         const cmd = action.command || action.cmd || action.content || "bash";
         activeTool = "bash";
         sse(res, "tool_start", { step: ++step, name: "bash", args: { command: cmd } });
@@ -118,9 +151,7 @@ export async function streamAgentEvents({ conversationId, res, model }) {
         sse(res, "tool_progress", { step, name: "bash", partial: output });
         sse(res, "tool_result", { step, name: "bash", ok: observation.exit_code === 0 || !observation.exit_code, result: output, error: observation.exit_code > 0 ? output : null });
         activeTool = null;
-      } 
-      // ── 3. Файловая система (FileWriteAction / FileReadAction) ──
-      else if (type === "FileWriteAction" || type === "write_file") {
+      } else if (type === "FileWriteAction" || type === "write_file") {
         const path = action.path || action.file || "file";
         activeTool = "write_file";
         sse(res, "tool_start", { step: ++step, name: "write_file", args: { path, content: action.content || "" } });
@@ -134,9 +165,7 @@ export async function streamAgentEvents({ conversationId, res, model }) {
       } else if (type === "FileReadObservation") {
         sse(res, "tool_result", { step, name: "read_file", ok: true, result: { path: observation.path || "file", content: observation.content || "" } });
         activeTool = null;
-      } 
-      // ── 4. Python песочница (IPythonRunCellAction) ──
-      else if (type === "IPythonRunCellAction" || type === "python") {
+      } else if (type === "IPythonRunCellAction" || type === "python") {
         activeTool = "python";
         sse(res, "tool_start", { step: ++step, name: "python", args: { code: action.code || action.content || "" } });
       } else if (type === "IPythonRunCellObservation") {
@@ -144,17 +173,13 @@ export async function streamAgentEvents({ conversationId, res, model }) {
         sse(res, "tool_progress", { step, name: "python", partial: output });
         sse(res, "tool_result", { step, name: "python", ok: !observation.error, result: output, error: observation.error ? output : null });
         activeTool = null;
-      } 
-      // ── 5. Итоговый ответ (AgentFinishAction / Final Response) ──
-      else if (type === "AgentFinishAction" || type === "assistant" || type === "final_response") {
+      } else if (type === "AgentFinishAction" || type === "assistant" || type === "final_response") {
         const chunk = action.response || action.content || msg.content || "";
         if (chunk) {
           fullAnswer += chunk;
           sse(res, "assistant_delta", { step, chunk });
         }
-      } 
-      // ── 6. Завершение сессии (Status Completed / Error) ──
-      else if (type === "status" && msg.status === "completed") {
+      } else if (type === "status" && msg.status === "completed") {
         hasEnded = true;
         if (fullAnswer) sse(res, "assistant", { step, text: fullAnswer });
         sse(res, "done", { reason: "complete", steps: step });
@@ -232,4 +257,4 @@ export async function proxyAgentChat({ req, res }) {
   }
 }
 
-export default { createConversation, runAgentConversation, interruptConversation, streamAgentEvents, proxyAgentChat };
+export default { initOpenHandsSettings, createConversation, runAgentConversation, interruptConversation, streamAgentEvents, proxyAgentChat };
