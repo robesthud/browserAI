@@ -254,6 +254,7 @@ export async function runAgentWithPiCore({
     (async function() {
       var partial = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, totalTokens: 0 } };
       try {
+        console.log("[customStreamFn] Starting stream for model: " + provider.model + ", baseUrl: " + provider.baseUrl);
         stream.push({ type: "start", partial: partial });
         var currentTextIndex = -1, currentThinkingIndex = -1, accumulatedText = "";
 
@@ -274,11 +275,6 @@ export async function runAgentWithPiCore({
               stream.push({ type: "thinking_delta", contentIndex: currentThinkingIndex, delta: chunk });
             } else {
               accumulatedText += chunk;
-              // For DeepSeek-web we DON'T stream raw text deltas: the model mixes
-              // ```json tool blocks into the prose, which would (a) show stray ```
-              // fences in the UI and (b) make tools appear before the cleaned text.
-              // Instead we buffer here and emit the CLEANED text after parsing,
-              // followed by the tool calls — giving correct "text → tools" order.
               if (isDS) return;
               if (currentTextIndex === -1) {
                 currentTextIndex = partial.content.length;
@@ -292,15 +288,11 @@ export async function runAgentWithPiCore({
           onUsage: function(u) { if (u) partial.usage = { input: u.prompt || 0, output: u.completion || 0, totalTokens: u.total || 0 }; },
         });
 
+        console.log("[customStreamFn] Stream completed successfully. Accumulated length: " + accumulatedText.length);
+
         if (isDS) {
           var parsed = parseToolCallsFromText(accumulatedText);
-          // Always emit cleaned text (fences stripped) as the visible answer,
-          // BEFORE any tool calls, so the UI order is "reasoning → tools".
-          var cleanText = String(parsed.cleanText || accumulatedText || "")
-            // Remove any leftover code fences / stray backticks the model emitted.
-            .replace(/```[a-zA-Z0-9_-]*[\s\S]*?```/g, "")
-            .replace(/`{1,}/g, "")
-            .trim();
+          var cleanText = String(parsed.cleanText || accumulatedText || "").replace(/```[a-zA-Z0-9_-]*[\s\S]*?```/g, "").replace(/`{1,}/g, "").trim();
           if (cleanText) {
             currentTextIndex = partial.content.length;
             partial.content.push({ type: "text", text: cleanText });
@@ -308,8 +300,6 @@ export async function runAgentWithPiCore({
             stream.push({ type: "text_delta", contentIndex: currentTextIndex, delta: cleanText });
           }
           if (piTools.length > 0 && parsed.toolCalls.length > 0) {
-            // Dedupe identical tool calls within a single response (DeepSeek
-            // often repeats the same block, e.g. create_folder x3).
             var seenSig = {};
             for (var ti = 0; ti < parsed.toolCalls.length; ti++) {
               var tc = parsed.toolCalls[ti];
@@ -335,6 +325,7 @@ export async function runAgentWithPiCore({
         stream.push({ type: "done", reason: "stop", message: partial, usage: partial.usage });
         stream.end();
       } catch (e) {
+        console.error("[customStreamFn] Fatal error in callLLMStream:", e);
         partial.stopReason = "error"; partial.errorMessage = e.message;
         stream.push({ type: "error", reason: "error", error: partial, errorMessage: e.message, usage: partial.usage });
         stream.end();
@@ -425,7 +416,8 @@ export async function runAgentWithPiCore({
     sseDone(wrappedRes, { steps: step, reason: "complete" }, { prompt: totals.prompt, completion: totals.completion, total: totals.total, reasoningTokens: totals.reasoningTokens, llmCalls: step });
     wrappedRes.end();
   } catch (e) {
-    if (!wrappedRes.destroyed && !res.headersSent) {
+    console.error("[Agent Engine] Fatal error during agent run:", e);
+    if (!wrappedRes.destroyed) {
       sse(wrappedRes, "error", { message: e.message || "Agent engine error" });
       sseDone(wrappedRes, { steps: step, reason: "engine-error" }, totals);
       wrappedRes.end();
