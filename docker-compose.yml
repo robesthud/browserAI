@@ -22,6 +22,7 @@ services:
       - ZAI_HEARTBEAT_MS=${ZAI_HEARTBEAT_MS:-600000}
       - ZAI_MODELS_REFRESH_MS=${ZAI_MODELS_REFRESH_MS:-3600000}
       - ZAI_COOKIES=${ZAI_COOKIES:-}
+      - ZAI_API_KEY=${ZAI_API_KEY:-}
       - GLM_PROXY_URL=${GLM_PROXY_URL:-http://glm-free-api:8000}
       - CHAT_DEBUG_LOG=/data/chat-debug.log
       # - DEEPSEEK_USER_TOKEN=
@@ -137,7 +138,7 @@ services:
     mem_limit: 3500m
     memswap_limit: 3500m   # disable swap for ollama (was eating all 2GB)
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     volumes:
       - ${DATA_DIR:-./data}/ollama:/root/.ollama
     environment:
@@ -146,7 +147,7 @@ services:
       # ── keep model loaded (default 5m). 0 = unload IMMEDIATELY after request.
       # On 3.8GB VPS with 7b model (~3.2GB RSS), keeping it loaded kills RAM
       # and pushes everything else to swap. Unload after each request is safe.
-      - OLLAMA_KEEP_ALIVE=0
+      - OLLAMA_KEEP_ALIVE=-1
       # ── only one model in RAM at a time
       - OLLAMA_MAX_LOADED_MODELS=1
       # ── sequential request handling (no parallel inference)
