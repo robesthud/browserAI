@@ -85,6 +85,7 @@ export async function runAgentConversation(id) {
   const r = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
     signal: AbortSignal.timeout(15000)
   });
   if (!r.ok) {
