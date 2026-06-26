@@ -178,6 +178,11 @@ export async function runAgentWithPiCore({
     if (u0.includes("ollama") || u0.includes("11434")) provider.model = "qwen2.5-coder:1.5b";
   }
 
+  // ── Workspace scoping: run the ENTIRE agent execution inside the chat scope so
+  // file tools resolve to /workspace/chats/<chatId> instead of the shared root.
+  // AsyncLocalStorage propagates through awaits, so wrapping prompt() is enough.
+  return await withWorkspaceScope(workspaceScope || "", async function() {
+
   var cwd = getContainerWorkspaceRoot() || "/workspace";
   var systemPrompt = extraSystem || "BrowserAI agent. Workspace: " + cwd + ". OS: Linux. Respond in Russian.";
 
@@ -349,6 +354,8 @@ export async function runAgentWithPiCore({
       wrappedRes.end();
     }
   }
+
+  }); // end withWorkspaceScope
 }
 
 export default runAgentWithPiCore;
