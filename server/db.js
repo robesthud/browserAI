@@ -47,6 +47,19 @@ db.exec(`
   );
 `)
 
+const _keyCount = db.prepare('SELECT count(*) as c FROM keys').get()
+if (_keyCount && _keyCount.c === 0) {
+  const now = Date.now()
+  const glmModels = ['glm-4.5-flash', 'GLM-4.7-Flash', 'glm-4-flash', 'glm-z1-flash', 'glm-4v-flash', 'glm-4.1v-thinking-flash', 'glm-4.6v-flash', 'glm-4.7', 'glm-5.1', 'glm-5.2']
+  const dsModels = ['deepseek_chat', 'deepseek-reasoner', 'DeepThink']
+  db.prepare(`INSERT INTO keys (id, name, base_url, api_key, model, available_models, is_active, enc, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    'glm-default', 'Zhipu AI (GLM)', 'https://open.bigmodel.cn/api/paas/v4', process.env.BIGMODEL_API_KEY || '', 'glm-4.5-flash', JSON.stringify(glmModels), 1, 0, now, now
+  )
+  db.prepare(`INSERT INTO keys (id, name, base_url, api_key, model, available_models, is_active, enc, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    'deepseek-default', 'DeepSeek Managed', 'https://chat.deepseek.com/api/v0', '__managed__', 'deepseek_chat', JSON.stringify(dsModels), 0, 0, now, now
+  )
+}
+
 // Миграции старых БД — добавляем недостающие колонки без пересоздания таблицы
 try {
   const cols = db.prepare(`PRAGMA table_info(keys)`).all().map((c) => c.name)

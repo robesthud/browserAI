@@ -564,13 +564,36 @@ async function probeChatModel(baseUrl, apiKey, model, signal) {
 
 export async function validateKey({ baseUrl, apiKey, model }, signal) {
   const root = normalizeBaseUrl(baseUrl)
-  if (!root || !apiKey) {
+  if (!root || (!apiKey && !root.includes('chat.deepseek.com'))) {
     return {
       ok: false,
       message: 'Укажите Base URL и ключ',
       models: [],
       preferredModel: '',
     }
+  }
+
+  if (root.includes('bigmodel.cn') || root.includes('api.z.ai')) {
+    const glmModels = ['glm-4.5-flash', 'GLM-4.7-Flash', 'glm-4-flash', 'glm-z1-flash', 'glm-4v-flash', 'glm-4.1v-thinking-flash', 'glm-4.6v-flash', 'glm-4.7', 'glm-5.1', 'glm-5.2']
+    const cand = model || 'glm-4.5-flash'
+    const probe = await probeChatModel(root, apiKey, cand, signal)
+    if (probe.ok) {
+      return { ok: true, message: `Ключ валиден · моделей: ${glmModels.length}`, models: glmModels, preferredModel: cand }
+    }
+    return { ok: false, message: `Ключ отклонён (${probe.status})`, models: glmModels, preferredModel: '' }
+  }
+
+  if (root.includes('chat.deepseek.com') || root.includes('deepseek.com')) {
+    const dsModels = ['deepseek_chat', 'deepseek-reasoner', 'DeepThink']
+    const cand = model || 'deepseek_chat'
+    if (apiKey === '__managed__' || root.includes('chat.deepseek.com')) {
+      return { ok: true, message: `Ключ валиден (managed) · моделей: ${dsModels.length}`, models: dsModels, preferredModel: cand }
+    }
+    const probe = await probeChatModel(root, apiKey, cand, signal)
+    if (probe.ok) {
+      return { ok: true, message: `Ключ валиден · моделей: ${dsModels.length}`, models: dsModels, preferredModel: cand }
+    }
+    return { ok: false, message: `Ключ отклонён (${probe.status})`, models: dsModels, preferredModel: '' }
   }
 
   try {

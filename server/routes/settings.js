@@ -46,55 +46,9 @@ router.put('/cloud', (req, res) => {
 })
 
 // ---- Settings ----
-function getListKeysSafeWithDefaults() {
-  const keys = listKeysSafe()
-  const glmModels = ['glm-4.5-flash', 'GLM-4.7-Flash', 'glm-4-flash', 'glm-z1-flash', 'glm-4v-flash', 'glm-4.1v-thinking-flash', 'glm-4.6v-flash', 'glm-4.7', 'glm-5.1', 'glm-5.2']
-  const dsModels = ['deepseek_chat', 'deepseek-reasoner', 'DeepThink']
-
-  let foundGlm = false
-  let foundDs = false
-
-  for (const k of keys) {
-    if (k.baseUrl && (k.baseUrl.includes('bigmodel.cn') || k.baseUrl.includes('api.z.ai'))) {
-      foundGlm = true
-      k.availableModels = [...new Set([...(k.availableModels || []), ...glmModels])]
-    }
-    if (k.baseUrl && k.baseUrl.includes('chat.deepseek.com')) {
-      foundDs = true
-      k.availableModels = [...new Set([...(k.availableModels || []), ...dsModels])]
-    }
-  }
-
-  if (!foundGlm) {
-    keys.push({
-      id: 'glm-default',
-      name: 'Zhipu AI (GLM)',
-      baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-      apiKey: '',
-      hasSecret: true,
-      useStoredSecret: true,
-      model: 'glm-4.5-flash',
-      availableModels: glmModels,
-    })
-  }
-  if (!foundDs) {
-    keys.push({
-      id: 'deepseek-default',
-      name: 'DeepSeek Managed',
-      baseUrl: 'https://chat.deepseek.com/api/v0',
-      apiKey: '__managed__',
-      hasSecret: true,
-      useStoredSecret: true,
-      model: 'deepseek_chat',
-      availableModels: dsModels,
-    })
-  }
-  return keys
-}
-
 router.get('/settings', requireOwner, (req, res) => {
   res.json({
-    keys: getListKeysSafeWithDefaults(),
+    keys: listKeysSafe(),
     activeKeyId: getActiveKeyId(),
     params: getParams(),
     vault: { enabled: vaultEnabled(), locked: false },
@@ -102,7 +56,7 @@ router.get('/settings', requireOwner, (req, res) => {
 })
 
 router.get('/keys', requireOwner, (req, res) => {
-  res.json({ keys: getListKeysSafeWithDefaults(), activeKeyId: getActiveKeyId() })
+  res.json({ keys: listKeysSafe(), activeKeyId: getActiveKeyId() })
 })
 
 router.post('/keys', requireOwner, (req, res) => {
@@ -112,17 +66,17 @@ router.post('/keys', requireOwner, (req, res) => {
   const keepExistingSecret = Boolean(existing && !String(incoming.apiKey || '').trim() && (incoming.keepExistingSecret || incoming.hasSecret))
   if (keepExistingSecret) incoming.apiKey = existing.apiKey
   upsertKey(incoming, null)
-  res.json({ keys: getListKeysSafeWithDefaults(), activeKeyId: getActiveKeyId() })
+  res.json({ keys: listKeysSafe(), activeKeyId: getActiveKeyId() })
 })
 
 router.post('/keys/:id/activate', requireOwner, (req, res) => {
   setActiveKey(req.params.id)
-  res.json({ keys: getListKeysSafeWithDefaults(), activeKeyId: getActiveKeyId() })
+  res.json({ keys: listKeysSafe(), activeKeyId: getActiveKeyId() })
 })
 
 router.delete('/keys/:id', requireOwner, (req, res) => {
   deleteKey(req.params.id)
-  res.json({ keys: getListKeysSafeWithDefaults(), activeKeyId: getActiveKeyId() })
+  res.json({ keys: listKeysSafe(), activeKeyId: getActiveKeyId() })
 })
 
 router.get('/params', requireOwner, (req, res) => {
