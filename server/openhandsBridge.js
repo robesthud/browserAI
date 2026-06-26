@@ -2,7 +2,7 @@
  * openhandsBridge.js — Совершенный прокси-мост к OpenHands Agent Server (FastAPI)
  *
  * Осуществляет 100% глубокую интеграцию OpenHands в минималистичный React UI BrowserAI.
- * Перехватывает все Actions/Observations OpenHands и филигранно транслирует их в SSE-поток чата.
+ * Работает в точном соответствии с официальной спецификацией OpenAPI сервера OpenHands.
  */
 
 const OPENHANDS_SERVER = process.env.OPENHANDS_AGENT_SERVER || "http://openhands:18000";
@@ -16,24 +16,22 @@ function sse(res, event, data) {
 
 export async function createConversation({ prompt, model, workspaceScope, provider }) {
   const url = `${OPENHANDS_SERVER}/api/conversations`;
-  const baseModel = provider?.model || model || process.env.OPENHANDS_LLM_MODEL || "glm-4.5-flash";
-  const apiKey = provider?.apiKey || process.env.BIGMODEL_API_KEY || process.env.ZAI_API_KEY || "dba035e8741f4f68afdd0f58951e0ee0.zOIQpvWagZlY5r7e";
-  const baseUrl = provider?.baseUrl || process.env.OPENHANDS_LLM_BASE_URL || "https://open.bigmodel.cn/api/paas/v4";
-
+  
+  // Согласно официальной OpenAPI схеме OpenHands (InitSessionRequest):
   const body = {
-    agent: "CodeActAgent",
-    llm_config: {
-      model: baseModel,
-      api_key: apiKey,
-      base_url: baseUrl
-    },
-    workspace_mount_path: workspaceScope ? `/opt/browserai-data/workspace/chats/${workspaceScope}` : "/opt/browserai-data/workspace",
-    initial_prompt: prompt || "hi"
+    initial_user_msg: prompt || "hi",
+    conversation_instructions: `You are BrowserAI CodeAct Agent. Use your tools and bash terminal to solve tasks.`
   };
+
+  const headers = { "Content-Type": "application/json" };
+  const apiKey = provider?.apiKey || process.env.BIGMODEL_API_KEY || process.env.ZAI_API_KEY || "";
+  if (apiKey && apiKey !== "__managed__") {
+    headers["Authorization"] = `Bearer ${apiKey}`;
+  }
 
   const r = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(15000)
   });
@@ -45,7 +43,8 @@ export async function createConversation({ prompt, model, workspaceScope, provid
 }
 
 export async function runAgentConversation(id) {
-  const url = `${OPENHANDS_SERVER}/api/conversations/${id}/run`;
+  // Согласно официальной OpenAPI схеме OpenHands: /api/conversations/{id}/start
+  const url = `${OPENHANDS_SERVER}/api/conversations/${id}/start`;
   const r = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -53,13 +52,14 @@ export async function runAgentConversation(id) {
   });
   if (!r.ok) {
     const raw = await r.text().catch(() => "");
-    throw new Error(`OpenHands run failed (${r.status}): ${raw}`);
+    throw new Error(`OpenHands start failed (${r.status}): ${raw}`);
   }
   return await r.json();
 }
 
 export async function interruptConversation(id) {
-  const url = `${OPENHANDS_SERVER}/api/conversations/${id}/interrupt`;
+  // Согласно официальной OpenAPI схеме OpenHands: /api/conversations/{id}/stop
+  const url = `${OPENHANDS_SERVER}/api/conversations/${id}/stop`;
   const r = await fetch(url, { method: "POST", signal: AbortSignal.timeout(10000) });
   return r.ok;
 }
