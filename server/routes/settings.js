@@ -17,6 +17,7 @@ import { dailyTotalUsd, topModelsToday, checkCap, chatTotalUsd } from '../costTr
 import { listFacts, forgetFact } from '../userMemory.js'
 import { listProjectFacts, forgetProjectFact } from '../projectMemory.js'
 import { listMemories, forgetMemory } from '../semanticMemory.js'
+import { getAvailableModels } from '../modelCatalog.js'
 
 const router = express.Router()
 
@@ -164,6 +165,16 @@ router.delete('/memory/project/:chatId/:key', (req, res) => {
     const key = String(req.params.key || '')
     res.json(forgetProjectFact(req.user?.id || '', chatId, key))
   } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+// ---- Available models (unified, deduplicated, only working) ----
+// GET /api/models/available[?force=1] → { models:[{id,label,kind,provider,baseUrl}], checkedAt, cached }
+router.get('/models/available', async (req, res) => {
+  try {
+    const force = String(req.query.force || '') === '1'
+    const out = await getAvailableModels({ force })
+    res.json(out)
+  } catch (e) { res.status(500).json({ error: safeErrorMessage(e, 'models/available failed') }) }
 })
 
 export default router

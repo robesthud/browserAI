@@ -23,6 +23,7 @@ services:
       - ZAI_MODELS_REFRESH_MS=${ZAI_MODELS_REFRESH_MS:-3600000}
       - ZAI_COOKIES=${ZAI_COOKIES:-}
       - ZAI_API_KEY=${ZAI_API_KEY:-}
+      - BIGMODEL_API_KEY=${BIGMODEL_API_KEY:-}
       - GLM_PROXY_URL=${GLM_PROXY_URL:-http://glm-free-api:8000}
       - CHAT_DEBUG_LOG=/data/chat-debug.log
       # - DEEPSEEK_USER_TOKEN=
