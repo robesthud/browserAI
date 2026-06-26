@@ -35,13 +35,6 @@ export const PROVIDER_SUPPORT_MATRIX = [
     knownLimitations: ['Not all Anthropic models support tool use'],
   },
   {
-    id: 'ollama_local',
-    label: 'Ollama (local)',
-    tier: 'experimental',
-    baseUrlPattern: /(localhost|127\.0\.0\.1):11434/,
-    knownLimitations: ['Quality depends on local model size and quantization'],
-  },
-  {
     id: 'openai_compat',
     label: 'OpenAI-compatible',
     tier: 'experimental',

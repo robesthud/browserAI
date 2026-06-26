@@ -127,39 +127,6 @@ services:
     mem_limit: 256m
     cpus: 0.25
 
-  # ──────────────────────────────────────────────────────────────────────
-  # ollama — local sovereign AI service
-  # ──────────────────────────────────────────────────────────────────────
-  ollama:
-    image: ollama/ollama:latest
-    container_name: browserai-ollama
-    restart: unless-stopped
-    # Memory cap: 3.5GB leaves ~300MB for the rest of the VPS.
-    # Ollama will respect this; if model + context exceed it, OOM-kills.
-    mem_limit: 3500m
-    memswap_limit: 3500m   # disable swap for ollama (was eating all 2GB)
-    ports:
-      - "127.0.0.1:11434:11434"
-    volumes:
-      - ${DATA_DIR:-./data}/ollama:/root/.ollama
-    environment:
-
-
-      # ── keep model loaded (default 5m). 0 = unload IMMEDIATELY after request.
-      # On 3.8GB VPS with 7b model (~3.2GB RSS), keeping it loaded kills RAM
-      # and pushes everything else to swap. Unload after each request is safe.
-      - OLLAMA_KEEP_ALIVE=-1
-      # ── only one model in RAM at a time
-      - OLLAMA_MAX_LOADED_MODELS=1
-      # ── sequential request handling (no parallel inference)
-      - OLLAMA_NUM_PARALLEL=1
-      # ── fail fast if loading takes >5min (avoid zombie processes)
-      - OLLAMA_LOAD_TIMEOUT=5m
-      # ── reduce default context from 4096 to 2048 → less RAM per request
-      - OLLAMA_CONTEXT_LENGTH=2048
-      # ── smaller batch sizes (default 512) — saves ~200MB
-      - OLLAMA_BATCH_SIZE=256
-      - OLLAMA_UBATCH_SIZE=128
 
   # ──────────────────────────────────────────────────────────────────────
   # computer-sandbox — virtual X11 desktop for Computer Use tools.

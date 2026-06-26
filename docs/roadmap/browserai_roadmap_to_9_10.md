@@ -569,7 +569,6 @@ BrowserAI развивается не как набор точечных фич 
 - Дата завершения: 2026-06-20
 - Коммиты:
   - `LOCAL` — `feat(agent): add 25 canonical regression tasks (chat, web, agent)`
-  - `LOCAL` — `feat(agent): add 7-provider certification matrix (DeepSeek, OpenRouter, Gemini, Ollama, Anthropic, Zhipu, Groq)`
   - `LOCAL` — `feat(agent): add golden run artifact capture with browserai.golden_run.v1 schema`
   - `LOCAL` — `feat(agent): add regression runner with task generator and matrix summary`
   - `LOCAL` — `feat(agent): add pre-deploy smoke suite (scripts/pre-deploy-smoke.sh)`
@@ -577,7 +576,6 @@ BrowserAI развивается не как набор точечных фич 
   - `LOCAL` — `feat(tests): add regressionSuite.test.js (17 tests)`
 - Что сделано:
   - `server/regressionSuite.js` — 25 canonical tasks: file ops, code generation, git, verify, anti-fabrication, deploy/health, browser, ESM/CJS, mini React, shell session, web search, secrets, repo analysis, large file edits, empty workspace
-  - `server/regressionProviderMatrix.js` — 7 провайдеров: managed_deepseek, openrouter_free, gemini_official, ollama_local, zhipu_official, groq_official, anthropic_official. Per-task compatibility (required/recommended/optional/unsupported)
   - `server/regressionArtifacts.js` — golden run capture (toolHistory, finalStatus, streamTrace, expected vs actual), diff engine, listing
   - `server/regressionRunner.js` — `runRegressionTask` async generator + `runRegressionMatrix` summary runner
   - `scripts/pre-deploy-smoke.sh` — fast pre-deploy smoke suite (non-blocking, runs first provider × first 3 critical tasks)

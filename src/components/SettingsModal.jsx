@@ -110,22 +110,6 @@ const PROVIDER_PRESETS = [
     },
     hint: 'Бесплатно. Токен и cookies хранятся на сервере и обновляются автоматически. Управление: /admin/deepseek или Telegram-бот.',
   },
-  {
-    id: 'ollama',
-    group: 'free',
-    label: '🦙 Ollama (локально)',
-    name: 'Ollama (локально)',
-    baseUrl: 'http://browserai-ollama:11434/v1',
-    model: 'qwen2.5-coder:1.5b',
-    apiKey: 'ollama',
-    // NOTE: installed models on this 3.8GB VPS:
-    //   qwen2.5-coder:1.5b — main coding model (~986MB on disk, ~1.2GB RAM)
-    //   moondream:latest   — vision model (~1.7GB, only for image tasks)
-    // qwen2.5-coder:7b was REMOVED — it requires ~3.2GB RAM and gets
-    // OOM-killed on this VPS. Keep KEEP_ALIVE=0 so model unloads after use.
-    availableModels: ['qwen2.5-coder:1.5b', 'moondream:latest'],
-    hint: 'Локальный суверенный ИИ на твоем VPS. Требуется предварительный запуск контейнера Ollama и загрузка модели.',
-  },
 ]
 
 function Field({ label, hint, children }) {

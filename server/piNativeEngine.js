@@ -4,7 +4,7 @@
  * Goal: for real cloud providers (OpenAI / Anthropic / Google) use pi-ai's
  * NATIVE `stream()` which performs real, structured tool-calling instead of the
  * text-JSON parsing used by the legacy customStreamFn. Web sessions (DeepSeek /
- * z.ai) and local Ollama keep the legacy path in agentEngine.js.
+ * z.ai) keep the legacy path in agentEngine.js.
  *
  * This module exposes:
  *   - isNativeCapableProvider(provider) -> boolean
@@ -29,17 +29,17 @@ function ensureProviders() {
 /**
  * Decide whether a provider should use the native pi-ai path.
  * Native is used ONLY for first-party cloud APIs reachable with a normal API key.
- * DeepSeek-web, z.ai-web (managed sessions) and local Ollama stay on legacy.
+ * DeepSeek-web and z.ai-web managed sessions stay on legacy.
  */
 export function isNativeCapableProvider(provider = {}) {
   const url = String(provider.baseUrl || "").toLowerCase();
   const key = String(provider.apiKey || "");
-  if (!url || !key || key === "__managed__" || key === "ollama") return false;
+  if (!url || !key || key === "__managed__") return false;
 
   // Exclude managed WEB-session backends (handled by legacy path).
   if (url.includes("chat.deepseek") || url.includes("chat.z.ai")) return false;
-  // Exclude local ollama (no native tool-calling reliability on tiny models).
-  if (url.includes("ollama") || url.includes("11434") || url.includes("127.0.0.1") || url.includes("localhost")) return false;
+  // Exclude loopback endpoints from native provider handling.
+  if (url.includes("127.0.0.1") || url.includes("localhost")) return false;
 
   // Allow recognised cloud providers (incl. official z.ai API).
   return (

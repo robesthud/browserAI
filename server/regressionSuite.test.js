@@ -78,17 +78,17 @@ describe('provider certification matrix', () => {
 
   it('getProviderCompatibility returns expected values', () => {
     expect(getProviderCompatibility('chat_greeting', 'managed_deepseek')).toBe('required')
-    expect(getProviderCompatibility('agent_browser_open', 'ollama_local')).toBe('unsupported')
+    expect(getProviderCompatibility('agent_browser_open', 'managed_deepseek')).toBe('required')
   })
 
   it('isProviderSupportedForTask correctly identifies unsupported', () => {
-    expect(isProviderSupportedForTask('ollama_local', 'agent_browser_open')).toBe(false)
+    expect(isProviderSupportedForTask('unknown_provider', 'agent_browser_open')).toBe(false)
     expect(isProviderSupportedForTask('managed_deepseek', 'agent_browser_open')).toBe(true)
   })
 
   it('listProviderTasks returns supported tasks for a provider', () => {
-    const tasks = listProviderTasks('ollama_local')
-    expect(tasks).not.toContain('agent_browser_open')
+    const tasks = listProviderTasks('managed_deepseek')
+    expect(tasks).toContain('agent_browser_open')
     expect(tasks.length).toBeGreaterThan(0)
   })
 

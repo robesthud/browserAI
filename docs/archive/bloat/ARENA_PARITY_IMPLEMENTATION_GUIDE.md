@@ -41,7 +41,6 @@ const verdict = await Promise.race([
 В веб-интерфейсе в списке моделей добавьте виртуальную модель под именем **`Autopilot (Hybrid Cascade)`**. 
 Когда пользователь выбирает её:
 * **Для этапа планирования и рефлексии:** Рантайм шлёт запросы на **`DeepSeek R1`** (для глубокого логического рассуждения) [1](github_browserai/docs/roadmap/browserai_roadmap_to_9_10.md).
-* **Для этапа написания кода:** Рантайм переключает запросы на бесплатный и сверхбыстрый **`glm-4.7-flash`** (через ваш Z.ai ключ) [2](https://developer.puter.com/tutorials/zai-glm-api-pricing/) или локальный **`qwen2.5-coder:1.5b`** [5](https://avenchat.com/blog/glm-5.2-pricing/).
 
 ---
 

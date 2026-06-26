@@ -3,7 +3,7 @@
  *
  * C — Automatic provider fallback when the active LLM is unavailable.
  *
- * Chain: user active key → DeepSeek Managed → Ollama local → null (give up)
+ * Chain: user active key → DeepSeek Managed → null (give up)
  *
  * Triggered by:
  *  - 503 / 502 / 504 (server unavailable)
@@ -61,32 +61,6 @@ function buildDeepSeekFallback() {
   }
 }
 
-/**
- * Build Ollama local fallback (if running on localhost:11434).
- */
-async function buildOllamaFallback() {
-  try {
-    const r = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(2000) })
-    if (!r.ok) return null
-    const data = await r.json()
-    const models = data?.models || []
-    if (!models.length) return null
-    // Prefer larger / smarter models
-    const preferred = ['qwen2.5:7b', 'qwen2.5:3b', 'llama3.2:3b', 'mistral:7b', 'gemma2:2b']
-    const names = models.map(m => m.name)
-    const model = preferred.find(p => names.includes(p)) || names[0]
-    return {
-      baseUrl: 'http://127.0.0.1:11434/v1',
-      apiKey: 'ollama',
-      authType: 'bearer',
-      authHeader: '',
-      model,
-      temperature: 0.3,
-      extraHeaders: {},
-      _fallbackSource: 'ollama_local',
-    }
-  } catch { return null }
-}
 
 /**
  * Given a provider that just failed and its error, return the next
@@ -116,12 +90,6 @@ export async function resolveNextProvider(failedProvider, error) {
   if (!alreadyTried.has('deepseek_managed')) {
     const ds = buildDeepSeekFallback()
     if (ds) return ds
-  }
-
-  // 2. Try Ollama local
-  if (!alreadyTried.has('ollama_local')) {
-    const ollama = await buildOllamaFallback()
-    if (ollama) return ollama
   }
 
   return null  // exhausted all fallbacks

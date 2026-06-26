@@ -77,7 +77,6 @@ export async function runBackup() {
   const args = [
     'czf', out,
     '--exclude=node_modules',
-    '--exclude=ollama',
     '--exclude=postgres',
     '--exclude=pip-cache',
     '--exclude=global-npm',

@@ -21,7 +21,6 @@ Every provider the agent runtime can talk to is in this matrix, with a
 | `managed_deepseek` | certified | `chat.deepseek.com/api/v0` | 2026-06-20 | No native tools; non-standard SSE |
 | `gemini_official` | certified | `generativelanguage.googleapis.com` | 2026-06-20 | Free-tier quota may saturate |
 | `anthropic_official` | experimental | `api.anthropic.com` | 2026-06-20 | Not all models support tools |
-| `ollama_local` | experimental | `(localhost\|127.0.0.1):11434` | 2026-06-20 | Quality depends on local model |
 | `openai_compat` | experimental | `\/(v1\|api\/v1)\/?$` | 2026-06-20 | Catch-all; capabilities vary per upstream |
 
 ## Adding a new provider

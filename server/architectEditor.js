@@ -163,6 +163,5 @@ export function getAutopilotModelForTurn({ step = 1, recentToolHistory = [], use
 
   if (allAvailableModels.has('glm-4.7-flash')) return 'glm-4.7-flash'
   if (allAvailableModels.has('glm-4.6v-flash')) return 'glm-4.6v-flash'
-  if (allAvailableModels.has('qwen2.5-coder:1.5b')) return 'qwen2.5-coder:1.5b'
   return null
 }

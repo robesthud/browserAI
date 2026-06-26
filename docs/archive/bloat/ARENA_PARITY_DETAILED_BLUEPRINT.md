@@ -35,7 +35,6 @@ export function getAutopilotModelForTurn({ step = 1, recentToolHistory = [], act
   // 2. На шагах механического кодинга — используем бесплатный Flash или локальный Qwen
   const hasFlash = activeKeyList.some(k => k.model.includes('flash'));
   if (hasFlash) return { model: 'glm-4.7-flash', providerId: 'z_ai_official' };
-  return { model: 'qwen2.5-coder:1.5b', providerId: 'ollama_local' };
 }
 ```
 

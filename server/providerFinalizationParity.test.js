@@ -5,7 +5,7 @@ import { buildFinalStatus, isBlocked, isPartial, finalStatusToText } from './age
  * Approach 2 — Provider finalization parity.
  *
  * The same agent task on different providers (managed_deepseek, openrouter,
- * gemini_official, ollama_local, etc.) must produce the SAME finalStatus
+ * gemini_official, etc.) must produce the SAME finalStatus
  * schema. Provider-specific behavior must not leak into the final status
  * shape — only the contents (blockers list, evidence summary) can differ.
  */

@@ -72,11 +72,6 @@ describe('providerSupport: lookupProviderSupport', () => {
     expect(b.id).toBe('openai_compat')
   })
 
-  it('matches Ollama local by baseUrl', () => {
-    const e = lookupProviderSupport({ baseUrl: 'http://127.0.0.1:11434/v1' })
-    expect(e.id).toBe('ollama_local')
-  })
-
   it('returns unsupported entry for unknown provider', () => {
     // Use a URL that matches NONE of the patterns in PROVIDER_SUPPORT_MATRIX.
     const e = lookupProviderSupport({ baseUrl: 'https://totally-not-recognised.example.com/api', id: 'mystery' })

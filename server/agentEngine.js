@@ -57,8 +57,8 @@ function wrapTool(name, toolDef, loopGuard) {
   };
 }
 function buildModel(provider) {
-  var modelId = provider.model || "qwen2.5-coder:1.5b";
-  var baseUrl = provider.baseUrl || "http://browserai-ollama:11434/v1";
+  var modelId = provider.model || "glm-4.5-flash";
+  var baseUrl = provider.baseUrl || "https://open.bigmodel.cn/api/paas/v4";
   var api = "openai-completions", providerType = "openai";
   var u = baseUrl.toLowerCase();
   if (u.includes("anthropic")) { api = "anthropic-messages"; providerType = "anthropic"; }
@@ -212,10 +212,8 @@ export async function runAgentWithPiCore({
   }
 
   // ── Reliable model/provider defaults (fix: empty answers when model omitted) ──
-  // Priority when the request didn't specify a provider: use a WORKING GLM flash
-  // model from the unified catalog (z.ai + bigmodel). Only if none is available
-  // do we fall back to the local Ollama model. This keeps default answers fast
-  // and high-quality instead of relying on the weak 1.5B local model.
+  // Priority when the request did not specify a provider: use a working GLM flash
+  // model from the unified catalog (z.ai + bigmodel).
   if (!provider.baseUrl && !provider.apiKey && !provider.model) {
     try {
       var cat = await getAvailableModels({});
@@ -224,13 +222,10 @@ export async function runAgentWithPiCore({
         var pc = resolveModelProvider(best.id);
         if (pc && pc.apiKey) { provider.baseUrl = pc.baseUrl; provider.apiKey = pc.apiKey; provider.model = pc.model; }
       }
-    } catch (e) { /* fall through to Ollama default */ }
+    } catch (e) { /* no catalog default available */ }
   }
-  if (!provider.baseUrl) provider.baseUrl = "http://browserai-ollama:11434/v1";
-  if (!provider.apiKey) provider.apiKey = "ollama";
-  if (!provider.model) {
-    var u0 = String(provider.baseUrl || "").toLowerCase();
-    if (u0.includes("ollama") || u0.includes("11434")) provider.model = "qwen2.5-coder:1.5b";
+  if (!provider.baseUrl || !provider.apiKey || !provider.model) {
+    throw new Error("LLM provider is not configured. Add a cloud provider API key/model in settings or environment.");
   }
 
   // ── Workspace scoping: run the ENTIRE agent execution inside the chat scope so
@@ -349,7 +344,7 @@ export async function runAgentWithPiCore({
 
   // ── Hybrid engine selection ──
   // Cloud providers (OpenAI/Anthropic/Google) → native pi-ai stream() with real
-  // structured tool-calling. Web sessions (DeepSeek/z.ai) and Ollama → legacy
+  // structured tool-calling. Web sessions (DeepSeek/z.ai) use the legacy
   // customStreamFn (text-JSON tool parsing). UI protocol is identical either way.
   var useNative = false;
   try { useNative = isNativeCapableProvider(provider); } catch (e) { useNative = false; }
@@ -374,7 +369,7 @@ export async function runAgentWithPiCore({
   var agent = new Agent({
     initialState: { systemPrompt: systemPrompt, model: agentModel, tools: agentTools, messages: piMessages },
     streamFn: agentStreamFn,
-    getApiKey: async function() { return provider.apiKey || "ollama"; },
+    getApiKey: async function() { return provider.apiKey; },
   });
 
   sse(wrappedRes, "agent_context", { model: provider.model, provider: provider.baseUrl, maxSteps: maxStepsVal, serverRoute: "/api/agent/chat-pi", engine: engineName, toolCount: agentTools.length });

@@ -13,7 +13,7 @@
  * Adding a provider here does NOT auto-certify it — operators must verify
  * before bumping to `certified`.
  *
- * Order matters: more-specific patterns (gemini, anthropic, ollama) come
+ * Order matters: more-specific patterns (gemini, anthropic) come
  * BEFORE the catch-all openai_compat pattern, so the broad `/v1$/` regex
  * does not swallow them.
  */
@@ -57,19 +57,6 @@ export const PROVIDER_SUPPORT_MATRIX = [
     knownLimitations: [
       'Not all Anthropic models support tool use — runtime cap enforced',
       'Different SSE event format; converted at transport boundary',
-    ],
-    sampleRunId: null,
-  },
-  {
-    id: 'ollama_local',
-    label: 'Ollama (local)',
-    tier: 'experimental',
-    baseUrlPattern: /(localhost|127\.0\.0\.1):11434/,
-    testedAt: '2026-06-20',
-    notes: 'Local LLM runtime. OpenAI-compatible surface. Capability detection happens at runtime.',
-    knownLimitations: [
-      'No native tools on older models — JSON-in-text fallback',
-      'Quality depends entirely on the local model size and quantization',
     ],
     sampleRunId: null,
   },

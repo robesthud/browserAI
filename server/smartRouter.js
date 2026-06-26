@@ -122,7 +122,7 @@ ${recentMessages}
 User message to classify: "${safeUserText}"
 Output:`
 
-  // Try providers in order: OpenRouter fallback chain → DeepSeek managed → Ollama local → null (heuristics)
+  // Try providers in order: OpenRouter fallback chain → DeepSeek managed → null (heuristics)
   const providersToTry = []
 
   if (lowerBase.includes('openrouter')) {
@@ -152,14 +152,6 @@ Output:`
       })
     }
   } catch { /* ignore */ }
-
-  // Ollama local fallback
-  providersToTry.push({
-    baseUrl: 'http://127.0.0.1:11434/v1',
-    apiKey: 'ollama',
-    authType: 'bearer',
-    model: 'qwen2.5:3b',
-  })
 
   for (const p of providersToTry) {
     try {

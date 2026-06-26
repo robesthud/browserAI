@@ -24,7 +24,6 @@
   - `browserai` healthy;
   - `agent-sandbox` running;
   - `browserai-db` running;
-  - `browserai-ollama` running;
   - `computer-sandbox` healthy.
 
 ## Ручной deploy на сервере

@@ -33,7 +33,7 @@ export default function ProviderStatusBadge({ activeKey, agentContext, isBusy })
 
   if (!shortModel) return null
 
-  // BUG-9 fix: removed unused isDeepSeek/isGemini/isOllama variables
+  // BUG-9 fix: removed unused unused provider-specific variables
   const dot = isFallback ? '🔀' : isBusy ? '🟢' : '⚪'
   const label = isFallback ? `${shortModel} (fallback)` : shortModel
 

@@ -229,11 +229,10 @@ async function callOpenAICompatible({
   const safeUrl = url.replace(/([?&]key=)[^&]+/gi, '$1<redacted>')
   const proxyUrl = process.env.CF_PROXY_URL || ''
   const proxySecret = process.env.CF_PROXY_SECRET || ''
-  // isLocal: точная проверка hostname чтобы 'exampleollama.com' не матчился
   const isLocal = (() => {
     try {
       const _h = new URL(baseUrl).hostname
-      return _h === 'localhost' || _h === '127.0.0.1' || _h === 'browserai-ollama' || _h.endsWith('.ollama') || _h === 'ollama'
+      return _h === 'localhost' || _h === '127.0.0.1'
     } catch {
       return baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1')
     }
@@ -893,7 +892,7 @@ async function callOpenAICompatibleStream({
   const isLocal = (() => {
     try {
       const _hs = new URL(baseUrl).hostname
-      return _hs === 'localhost' || _hs === '127.0.0.1' || _hs === 'browserai-ollama' || _hs.endsWith('.ollama') || _hs === 'ollama'
+      return _hs === 'localhost' || _hs === '127.0.0.1'
     } catch {
       return baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1')
     }

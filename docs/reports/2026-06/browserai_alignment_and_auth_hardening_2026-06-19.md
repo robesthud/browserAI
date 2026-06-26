@@ -17,7 +17,6 @@ Continue universal project-level hardening, verify GitHub/Timeweb actuality, and
   - `browserai`
   - `agent-sandbox`
   - `browserai-db`
-  - `browserai-ollama`
   - `computer-sandbox`
 
 ### Local verified repo

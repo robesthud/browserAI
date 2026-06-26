@@ -26,7 +26,7 @@ if [ "${DISK_USED_PCT}" -ge "${PRE_PRUNE_THRESHOLD}" ]; then
 fi
 
 echo "Ensuring base services are up..."
-docker compose up -d --no-build db ollama >/dev/null 2>&1 || true
+docker compose up -d --no-build db >/dev/null 2>&1 || true
 
 if [ "$REBUILD_AGENT_SANDBOX" = "1" ]; then
   echo "Rebuilding agent-sandbox image..."
@@ -75,7 +75,7 @@ echo "Waiting for health..."
 for i in $(seq 1 40); do
   if curl -fsS http://127.0.0.1/api/health >/dev/null 2>&1; then
     echo "Health OK"
-    docker ps --format '{{.Names}} {{.Status}} {{.Ports}}' | grep -E 'browserai|agent-sandbox|browserai-db|browserai-ollama' || true
+    docker ps --format '{{.Names}} {{.Status}} {{.Ports}}' | grep -E 'browserai|agent-sandbox|browserai-db' || true
     echo "Pruning old Docker build cache..."
     docker builder prune -af --filter 'until=24h' >/dev/null 2>&1 || true
     echo "=== Deploy completed ==="
@@ -86,6 +86,6 @@ for i in $(seq 1 40); do
 done
 
 echo "Health check failed; recent logs:"
-docker ps -a --format '{{.Names}} {{.Status}} {{.Ports}}' | grep -E 'browserai|agent-sandbox|browserai-db|browserai-ollama' || true
+docker ps -a --format '{{.Names}} {{.Status}} {{.Ports}}' | grep -E 'browserai|agent-sandbox|browserai-db' || true
 docker logs --tail=120 browserai 2>&1 || true
 exit 1

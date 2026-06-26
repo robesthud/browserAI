@@ -46,11 +46,9 @@ const AVAILABLE_PROVIDERS = listProviderIds().filter(id => {
     anthropic_official: 'ANTHROPIC_API_KEY',
     groq_official: 'GROQ_API_KEY',
     zhipu_official: 'ZHIPU_API_KEY',
-    ollama_local: 'OLLAMA_ALWAYS_AVAILABLE',
   };
   const envKey = envMap[id];
   if (!envKey) return false;
-  if (envKey === 'OLLAMA_ALWAYS_AVAILABLE') return true;
   return process.env[envKey] !== undefined;
 });
 

@@ -28,7 +28,6 @@ The patch was applied on the server with `git am` and pushed from the server's G
 - Related containers running:
   - `agent-sandbox`
   - `browserai-db`
-  - `browserai-ollama`
   - `computer-sandbox`
 
 ## Health verification
