@@ -36,13 +36,15 @@ export function isNativeCapableProvider(provider = {}) {
   const key = String(provider.apiKey || "");
   if (!url || !key || key === "__managed__" || key === "ollama") return false;
 
-  // Exclude managed web-session backends (handled by legacy path).
+  // Exclude managed WEB-session backends (handled by legacy path).
   if (url.includes("chat.deepseek") || url.includes("chat.z.ai")) return false;
   // Exclude local ollama (no native tool-calling reliability on tiny models).
   if (url.includes("ollama") || url.includes("11434") || url.includes("127.0.0.1") || url.includes("localhost")) return false;
 
-  // Allow recognised cloud providers.
+  // Allow recognised cloud providers (incl. official z.ai API).
   return (
+    url.includes("api.z.ai") ||        // official Z.AI API (GLM models) — native
+    url.includes("bigmodel") ||        // Zhipu BigModel endpoint
     url.includes("openai") ||
     url.includes("anthropic") ||
     url.includes("googleapis") ||
@@ -63,15 +65,24 @@ export function detectApi(baseUrl = "") {
   if (u.includes("anthropic")) return { api: "anthropic-messages", provider: "anthropic" };
   if (u.includes("googleapis") || u.includes("generativelanguage") || u.includes("gemini"))
     return { api: "google-completions", provider: "google" };
+  if (u.includes("api.z.ai") || u.includes("bigmodel"))
+    return { api: "openai-completions", provider: "zai" };
   return { api: "openai-completions", provider: "openai" };
 }
 
 /** Build a pi-ai Model object for native streaming. */
 export function buildNativeModel(provider = {}) {
-  const modelId = provider.model || "gpt-4o-mini";
   const baseUrl = provider.baseUrl;
   const { api, provider: providerType } = detectApi(baseUrl);
-  return {
+  // Sensible default model id per provider (pi-ai catalog ids).
+  let modelId = provider.model;
+  if (!modelId) {
+    if (providerType === "zai") modelId = "glm-4.7";
+    else if (providerType === "anthropic") modelId = "claude-3-5-sonnet-latest";
+    else if (providerType === "google") modelId = "gemini-1.5-flash";
+    else modelId = "gpt-4o-mini";
+  }
+  const model = {
     id: modelId,
     name: modelId,
     api,
@@ -83,6 +94,20 @@ export function buildNativeModel(provider = {}) {
     contextWindow: Number(provider.contextWindow) || 128000,
     maxTokens: Number(provider.maxTokens) || 4096,
   };
+  // z.ai (GLM) needs specific OpenAI-compat overrides for thinking + tool stream.
+  if (providerType === "zai") {
+    model.input = ["text"];
+    model.contextWindow = Number(provider.contextWindow) || 200000;
+    model.maxTokens = Number(provider.maxTokens) || 131072;
+    model.compat = {
+      supportsStore: false,
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: false,
+      thinkingFormat: "zai",
+      zaiToolStream: true,
+    };
+  }
+  return model;
 }
 
 /**
