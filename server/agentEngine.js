@@ -214,12 +214,13 @@ export async function runAgentWithPiCore({
   // ── Reliable model/provider defaults (fix: empty answers when model omitted) ──
   // Priority when the request did not specify a provider: use a working GLM flash
   // model from the unified catalog (z.ai + bigmodel).
-  if (!provider.baseUrl && !provider.apiKey && !provider.model) {
+  if (!provider.baseUrl || !provider.apiKey) {
     try {
       var cat = await getAvailableModels({});
-      var best = (cat && cat.models || [])[0];
-      if (best) {
-        var pc = resolveModelProvider(best.id);
+      var targetModel = provider.model || (cat && cat.models || [])[0]?.id;
+      if (targetModel) {
+        var pc = resolveModelProvider(targetModel);
+        if (!pc) pc = resolveModelProvider((cat && cat.models || [])[0]?.id);
         if (pc && pc.apiKey) { provider.baseUrl = pc.baseUrl; provider.apiKey = pc.apiKey; provider.model = pc.model; }
       }
     } catch (e) { /* no catalog default available */ }
