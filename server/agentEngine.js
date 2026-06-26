@@ -214,6 +214,12 @@ export async function runAgentWithPiCore({
   // ── Reliable model/provider defaults (fix: empty answers when model omitted) ──
   // Priority when the request did not specify a provider: use a working GLM flash
   // model from the unified catalog (z.ai + bigmodel).
+  if (provider && provider.baseUrl && provider.baseUrl.includes("bigmodel.cn") && process.env.BIGMODEL_API_KEY) {
+    provider.apiKey = process.env.BIGMODEL_API_KEY;
+  }
+  if (provider && provider.baseUrl && provider.baseUrl.includes("api.z.ai") && process.env.ZAI_API_KEY) {
+    provider.apiKey = process.env.ZAI_API_KEY;
+  }
   if (!provider.baseUrl || !provider.apiKey) {
     try {
       var cat = await getAvailableModels({});
