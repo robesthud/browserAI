@@ -103,6 +103,9 @@ export function streamAgent({ chatId = '', history, provider, extraSystem = '', 
         emit('done', { reason: 'stream-cut' })
       }
     } catch (e) {
+      if (sawDone) {
+        return
+      }
       if (e?.name === 'AbortError') {
         emit('done', { reason: 'aborted' })
       } else {

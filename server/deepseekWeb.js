@@ -362,7 +362,14 @@ async function streamDeepSeekToOpenAI(upstream, res) {
     }
     if (!sentAny && buffer.trim()) { try { emit(parseDeepSeekText(buffer)) } catch { } }
   } catch (e) {
-    try { res.write(`data: ${JSON.stringify({ error: 'Поток DeepSeek оборвался: ' + (e?.message || 'connection lost') })}\n\n`) } catch { }
+    // If DeepSeek dropped the stream AFTER we already emitted some content,
+    // don't surface a scary UI error: the user already has a usable answer.
+    // Just finish the SSE stream cleanly. Emit an error only when nothing was delivered.
+    if (!sentAny) {
+      try { res.write(`data: ${JSON.stringify({ error: 'Поток DeepSeek оборвался: ' + (e?.message || 'connection lost') })}\n\n`) } catch { }
+    } else {
+      try { console.warn('[deepseek-web] stream ended after partial content:', e?.message || e) } catch { }
+    }
   } finally { clearInterval(ka); try { res.write('data: [DONE]\n\n') } catch { }; res.end() }
 }
 

@@ -147,7 +147,7 @@ export async function runAgentWithPiCore({
 }) {
   var wrappedRes = {
     write: function(chunk) { try { res.write(chunk); } catch {} },
-    end: function() { try { res.end(); } catch {} },
+    end: function() { try { wrappedRes.writableEnded = true; res.end(); } catch {} },
     destroyed: false, writableEnded: false,
   };
   if (typeof res.on === "function") {
@@ -306,10 +306,12 @@ export async function runAgentWithPiCore({
       if (ft && !wrappedRes.destroyed) sse(wrappedRes, "assistant", { step: step, text: ft });
     }
     sseDone(wrappedRes, { steps: step, reason: "complete" }, { prompt: totals.prompt, completion: totals.completion, total: totals.total, reasoningTokens: totals.reasoningTokens, llmCalls: step });
+    wrappedRes.end();
   } catch (e) {
     if (!wrappedRes.destroyed && !res.headersSent) {
       sse(wrappedRes, "error", { message: e.message || "Agent engine error" });
       sseDone(wrappedRes, { steps: step, reason: "engine-error" }, totals);
+      wrappedRes.end();
     }
   }
 }
