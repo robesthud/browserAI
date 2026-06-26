@@ -25,15 +25,25 @@ function wrapTool(name, toolDef, loopGuard) {
   return {
     name, label: toolDef.label || name, description: toolDef.description || "", parameters: params,
     execute: async function(toolCallId, args, signal, onUpdate) {
-      // ── Loop guard: stop the model from calling the same tool with the same
-      // args repeatedly (common failure with web-session models like DeepSeek).
+      // ── Loop guard: stop web-session models (DeepSeek) from spinning.
       if (loopGuard) {
+        // (a) identical tool + identical args repeated → short-circuit.
         var sig;
         try { sig = name + ":" + JSON.stringify(args || {}); } catch (e) { sig = name + ":?"; }
         var n = (loopGuard.get(sig) || 0) + 1;
         loopGuard.set(sig, n);
-        if (n >= 3) {
-          return { content: [{ type: "text", text: "LOOP DETECTED: tool '" + name + "' was already called with identical arguments " + (n - 1) + " times. Do NOT repeat it. If the previous call succeeded, proceed to the next step or finish. If it failed, change the arguments or try a different tool." }], details: { loopGuard: true, count: n } };
+        if (n >= 2) {
+          return { content: [{ type: "text", text: "ALREADY DONE: tool '" + name + "' was already executed with these exact arguments. Do NOT call it again. Proceed to the NEXT step, or finish with a short confirmation and NO tool call." }], details: { loopGuard: true, count: n, alreadyDone: true } };
+        }
+        // (b) same FILE written/edited more than twice (even with different
+        // content) → the model is re-creating the same file in a loop. Stop it.
+        if ((name === "write_file" || name === "edit_file") && args && args.path) {
+          var pkey = "path:" + String(args.path);
+          var pn = (loopGuard.get(pkey) || 0) + 1;
+          loopGuard.set(pkey, pn);
+          if (pn >= 3) {
+            return { content: [{ type: "text", text: "STOP: file '" + args.path + "' has already been written " + (pn - 1) + " times in this task. It is complete. Do NOT write it again. Reply with a short final confirmation and NO tool call." }], details: { loopGuard: true, pathLoop: true, count: pn } };
+          }
         }
       }
       try {
@@ -225,6 +235,7 @@ export async function runAgentWithPiCore({
   var isDS = isDeepSeekWebUrl(provider.baseUrl);
 
   var step = 0;
+  var lastAssistantText = "";
   var totals = { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: 0 };
 
   var piMessages = (history || []).slice(0, -1).map(function(m) { return { role: m.role || "user", content: typeof m.content === "string" ? m.content : "" }; });
@@ -254,6 +265,12 @@ export async function runAgentWithPiCore({
               stream.push({ type: "thinking_delta", contentIndex: currentThinkingIndex, delta: chunk });
             } else {
               accumulatedText += chunk;
+              // For DeepSeek-web we DON'T stream raw text deltas: the model mixes
+              // ```json tool blocks into the prose, which would (a) show stray ```
+              // fences in the UI and (b) make tools appear before the cleaned text.
+              // Instead we buffer here and emit the CLEANED text after parsing,
+              // followed by the tool calls — giving correct "text → tools" order.
+              if (isDS) return;
               if (currentTextIndex === -1) {
                 currentTextIndex = partial.content.length;
                 partial.content.push({ type: "text", text: "" });
@@ -266,10 +283,25 @@ export async function runAgentWithPiCore({
           onUsage: function(u) { if (u) partial.usage = { input: u.prompt || 0, output: u.completion || 0, totalTokens: u.total || 0 }; },
         });
 
-        if (isDS && piTools.length > 0) {
+        if (isDS) {
           var parsed = parseToolCallsFromText(accumulatedText);
-          if (parsed.toolCalls.length > 0) {
-            if (currentTextIndex !== -1) partial.content[currentTextIndex].text = parsed.cleanText;
+          // Always emit cleaned text (fences stripped) as the visible answer,
+          // BEFORE any tool calls, so the UI order is "reasoning → tools".
+          var cleanText = String(parsed.cleanText || accumulatedText || "")
+            // Remove any leftover code fences / stray backticks the model emitted.
+            .replace(/```[a-zA-Z0-9_-]*[\s\S]*?```/g, "")
+            .replace(/`{1,}/g, "")
+            .trim();
+          if (cleanText) {
+            currentTextIndex = partial.content.length;
+            partial.content.push({ type: "text", text: cleanText });
+            stream.push({ type: "text_start", contentIndex: currentTextIndex, partial: partial });
+            stream.push({ type: "text_delta", contentIndex: currentTextIndex, delta: cleanText });
+          }
+          if (piTools.length > 0 && parsed.toolCalls.length > 0) {
+            // Dedupe identical tool calls within a single response (DeepSeek
+            // often repeats the same block, e.g. create_folder x3).
+            var seenSig = {};
             for (var ti = 0; ti < parsed.toolCalls.length; ti++) {
               var tc = parsed.toolCalls[ti];
               var matched = piTools.find(function(t) { return t.name === tc.name; });
@@ -277,11 +309,14 @@ export async function runAgentWithPiCore({
                 matched = piTools.find(function(t) { return t.name.indexOf(tc.name) >= 0 || tc.name.indexOf(t.name) >= 0; });
                 if (matched) console.log("[Pi Core Engine] Fuzzy match: " + tc.name + " -> " + matched.name);
               }
-              if (matched) {
-                tc.name = matched.name;
-                partial.content.push({ type: "toolCall", id: tc.id, name: tc.name, arguments: tc.args });
-                stream.push({ type: "tool_use_start", toolCallId: tc.id, toolName: tc.name, args: tc.args });
-              }
+              if (!matched) continue;
+              tc.name = matched.name;
+              var sig;
+              try { sig = tc.name + ":" + JSON.stringify(tc.args || {}); } catch (e) { sig = tc.name + ":?"; }
+              if (seenSig[sig]) { console.log("[Pi Core Engine] Skipped duplicate tool call: " + sig); continue; }
+              seenSig[sig] = true;
+              partial.content.push({ type: "toolCall", id: tc.id, name: tc.name, arguments: tc.args });
+              stream.push({ type: "tool_use_start", toolCallId: tc.id, toolName: tc.name, args: tc.args });
             }
           }
         }
@@ -363,7 +398,7 @@ export async function runAgentWithPiCore({
           var m = event.message;
           if (m && Array.isArray(m.content)) {
             var t = m.content.filter(function(c) { return c && c.type === "text"; }).map(function(c) { return c.text || ""; }).join("");
-            if (t) sse(wrappedRes, "assistant", { step: step, text: t });
+            if (t && t !== lastAssistantText) { lastAssistantText = t; sse(wrappedRes, "assistant", { step: step, text: t }); }
           }
           sse(wrappedRes, "usage", { step: step, prompt: totals.prompt, completion: totals.completion, total: totals.total, reasoningTokens: totals.reasoningTokens, llmCalls: totals.llmCalls, totals: { prompt: totals.prompt, completion: totals.completion, total: totals.total, reasoningTokens: totals.reasoningTokens, llmCalls: totals.llmCalls } });
           break;
@@ -376,7 +411,7 @@ export async function runAgentWithPiCore({
     var finalMsg = agent.state.messages[agent.state.messages.length - 1];
     if (finalMsg && finalMsg.role === "assistant" && Array.isArray(finalMsg.content)) {
       var ft = finalMsg.content.filter(function(c) { return c && c.type === "text"; }).map(function(c) { return c.text || ""; }).join("");
-      if (ft && !wrappedRes.destroyed) sse(wrappedRes, "assistant", { step: step, text: ft });
+      if (ft && ft !== lastAssistantText && !wrappedRes.destroyed) { lastAssistantText = ft; sse(wrappedRes, "assistant", { step: step, text: ft }); }
     }
     sseDone(wrappedRes, { steps: step, reason: "complete" }, { prompt: totals.prompt, completion: totals.completion, total: totals.total, reasoningTokens: totals.reasoningTokens, llmCalls: step });
     wrappedRes.end();
