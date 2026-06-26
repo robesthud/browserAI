@@ -6,6 +6,7 @@
  */
 import { Agent } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { isNativeCapableProvider, buildNativeStreamFn, toTypeboxTools, buildNativeModel } from "./piNativeEngine.js";
 import { TOOLS } from "./agentTools.js";
 import { resolveProviderFromInput } from "./providerResolution.js";
 import { withWorkspaceScope, getContainerWorkspaceRoot } from "./workspace.js";
@@ -250,13 +251,37 @@ export async function runAgentWithPiCore({
     return stream;
   };
 
+  // ── Hybrid engine selection ──
+  // Cloud providers (OpenAI/Anthropic/Google) → native pi-ai stream() with real
+  // structured tool-calling. Web sessions (DeepSeek/z.ai) and Ollama → legacy
+  // customStreamFn (text-JSON tool parsing). UI protocol is identical either way.
+  var useNative = false;
+  try { useNative = isNativeCapableProvider(provider); } catch (e) { useNative = false; }
+
+  var agentTools = piTools;
+  var agentModel = model;
+  var agentStreamFn = customStreamFn;
+  var engineName = "pi-agent-core";
+  if (useNative) {
+    try {
+      agentTools = toTypeboxTools(piTools);
+      agentModel = buildNativeModel(provider);
+      agentStreamFn = buildNativeStreamFn(provider);
+      engineName = "pi-ai-native";
+      console.log("[Pi Native Engine] Using native pi-ai tool-calling for " + provider.baseUrl);
+    } catch (e) {
+      console.log("[Pi Native Engine] native setup failed, falling back to legacy: " + e.message);
+      agentTools = piTools; agentModel = model; agentStreamFn = customStreamFn; engineName = "pi-agent-core";
+    }
+  }
+
   var agent = new Agent({
-    initialState: { systemPrompt: systemPrompt, model: model, tools: piTools, messages: piMessages },
-    streamFn: customStreamFn,
+    initialState: { systemPrompt: systemPrompt, model: agentModel, tools: agentTools, messages: piMessages },
+    streamFn: agentStreamFn,
     getApiKey: async function() { return provider.apiKey || "ollama"; },
   });
 
-  sse(wrappedRes, "agent_context", { model: provider.model, provider: provider.baseUrl, maxSteps: maxStepsVal, serverRoute: "/api/agent/chat-pi", engine: "pi-agent-core", toolCount: piTools.length });
+  sse(wrappedRes, "agent_context", { model: provider.model, provider: provider.baseUrl, maxSteps: maxStepsVal, serverRoute: "/api/agent/chat-pi", engine: engineName, toolCount: agentTools.length });
 
   try {
     var lastUserMsg = (history || []).slice().reverse().find(function(m) { return m.role === "user"; });
