@@ -9,15 +9,12 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     environment:
-
       - BROWSERAI_RUNTIME_MODE=privileged
       - BROWSERAI_DISABLE_CATASTROPHIC_APPROVAL=1
       - NODE_ENV=production
       - PORT=8080
       - OPS_APP_DIR=/opt/browserai
-      # DeepSeek managed-session env (optional bootstrap, can be set later via UI/TG)
       - DEEPSEEK_STATE_FILE=/data/deepseek_session.json
-      # Z.ai (chat.z.ai) managed session — same pattern as DeepSeek
       - ZAI_STATE_FILE=/data/zai_session.json
       - ZAI_HEARTBEAT_MS=${ZAI_HEARTBEAT_MS:-600000}
       - ZAI_MODELS_REFRESH_MS=${ZAI_MODELS_REFRESH_MS:-3600000}
@@ -26,88 +23,33 @@ services:
       - BIGMODEL_API_KEY=${BIGMODEL_API_KEY:-}
       - GLM_PROXY_URL=${GLM_PROXY_URL:-http://glm-free-api:8000}
       - CHAT_DEBUG_LOG=/data/chat-debug.log
-      # - DEEPSEEK_USER_TOKEN=
-      # - DEEPSEEK_COOKIES=
-      # Telegram bot v2 (optional): single-token admin + AI agent interface
       - TG_BOT_TOKEN=${TG_BOT_TOKEN:-}
       - TG_ADMIN_CHAT_ID=${TG_ADMIN_CHAT_ID:-}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - GITHUB_REPO=${GITHUB_REPO:-robesthud/browserAI}
       - CF_PROXY_URL=${CF_PROXY_URL:-}
       - CF_PROXY_SECRET=${CF_PROXY_SECRET:-}
-      # App-level secrets
       - SESSION_SECRET=${SESSION_SECRET:-change-me}
-      # AUTH_SECRET signs/encrypts sessions and the encrypted cloud-sync
-      # payloads (HKDF -> AES-256-GCM). MUST be a long random string in
-      # production — the code falls back to a known dev default otherwise.
       - AUTH_SECRET=${AUTH_SECRET:-}
       - APP_URL=${APP_URL:-http://localhost}
-      # Workspace path shared by API and agent-sandbox. Without this the API
-      # defaults to /data/workspace while bash tools write to /workspace.
       - WORKSPACE_ROOT=${WORKSPACE_ROOT:-/workspace}
-      # Agent runtime defaults: full agent loop, no hard approval prompts for trusted owner deployments.
       - BROWSERAI_LIGHTWEIGHT_ROUTE=${BROWSERAI_LIGHTWEIGHT_ROUTE:-0}
-      # Agent sandbox
-      - AGENT_SANDBOX_CONTAINER=agent-sandbox
-      # Computer-use sandbox (Xvfb + Firefox + xdotool). Disabled by
-      # default — set BROWSERAI_COMPUTER_USE=on AND docker compose --profile
-      # computer up -d to enable.
-      - COMPUTER_SANDBOX_CONTAINER=computer-sandbox
-      - BROWSERAI_COMPUTER_USE=${BROWSERAI_COMPUTER_USE:-off}
-      # Optional: Google AI Studio API key for generate_image + Gemini calls.
-      # Get a free key at https://aistudio.google.com/apikey — no card needed.
+      - BROWSERAI_COMPUTER_USE=off
+      - OPENHANDS_AGENT_SERVER=http://openhands:18000
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - LUMA_API_KEY=${LUMA_API_KEY:-}
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
-    # Bind-mounts: state lives on the host filesystem, visible with plain ls,
-    # easy to rsync / backup, completely independent from docker volumes so
-    # `docker compose down -v` does NOT touch it.
-    #
-    # Override the host paths via .env if you want different locations:
-    #   DATA_DIR=/srv/browserai/data
-    #   WORKSPACE_DIR=/srv/browserai/workspace
     volumes:
       - ${DATA_DIR:-./data}:/data
       - ${WORKSPACE_DIR:-./workspace}:/workspace
-      # Allows `docker exec agent-sandbox ...` from inside this container.
       - /var/run/docker.sock:/var/run/docker.sock
       - /opt/browserai:/opt/browserai
       - /opt/browserai/server:/app/server
       - /opt/browserai/runtime:/app/runtime
     depends_on:
-      - agent-sandbox
-
-  # Isolated runner for LLM-generated shell commands.
-  # Полноценный toolset для работы с любыми проектами: SSH на серверы,
-  # git, базы данных, Docker, k8s, terraform, языки (Node/Python/Go/Rust/
-  # Ruby/PHP/Java), медиа (ffmpeg/imagemagick), DevOps CLI.
-  # Dockerfile: docker/agent-sandbox/Dockerfile
-  agent-sandbox:
-    build:
-      context: ./docker/agent-sandbox
-      dockerfile: Dockerfile
-    image: browserai-agent-sandbox:latest
-    container_name: agent-sandbox
-    restart: unless-stopped
-    user: "0:0"  # boot as root; agent commands run as uid 1000 via -u
-    read_only: false
-    tmpfs:
-      - /tmp:size=256m
-      - /home/agent:size=512m,uid=1000,gid=1000,mode=1777,exec
-    working_dir: /workspace
-    volumes:
-      - ${WORKSPACE_DIR:-./workspace}:/workspace
-      - ${DATA_DIR:-./data}/global-npm:/usr/local/lib/node_modules
-      - ${DATA_DIR:-./data}/global-bin:/usr/local/bin
-      - ${DATA_DIR:-./data}/ssh:/root/.ssh
-      - ${DATA_DIR:-./data}/python-local:/root/.local
-      - ${DATA_DIR:-./data}/pip-cache:/root/.cache/pip
-      # Docker socket — позволяет агенту управлять контейнерами хоста
-      - /var/run/docker.sock:/var/run/docker.sock
-    # Generous limits for fast builds and tests on personal VPS.
-    pids_limit: 1024
+      - openhands
 
   # ──────────────────────────────────────────────────────────────────────
   # postgres — built-in robust database for sandbox and app data
@@ -117,8 +59,6 @@ services:
     container_name: browserai-db
     restart: unless-stopped
     environment:
-
-
       - POSTGRES_USER=browserai
       - POSTGRES_PASSWORD=browserai_secret
       - POSTGRES_DB=browserai
@@ -127,75 +67,23 @@ services:
     mem_limit: 256m
     cpus: 0.25
 
-
   # ──────────────────────────────────────────────────────────────────────
-  # computer-sandbox — virtual X11 desktop for Computer Use tools.
-  #
-  # OPT-IN: lives under the `computer` compose profile so plain
-  # `docker compose up` does NOT start it. Activate with:
-  #
-  #     docker compose --profile computer up -d computer-sandbox
-  #
-  # plus set BROWSERAI_COMPUTER_USE=on for the browserai container so
-  # the computer_* tools register at boot. RAM cap is 400 MB — fits on
-  # a 1 GB VPS alongside browserai (~120 MB) and agent-sandbox (~80 MB).
-  # ──────────────────────────────────────────────────────────────────────
-  computer-sandbox:
-    build:
-      context: ./docker/computer-sandbox
-      dockerfile: Dockerfile
-    image: browserai-computer-sandbox:latest
-    container_name: computer-sandbox
-    profiles: ["computer"]
-    restart: unless-stopped
-    # SHM size matters for Firefox — too small and pages crash.
-    shm_size: 256m
-    environment:
-
-
-      - DISPLAY=:99
-      - SCREEN_WIDTH=${COMPUTER_SCREEN_WIDTH:-1280}
-      - SCREEN_HEIGHT=${COMPUTER_SCREEN_HEIGHT:-720}
-      - SCREEN_DEPTH=24
-    working_dir: /home/computer
-    # Share the same workspace so files the LLM downloads via Firefox
-    # show up in the UI immediately.
-    volumes:
-      - ${WORKSPACE_DIR:-./workspace}:/workspace
-    mem_limit: 400m
-    cpus: 0.5
-    pids_limit: 256
-
-  # ──────────────────────────────────────────────────────────────────────
-  # glm-free-api — z.ai (Zhipu AI Web) Free Reverse API Gateway
-  # ──────────────────────────────────────────────────────────────────────
-  glm-free-api:
-    image: akashrajpuroh1t/glm-free-api-fix:latest
-    container_name: glm-free-api
-    restart: unless-stopped
-    environment:
-      - TZ=Europe/Volgograd
-    ports:
-      - "127.0.0.1:8001:8000"
-    pids_limit: 64
-
-  # ──────────────────────────────────────────────────────────────────────
-  # openhands — OpenHands (OpenDevin) Autonomous AI Software Engineer
+  # openhands — OpenHands Agent Server (backend-only, port 18000)
   # ──────────────────────────────────────────────────────────────────────
   openhands:
     image: ghcr.io/all-hands-ai/openhands:main
     container_name: openhands
+    command: ["--backend-only"]
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:18000:18000"
     environment:
+      - PORT=18000
       - SANDBOX_RUNTIME_CONTAINER_IMAGE=ghcr.io/all-hands-ai/runtime:main
-      - WORKSPACE_MOUNT_PATH=${WORKSPACE_DIR:-./workspace}
+      - WORKSPACE_MOUNT_PATH=${WORKSPACE_DIR:-/opt/browserai-data/workspace}
       - LLM_BASE_URL=${OPENHANDS_LLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
-      - LLM_API_KEY=dba035e8741f4f68afdd0f58951e0ee0.zOIQpvWagZlY5r7e
+      - LLM_API_KEY=${OPENHANDS_LLM_API_KEY:-${BIGMODEL_API_KEY:-dba035e8741f4f68afdd0f58951e0ee0.zOIQpvWagZlY5r7e}}
       - LLM_MODEL=${OPENHANDS_LLM_MODEL:-glm-4.5-flash}
     volumes:
       - ${WORKSPACE_DIR:-./workspace}:/workspace
       - /var/run/docker.sock:/var/run/docker.sock
-
-
