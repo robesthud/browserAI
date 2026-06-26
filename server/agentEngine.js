@@ -20,11 +20,22 @@ function sse(target, event, data) {
 function sseDone(target, meta, tokens) {
   sse(target, "done", { reason: meta?.reason || "complete", ...meta, tokens: tokens || { prompt: 0, completion: 0, total: 0, reasoningTokens: 0, llmCalls: meta?.steps || 0 } });
 }
-function wrapTool(name, toolDef) {
+function wrapTool(name, toolDef, loopGuard) {
   var params = toolDef.parameters || toolDef.params || {};
   return {
     name, label: toolDef.label || name, description: toolDef.description || "", parameters: params,
     execute: async function(toolCallId, args, signal, onUpdate) {
+      // ── Loop guard: stop the model from calling the same tool with the same
+      // args repeatedly (common failure with web-session models like DeepSeek).
+      if (loopGuard) {
+        var sig;
+        try { sig = name + ":" + JSON.stringify(args || {}); } catch (e) { sig = name + ":?"; }
+        var n = (loopGuard.get(sig) || 0) + 1;
+        loopGuard.set(sig, n);
+        if (n >= 3) {
+          return { content: [{ type: "text", text: "LOOP DETECTED: tool '" + name + "' was already called with identical arguments " + (n - 1) + " times. Do NOT repeat it. If the previous call succeeded, proceed to the next step or finish. If it failed, change the arguments or try a different tool." }], details: { loopGuard: true, count: n } };
+        }
+      }
       try {
         var result = await toolDef.handler(args);
         if (result && result.ok === false) return { content: [{ type: "text", text: result.error || "Tool failed" }], details: result };
@@ -54,18 +65,27 @@ function buildToolPrompt(piTools) {
   if (!piTools || piTools.length === 0) return "";
   var L = [];
   L.push("");
-  L.push("=== TOOL USAGE PROTOCOL ===");
-  L.push("To call a tool, output EXACTLY this JSON format on its own line:");
+  L.push("=== TOOL USAGE PROTOCOL (STRICT) ===");
+  L.push("You can perform real actions ONLY by emitting a tool call. You CANNOT create files or run code by writing prose.");
+  L.push("");
+  L.push("To call a tool, output a fenced json block containing EXACTLY one JSON object, on its own lines, with NO text before it:");
   L.push("");
   L.push("```json");
-  L.push("{" + JSON.stringify("tool") + ": " + JSON.stringify("TOOL_NAME") + ", " + JSON.stringify("arguments") + ": {" + JSON.stringify("param") + ": " + JSON.stringify("value") + "}}");
+  L.push('{"tool": "TOOL_NAME", "arguments": { "param": "value" }}');
   L.push("```");
   L.push("");
-  L.push("RULES:");
-  L.push("1. When asked to DO something -> call a tool IMMEDIATELY. Never describe.");
-  L.push("2. Output tool call FIRST. Explain AFTER seeing the result.");
-  L.push("3. If tool fails -> try DIFFERENT approach. Do NOT repeat same failing call.");
-  L.push("4. write_file: ALL content in ONE call. bash: full command string.");
+  L.push("EXAMPLE — to create a file:");
+  L.push("```json");
+  L.push('{"tool": "write_file", "arguments": {"path": "index.html", "content": "<!DOCTYPE html>..."}}');
+  L.push("```");
+  L.push("");
+  L.push("HARD RULES:");
+  L.push("1. To DO anything (create/edit/list files, run commands) you MUST emit a tool call. Never just describe it.");
+  L.push("2. Emit the json tool-call block FIRST, before any explanation. Do not add commentary above it.");
+  L.push("3. Exactly ONE JSON object per ```json block. Use the key \"tool\" for the name and \"arguments\" for the params object.");
+  L.push("4. write_file: put the ENTIRE file content in one call's \"content\". bash: full command string in \"command\".");
+  L.push("5. After a tool result is returned, continue or finish. If a tool fails, try a DIFFERENT approach; never repeat the same failing call.");
+  L.push("6. When the task is fully done, reply with a short confirmation and NO json block.");
   L.push("");
   L.push("AVAILABLE TOOLS:");
   piTools.slice(0, 30).forEach(function(t) {
@@ -84,61 +104,73 @@ function parseToolCallsFromText(text) {
     if (str[startIdx] !== "{") return null;
     var depth = 0, inStr = false, esc = false;
     for (var i = startIdx; i < str.length; i++) {
-      var c = str[i];
+      var ch = str[i];
       if (esc) { esc = false; continue; }
-      if (c === "\\") { esc = true; continue; }
-      if (c === "\"" && !esc) { inStr = !inStr; continue; }
+      if (ch === "\\") { esc = true; continue; }
+      if (ch === "\"" && !esc) { inStr = !inStr; continue; }
       if (inStr) continue;
-      if (c === "{") depth++;
-      else if (c === "}") { depth--; if (depth === 0) return str.substring(startIdx, i + 1); }
+      if (ch === "{") depth++;
+      else if (ch === "}") { depth--; if (depth === 0) return str.substring(startIdx, i + 1); }
     }
+    return null;
+  }
+
+  // Accept several field-name conventions the model might use.
+  function normalizeCall(p) {
+    if (!p || typeof p !== "object") return null;
+    var name, args;
+    // OpenAI-style first: { function: { name, arguments } }
+    if (p.function && typeof p.function === "object") {
+      name = p.function.name;
+      args = p.function.arguments;
+    } else {
+      name = p.tool || p.name || p.tool_name || (typeof p.function === "string" ? p.function : undefined);
+      args = p.arguments || p.args || p.parameters || p.params || p.input;
+    }
+    if (typeof args === "string") { try { args = JSON.parse(args); } catch (e) { /* leave as-is */ } }
+    if (name && (args === undefined || args === null)) args = {};
+    if (name && typeof args === "object") return { name: String(name), args: args };
     return null;
   }
 
   function tryAddTool(jsonStr) {
     if (!jsonStr) return false;
-    try { var p = JSON.parse(jsonStr); if (p.tool && p.arguments) { toolCalls.push({ id: "tc_" + toolCalls.length + "_" + Date.now(), name: p.tool, args: p.arguments }); return true; } } catch(e) {}
+    try {
+      var p = JSON.parse(jsonStr);
+      var nc = normalizeCall(p);
+      if (nc) { toolCalls.push({ id: "tc_" + toolCalls.length + "_" + Date.now(), name: nc.name, args: nc.args }); return true; }
+    } catch (e) {}
     return false;
   }
 
-  // Strategy 1: ```json ... ``` blocks
-  var idx = 0;
-  while (idx < text.length) {
-    var start = text.indexOf("```json", idx);
-    if (start === -1) break;
-    var jsonStart = start + 7;
-    if (text[jsonStart] === "\n") jsonStart++;
-    var end = text.indexOf("```", jsonStart);
-    if (end === -1) { idx = start + 7; continue; }
-    var block = text.substring(jsonStart, end).trim();
-    var braceStart = block.indexOf("{");
-    if (braceStart >= 0) {
-      var jsonStr = extractBalancedJson(block, braceStart);
-      tryAddTool(jsonStr);
+  // Strategy 1: any fenced code block (```json, ```, ```js, ```tool) containing a JSON object.
+  var fenceRe = /```[a-zA-Z0-9_-]*\s*\n?([\s\S]*?)```/g;
+  var fm;
+  while ((fm = fenceRe.exec(text)) !== null) {
+    var block = (fm[1] || "").trim();
+    var bs = block.indexOf("{");
+    while (bs >= 0) {
+      var js = extractBalancedJson(block, bs);
+      if (js && tryAddTool(js)) break;
+      bs = block.indexOf("{", bs + 1);
     }
-    idx = end + 3;
   }
 
-  // Strategy 2: bare {"tool":... anywhere in text (model forgot code fences)
+  // Strategy 2: bare JSON objects with "tool"/"name"/"function" anywhere (model forgot fences).
   if (toolCalls.length === 0) {
-    idx = 0;
-    while (idx < text.length) {
-      var toolIdx = text.indexOf(tool, idx);
-      if (toolIdx === -1) break;
-      var braceStart = text.lastIndexOf("{", toolIdx);
-      if (braceStart >= 0 && (toolIdx - braceStart) < 300) {
-        var jsonStr2 = extractBalancedJson(text, braceStart);
-        if (jsonStr2 && jsonStr2.indexOf(tool) > 0 && jsonStr2.indexOf(arguments) > 0) {
-          tryAddTool(jsonStr2);
-          if (toolCalls.length > 0) break;
-        }
-      }
-      idx = toolIdx + 6;
+    var keyRe = /"(tool|name|tool_name|function)"\s*:/g;
+    var km;
+    while ((km = keyRe.exec(text)) !== null) {
+      var braceStart = text.lastIndexOf("{", km.index);
+      if (braceStart < 0) continue;
+      var js2 = extractBalancedJson(text, braceStart);
+      if (js2 && tryAddTool(js2)) break;
     }
   }
 
   if (toolCalls.length > 0) {
-    cleanText = cleanText.replace(/```json[\s\S]*?```/g, "").trim();
+    // Strip any fenced blocks from the visible text.
+    cleanText = cleanText.replace(/```[a-zA-Z0-9_-]*[\s\S]*?```/g, "").trim();
   }
   return { cleanText: cleanText, toolCalls: toolCalls };
 }
@@ -186,7 +218,8 @@ export async function runAgentWithPiCore({
   var cwd = getContainerWorkspaceRoot() || "/workspace";
   var systemPrompt = extraSystem || "BrowserAI agent. Workspace: " + cwd + ". OS: Linux. Respond in Russian.";
 
-  var piTools = Object.entries(TOOLS).filter(function(entry) { return typeof entry[1].handler === "function"; }).map(function(entry) { return wrapTool(entry[0], entry[1]); });
+  var loopGuard = new Map();
+  var piTools = Object.entries(TOOLS).filter(function(entry) { return typeof entry[1].handler === "function"; }).map(function(entry) { return wrapTool(entry[0], entry[1], loopGuard); });
   var model = buildModel(provider);
   var maxStepsVal = Math.max(1, Number(maxSteps) || 50);
   var isDS = isDeepSeekWebUrl(provider.baseUrl);

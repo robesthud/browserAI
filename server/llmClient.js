@@ -1080,20 +1080,42 @@ export async function callLLMStream(opts) {
   if (isDeepSeekWebUrl(opts.baseUrl)) {
     // #41 FIX: Use enhanced handleDeepSeekWebChat for Agent Mode.
     // Supports real-time callback-based streaming.
-    return await handleDeepSeekWebChat({
-      reqBody: {
-        baseUrl: opts.baseUrl,
-        apiKey: opts.apiKey,
-        authType: opts.authType || 'bearer',
-        authHeader: opts.authHeader || '',
-        extraHeaders: opts.extraHeaders || {},
-        model: opts.model,
-        messages: opts.messages,
-        temperature: opts.temperature,
-        stream: true,
-      },
-      onTextDelta: opts.onTextDelta,
-    })
+    // STABILITY: chat.deepseek.com intermittently streams an EMPTY response
+    // under throttling. Buffer the streamed text and retry up to 3x with
+    // backoff if nothing came through. Deltas are only forwarded as they arrive;
+    // since we retry only when the buffer is empty, no duplicate text reaches UI.
+    {
+      const MAX_DS_ATTEMPTS = 3
+      let dsLastErr = null
+      for (let dsAttempt = 1; dsAttempt <= MAX_DS_ATTEMPTS; dsAttempt++) {
+        let dsBuf = ''
+        try {
+          const dsRes = await handleDeepSeekWebChat({
+            reqBody: {
+              baseUrl: opts.baseUrl,
+              apiKey: opts.apiKey,
+              authType: opts.authType || 'bearer',
+              authHeader: opts.authHeader || '',
+              extraHeaders: opts.extraHeaders || {},
+              model: opts.model,
+              messages: opts.messages,
+              temperature: opts.temperature,
+              stream: true,
+            },
+            onTextDelta: (chunk, meta) => { dsBuf += (chunk || ''); if (typeof opts.onTextDelta === 'function') opts.onTextDelta(chunk, meta) },
+          })
+          if (dsBuf && dsBuf.trim()) return dsRes
+          dsLastErr = new Error('DeepSeek streamed empty response')
+        } catch (e) {
+          dsLastErr = e
+        }
+        if (dsAttempt < MAX_DS_ATTEMPTS) {
+          await new Promise((r) => setTimeout(r, 1500 * dsAttempt))
+        }
+      }
+      throw (dsLastErr || new Error('DeepSeek streamed empty response after retries'))
+    }
+  }
 
   if (isZaiWebUrl(opts.baseUrl)) {
     return await handleZaiWebChat({
@@ -1108,8 +1130,6 @@ export async function callLLMStream(opts) {
     })
   }
 
-  }
-  
   const useStream = supportsStreaming(opts.baseUrl)
   if (!useStream) {
     const res = await callLLM(opts)

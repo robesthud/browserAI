@@ -386,10 +386,16 @@ export async function handleDeepSeekWebChat({ reqBody, res, onTextDelta }) {
   const _crypto = await import('node:crypto')
   const cacheKey = `${_crypto.default.createHash('sha256').update(_rawAuth).digest('hex').slice(0,16)}:${model}`
   const proxyUrl = process.env.CF_PROXY_URL || '', proxySecret = process.env.CF_PROXY_SECRET || ''
-  let chatSessionId = sessionCache.get(cacheKey)?.chatSessionId
+  // STABILITY FIX: DeepSeek-web rejects/returns-empty when the same
+  // chat_session_id is reused with parent_message_id=null (each call looks like
+  // re-sending the root message). Agent loops do many turns, so a cached session
+  // broke every call after the first. We now create a FRESH session per request
+  // unless the caller explicitly opts into reuse (reqBody.reuseSession === true).
+  const reuseSession = reqBody?.reuseSession === true
+  let chatSessionId = reuseSession ? sessionCache.get(cacheKey)?.chatSessionId : null
   if (!chatSessionId) {
     chatSessionId = await createChatSession({ baseUrl, headers, proxyUrl, proxySecret })
-    sessionCache.set(cacheKey, { chatSessionId, createdAt: Date.now() })
+    if (reuseSession) sessionCache.set(cacheKey, { chatSessionId, createdAt: Date.now() })
     // TTL cleanup — удаляем записи старше 2 часов
     const _now = Date.now(), _TTL = 2 * 60 * 60 * 1000
     for (const [k, v] of sessionCache) {
