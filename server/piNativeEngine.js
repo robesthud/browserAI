@@ -40,11 +40,11 @@ export function isNativeCapableProvider(provider = {}) {
   if (url.includes("chat.deepseek") || url.includes("chat.z.ai")) return false;
   // Exclude loopback endpoints from native provider handling.
   if (url.includes("127.0.0.1") || url.includes("localhost")) return false;
+  // Exclude Zhipu / GLM endpoints from pi-ai native stream (use robust callLLMStream path instead)
+  if (url.includes("bigmodel") || url.includes("api.z.ai")) return false;
 
-  // Allow recognised cloud providers (incl. official z.ai API).
+  // Allow recognised cloud providers.
   return (
-    url.includes("api.z.ai") ||        // official Z.AI API (GLM models) — native
-    url.includes("bigmodel") ||        // Zhipu BigModel endpoint
     url.includes("openai") ||
     url.includes("anthropic") ||
     url.includes("googleapis") ||
