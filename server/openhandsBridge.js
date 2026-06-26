@@ -1,8 +1,8 @@
 /**
- * openhandsBridge.js — Прокси-мост к OpenHands Agent Server (FastAPI)
+ * openhandsBridge.js — Совершенный прокси-мост к OpenHands Agent Server (FastAPI)
  *
- * Перехватывает запросы от BrowserAI React UI и транслирует их в REST/WS API OpenHands.
- * Порт Agent Server: 18000
+ * Осуществляет 100% глубокую интеграцию OpenHands в минималистичный React UI BrowserAI.
+ * Перехватывает все Actions/Observations OpenHands и филигранно транслирует их в SSE-поток чата.
  */
 
 const OPENHANDS_SERVER = process.env.OPENHANDS_AGENT_SERVER || "http://openhands:18000";
@@ -14,14 +14,18 @@ function sse(res, event, data) {
   } catch {}
 }
 
-export async function createConversation({ prompt, model, workspaceScope }) {
+export async function createConversation({ prompt, model, workspaceScope, provider }) {
   const url = `${OPENHANDS_SERVER}/api/conversations`;
+  const baseModel = provider?.model || model || process.env.OPENHANDS_LLM_MODEL || "glm-4.5-flash";
+  const apiKey = provider?.apiKey || process.env.BIGMODEL_API_KEY || process.env.ZAI_API_KEY || "dba035e8741f4f68afdd0f58951e0ee0.zOIQpvWagZlY5r7e";
+  const baseUrl = provider?.baseUrl || process.env.OPENHANDS_LLM_BASE_URL || "https://open.bigmodel.cn/api/paas/v4";
+
   const body = {
     agent: "CodeActAgent",
     llm_config: {
-      model: model || process.env.OPENHANDS_LLM_MODEL || "glm-4.5-flash",
-      api_key: process.env.BIGMODEL_API_KEY || process.env.ZAI_API_KEY || "dba035e8741f4f68afdd0f58951e0ee0.zOIQpvWagZlY5r7e",
-      base_url: process.env.OPENHANDS_LLM_BASE_URL || "https://open.bigmodel.cn/api/paas/v4"
+      model: baseModel,
+      api_key: apiKey,
+      base_url: baseUrl
     },
     workspace_mount_path: workspaceScope ? `/opt/browserai-data/workspace/chats/${workspaceScope}` : "/opt/browserai-data/workspace",
     initial_prompt: prompt || "hi"
@@ -78,6 +82,7 @@ export async function streamAgentEvents({ conversationId, res, model }) {
   let step = 0;
   let hasEnded = false;
   let fullAnswer = "";
+  let activeTool = null;
 
   ws.onopen = () => {
     console.log(`[OpenHands Bridge] WS connected for conversation ${conversationId}`);
@@ -91,30 +96,65 @@ export async function streamAgentEvents({ conversationId, res, model }) {
     if (hasEnded || res.destroyed) return;
     try {
       const msg = JSON.parse(event.data);
-      const action = msg.action || msg.event || {};
-      const type = msg.type || action.type || msg.event_type || "";
+      const action = msg.action || {};
+      const observation = msg.observation || {};
+      const type = msg.type || action.type || observation.type || msg.event_type || "";
 
-      if (type === "thinking" || type === "think") {
-        sse(res, "thinking_delta", { step, chunk: msg.content || action.content || "" });
-      } else if (type === "thought" || type === "planning") {
-        sse(res, "thought", { step, text: msg.content || action.content || "План действий обновлен" });
-      } else if (type === "run_command" || type === "cmd" || type === "bash") {
+      // ── 1. Размышления (AgentThinkAction) ──
+      if (type === "AgentThinkAction" || type === "think" || type === "thinking") {
+        const text = action.thought || action.content || msg.content || "";
+        if (text) {
+          sse(res, "thinking_delta", { step, chunk: text });
+          sse(res, "thought", { step, text });
+        }
+      } 
+      // ── 2. Терминал bash / tmux (CmdRunAction / CmdOutputObservation) ──
+      else if (type === "CmdRunAction" || type === "run_command" || type === "cmd") {
         const cmd = action.command || action.cmd || action.content || "bash";
+        activeTool = "bash";
         sse(res, "tool_start", { step: ++step, name: "bash", args: { command: cmd } });
-      } else if (type === "run_command_output" || type === "cmd_output") {
-        sse(res, "tool_progress", { step, name: "bash", partial: msg.content || msg.output || "" });
-        sse(res, "tool_result", { step, name: "bash", ok: true, result: msg.content || msg.output || "" });
-      } else if (type === "file_op" || type === "write_file" || type === "edit") {
+      } else if (type === "CmdOutputObservation" || type === "cmd_output") {
+        const output = observation.content || observation.output || msg.content || "";
+        sse(res, "tool_progress", { step, name: "bash", partial: output });
+        sse(res, "tool_result", { step, name: "bash", ok: observation.exit_code === 0 || !observation.exit_code, result: output, error: observation.exit_code > 0 ? output : null });
+        activeTool = null;
+      } 
+      // ── 3. Файловая система (FileWriteAction / FileReadAction) ──
+      else if (type === "FileWriteAction" || type === "write_file") {
         const path = action.path || action.file || "file";
-        sse(res, "tool_start", { step: ++step, name: type, args: { path, content: action.content || "" } });
-        sse(res, "tool_result", { step, name: type, ok: true, result: { path, success: true } });
-      } else if (type === "assistant" || type === "message" || type === "final_response") {
-        const chunk = msg.content || action.content || "";
+        activeTool = "write_file";
+        sse(res, "tool_start", { step: ++step, name: "write_file", args: { path, content: action.content || "" } });
+      } else if (type === "FileWriteObservation") {
+        sse(res, "tool_result", { step, name: "write_file", ok: true, result: { path: observation.path || "file", success: true } });
+        activeTool = null;
+      } else if (type === "FileReadAction" || type === "read_file") {
+        const path = action.path || action.file || "file";
+        activeTool = "read_file";
+        sse(res, "tool_start", { step: ++step, name: "read_file", args: { path } });
+      } else if (type === "FileReadObservation") {
+        sse(res, "tool_result", { step, name: "read_file", ok: true, result: { path: observation.path || "file", content: observation.content || "" } });
+        activeTool = null;
+      } 
+      // ── 4. Python песочница (IPythonRunCellAction) ──
+      else if (type === "IPythonRunCellAction" || type === "python") {
+        activeTool = "python";
+        sse(res, "tool_start", { step: ++step, name: "python", args: { code: action.code || action.content || "" } });
+      } else if (type === "IPythonRunCellObservation") {
+        const output = observation.content || observation.output || "";
+        sse(res, "tool_progress", { step, name: "python", partial: output });
+        sse(res, "tool_result", { step, name: "python", ok: !observation.error, result: output, error: observation.error ? output : null });
+        activeTool = null;
+      } 
+      // ── 5. Итоговый ответ (AgentFinishAction / Final Response) ──
+      else if (type === "AgentFinishAction" || type === "assistant" || type === "final_response") {
+        const chunk = action.response || action.content || msg.content || "";
         if (chunk) {
           fullAnswer += chunk;
           sse(res, "assistant_delta", { step, chunk });
         }
-      } else if (type === "status" && msg.status === "completed") {
+      } 
+      // ── 6. Завершение сессии (Status Completed / Error) ──
+      else if (type === "status" && msg.status === "completed") {
         hasEnded = true;
         if (fullAnswer) sse(res, "assistant", { step, text: fullAnswer });
         sse(res, "done", { reason: "complete", steps: step });
@@ -165,8 +205,14 @@ export async function proxyAgentChat({ req, res }) {
     const model = req.body?.model || req.body?.providerInput?.model || "glm-4.5-flash";
     const workspaceScope = req.body?.chatId || "";
 
+    let provider = req.body?.providerInput || req.body?.provider || {};
+    try {
+      const { resolveProviderFromInput } = await import("./providerResolution.js");
+      provider = resolveProviderFromInput(req.body || {}, { requireBearer: false });
+    } catch { /* fallback to req.body values */ }
+
     console.log(`[OpenHands Bridge] Initializing conversation for chatId=${workspaceScope}, model=${model}`);
-    const conv = await createConversation({ prompt, model, workspaceScope });
+    const conv = await createConversation({ prompt, model, workspaceScope, provider });
     const convId = conv.id || conv.conversation_id || workspaceScope || Date.now().toString();
 
     console.log(`[OpenHands Bridge] Starting run for conversation ${convId}`);

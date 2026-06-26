@@ -15,7 +15,12 @@
  */
 import db from './db.js'
 import { purgeChat } from './chatPurge.js'
-import { runAgent } from './agentLoop.js'
+import { createConversation, runAgentConversation } from './openhandsBridge.js'
+const runAgent = async (opts) => {
+  const c = await createConversation({ prompt: opts.prompt || "hi", model: opts.provider?.model });
+  await runAgentConversation(c.id);
+  opts.onTurnEnd?.({ text: "Задание выполняется в OpenHands..." });
+};
 import { answerQuestion, cancelQuestion } from './askUserRegistry.js'
 import { runOpsAction, listOpsServices } from './ops.js'
 import {
