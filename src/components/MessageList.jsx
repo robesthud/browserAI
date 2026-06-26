@@ -426,15 +426,12 @@ function Message({ m, chatId, aiWorking, onEdit, onRegenerate, onResumeRun, onOp
                       order: eventOrder++,
                     })
                   }
-                  const sortValue = (e) => e.at || ((Number.isFinite(e.step) ? e.step : 0) * 1000 + (Number.isFinite(e.sub) ? e.sub : 0))
                   timeline.sort((a, b) => {
-                    const byTime = sortValue(a) - sortValue(b)
-                    if (byTime) return byTime
                     const byStep = a.step - b.step
                     if (byStep) return byStep
+                    if (a.type !== b.type) return a.type === 'thought' ? -1 : 1
                     const bySub = a.sub - b.sub
                     if (bySub) return bySub
-                    if (a.type !== b.type) return a.type === 'thought' ? -1 : 1
                     return a.order - b.order
                   })
 
@@ -532,7 +529,6 @@ function Message({ m, chatId, aiWorking, onEdit, onRegenerate, onResumeRun, onOp
                       title="Озвучить ответ"
                     >🔊 Озвучить</button>
                   )}
-                  {!m.pending && !m.error ? <ResultFilesBlock toolCalls={m.toolCalls} chatId={chatId} /> : null}
                   {parts.evidence ? (
                     <details className="mt-3 rounded-lg border border-white/5 bg-graphite-800/20 text-[12px]">
                       <summary className="cursor-pointer px-2.5 py-1 text-cream-soft hover:bg-white/5">Подробности выполнения</summary>
@@ -603,18 +599,8 @@ const MemoMessage = memo(Message, (prev, next) => {
     && (!prev.isLast || prev.aiWorking === next.aiWorking)
 })
 
-function CheckpointBadge({ toolCalls }) {
-  const hasWrite = (toolCalls || []).some(tc => 
-    tc.ok && tc.status === 'done' && 
-    (tc.name === 'write_file' || tc.name === 'edit_file' || tc.name === 'delete_file' || tc.name === 'replace_across_files')
-  )
-  if (!hasWrite) return null
-  return (
-    <div className="mt-3 flex items-center justify-end gap-1.5 opacity-60 transition-opacity hover:opacity-100">
-      <span className="text-[10px] text-emerald-400"><IconCheck /></span>
-      <span className="text-[10px] uppercase tracking-wider text-emerald-400">Снимок сохранён</span>
-    </div>
-  )
+function CheckpointBadge() {
+  return null
 }
 
 export default function MessageList({ messages, chatId = '', aiWorking, onEdit, onRegenerate, onResumeRun, onOpenSettings, onAnswerAskUser, onCancelAskUser, onJobDone, onBranch }) {

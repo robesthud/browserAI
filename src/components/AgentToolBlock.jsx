@@ -387,13 +387,13 @@ export default function AgentToolBlock({
   }, [shouldAutoOpen, expandable, status])
 
   return (
-    <div className="my-1 overflow-hidden rounded-lg border border-white/7 bg-white/[0.018] text-[11px] md:text-[12px]">
+    <div className="my-1 overflow-hidden bg-transparent text-[11px] md:text-[12px]">
       <button
         type="button"
         onClick={() => expandable && setOpen((o) => !o)}
         aria-expanded={expandable ? open : undefined}
         aria-controls={expandable ? panelId : undefined}
-        className={`flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left ${expandable ? 'hover:bg-white/5' : 'cursor-default'}`}
+        className={`flex w-full items-center gap-1.5 py-1 text-left ${expandable ? 'hover:text-cream' : 'cursor-default'}`}
       >
         <span className={`shrink-0 font-mono text-[12px] leading-none ${status !== 'done' ? 'animate-pulse ' : ''}${markCls}`}>{mark}</span>
         <span className="min-w-0 shrink truncate font-mono text-[12px] font-medium text-cream-soft" title={spec.action}>{spec.action}</span>

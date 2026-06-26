@@ -274,6 +274,29 @@ router.post("/chat-pi", agentChatLimiter, async (req, res) => {
   res.setHeader("X-Accel-Buffering", "no");
 
   try {
+    const isOH = process.env.USE_OPENHANDS === '1' || req.body?.engine === 'openhands';
+    let openhandsOk = false;
+    if (isOH) {
+      try {
+        const r = await fetch('http://openhands:3000/api/health', { signal: AbortSignal.timeout(1500) });
+        openhandsOk = r.ok;
+      } catch { openhandsOk = false; }
+    }
+
+    if (openhandsOk) {
+      console.log("[Agent Route] Forwarding request to OpenHands engine at http://openhands:3000");
+      const ohRes = await fetch('http://openhands:3000/api/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body)
+      });
+      ohRes.body.pipeTo(new WritableStream({
+        write(chunk) { res.write(chunk); },
+        close() { res.end(); }
+      }));
+      return;
+    }
+
     const { runAgentWithPiCore } = await import("../agentEngine.js");
     await runAgentWithPiCore({
       history: req.body?.history || [],
