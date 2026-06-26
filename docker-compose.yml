@@ -73,7 +73,7 @@ services:
   openhands:
     image: ghcr.io/all-hands-ai/openhands:main
     container_name: openhands
-    command: ["python", "-m", "openhands.server.listen", "--port", "18000"]
+    command: ["uvicorn", "openhands.server.listen:app", "--host", "0.0.0.0", "--port", "18000"]
     restart: unless-stopped
     ports:
       - "127.0.0.1:18000:18000"
