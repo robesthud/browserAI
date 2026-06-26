@@ -48,7 +48,24 @@ router.put('/cloud', (req, res) => {
 // ---- Settings ----
 function getListKeysSafeWithDefaults() {
   const keys = listKeysSafe()
-  if (!keys.find((k) => k.baseUrl && k.baseUrl.includes('bigmodel.cn'))) {
+  const glmModels = ['glm-4.5-flash', 'GLM-4.7-Flash', 'glm-4-flash', 'glm-z1-flash', 'glm-4v-flash', 'glm-4.1v-thinking-flash', 'glm-4.6v-flash', 'glm-4.7', 'glm-5.1', 'glm-5.2']
+  const dsModels = ['deepseek_chat', 'deepseek-reasoner', 'DeepThink']
+
+  let foundGlm = false
+  let foundDs = false
+
+  for (const k of keys) {
+    if (k.baseUrl && (k.baseUrl.includes('bigmodel.cn') || k.baseUrl.includes('api.z.ai'))) {
+      foundGlm = true
+      k.availableModels = [...new Set([...(k.availableModels || []), ...glmModels])]
+    }
+    if (k.baseUrl && k.baseUrl.includes('chat.deepseek.com')) {
+      foundDs = true
+      k.availableModels = [...new Set([...(k.availableModels || []), ...dsModels])]
+    }
+  }
+
+  if (!foundGlm) {
     keys.push({
       id: 'glm-default',
       name: 'Zhipu AI (GLM)',
@@ -57,10 +74,10 @@ function getListKeysSafeWithDefaults() {
       hasSecret: true,
       useStoredSecret: true,
       model: 'glm-4.5-flash',
-      availableModels: ['glm-4.5-flash', 'GLM-4.7-Flash', 'glm-4-flash', 'glm-z1-flash', 'glm-4v-flash', 'glm-4.1v-thinking-flash'],
+      availableModels: glmModels,
     })
   }
-  if (!keys.find((k) => k.baseUrl && k.baseUrl.includes('chat.deepseek.com'))) {
+  if (!foundDs) {
     keys.push({
       id: 'deepseek-default',
       name: 'DeepSeek Managed',
@@ -69,7 +86,7 @@ function getListKeysSafeWithDefaults() {
       hasSecret: true,
       useStoredSecret: true,
       model: 'deepseek_chat',
-      availableModels: ['deepseek_chat', 'deepseek_reasoner'],
+      availableModels: dsModels,
     })
   }
   return keys
