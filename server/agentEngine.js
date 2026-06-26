@@ -258,12 +258,23 @@ export async function runAgentWithPiCore({
         stream.push({ type: "start", partial: partial });
         var currentTextIndex = -1, currentThinkingIndex = -1, accumulatedText = "";
 
-        await callLLMStream({
+        var openAITools = piTools.map(function(t) {
+          var props = {};
+          var req = [];
+          for (var k in t.parameters || {}) {
+            props[k] = { type: t.parameters[k].type || "string", description: t.parameters[k].description || "" };
+            if (t.parameters[k].required) req.push(k);
+          }
+          return { type: "function", function: { name: t.name, description: t.description || t.label || t.name, parameters: { type: "object", properties: props, required: req } } };
+        });
+
+        var resLLM = await callLLMStream({
           baseUrl: provider.baseUrl, apiKey: provider.apiKey,
           authType: provider.authType || "bearer", authHeader: provider.authHeader || "",
           extraHeaders: provider.extraHeaders || {}, model: provider.model,
           messages: context.messages.map(function(m) { return { role: m.role, content: mapContentToString(m.content) }; }),
           temperature: provider.temperature != null ? provider.temperature : 0.3,
+          tools: openAITools,
           onTextDelta: function(chunk, meta) {
             if (meta && meta.kind === "thinking") {
               if (currentThinkingIndex === -1) {
@@ -317,6 +328,16 @@ export async function runAgentWithPiCore({
               partial.content.push({ type: "toolCall", id: tc.id, name: tc.name, arguments: tc.args });
               stream.push({ type: "tool_use_start", toolCallId: tc.id, toolName: tc.name, args: tc.args });
             }
+          }
+        } else if (resLLM && resLLM.toolCalls && resLLM.toolCalls.length > 0) {
+          for (var ti = 0; ti < resLLM.toolCalls.length; ti++) {
+            var tc = resLLM.toolCalls[ti];
+            var matched = piTools.find(function(t) { return t.name === tc.name; });
+            if (!matched) continue;
+            var callId = tc.id || "call-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7);
+            console.log("[Pi Core Engine] Native tool call: " + tc.name);
+            partial.content.push({ type: "toolCall", id: callId, name: tc.name, arguments: tc.args });
+            stream.push({ type: "tool_use_start", toolCallId: callId, toolName: tc.name, args: tc.args });
           }
         }
 
