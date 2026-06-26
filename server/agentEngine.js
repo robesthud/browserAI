@@ -168,6 +168,16 @@ export async function runAgentWithPiCore({
     return;
   }
 
+  // ── Reliable model/provider defaults (fix: empty answers when model omitted) ──
+  // If the request didn't specify a model/baseUrl, fall back to the local Ollama
+  // model explicitly so the engine never runs with model=undefined.
+  if (!provider.baseUrl) provider.baseUrl = "http://browserai-ollama:11434/v1";
+  if (!provider.apiKey) provider.apiKey = "ollama";
+  if (!provider.model) {
+    var u0 = String(provider.baseUrl || "").toLowerCase();
+    if (u0.includes("ollama") || u0.includes("11434")) provider.model = "qwen2.5-coder:1.5b";
+  }
+
   var cwd = getContainerWorkspaceRoot() || "/workspace";
   var systemPrompt = extraSystem || "BrowserAI agent. Workspace: " + cwd + ". OS: Linux. Respond in Russian.";
 
