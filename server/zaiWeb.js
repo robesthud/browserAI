@@ -17,11 +17,11 @@ export function isZaiWebUrl(baseUrl) {
   if (!baseUrl) return false;
   try {
     const u = new URL(baseUrl);
+    if (u.hostname === "open.bigmodel.cn" || u.hostname === "api.z.ai") return false;
     return (
       u.hostname === "chat.z.ai" ||
       u.hostname === "chatglm.cn" ||
-      u.hostname.endsWith(".chatglm.cn") ||
-      (u.hostname === "open.bigmodel.cn" && u.pathname.includes("/api/"))
+      u.hostname.endsWith(".chatglm.cn")
     );
   } catch {
     return false;
