@@ -272,7 +272,17 @@ export async function runAgentWithPiCore({
           baseUrl: provider.baseUrl, apiKey: provider.apiKey,
           authType: provider.authType || "bearer", authHeader: provider.authHeader || "",
           extraHeaders: provider.extraHeaders || {}, model: provider.model,
-          messages: context.messages.map(function(m) { return { role: m.role, content: mapContentToString(m.content) }; }),
+          messages: context.messages.map(function(m) {
+            var r = m.role || "user";
+            var base = { role: r === "function" ? "tool" : r, content: mapContentToString(m.content) };
+            if (m.tool_calls) base.tool_calls = m.tool_calls;
+            if (m.toolCallId || m.tool_call_id) base.tool_call_id = m.toolCallId || m.tool_call_id;
+            if (m.name) base.name = m.name;
+            if (base.role === "tool" && !base.tool_call_id) {
+              base.tool_call_id = "call-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7);
+            }
+            return base;
+          }),
           temperature: provider.temperature != null ? provider.temperature : 0.3,
           tools: openAITools,
           onTextDelta: function(chunk, meta) {
