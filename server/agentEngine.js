@@ -12,6 +12,7 @@ import { resolveProviderFromInput } from "./providerResolution.js";
 import { withWorkspaceScope, getContainerWorkspaceRoot } from "./workspace.js";
 import { callLLMStream } from "./llmClient.js";
 import { isDeepSeekWebUrl } from "./deepseekWeb.js";
+import { getAvailableModels, resolveModelProvider } from "./modelCatalog.js";
 
 function sse(target, event, data) {
   if (!target || target.destroyed || target.writableEnded) return;
@@ -211,8 +212,20 @@ export async function runAgentWithPiCore({
   }
 
   // ── Reliable model/provider defaults (fix: empty answers when model omitted) ──
-  // If the request didn't specify a model/baseUrl, fall back to the local Ollama
-  // model explicitly so the engine never runs with model=undefined.
+  // Priority when the request didn't specify a provider: use a WORKING GLM flash
+  // model from the unified catalog (z.ai + bigmodel). Only if none is available
+  // do we fall back to the local Ollama model. This keeps default answers fast
+  // and high-quality instead of relying on the weak 1.5B local model.
+  if (!provider.baseUrl && !provider.apiKey && !provider.model) {
+    try {
+      var cat = await getAvailableModels({});
+      var best = (cat && cat.models || [])[0];
+      if (best) {
+        var pc = resolveModelProvider(best.id);
+        if (pc && pc.apiKey) { provider.baseUrl = pc.baseUrl; provider.apiKey = pc.apiKey; provider.model = pc.model; }
+      }
+    } catch (e) { /* fall through to Ollama default */ }
+  }
   if (!provider.baseUrl) provider.baseUrl = "http://browserai-ollama:11434/v1";
   if (!provider.apiKey) provider.apiKey = "ollama";
   if (!provider.model) {
