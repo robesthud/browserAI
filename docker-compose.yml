@@ -187,12 +187,12 @@ services:
     container_name: openhands
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3000:3000"
+      - "3000:3000"
     environment:
       - SANDBOX_RUNTIME_CONTAINER_IMAGE=ghcr.io/all-hands-ai/runtime:main
       - WORKSPACE_MOUNT_PATH=${WORKSPACE_DIR:-./workspace}
       - LLM_BASE_URL=${OPENHANDS_LLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
-      - LLM_API_KEY=${OPENHANDS_LLM_API_KEY:-${BIGMODEL_API_KEY:-}}
+      - LLM_API_KEY=dba035e8741f4f68afdd0f58951e0ee0.zOIQpvWagZlY5r7e
       - LLM_MODEL=${OPENHANDS_LLM_MODEL:-glm-4.5-flash}
     volumes:
       - ${WORKSPACE_DIR:-./workspace}:/workspace
