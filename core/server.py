@@ -26,7 +26,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -56,6 +56,13 @@ from core.auth import (
     set_session_cookie,
     _verify_password,
 )
+from core.conversations import (
+    drop_mapping,
+    get_mapping,
+    get_or_create_conversation,
+    init_conversations_schema,
+    update_last_event,
+)
 
 log = logging.getLogger("browserai.core")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -77,9 +84,10 @@ app = FastAPI(title="BrowserAI-OpenHands Core Monolith", version="0.3.0")
 async def _startup_init() -> None:
     try:
         init_auth_schema()
-        log.info("auth schema ready")
+        init_conversations_schema()
+        log.info("auth + conversations schemas ready")
     except Exception as e:
-        log.error("auth init failed: %s", e)
+        log.error("schema init failed: %s", e)
 
 # CORS: must NOT be wildcard when allow_credentials is true, otherwise cookies
 # are silently dropped by browsers.
@@ -398,41 +406,18 @@ async def _push_oh_settings(
         log.warning("OpenHands settings push error: %s", e)
 
 
+# Note: conversation create/start/reuse is delegated to core.conversations.
+# Kept as a thin alias only for legacy callers/tests.
 async def _create_and_start(
     client: httpx.AsyncClient,
     prompt: str,
     extra_system: str = "",
-) -> str:
-    payload: Dict[str, Any] = {"initial_user_msg": prompt or "hi"}
-    if extra_system:
-        payload["conversation_instructions"] = extra_system
-
-    r = await client.post(
-        f"{OPENHANDS_SERVER}/api/conversations", json=payload, timeout=30.0
+    chat_id: str = "",
+    user_id: Optional[str] = None,
+) -> Tuple[str, bool, int]:
+    return await get_or_create_conversation(
+        client, OPENHANDS_SERVER, chat_id, user_id, prompt, extra_system
     )
-    if r.status_code >= 400:
-        raise HTTPException(
-            status_code=502,
-            detail=f"OpenHands conversation init failed: {r.status_code} {r.text}",
-        )
-    body = r.json()
-    cid = body.get("conversation_id") or body.get("id")
-    if not cid:
-        raise HTTPException(
-            status_code=502, detail=f"OpenHands returned no conversation_id: {body}"
-        )
-
-    # `/start` may take a long time on cold runtime (image build).
-    # Use a generous timeout to ride through it.
-    try:
-        await client.post(
-            f"{OPENHANDS_SERVER}/api/conversations/{cid}/start",
-            json={},
-            timeout=600.0,
-        )
-    except httpx.TimeoutException:
-        log.warning("OpenHands /start timed out for %s — continuing to poll", cid)
-    return cid
 
 
 import re as _re
@@ -666,6 +651,7 @@ async def _stream_chat(
     prompt: str,
     extra_system: str,
     provider: Dict[str, Any],
+    user_id: Optional[str] = None,
 ) -> AsyncIterator[bytes]:
     step = 0
     full_answer = ""
@@ -711,11 +697,18 @@ async def _stream_chat(
         {"phase": "plan", "step": 1, "maxSteps": MAX_AGENT_ITERATIONS, "engine": "openhands"},
     ).encode("utf-8")
 
-    # 2) Push settings + create conversation
+    # 2) Push settings + open/reuse conversation
     async with httpx.AsyncClient() as client:
         try:
             await _push_oh_settings(client, provider)
-            cid = await _create_and_start(client, prompt, extra_system)
+            cid, was_created, last_seen_event_id = await get_or_create_conversation(
+                client,
+                OPENHANDS_SERVER,
+                chat_id,
+                user_id,
+                prompt,
+                extra_system,
+            )
         except HTTPException as e:
             yield _sse("error", {"message": str(e.detail)}).encode("utf-8")
             yield _sse("done", {"reason": "engine-error", "steps": step}).encode("utf-8")
@@ -725,30 +718,61 @@ async def _stream_chat(
             yield _sse("done", {"reason": "engine-error", "steps": step}).encode("utf-8")
             return
 
-        # 3) Poll events
+        # Tell the UI whether this is a fresh sandbox boot or a warm reuse.
+        # That lets the UI show a smarter "cold start in progress" hint.
+        yield _sse(
+            "agent_state",
+            {
+                "step": 0,
+                "phase": "warm" if not was_created else "cold",
+                "raw": "warm" if not was_created else "cold",
+                "conversationId": cid,
+            },
+        ).encode("utf-8")
+
+        # 3) Poll events incrementally — start AFTER the last event we already
+        #    showed for this chat. For new conversations this is 0; for reused
+        #    ones it's the id of the event just before our new POST /message.
         seen_ids: set = set()
+        next_start_id = last_seen_event_id + 1 if last_seen_event_id >= 0 else 0
         t0 = time.time()
         last_event_ts = time.time()
         done = False
 
+        # OpenHands main v0.59 has both:
+        #   * a broken /events?start_id filter (returns []),
+        #   * a hard max of limit<=100.
+        # We always fetch the tail with limit=100 and dedup via seen_ids.
+        # For warm reuse we pre-seed seen_ids with everything prior to this
+        # turn so we only stream the response to THIS message.
+        if not was_created and last_seen_event_id >= 0:
+            seen_ids = set(range(0, last_seen_event_id + 1))
+
         while not done and (time.time() - t0) < EVENT_POLL_TIMEOUT_S:
             try:
                 r = await client.get(
-                    f"{OPENHANDS_SERVER}/api/conversations/{cid}/events", timeout=20.0
+                    f"{OPENHANDS_SERVER}/api/conversations/{cid}/events?limit=100",
+                    timeout=20.0,
                 )
                 if r.status_code == 404:
-                    # Conversation gone
                     yield _sse("error", {"message": "OpenHands conversation lost"}).encode("utf-8")
+                    # Forget the mapping so the next user message creates a fresh one
+                    if chat_id:
+                        drop_mapping(chat_id)
                     break
                 if r.status_code >= 400:
                     await asyncio.sleep(EVENT_POLL_INTERVAL)
                     continue
                 body = r.json()
                 events = body if isinstance(body, list) else (body.get("events") or body.get("results") or [])
+                # `start_id` is inclusive, so we still de-dup against seen_ids
                 new_events = [e for e in events if e.get("id") not in seen_ids]
                 for e in new_events:
                     seen_ids.add(e.get("id"))
                     last_event_ts = time.time()
+                    eid = int(e.get("id", -1))
+                    if eid >= next_start_id:
+                        next_start_id = eid + 1
                     # End-of-turn signal from OpenHands itself
                     if (
                         e.get("observation") == "agent_state_changed"
@@ -812,12 +836,21 @@ async def _stream_chat(
             if clean:
                 yield _sse("assistant", {"step": step, "text": clean}).encode("utf-8")
 
+        # Persist max event id we've seen so the next /api/agent/chat for
+        # this chat skips replaying old events from THIS turn.
+        if chat_id and seen_ids:
+            try:
+                update_last_event(chat_id, max(seen_ids))
+            except Exception as e:
+                log.warning("update_last_event failed: %s", e)
+
         yield _sse(
             "done",
             {
                 "reason": "complete" if done else "timeout",
                 "steps": step,
                 "conversationId": cid,
+                "reused": not was_created,
             },
         ).encode("utf-8")
 
@@ -832,9 +865,11 @@ async def agent_chat(request: Request):
     provider = _resolve_provider(body)
     model = provider.get("model") or body.get("model") or DEFAULT_MODEL
     prompt = _history_to_prompt(history) or body.get("prompt") or "hi"
+    user = current_user(request)
+    user_id = user["id"] if user else None
 
     return StreamingResponse(
-        _stream_chat(chat_id, model, prompt, extra_system, provider),
+        _stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
@@ -881,21 +916,120 @@ async def agent_health():
     return {"ok": True, "engine": "openhands", "openhands": True}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Workspace — per-chat, via OpenHands sandbox (Step 4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _bind_chat_to_oh(chat_id: Optional[str]) -> Optional[str]:
+    """Return the OpenHands conversation_id mapped to chat_id, or None."""
+    if not chat_id:
+        return None
+    m = get_mapping(chat_id)
+    return m["conversation_id"] if m else None
+
+
+def _to_tree_item(raw_path: str, base: str = "/workspace") -> Dict[str, Any]:
+    """Normalize OpenHands list-files entries into the {name, path, type}
+    shape the BrowserAI UI's FileTree expects."""
+    if not raw_path:
+        return {"name": "", "path": "", "type": "file"}
+    p = raw_path.rstrip("/")
+    is_dir = raw_path.endswith("/") or raw_path == base
+    # Strip leading /workspace/ so UI shows relative paths
+    rel = p
+    if base and rel.startswith(base + "/"):
+        rel = rel[len(base) + 1 :]
+    elif rel == base:
+        rel = ""
+    name = rel.split("/")[-1] if rel else ""
+    return {"name": name, "path": rel, "type": "dir" if is_dir else "file"}
+
+
 @app.get("/api/workspace")
 @app.get("/api/workspace/tree")
-async def workspace_tree(chatId: Optional[str] = None):
-    # TODO Step 4: real workspace listing per chat through OpenHands /list-files
-    return {"items": [], "chatId": chatId}
+async def workspace_tree(chatId: Optional[str] = None, path: Optional[str] = None):
+    cid = _bind_chat_to_oh(chatId)
+    if not cid:
+        return {"items": [], "chatId": chatId, "path": path or ""}
+    qs = ""
+    if path:
+        qs = f"?path={path.lstrip('/')}"
+    async with httpx.AsyncClient() as client:
+        try:
+            r = await client.get(
+                f"{OPENHANDS_SERVER}/api/conversations/{cid}/list-files{qs}",
+                timeout=15.0,
+            )
+            if r.status_code >= 400:
+                return {"items": [], "chatId": chatId, "path": path or "", "error": r.text[:200]}
+            entries = r.json() or []
+        except Exception as e:
+            return {"items": [], "chatId": chatId, "path": path or "", "error": str(e)}
+    items = [_to_tree_item(p) for p in entries if isinstance(p, str)]
+    return {"items": items, "chatId": chatId, "path": path or ""}
 
 
 @app.get("/api/workspace/metadata")
 async def workspace_meta(chatId: Optional[str] = None):
-    return {"chatId": chatId, "items": []}
+    cid = _bind_chat_to_oh(chatId)
+    return {"chatId": chatId, "conversationId": cid, "ready": bool(cid)}
 
 
 @app.get("/api/workspace/file")
 async def workspace_file(path: str, chatId: Optional[str] = None):
-    return JSONResponse({"path": path, "content": ""}, status_code=200)
+    cid = _bind_chat_to_oh(chatId)
+    if not cid:
+        return JSONResponse(
+            {"path": path, "content": "", "error": "no_conversation_for_chat"},
+            status_code=200,
+        )
+    async with httpx.AsyncClient() as client:
+        try:
+            r = await client.get(
+                f"{OPENHANDS_SERVER}/api/conversations/{cid}/select-file",
+                params={"file": path},
+                timeout=15.0,
+            )
+            if r.status_code >= 400:
+                return JSONResponse(
+                    {"path": path, "content": "", "error": r.text[:200]},
+                    status_code=200,
+                )
+            body = r.json() or {}
+            return {
+                "path": path,
+                "content": body.get("code") or body.get("content") or "",
+            }
+        except Exception as e:
+            return JSONResponse(
+                {"path": path, "content": "", "error": str(e)}, status_code=200
+            )
+
+
+@app.get("/api/workspace/download")
+async def workspace_download(chatId: str, path: Optional[str] = None):
+    """Download the whole workspace (or a sub-path) as a zip stream."""
+    cid = _bind_chat_to_oh(chatId)
+    if not cid:
+        raise HTTPException(status_code=404, detail="no_conversation_for_chat")
+    qs = ""
+    if path:
+        qs = f"?path={path.lstrip('/')}"
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{OPENHANDS_SERVER}/api/conversations/{cid}/zip-directory{qs}",
+            timeout=120.0,
+        )
+        if r.status_code >= 400:
+            raise HTTPException(status_code=r.status_code, detail=r.text[:300])
+        return Response(
+            content=r.content,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="workspace-{chatId or "chat"}.zip"'
+            },
+        )
 
 
 # Generic catch-all for unimplemented agent endpoints so the UI does not
