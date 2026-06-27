@@ -669,6 +669,7 @@ async def _stream_chat(
 ) -> AsyncIterator[bytes]:
     step = 0
     full_answer = ""
+    turn_complete = False  # set as soon as OpenHands emits awaiting_user_input
 
     # 1) Send stream protocol + initial agent_context up-front so the UI shows
     #    activity even while OpenHands is cold-booting a runtime image.
@@ -748,6 +749,13 @@ async def _stream_chat(
                 for e in new_events:
                     seen_ids.add(e.get("id"))
                     last_event_ts = time.time()
+                    # End-of-turn signal from OpenHands itself
+                    if (
+                        e.get("observation") == "agent_state_changed"
+                        and (e.get("extras") or {}).get("agent_state")
+                        in ("awaiting_user_input", "finished", "stopped", "error")
+                    ):
+                        turn_complete = True
                     for translated in _translate_event(e, step + 1):
                         ev_name = translated["event"]
                         ev_data = translated["data"]
@@ -762,14 +770,14 @@ async def _stream_chat(
             except Exception as e:
                 log.warning("event poll error: %s", e)
 
-            # Detect natural end-of-turn from event stream itself: if we have
-            # at least one assistant message and the latest agent_state is
-            # awaiting_user_input/finished/stopped, the turn is complete.
-            last_evt_state = None
-            for e in reversed(list(seen_ids)[-10:] if False else []):
-                pass  # placeholder; real check is done via /conversations status
+            # Primary end-of-turn signal: OpenHands sent agent_state_changed
+            # to awaiting_user_input/finished/stopped/error. We DON'T wait for
+            # /conversations status to flip (it stays RUNNING until conv is
+            # actually deleted) — the event is the source of truth.
+            if turn_complete and full_answer:
+                done = True
 
-            # Status check
+            # Belt-and-suspenders: hard status check
             try:
                 rs = await client.get(
                     f"{OPENHANDS_SERVER}/api/conversations/{cid}", timeout=10.0
@@ -781,11 +789,10 @@ async def _stream_chat(
             except Exception:
                 pass
 
-            # Detect turn end: if the latest known agent_state event is
-            # awaiting_user_input or finished and we already have an answer.
-            # We look at the most recent event we translated. A cheaper proxy
-            # is the `full_answer` non-empty AND no new events in last 4s.
-            if full_answer and (time.time() - last_event_ts) > 4:
+            # Soft fallback: if we have an answer and the agent has been
+            # quiet for >6 seconds, close the stream so the UI does not hang
+            # if OpenHands forgets to emit awaiting_user_input.
+            if full_answer and (time.time() - last_event_ts) > 6:
                 done = True
 
             # Idle watchdog: no new events for 3 minutes → assume hung
