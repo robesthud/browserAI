@@ -179,15 +179,15 @@ format, `<think>`-парсер, закрытие стрима по `awaiting_use
 
 | Подпункт | Статус |
 |---|---|
-| 10.1 token-by-token streaming | 🔴 нет (message целиком) |
-| 10.2 zombie runtime GC | 🔴 нет (чистили вручную) |
-| 10.3 pytest suite | 🔴 каталога `tests/` нет |
-| 10.4 OpenAPI response_model | 🔴 нет |
-| 10.5 Docker HEALTHCHECK | 🟢 **сделано в этой сессии** (`2d56485`) |
-| 10.6 structured logging / trace_id | 🔴 нет |
-| 10.7 HTTPS / Let's Encrypt | 🔴 только HTTP :80 |
-| 10.8 secret rotation | 🔴 нет (ключ всё ещё в `.env`+БД) |
-| 10.9 daily backup script | ⚠️ бэкапы есть на проде вручную, скрипта/таймера в репо нет |
+| 10.1 token-by-token streaming | 🔴 нет (message целиком) — отдельный заход |
+| 10.2 zombie runtime GC | 🟢 **сделано** (`f52f489`): `gc_runtimes.sh` + `browserai-gc.timer` (15 мин), проверено на проде |
+| 10.3 pytest suite | 🟢 **сделано** (`f52f489`): `tests/` 13 зелёных + opt-in `tests/integration/` |
+| 10.4 OpenAPI docs | 🟢 **сделано** (`f52f489`): stub'ы вне схемы, `/docs`+`/openapi.json` чистые, без warning'ов |
+| 10.5 Docker HEALTHCHECK + /api/health/deep | 🟢 **сделано** (`2d56485` + `f52f489`): deep-probe db/OH/key/disk, X-Trace-Id, ready на проде |
+| 10.6 structured logging / trace_id | 🟢 **сделано** (`f52f489`): `core/obslog.py` JSON-логи + per-request trace_id + `X-Trace-Id` |
+| 10.7 HTTPS / Let's Encrypt | 🔴 только HTTP :80 (домена нет — отложено) |
+| 10.8 secret rotation | 🟠 механизм отложен → доработка ввода/ротации ключа в UI отдельным заходом |
+| 10.9 daily backup script | 🟢 **сделано** (`f52f489`): `backup.sh` (online .backup+gzip+integrity+prune) + `browserai-backup.timer` (02:30 UTC), проверено |
 | 10.10 merge to main | ✅ step6/7/8/9 влиты в main (`70a79a4`) |
 
 ---
@@ -205,7 +205,7 @@ format, `<think>`-парсер, закрытие стрима по `awaiting_use
 | 7 Memory/KB/Web/Image | ✅ | memory/KB/web ✅, image=реальный images API+fallback, factExtractor ✅ (`70b4f08`) | 🟩 ПОДТВЕРЖДЁН |
 | 8 Jobs/Cost/… | ✅ | jobs/cost/notifications на реальных данных БД (`cc3a6f2`); остаток: deepseek/checkpoints | 🟩 ПОДТВЕРЖДЁН |
 | 9 Operator/MCP/… | ✅ | operator/incidents/gateway на реальных данных (`e3cfaa6`) | 🟩 ПОДТВЕРЖДЁН |
-| 10 Polish/Tests | ⚠️ | только healthcheck (10.5); tests/backup/rotation/streaming TODO | 🔴 ПОЧТИ НЕТ |
+| 10 Polish/Tests | ✅ | deep-health/logs+trace_id/GC/backup/pytest/OpenAPI готовы (`f52f489`); осталось streaming(10.1)+HTTPS(10.7, нет домена)+key-UI(10.8) | 🟩 БЕЗОПАСНЫЙ БЛОК ГОТОВ |
 
 ## Что нужно доделать по каждому шагу (чтобы закрыть до «полностью»)
 

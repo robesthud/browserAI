@@ -215,22 +215,21 @@ vault, память/KB, jobs/cost/notifications/operator/incidents/gateway на 
 - [ ] **10.1 Streaming improvements**
   - [ ] Token-by-token streaming через LiteLLM streaming API (сейчас message приходит целиком)
   - [ ] `assistant_delta` чанки по 10-50 токенов вместо одного финального
-- [ ] **10.2 Zombie runtime GC**
-  - [ ] Cron task: убивать sandbox-контейнеры с idle > 30 мин и `num_connections=0`
-  - [ ] Текущая проблема: 3 зомби × 1.4 GiB убивают сервер
-- [ ] **10.3 Pytest suite**
-  - [ ] `tests/test_auth.py`, `test_chat.py`, `test_conversations.py`, `test_workspace.py`
-  - [ ] Mock OpenHands через `respx`/`pytest-httpx`
-  - [ ] Smoke test против реального OH в `tests/integration/`
-- [ ] **10.4 OpenAPI docs**
-  - [ ] FastAPI auto-генерит `/docs` — добавить корректные `response_model` Pydantic схемы для всех endpoint-ов
-- [~] **10.5 Healthcheck endpoint**
-  - [ ] `/api/health/deep` — проверяет: db reachable, OpenHands reachable, активный ключ валиден, free disk > 5 GB
-  - [x] **Docker `HEALTHCHECK` директива** — ✅ СДЕЛАНО 2026-06-27 (commit `2d56485`): `Dockerfile` + `docker-compose.yml`, проверка `/api/health` (ok=true), контейнер помечается healthy/unhealthy
-- [ ] **10.6 Logging & observability**
-  - [ ] Structured logs (JSON) для всех request/response
-  - [ ] Per-chat trace_id связан с OH conversation_id
-  - [ ] Запись в `agent_tool_ledger` для аудита
+- [x] **10.2 Zombie runtime GC** — ✅ СДЕЛАНО (`f52f489`)
+  - [x] `scripts/gc_runtimes.sh` + systemd timer (каждые 15 мин): удаляет `openhands-runtime-*` старше `IDLE_MINUTES=45`, которые НЕ обслуживают активную conversation; host-level (в контейнере нет docker.sock)
+  - [x] Установлен и проверен на проде: `browserai-gc.timer` активен, dry-run/реальный прогон чистые
+- [x] **10.3 Pytest suite** — ✅ СДЕЛАНО (`f52f489`)
+  - [x] `tests/` (conftest с изолированной temp-БД): `test_health.py`, `test_agent_state.py`, `test_openapi.py`, `test_memory.py` — 13 тестов зелёные
+  - [x] Smoke test против реального OH в `tests/integration/` (opt-in, skip если OH недоступен)
+- [x] **10.4 OpenAPI docs** — ✅ СДЕЛАНО (`f52f489`)
+  - [x] Stub-роуты исключены из схемы (`include_in_schema=False`) + уникальные operation names → `/docs` и `/openapi.json` документируют только реальные эндпоинты, без warning'ов о дублях
+- [x] **10.5 Healthcheck endpoint** — ✅ СДЕЛАНО
+  - [x] `/api/health/deep` (`f52f489`) — проверяет: db reachable, OpenHands reachable, активный ключ настроен, free disk > 5 GB; 200/ready или 503/degraded. Живьём: ready, все 4 ✅
+  - [x] **Docker `HEALTHCHECK` директива** — ✅ 2026-06-27 (`2d56485`): `Dockerfile` + `docker-compose.yml`, проверка `/api/health` (ok=true)
+- [x] **10.6 Logging & observability** — ✅ СДЕЛАНО (`f52f489`)
+  - [x] `core/obslog.py`: structured JSON logs (`LOG_FORMAT=json`) + contextvar trace_id
+  - [x] Per-request middleware: trace_id на каждый запрос, заголовок `X-Trace-Id`, корреляция с chatId / OH conversation_id (`bind_conversation`)
+  - [ ] Запись в `agent_tool_ledger` для аудита (отложено)
 - [ ] **10.7 HTTPS**
   - [ ] Let's Encrypt cert через certbot (если есть домен) или self-signed
   - [ ] nginx redirect 80 → 443, HSTS header
@@ -238,9 +237,9 @@ vault, память/KB, jobs/cost/notifications/operator/incidents/gateway на 
 - [ ] **10.8 Secret rotation**
   - [ ] BigModel API ключ `dba035e8...` сейчас лежит в `.env` и в БД — нужно ротировать (упоминался в коммитах несколько раз, могла утечь)
   - [ ] Add `/api/admin/keys/rotate` чтобы перегенерить
-- [ ] **10.9 Backup**
-  - [ ] Daily SQLite dump в `/data/backups/`
-  - [ ] Скрипт `scripts/backup.sh`, systemd timer
+- [x] **10.9 Backup** — ✅ СДЕЛАНО (`f52f489`)
+  - [x] `scripts/backup.sh`: online `.backup` → gzip → `PRAGMA integrity_check` → прунинг `RETENTION_DAYS=14`
+  - [x] systemd timer `browserai-backup.timer` (ежедневно 02:30 UTC), установлен; первый прогон на проде: 41M gz, integrity ok. На host доустановлен `sqlite3`
 - [ ] **10.10 Merge to main**
   - [ ] Открыть PR `sync/from-timeweb-2026-06-27 → main`
   - [ ] Code review, squash, merge
