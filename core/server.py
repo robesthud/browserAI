@@ -86,11 +86,17 @@ from core.memory_kb import (
 from core.web_image import generate_image, web_search as do_web_search
 from core.admin_data import (
     cost_today as _cost_today,
+    gateway_status as _gateway_status,
     get_job as _get_job,
+    get_operator_mission as _get_operator_mission,
+    list_incidents as _list_incidents,
     list_jobs as _list_jobs,
     list_notifications as _list_notifications,
+    list_operator_missions as _list_operator_missions,
+    list_operator_projects as _list_operator_projects,
     mark_all_read as _mark_all_read,
     notifications_summary as _notifications_summary,
+    operator_status as _operator_status,
 )
 
 log = logging.getLogger("browserai.core")
@@ -1504,10 +1510,56 @@ async def notifications_read_all(request: Request):
     return _mark_all_read(user["id"], _is_owner(user))
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 9 — Operator / Gateway (real data from legacy tables)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@app.get("/api/operator/missions")
+async def operator_missions(request: Request, limit: int = 50):
+    user = _require_user(request)
+    return {"ok": True, "items": _list_operator_missions(user["id"], _is_owner(user), limit)}
+
+
+@app.get("/api/operator/missions/{mission_id}")
+async def operator_mission_detail(mission_id: str, request: Request):
+    user = _require_user(request)
+    m = _get_operator_mission(user["id"], _is_owner(user), mission_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="mission_not_found")
+    return {"ok": True, "mission": m}
+
+
+@app.get("/api/operator/projects")
+async def operator_projects(request: Request, limit: int = 50):
+    user = _require_user(request)
+    return {"ok": True, "items": _list_operator_projects(user["id"], _is_owner(user), limit)}
+
+
+@app.get("/api/operator/status")
+async def operator_status_ep(request: Request):
+    user = _require_user(request)
+    return _operator_status(user["id"], _is_owner(user))
+
+
+@app.get("/api/incidents")
+async def incidents_list(request: Request, limit: int = 50):
+    user = _require_user(request)
+    return {"ok": True, "items": _list_incidents(user["id"], _is_owner(user), limit)}
+
+
+@app.get("/api/gateway/status")
+async def gateway_status_ep(request: Request):
+    _require_user(request)
+    return await _gateway_status(OPENHANDS_SERVER)
+
+
 # Paths now backed by real handlers — exclude from stub registration.
 _REAL_NOW = {
     "/api/jobs", "/api/cost/today", "/api/notifications",
     "/api/notifications/summary", "/api/notifications/read-all",
+    "/api/operator/missions", "/api/operator/projects", "/api/operator/status",
+    "/api/incidents", "/api/gateway/status",
     "/api/memory/facts", "/api/memory/project", "/api/memory/semantic",
     "/api/web/search", "/api/image/generate",
 }
