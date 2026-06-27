@@ -339,85 +339,163 @@ async def _create_and_start(
     return cid
 
 
+import re as _re
+
+_THINK_PAIR_RE = _re.compile(r"<think>(.*?)</think>", _re.DOTALL)
+_THINK_LEADING_RE = _re.compile(r"^(.*?)</think>\s*", _re.DOTALL)
+
+
+def _split_think(text: str) -> tuple[str, str]:
+    """Return (thinking, final). Handles both paired <think>...</think>
+    blocks AND the GLM/DeepSeek style where the model omits the opening
+    <think> and only emits a closing </think> before the real answer."""
+    if not text:
+        return "", ""
+    thoughts_parts: list[str] = []
+
+    # Case 1: explicit paired blocks
+    for m in _THINK_PAIR_RE.findall(text):
+        thoughts_parts.append(m)
+    cleaned = _THINK_PAIR_RE.sub("", text)
+
+    # Case 2: leading "...</think>" (implicit opening think)
+    m = _THINK_LEADING_RE.match(cleaned)
+    if m:
+        thoughts_parts.append(m.group(1))
+        cleaned = cleaned[m.end():]
+
+    return "\n".join(t.strip() for t in thoughts_parts if t.strip()), cleaned.strip()
+
+
 def _translate_event(evt: Dict[str, Any], step: int) -> List[Dict[str, Any]]:
     """
-    Map an OpenHands V1 event dict into one or more SSE events that the
+    Map an OpenHands v0.59 event dict into one or more SSE events that the
     BrowserAI UI understands.
 
-    OpenHands events shape (varies by version, we accept the union):
-      * action:        {id, source: 'agent'|'user', action: {kind:..., ...}, ...}
-      * observation:   {id, source: 'environment', observation: {kind:..., ...}}
-      * message:       {role: 'assistant'|'user', content: '...'}
+    Real OpenHands event shape (observed against openhands:main v0.59.0):
+        {
+          "id": int,
+          "timestamp": iso8601,
+          "source": "agent" | "user" | "environment",
+          "message": str,                       # human-readable summary
+          "action": "message"|"recall"|"run"|"read"|"write"|...,
+          "observation": "agent_state_changed"|"recall"|"run"|"read"|...,
+          "content": str,
+          "args": { command, content, path, ... },
+          "extras": { agent_state, exit_code, path, ... },
+          "llm_metrics": {...},                 # only for agent messages
+          "cause": int,                         # id of action this obs answers
+          "tool_call_metadata": {...},
+        }
+
+    The exact "kind" depends on whether the event carries an `action` or
+    `observation` discriminator (they are mutually exclusive top-level strings,
+    not nested dicts in this version).
     """
     out: List[Dict[str, Any]] = []
 
-    # Older/newer schemas — try multiple keys
-    action = evt.get("action")
-    observation = evt.get("observation")
-    msg = evt.get("message") or evt
-    role = evt.get("role") or (msg.get("role") if isinstance(msg, dict) else None)
-    content = (
-        evt.get("content")
-        or (msg.get("content") if isinstance(msg, dict) else None)
-        or ""
-    )
+    src = evt.get("source", "")
+    action_kind = evt.get("action") if isinstance(evt.get("action"), str) else None
+    obs_kind = evt.get("observation") if isinstance(evt.get("observation"), str) else None
+    args = evt.get("args") or {}
+    extras = evt.get("extras") or {}
+    content = evt.get("content") or ""
+    message = evt.get("message") or ""
 
-    kind = (
-        (action.get("kind") if isinstance(action, dict) else None)
-        or (observation.get("kind") if isinstance(observation, dict) else None)
-        or evt.get("kind")
-        or evt.get("type")
-        or evt.get("event_type")
-        or ""
-    )
+    # ── 0. Drop pure-noise events the UI does not need to render
+    #      (system prompt echo, user echo, internal state change action,
+    #      condenser book-keeping, etc.)
+    if action_kind == "system":
+        return out  # system prompt — not for UI
+    if src == "user" and action_kind == "message":
+        return out  # user's own message — already shown by UI
+    if action_kind == "change_agent_state":
+        return out  # observation event below covers this
+    if action_kind == "condensation" or obs_kind == "condensation":
+        return out  # internal condenser
 
-    # Thinking / thought
-    if isinstance(action, dict) and (action.get("thought") or kind in ("think", "AgentThinkAction")):
-        text = action.get("thought") or action.get("content") or ""
+    # ── 1. agent_state_changed → expose phase to UI
+    if obs_kind == "agent_state_changed":
+        state = extras.get("agent_state") or ""
+        phase_map = {
+            "loading": "boot",
+            "init": "boot",
+            "running": "execute",
+            "awaiting_user_input": "done",
+            "finished": "done",
+            "stopped": "done",
+            "error": "error",
+        }
+        phase = phase_map.get(state, state or "execute")
+        out.append({"event": "agent_state", "data": {"step": step, "phase": phase, "raw": state}})
+        return out
+
+    # ── 2. assistant message (final or intermediate)
+    if src == "agent" and action_kind == "message":
+        raw = (args.get("content") if isinstance(args, dict) else None) or message or content
+        thoughts, final = _split_think(raw)
+        if thoughts:
+            out.append({"event": "thinking_delta", "data": {"step": step, "chunk": thoughts}})
+            out.append({"event": "thought", "data": {"step": step, "text": thoughts}})
+        if final:
+            out.append({"event": "assistant_delta", "data": {"step": step, "chunk": final}})
+        return out
+
+    # ── 3. agent thought / thinking
+    if action_kind == "think" or extras.get("thought"):
+        text = (args or {}).get("thought") or extras.get("thought") or content or ""
         if text:
             out.append({"event": "thinking_delta", "data": {"step": step, "chunk": text}})
             out.append({"event": "thought", "data": {"step": step, "text": text}})
+        return out
 
-    # Bash / cmd run
-    if kind in ("execute_bash", "CmdRunAction", "run_command", "cmd", "ExecuteBashAction"):
-        cmd = (
-            (action or {}).get("command")
-            or (action or {}).get("cmd")
-            or (action or {}).get("content")
-            or ""
+    # ── 4. recall: usually an internal lookup, surface as a tiny tool card
+    if action_kind == "recall":
+        query = (args or {}).get("query") or content or ""
+        out.append(
+            {"event": "tool_start", "data": {"step": step, "name": "recall", "args": {"query": query}}}
         )
+        return out
+    if obs_kind == "recall":
+        out.append(
+            {
+                "event": "tool_result",
+                "data": {"step": step, "name": "recall", "ok": True, "result": content or message},
+            }
+        )
+        return out
+
+    # ── 5. bash / run / execute_bash
+    if action_kind in ("run", "execute_bash", "run_ipython"):
+        cmd = (args or {}).get("command") or (args or {}).get("code") or content or ""
         out.append(
             {"event": "tool_start", "data": {"step": step, "name": "bash", "args": {"command": cmd}}}
         )
-
-    # Cmd / observation
-    if kind in ("CmdOutputObservation", "cmd_output", "execute_bash_observation"):
-        output = (
-            (observation or {}).get("content")
-            or (observation or {}).get("output")
-            or ""
-        )
-        exit_code = (observation or {}).get("exit_code", 0)
+        return out
+    if obs_kind in ("run", "execute_bash", "run_ipython"):
+        exit_code = int(extras.get("exit_code", 0) or 0)
         out.append(
             {
                 "event": "tool_result",
                 "data": {
                     "step": step,
                     "name": "bash",
-                    "ok": int(exit_code) == 0,
-                    "result": output,
-                    "error": output if int(exit_code) != 0 else None,
+                    "ok": exit_code == 0,
+                    "result": content,
+                    "error": content if exit_code != 0 else None,
                 },
             }
         )
+        return out
 
-    # File ops
-    if kind in ("write_file", "str_replace_editor", "FileWriteAction", "edit_file"):
-        path = (action or {}).get("path") or (action or {}).get("file") or "file"
+    # ── 6. file edit / write
+    if action_kind in ("write", "edit", "str_replace_editor"):
+        path = (args or {}).get("path") or (args or {}).get("file") or ""
         out.append(
             {"event": "tool_start", "data": {"step": step, "name": "write_file", "args": {"path": path}}}
         )
-    if kind in ("FileWriteObservation", "file_write_observation"):
+        return out
+    if obs_kind in ("write", "edit"):
         out.append(
             {
                 "event": "tool_result",
@@ -425,16 +503,20 @@ def _translate_event(evt: Dict[str, Any], step: int) -> List[Dict[str, Any]]:
                     "step": step,
                     "name": "write_file",
                     "ok": True,
-                    "result": {"path": (observation or {}).get("path", ""), "success": True},
+                    "result": {"path": extras.get("path", ""), "success": True},
                 },
             }
         )
-    if kind in ("read_file", "FileReadAction"):
-        path = (action or {}).get("path") or (action or {}).get("file") or "file"
+        return out
+
+    # ── 7. file read
+    if action_kind in ("read",):
+        path = (args or {}).get("path") or ""
         out.append(
             {"event": "tool_start", "data": {"step": step, "name": "read_file", "args": {"path": path}}}
         )
-    if kind in ("FileReadObservation", "file_read_observation"):
+        return out
+    if obs_kind in ("read",):
         out.append(
             {
                 "event": "tool_result",
@@ -442,30 +524,43 @@ def _translate_event(evt: Dict[str, Any], step: int) -> List[Dict[str, Any]]:
                     "step": step,
                     "name": "read_file",
                     "ok": True,
-                    "result": {
-                        "path": (observation or {}).get("path", ""),
-                        "content": (observation or {}).get("content", ""),
-                    },
+                    "result": {"path": extras.get("path", ""), "content": content},
                 },
             }
         )
+        return out
 
-    # Browser
-    if kind in ("browse", "browse_interactive", "BrowseURLAction", "BrowseInteractiveAction"):
-        url = (action or {}).get("url") or ""
+    # ── 8. browse
+    if action_kind in ("browse", "browse_interactive"):
+        url = (args or {}).get("url") or content or ""
         out.append(
             {"event": "tool_start", "data": {"step": step, "name": "browser", "args": {"url": url}}}
         )
+        return out
+    if obs_kind in ("browse",):
+        out.append(
+            {
+                "event": "tool_result",
+                "data": {"step": step, "name": "browser", "ok": True, "result": content[:2000]},
+            }
+        )
+        return out
 
-    # Final assistant message
-    if isinstance(action, dict) and (action.get("kind") in ("message", "AgentFinishAction") or action.get("response")):
-        text = action.get("response") or action.get("content") or ""
-        if text:
-            out.append({"event": "assistant_delta", "data": {"step": step, "chunk": text}})
+    # ── 9. error
+    if obs_kind == "error" or evt.get("error"):
+        err = content or message or "engine error"
+        out.append({"event": "error", "data": {"message": err}})
+        return out
 
-    if role == "assistant" and isinstance(content, str) and content.strip():
-        out.append({"event": "assistant_delta", "data": {"step": step, "chunk": content}})
-
+    # ── 10. unknown event: silently swallow (logged on server) so the UI
+    #       does not get spammed with system internals
+    log.debug(
+        "unknown OpenHands event: src=%s action=%s obs=%s msg=%s",
+        src,
+        action_kind,
+        obs_kind,
+        (message or content)[:120],
+    )
     return out
 
 
@@ -571,17 +666,31 @@ async def _stream_chat(
             except Exception as e:
                 log.warning("event poll error: %s", e)
 
+            # Detect natural end-of-turn from event stream itself: if we have
+            # at least one assistant message and the latest agent_state is
+            # awaiting_user_input/finished/stopped, the turn is complete.
+            last_evt_state = None
+            for e in reversed(list(seen_ids)[-10:] if False else []):
+                pass  # placeholder; real check is done via /conversations status
+
             # Status check
             try:
                 rs = await client.get(
                     f"{OPENHANDS_SERVER}/api/conversations/{cid}", timeout=10.0
                 )
                 if rs.status_code == 200:
-                    status = (rs.json() or {}).get("conversation_status", "")
+                    status = ((rs.json() or {}).get("conversation_status") or "").upper()
                     if status in ("STOPPED", "FINISHED", "COMPLETED", "ERROR"):
                         done = True
             except Exception:
                 pass
+
+            # Detect turn end: if the latest known agent_state event is
+            # awaiting_user_input or finished and we already have an answer.
+            # We look at the most recent event we translated. A cheaper proxy
+            # is the `full_answer` non-empty AND no new events in last 4s.
+            if full_answer and (time.time() - last_event_ts) > 4:
+                done = True
 
             # Idle watchdog: no new events for 3 minutes → assume hung
             if (time.time() - last_event_ts) > 180:
@@ -596,7 +705,9 @@ async def _stream_chat(
             await asyncio.sleep(EVENT_POLL_INTERVAL)
 
         if full_answer:
-            yield _sse("assistant", {"step": step, "text": full_answer}).encode("utf-8")
+            _, clean = _split_think(full_answer)
+            if clean:
+                yield _sse("assistant", {"step": step, "text": clean}).encode("utf-8")
 
         yield _sse(
             "done",
