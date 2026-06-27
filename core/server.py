@@ -37,8 +37,13 @@ from fastapi.staticfiles import StaticFiles
 from core.database import (
     delete_key,
     get_active_key,
+    get_key,
+    get_params,
+    import_keys,
+    init_db,
     list_keys,
     set_active_key,
+    set_params,
     upsert_key,
 )
 from core.auth import (
@@ -63,6 +68,8 @@ from core.conversations import (
     init_conversations_schema,
     update_last_event,
 )
+from core import providers as provs
+from core import vault as vlt
 
 log = logging.getLogger("browserai.core")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -83,9 +90,10 @@ app = FastAPI(title="BrowserAI-OpenHands Core Monolith", version="0.3.0")
 @app.on_event("startup")
 async def _startup_init() -> None:
     try:
+        init_db()
         init_auth_schema()
         init_conversations_schema()
-        log.info("auth + conversations schemas ready")
+        log.info("all schemas ready (db, auth, conversations, vault)")
     except Exception as e:
         log.error("schema init failed: %s", e)
 
@@ -108,7 +116,7 @@ app.add_middleware(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _resolve_provider(body: Dict[str, Any]) -> Dict[str, Any]:
+def _resolve_provider(body: Dict[str, Any], user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Reconstruct provider config from UI body. The UI flattens fields directly
     onto the request body of /api/agent/chat:
@@ -119,50 +127,54 @@ def _resolve_provider(body: Dict[str, Any]) -> Dict[str, Any]:
     """
     pi = body.get("providerInput") or body.get("provider")
     if isinstance(pi, dict) and (pi.get("baseUrl") or pi.get("apiKey") or pi.get("keyId")):
-        return pi
+        out = dict(pi)
+    else:
+        out = {
+            "keyId": body.get("keyId"),
+            "useStoredSecret": body.get("useStoredSecret"),
+            "baseUrl": body.get("baseUrl"),
+            "apiKey": body.get("apiKey"),
+            "authType": body.get("authType"),
+            "authHeader": body.get("authHeader"),
+            "extraHeaders": body.get("extraHeaders"),
+            "model": body.get("model"),
+            "temperature": body.get("temperature"),
+        }
 
-    flat = {
-        "keyId": body.get("keyId"),
-        "useStoredSecret": body.get("useStoredSecret"),
-        "baseUrl": body.get("baseUrl"),
-        "apiKey": body.get("apiKey"),
-        "authType": body.get("authType"),
-        "authHeader": body.get("authHeader"),
-        "extraHeaders": body.get("extraHeaders"),
-        "model": body.get("model"),
-        "temperature": body.get("temperature"),
-    }
-    if any(flat.values()):
-        # Resolve stored secret if requested
-        if flat.get("useStoredSecret") and flat.get("keyId"):
-            stored = next((k for k in list_keys() if k["id"] == flat["keyId"]), None)
-            if stored:
-                flat["apiKey"] = stored.get("apiKey") or flat.get("apiKey")
-                flat["baseUrl"] = flat.get("baseUrl") or stored.get("baseUrl")
-                flat["model"] = flat.get("model") or stored.get("model")
-        return flat
+    # If caller wants stored secret, fetch it from DB with full row (secret incl.)
+    if out.get("useStoredSecret") and out.get("keyId"):
+        stored = get_key(out["keyId"], include_secret=True)
+        if stored:
+            for k in ("baseUrl", "authType", "authHeader", "extraHeaders", "model"):
+                if not out.get(k):
+                    out[k] = stored.get(k)
+            out["apiKey"] = stored.get("apiKey") or out.get("apiKey") or ""
 
-    # Last resort: DB-active key
-    active = get_active_key() or {}
-    return {
-        "keyId": active.get("id"),
-        "useStoredSecret": True,
-        "baseUrl": active.get("baseUrl") or DEFAULT_BASE_URL,
-        "apiKey": active.get("apiKey") or os.environ.get("BIGMODEL_API_KEY", ""),
-        "model": active.get("model") or DEFAULT_MODEL,
-    }
+    # Decrypt secret if vault is enabled and unlocked
+    if user and out.get("apiKey", "").startswith("enc:"):
+        out["apiKey"] = vlt.resolve_secret(user["id"], out["apiKey"])
+
+    # Last-resort default
+    if not (out.get("apiKey") or out.get("baseUrl")):
+        active = get_active_key(include_secret=True) or {}
+        if active:
+            if user and active.get("apiKey", "").startswith("enc:"):
+                active["apiKey"] = vlt.resolve_secret(user["id"], active["apiKey"])
+            out.update({
+                "keyId": active.get("id"),
+                "useStoredSecret": True,
+                "baseUrl": active.get("baseUrl") or DEFAULT_BASE_URL,
+                "apiKey": active.get("apiKey") or os.environ.get("BIGMODEL_API_KEY", ""),
+                "model": out.get("model") or active.get("model") or DEFAULT_MODEL,
+                "authType": active.get("authType") or "bearer",
+                "extraHeaders": active.get("extraHeaders") or {},
+            })
+    return out
 
 
 def _qualify_model(base_url: str, model: str) -> str:
-    """LiteLLM (used inside OpenHands) needs `openai/<model>` for any
-    OpenAI-compatible-but-not-OpenAI endpoint."""
-    if not model:
-        return f"openai/{DEFAULT_MODEL}"
-    if "/" in model:
-        return model
-    if any(host in (base_url or "") for host in ("bigmodel.cn", "api.z.ai", "deepseek.com")):
-        return f"openai/{model}"
-    return model
+    # Thin wrapper kept for backwards-compat with any external imports.
+    return provs.qualify_model(base_url, model)
 
 
 def _history_to_prompt(history: List[Dict[str, Any]]) -> str:
@@ -210,22 +222,28 @@ async def get_health():
     }
 
 
-@app.get("/api/settings")
-@app.get("/api/keys")
-async def get_settings():
-    keys = list_keys()
+def _settings_payload(request: Request) -> Dict[str, Any]:
+    user = current_user(request)
+    keys = list_keys(include_secrets=False)
     active = next((k for k in keys if k.get("isActive")), keys[0] if keys else None)
     return {
         "keys": keys,
         "activeKeyId": active["id"] if active else None,
-        "params": {
-            "systemPrompt": "Ты — точный и прямой ассистент.",
-            "temperature": 0.7,
-            "stream": True,
-            "useWebAI": False,
-        },
-        "vault": {"enabled": False, "locked": False},
+        "params": get_params(),
+        "vault": vlt.status(user["id"]) if user else {"enabled": False, "locked": False, "available": vlt.is_available()},
     }
+
+
+@app.get("/api/settings")
+async def get_settings(request: Request):
+    return _settings_payload(request)
+
+
+@app.get("/api/keys")
+async def get_keys():
+    keys = list_keys(include_secrets=False)
+    active = next((k for k in keys if k.get("isActive")), keys[0] if keys else None)
+    return {"keys": keys, "activeKeyId": active["id"] if active else None}
 
 
 @app.post("/api/keys")
@@ -233,14 +251,34 @@ async def post_key(request: Request):
     data = await request.json()
     if not data.get("id"):
         raise HTTPException(status_code=400, detail="id required")
+    # If vault is unlocked, encrypt secret transparently on its way to disk.
+    user = current_user(request)
+    if user and vlt.is_available() and data.get("apiKey"):
+        st = vlt.status(user["id"])
+        if st.get("enabled") and not st.get("locked"):
+            enc = vlt.encrypt(user["id"], data["apiKey"])
+            if enc:
+                data["apiKey"] = enc
     keys = upsert_key(data)
     active = next((k for k in keys if k.get("isActive")), keys[0] if keys else None)
-    return {"keys": keys, "activeKeyId": active["id"] if active else None}
+    return {"keys": [_k for _k in keys], "activeKeyId": active["id"] if active else None}
+
+
+@app.post("/api/keys/import")
+async def keys_import(request: Request):
+    body = await request.json()
+    incoming = body.get("keys") or []
+    active_id = body.get("activeKeyId")
+    keys = import_keys(incoming, active_id)
+    active = next((k for k in keys if k.get("isActive")), keys[0] if keys else None)
+    return {"keys": keys, "activeKeyId": active["id"] if active else None, "imported": len(incoming)}
 
 
 @app.post("/api/keys/{key_id}/activate")
-async def activate_key(key_id: str):
+async def activate_key(key_id: str, request: Request):
     keys = set_active_key(key_id)
+    # Push new provider into OpenHands settings so next chat uses it
+    asyncio.create_task(_sync_active_provider_to_openhands(request))
     return {"keys": keys, "activeKeyId": key_id}
 
 
@@ -251,12 +289,165 @@ async def remove_key(key_id: str):
     return {"keys": keys, "activeKeyId": active["id"] if active else None}
 
 
+@app.get("/api/params")
+async def params_get():
+    return get_params()
+
+
 @app.put("/api/params")
 async def put_params(request: Request):
-    # Persisting params (systemPrompt, temperature, stream, useWebAI) per-user
-    # is part of Step 3 (auth). For now we just echo.
-    data = await request.json()
-    return {"ok": True, "params": data}
+    body = await request.json()
+    p = set_params(body or {})
+    asyncio.create_task(_sync_active_provider_to_openhands(request))
+    return {"ok": True, "params": p}
+
+
+# ── Validation ──────────────────────────────────────────────────────────────
+
+
+@app.post("/api/validate")
+async def keys_validate(request: Request):
+    body = await request.json()
+    # Caller may send full provider dict OR {keyId} to validate stored one
+    if body.get("keyId") and not body.get("apiKey"):
+        stored = get_key(body["keyId"], include_secret=True)
+        if not stored:
+            raise HTTPException(status_code=404, detail="key not found")
+        provider = stored
+    else:
+        provider = body
+    # Resolve encrypted secret if needed
+    user = current_user(request)
+    if user and provider.get("apiKey", "").startswith("enc:"):
+        provider = {**provider, "apiKey": vlt.resolve_secret(user["id"], provider["apiKey"])}
+    return await provs.validate_key(provider)
+
+
+# ── Model catalog ───────────────────────────────────────────────────────────
+
+
+@app.get("/api/models")
+async def list_models(request: Request, baseUrl: Optional[str] = None, keyId: Optional[str] = None):
+    provider: Dict[str, Any] = {"baseUrl": baseUrl or ""}
+    if keyId:
+        stored = get_key(keyId, include_secret=True)
+        if stored:
+            provider = stored
+    user = current_user(request)
+    if user and provider.get("apiKey", "").startswith("enc:"):
+        provider["apiKey"] = vlt.resolve_secret(user["id"], provider["apiKey"])
+    if not provider.get("baseUrl") and not baseUrl:
+        active = get_active_key()
+        if active:
+            provider = active
+    models = await provs.fetch_models(provider.get("baseUrl") or "", provider)
+    return {"baseUrl": provider.get("baseUrl"), "models": models, "count": len(models)}
+
+
+# ── Vault ───────────────────────────────────────────────────────────────────
+
+
+def _require_user(request: Request) -> Dict[str, Any]:
+    user = current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="auth_required")
+    return user
+
+
+@app.get("/api/vault/status")
+async def vault_status(request: Request):
+    user = current_user(request)
+    if not user:
+        return {"enabled": False, "locked": False, "available": vlt.is_available()}
+    return vlt.status(user["id"])
+
+
+@app.post("/api/vault/setup")
+async def vault_setup(request: Request):
+    user = _require_user(request)
+    body = await request.json()
+    try:
+        return vlt.setup(user["id"], body.get("passphrase") or "", int(body.get("autolockMinutes") or 30))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.post("/api/vault/unlock")
+async def vault_unlock(request: Request):
+    user = _require_user(request)
+    body = await request.json()
+    try:
+        return vlt.unlock(user["id"], body.get("passphrase") or "")
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+@app.post("/api/vault/lock")
+async def vault_lock(request: Request):
+    user = _require_user(request)
+    return vlt.lock(user["id"])
+
+
+@app.post("/api/vault/change")
+async def vault_change(request: Request):
+    user = _require_user(request)
+    body = await request.json()
+    try:
+        return vlt.change(user["id"], body.get("passphrase") or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/vault/disable")
+async def vault_disable(request: Request):
+    user = _require_user(request)
+    return vlt.disable(user["id"])
+
+
+@app.post("/api/vault/autolock")
+async def vault_autolock(request: Request):
+    user = _require_user(request)
+    body = await request.json()
+    return vlt.autolock(user["id"], int(body.get("minutes") or 30))
+
+
+@app.get("/api/vault/backup")
+async def vault_backup(request: Request):
+    user = _require_user(request)
+    try:
+        return vlt.backup(user["id"])
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/vault/restore")
+async def vault_restore(request: Request):
+    user = _require_user(request)
+    body = await request.json()
+    try:
+        return vlt.restore(user["id"], body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ── OpenHands settings sync helper ─────────────────────────────────────────
+
+
+async def _sync_active_provider_to_openhands(request: Request) -> None:
+    """Fire-and-forget push of currently-active key + params to OH."""
+    try:
+        active = get_active_key(include_secret=True)
+        if not active:
+            return
+        user = current_user(request)
+        if user and active.get("apiKey", "").startswith("enc:"):
+            active["apiKey"] = vlt.resolve_secret(user["id"], active["apiKey"])
+        async with httpx.AsyncClient() as c:
+            await provs.push_to_openhands(c, OPENHANDS_SERVER, active, get_params())
+    except Exception as e:
+        log.warning("sync_active_provider_to_openhands failed: %s", e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -381,29 +572,11 @@ async def _push_oh_settings(
     client: httpx.AsyncClient,
     provider: Dict[str, Any],
 ) -> None:
-    """Push the chosen LLM into the OpenHands global Settings before each
-    conversation. OpenHands consults global Settings when initialising a
-    new agent loop."""
-    base_url = provider.get("baseUrl") or DEFAULT_BASE_URL
-    raw_model = provider.get("model") or DEFAULT_MODEL
-    api_key = provider.get("apiKey") or os.environ.get("BIGMODEL_API_KEY", "")
-    payload = {
-        "agent": "CodeActAgent",
-        "llm_model": _qualify_model(base_url, raw_model),
-        "llm_api_key": api_key,
-        "llm_base_url": base_url,
-        "max_iterations": MAX_AGENT_ITERATIONS,
-        "confirmation_mode": False,
-        "enable_default_condenser": True,
-    }
-    try:
-        r = await client.post(
-            f"{OPENHANDS_SERVER}/api/settings", json=payload, timeout=10.0
-        )
-        if r.status_code >= 400:
-            log.warning("OpenHands settings push %s: %s", r.status_code, r.text[:300])
-    except Exception as e:
-        log.warning("OpenHands settings push error: %s", e)
+    """Push the chosen LLM + global params into OpenHands. Thin wrapper
+    over providers.push_to_openhands; kept for legacy import sites."""
+    ok = await provs.push_to_openhands(client, OPENHANDS_SERVER, provider, get_params())
+    if not ok:
+        log.warning("OpenHands settings push failed; agent may use stale config")
 
 
 # Note: conversation create/start/reuse is delegated to core.conversations.
@@ -862,11 +1035,19 @@ async def agent_chat(request: Request):
     history = body.get("history") or body.get("messages") or []
     extra_system = body.get("extraSystem") or ""
     chat_id = body.get("chatId") or ""
-    provider = _resolve_provider(body)
-    model = provider.get("model") or body.get("model") or DEFAULT_MODEL
-    prompt = _history_to_prompt(history) or body.get("prompt") or "hi"
     user = current_user(request)
     user_id = user["id"] if user else None
+    provider = _resolve_provider(body, user=user)
+    model = provider.get("model") or body.get("model") or DEFAULT_MODEL
+    prompt = _history_to_prompt(history) or body.get("prompt") or "hi"
+
+    # If the provider has no usable secret (vault locked, no key), fail fast
+    # so the UI shows a clean message instead of OH returning 502 later.
+    if not provider.get("apiKey") and (provider.get("authType") or "bearer") == "bearer":
+        async def _err_stream():
+            yield _sse("error", {"message": "API ключ не настроен или vault заблокирован. Откройте Настройки."}).encode("utf-8")
+            yield _sse("done", {"reason": "no-provider"}).encode("utf-8")
+        return StreamingResponse(_err_stream(), media_type="text/event-stream")
 
     return StreamingResponse(
         _stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id),
