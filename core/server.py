@@ -800,10 +800,30 @@ def _translate_event(evt: Dict[str, Any], step: int) -> List[Dict[str, Any]]:
         )
         return out
 
-    # ── 9. error
+    # ── 8b. agent finish (final/no-more-actions)
+    if action_kind == "finish":
+        # The 'finish' action means the agent is done with this turn. We don't
+        # emit anything special — the next agent_state_changed event will
+        # carry awaiting_user_input which closes the stream cleanly.
+        return out
+
+    # ── 9. error — IMPORTANT distinction:
+    #     OpenHands emits observation=error to mean "a tool call failed and
+    #     I will retry/recover" — this is NOT fatal, the agent keeps going.
+    #     Examples: "Missing required parameters for function 'X': {'security_risk'}"
+    #     when GLM forgets the security_risk arg, OH retries with auto-fixed args.
+    #
+    #     The truly-fatal signal is agent_state_changed -> error (handled in
+    #     section 1 via the awaiting_user_input/finished/stopped/error match).
+    #
+    #     So we surface tool errors as a small thinking note rather than a
+    #     UI-killing error event.
     if obs_kind == "error" or evt.get("error"):
         err = content or message or "engine error"
-        out.append({"event": "error", "data": {"message": err}})
+        out.append({
+            "event": "thinking_delta",
+            "data": {"step": step, "chunk": f"⚠️ tool error (retrying): {err[:200]}"},
+        })
         return out
 
     # ── 10. unknown event: silently swallow (logged on server) so the UI
@@ -971,7 +991,12 @@ async def _stream_chat(
             # to awaiting_user_input/finished/stopped/error. We DON'T wait for
             # /conversations status to flip (it stays RUNNING until conv is
             # actually deleted) — the event is the source of truth.
-            if turn_complete and full_answer:
+            #
+            # Note: 'finished' can come WITHOUT any full_answer (e.g. GLM ends
+            # via a 'finish' action after a tool call, without summarising in
+            # natural language). Close the stream anyway — the UI already saw
+            # the tool_result cards.
+            if turn_complete:
                 done = True
 
             # Belt-and-suspenders: hard status check
@@ -986,10 +1011,10 @@ async def _stream_chat(
             except Exception:
                 pass
 
-            # Soft fallback: if we have an answer and the agent has been
-            # quiet for >6 seconds, close the stream so the UI does not hang
-            # if OpenHands forgets to emit awaiting_user_input.
-            if full_answer and (time.time() - last_event_ts) > 6:
+            # Soft fallback: if we have an answer OR tool steps and the agent
+            # has been quiet for >8 seconds, close the stream so the UI does
+            # not hang if OpenHands forgets to emit awaiting_user_input.
+            if (full_answer or step > 0) and (time.time() - last_event_ts) > 8:
                 done = True
 
             # Idle watchdog: no new events for 3 minutes → assume hung
@@ -1008,6 +1033,15 @@ async def _stream_chat(
             _, clean = _split_think(full_answer)
             if clean:
                 yield _sse("assistant", {"step": step, "text": clean}).encode("utf-8")
+        elif step > 0 and done:
+            # Agent finished via pure tool execution with no natural-language
+            # summary (common with GLM after a single write/edit). Emit a
+            # generic 'assistant' so the UI shows something instead of an
+            # empty bubble.
+            yield _sse(
+                "assistant",
+                {"step": step, "text": "✅ Готово."},
+            ).encode("utf-8")
 
         # Persist max event id we've seen so the next /api/agent/chat for
         # this chat skips replaying old events from THIS turn.

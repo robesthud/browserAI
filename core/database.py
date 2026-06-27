@@ -218,19 +218,46 @@ def upsert_key(k: Dict[str, Any]) -> List[Dict[str, Any]]:
         # When useStoredSecret=true and apiKey is empty/placeholder/masked,
         # preserve the existing secret on disk.
         incoming_secret = (k.get("apiKey") or "").strip()
+        existing_row = conn.execute(
+            "SELECT api_key, available_models FROM keys WHERE id = ?", (k_id,)
+        ).fetchone()
+
         if k.get("useStoredSecret") and (
             not incoming_secret
             or incoming_secret.startswith("•")
             or "•" in incoming_secret
+            or incoming_secret == "🔒 encrypted"
         ):
-            row = conn.execute("SELECT api_key FROM keys WHERE id = ?", (k_id,)).fetchone()
-            if row:
-                incoming_secret = row["api_key"] or ""
+            if existing_row:
+                incoming_secret = existing_row["api_key"] or ""
+
+        # Don't clobber availableModels with a smaller/empty list. The UI
+        # sometimes sends only the currently-selected model after edits or
+        # after a 'Validate' button click, which would silently shrink the
+        # model dropdown. Merge old + new instead.
+        incoming_models = k.get("availableModels") or []
+        if existing_row:
+            try:
+                old_models = json.loads(existing_row["available_models"] or "[]")
+            except Exception:
+                old_models = []
+            if old_models:
+                merged = list(incoming_models)
+                seen = set(merged)
+                for m in old_models:
+                    if m not in seen:
+                        merged.append(m); seen.add(m)
+                # Only replace if new list is strictly bigger or strictly different;
+                # never let it shrink below the existing size.
+                if len(incoming_models) < len(old_models):
+                    incoming_models = merged
+                else:
+                    incoming_models = merged
 
         name             = k.get("name", "")
         base_url         = k.get("baseUrl", "")
         model            = k.get("model", "")
-        available_models = json.dumps(k.get("availableModels") or [])
+        available_models = json.dumps(incoming_models)
         auth_type        = k.get("authType") or "bearer"
         auth_header      = k.get("authHeader") or ""
         response_path    = k.get("responsePath") or ""
