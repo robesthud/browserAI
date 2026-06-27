@@ -1,80 +1,141 @@
 # AGENTS.md — Системный контекст и правила для ИИ-агентов BrowserAI
 
-Добро пожаловать в BrowserAI! Этот файл является главным источником архитектурной истины (Ground Truth) и когнитивных правил для любых ИИ-агентов, работающих с этим репозиторием. Перед внесением изменений всегда читай этот документ целиком.
+Добро пожаловать в BrowserAI! Этот файл — главный источник архитектурной истины (Ground Truth) для любых ИИ-агентов, работающих с этим репозиторием.
 
 ---
 
-## 🚀 1. Суть проекта и его идентичность
+## 🚀 1. Суть проекта
 
-**BrowserAI** — это высокоавтономная, отказоустойчивая платформа для ИИ-разработчиков и операторов (агентов), развернутая на личном сервере Timeweb VPS (`186.246.31.78`) пользователя и интегрированная с его GitHub-репозиторием `robesthud/browserAI`.
+**BrowserAI** — это web-оболочка для **OpenHands Agent Server**, развернутая на Timeweb VPS (`186.246.14.141`), интегрированная с GitHub `robesthud/browserAI`.
 
-Архитектура платформы и её пользовательский опыт (UI/UX) спроектированы в точном соответствии со стандартами **Arena.ai's Agent Mode**: абсолютный минимализм в дизайне, 100% автопилот при решении сложных задач, отсутствие лишней воды, мгновенный отклик и когнитивное самоисцеление при сбоях.
+Архитектура и UI/UX — в стиле **Arena.ai Agent Mode**: минимализм, автопилот, никакого шума, мгновенный отклик.
 
----
-
-## 🎨 2. Философия UI/UX и Минимализма (Arena Style)
-
-Пользовательский интерфейс BrowserAI очищен от любого визуального шума и лишних элементов:
-1.  **Двусторонний баббл-чат (Messenger Bubble Layout):**
-    *   Сообщения пользователя (`Вы`) всегда отображаются справа, упакованные в мягкие темно-серые облачка (`bg-graphite-750`) со срезом в правом верхнем углу (`rounded-2xl rounded-tr-none`).
-    *   Ответы `Ассистента` всегда начинаются слева, упакованные в легкие облачка с тонкой рамкой (`border-white/5 bg-graphite-800/25`) со срезом в левом верхнем углу (`rounded-2xl rounded-tl-none`).
-    *   **Запрещено:** Выводить текстовые заголовки «Вы» или «Ассистент» над сообщениями, а также отображать аватарки ИИ-помощника слева. Чат должен оставаться абсолютно чистым.
-    *   **Запрещено:** Добавлять сплошные горизонтальные полосы-разделители (`divide-y`) между сообщениями. Разделение происходит за счет компактных вертикальных отступов (`space-y-1.5`).
-2.  **Микро-карточки инструментов (Compact Tools):**
-    *   Все шаги выполнения агента (`read_file`, `edit_file`, `bash`) отображаются непосредственно в чате в виде плотных, компактных, раскрывающихся моноширинных строчек.
-    *   Названия действий выводятся строго на английском языке в нижнем регистре (`read`, `write`, `edit`, `bash`, `tests`, `verify`) для максимальной плотности и технической эстетики.
-    *   Отступы между строчками шагов минимальны (`my-0.5`).
-3.  **Премиальная типографика:**
-    *   Финальные текстовые ответы, отчеты и пояснения агента рендерятся в комфортном, контрастном и слегка плотном начертании (`font-weight: 500` на `.md-p` и `.md-list`) для глубокого и приятного чтения на любых дисплеях.
-    *   Внутреннее разделение блоков текста внутри ответа агента осуществляется через минималистичные горизонтальные линии Markdown (`---`), которые стилизуются как тончайшие, еле заметные полоски (`border-top: 1px solid rgba(255, 255, 255, 0.05)`).
-4.  **Никакой лишней воды:** 
-    *   Никаких дублирующих сообщений, приветствий, пожеланий хорошего дня или предложений помочь в конце ответа. Конечный результат и технический лаконичный отчет — это всё, что нужно пользователю.
+Стек:
+- **Backend: Python 3.12 + FastAPI + Uvicorn + SQLite**
+  `core/server.py` — монолит ~3000 строк, все `/api/*`
+- **Frontend: React 19 + Vite + Tailwind**
+  `ui/src/`
+- **Agent engine: OpenHands** `ghcr.io/all-hands-ai/openhands:main`
+  БраузерAI проксирует чат в OpenHands, транслирует события в SSE для UI
+- **DB: SQLite** `browserai.db` — users, keys, conversations, agent_state, memory/kb
+- **Deploy: Docker Compose**, Timeweb, GitHub Actions
 
 ---
 
-## 🧠 3. Интеллектуальная оркестрация и Двухфазный роутинг
+## 🎨 2. Философия UI/UX (Arena Style)
 
-Для экономии токенов и мгновенной работы в BrowserAI внедрен **ИИ-Супервизор (Supervisor Intent Classifier)**.
+1. **Двусторонний баббл-чат**
+   - `Вы` — справа, `bg-graphite-750`, `rounded-2xl rounded-tr-none`
+   - `Ассистент` — слева, `border-white/5 bg-graphite-800/25`, `rounded-2xl rounded-tl-none`
+   - Запрещено: заголовки «Вы / Ассистент» над бабблами, аватарки
+   - Запрещено: `divide-y` между сообщениями, только `space-y-1.5`
 
-1.  **Двухфазный перехват на сервере (`server/agentLoop.js`):**
-    *   Перед запуском тяжелого агентского цикла бэкенд обращается к быстрому ИИ-Супервизору на базе `deepseek-chat` (DeepSeek-V3).
-    *   Супервизор с учетом контекста последних **4 сообщений диалога** классифицирует намерение на:
-        *   `CHAT` — простое приветствие, беседа, совет, объяснение теории.
-        *   `WEB` — поиск актуальных новостей, погоды, фактов в Google.
-        *   `AGENT` — создание/правка файлов, программирование, запуск тестов, деплой.
-2.  **Легковесный конвейер:**
-    *   Если выбран `CHAT` или `WEB` — бэкенд запускает дешевый конвейер `runLightweightChat`. От модели полностью скрывается список из 58 инструментов и тяжелый системный промпт. Температура выставляется на `0.7` для "живого" диалога.
-    *   Если выбран `AGENT` — запускается полный цикл агента. Модель получает доступ к инструментам. Температура зажимается в `0.1`–`0.3` для детерминированной точности кода.
-3.  **Автоматическая эскалация (Auto-Escalation):**
-    *   Если модель в режиме `CHAT` попытается сгенерировать вызов инструментов (XML-теги), бэкенд перехватывает ответ, прерывает генерацию, выводит уведомление и бесшовно перезапускает этот же запрос в полноценном Режиме Агента (`AGENT`).
+2. **Микро-карточки инструментов**
+   - `read`, `write`, `edit`, `bash`, `tests`, `verify` — компактные, моноширинные, раскрывающиеся
+   - названия строго lowercase английский
 
----
+3. **Типографика**
+   - `font-weight: 500` для `.md-p`, `.md-list`
+   - разделители `---` → `border-top: 1px solid rgba(255,255,255,0.05)`
 
-## 💻 4. Архитектура Бэкенда и Изолированное окружение
+4. **Никакой воды**
+   - никаких «Чем могу помочь?», дубликатов, приветствий
+   - результат + лаконичный тех-отчёт, всё
 
-1.  **Контейнеризация и VPS:**
-    *   Express-сервер (`server/index.js`) общается с SQLite (`server/db.js`) для управления API-ключами.
-    *   В таблице `keys` реализовано поле `only_free` (INTEGER 0/1) для персистентного сохранения галочки «Показывать только бесплатные модели». Все списки моделей в топике и боковой панели автоматически фильтруются по этому признаку на бэкенде и фронтенде.
-2.  **Изолированный Sandbox и Постоянные сессии:**
-    *   Все bash-команды агента выполняются внутри контейнера `agent-sandbox` на базе Ubuntu 22.04 с Node.js v22.13.0 и npm 10.9.2.
-    *   Запуск консоли (`bash` / `shell_session_run`) обслуживается модулем `server/shellSession.js`. 
-    *   **Критически важно:** Любая новая сессия терминала для конкретного чата обязана открываться в CWD (рабочей директории), принудительно настроенной на изолированную подпапку этого чата: `/workspace/chats/{chatId}`. Это гарантирует, что созданные агентом файлы автоматически появляются в Workspace-панели чата на фронтенде.
-3.  **Базы данных в Sandbox:**
-    *   В системе развернута постоянная служба PostgreSQL `browserai-db` (`POSTGRES_USER=browserai`, `POSTGRES_PASSWORD=browserai_secret`). В песочнице предустановлены `postgresql-client` и `mysql-client` для работы через инструмент `db_query`.
+UI файлы: `ui/src/MessageList.jsx`, `ui/src/components/AgentToolBlock.jsx`, `ui/src/index.css`
 
 ---
 
-## 🛡️ 5. Правила когнитивной безопасности и Самоисцеления
+## 💻 3. Архитектура бэкенда
 
-1.  **Создание Снапшотов (Workspace Snapshots):**
-    *   Перед ЛЮБОЙ операцией записи или изменения файлов (`write_file`, `edit_file`, `delete_file`), бэкенд автоматически создает резервный снимок рабочей области (Snapshot) для мгновенного отката в случае критической ошибки.
-2.  **Авто-Апгрейд Моделей (Auto-Upgrade):**
-    *   Если выбранная пользователем дешевая модель заходит в логический тупик или совершает 3 последовательные ошибки выполнения инструментов подряд, агентский цикл автоматически временно повышает уровень интеллекта до мощной рассуждающей модели `deepseek-reasoner` (DeepSeek-R1), чтобы выйти из тупика, после чего возвращает управление исходной модели.
-3.  **Обязательная Верификация:**
-    *   Любое изменение кода в репозитории ОБЯЗАНО сопровождаться вызовом встроенных тестов (`npm_test`) или валидатора синтаксиса (`verify_code`) перед выводом финального ответа.
-4.  **Аудит безопасности секретов:**
-    *   Перед любым коммитом/пушем в репозиторий ИИ-агент обязан провести `secret_scan` на предмет случайной утечки API-токенов в код. Все токены и ключи в логах и выводах bash маскируются на уровне бэкенда (`redactSecrets` в `ops.js`).
+**FastAPI монолит — `core/server.py`**
+
+Ключевые модули `core/`:
+- `auth.py` — email/password, HttpOnly cookie, sessions
+- `database.py` — keys / params, SQLite
+- `conversations.py` — маппинг `BrowserAI chat_id ↔ OpenHands conversation_id`
+- `providers.py` — каталог моделей, `validate_key`, `push_to_openhands`
+- `agent_state.py` — runs, questions/answers
+- `memory_kb.py` — facts, project_memory, KB RAG
+- `web_image.py` — web_search, generate_image
+- `vault.py` — Fernet-шифрование API-ключей per-user
+- `obslog.py` — JSON logs + `trace_id`, `X-Trace-Id`
+
+**OpenHands bridge**
+- `POST /api/agent/chat` → `_stream_chat()`
+- push LLM settings в OpenHands: `providers.push_to_openhands()`
+- `get_or_create_conversation()` — reuse conversation per chatId
+- poll `/api/conversations/{cid}/events`, translate в SSE: `agent_state`, `thinking_delta`, `tool_start`, `tool_result`, `assistant_delta`, `done`
+- progressive output: rechunk в `STREAM_CHUNK_CHARS=24`, typewriter feel
+
+**Workspace изоляция**
+- Один BrowserAI chat = один под-workspace: `/workspace/chats/<chatId>`
+- `_chat_workspace_abs(chat_id)` / `_ensure_chat_workspace()`
+- API: `/api/workspace/tree`, `/api/workspace/file`, `/api/workspace/upload`, `/api/workspace/upload-url` (git clone / zip auto-extract), `/api/workspace/download`
+- OpenHands контейнер монтирует тот же volume, файлы видны сразу
+
+**Cloud Sync**
+- `/api/cloud` — OpenHands является source of truth для истории чатов
+- `/_fetch_oh_conversations_for_cloud()` — импорт OH conversations → BrowserAI chats
+- `PUT /api/cloud` сохраняет только settings, НЕ чаты — иначе воскресают удалённые
+
+**Auth / Vault**
+- `/api/auth/register`, `/api/auth/login`, `/api/auth/logout`
+- Vault: `/api/vault/setup`, `/api/vault/unlock`, `/api/vault/lock`
+- Ключи: `/api/keys`, `/api/keys/rotate` — валидация нового секрета перед заменой
 
 ---
 
-BrowserAI — это автономный, невероятно минималистичный и надежный ИИ-помощник. Чти эти правила, держи код чистым от воды, а интерфейс — плотным и функциональным!
+## 🛡️ 4. Правила для агентов
+
+1. **Workspace scope**
+   - Всегда работай в `/workspace/chats/<chatId>`, никогда в `/workspace` корне
+   - Перед файловой операцией: `mkdir -p /workspace/chats/<chatId>`
+
+2. **Chat deletion**
+   - Удаление чата в BrowserAI → обязательно `DELETE /api/conversations/{cid}` в OpenHands, иначе чат воскреснет при следующем `/api/cloud`
+
+3. **Secrets**
+   - Никогда не коммить `.env`, `browserai.db`, `deepseek_session.json`
+   - Токены в логах маскируются
+   - `git push` только после проверки секретов
+
+4. **Тесты перед коммитом**
+   ```bash
+   python -m py_compile core/server.py
+   pytest -q
+   cd ui && npm run build
+   ```
+
+5. **Модели**
+   - Default: `glm-4.5-flash` / z.ai / BigModel
+   - Каталог: `core/providers.py`, unified model catalog, live-probe
+   - DeepSeek tool-calling: fresh session per call, loop-guard
+
+6. **SSE протокол**
+   - События: `stream_protocol`, `agent_context`, `agent_state`, `thinking_delta`, `tool_start`, `tool_result`, `assistant_delta`, `assistant`, `done`, `error`
+   - Не ломай порядок событий
+
+7. **Логи**
+   - JSON logs, `trace_id` в `X-Trace-Id`
+   - `core/obslog.py`
+
+---
+
+## 🗂️ 5. Деплой
+
+- Repo: `robesthud/browserAI`, branch `main`
+- Server: `root@186.246.14.141`, `/opt/browserai`
+- Data: `/opt/browserai-data` — `browserai.db`, workspace, backups
+- Deploy:
+  ```bash
+  cd /opt/browserai
+  git reset --hard origin/main
+  docker compose up -d --build browserai
+  curl http://localhost:8080/api/health
+  ```
+- CI: `.github/workflows/deploy-timeweb.yml`
+
+---
+
+BrowserAI — автономный, минималистичный, надёжный ИИ-помощник поверх OpenHands. Код чистый, интерфейс плотный, никакой воды.

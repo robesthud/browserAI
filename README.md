@@ -1,189 +1,170 @@
 # BrowserAI
 
-BrowserAI — русскоязычный web-чат с AI и агентным режимом. Фронтенд: React + Vite + Tailwind. Бэкенд: Express + SQLite. Production-развёртывание рассчитано на VPS Timeweb через Docker Compose и GitHub Actions.
+BrowserAI — русскоязычный web-чат с AI и агентным режимом. Оболочка для OpenHands.
+
+Фронтенд: React + Vite + Tailwind  
+Бэкенд: **Python 3.12 + FastAPI + Uvicorn + SQLite**  
+Агент-движок: **OpenHands Agent Server** (`ghcr.io/all-hands-ai/openhands:main`)
+
+Production-развёртывание: VPS Timeweb, Docker Compose, GitHub Actions.
+
+---
 
 ## Что умеет
 
-- Обычный чат с OpenAI-compatible провайдерами.
-- Агентный режим: модель может читать/редактировать файлы workspace, запускать sandboxed bash, искать по web, проверять код, работать с Git и ops-действиями.
-- SSE-стриминг ответа, reasoning/thinking, прогресс инструментов и финальный `done`-ивент.
-- Workspace: файлы, редактор, upload/download, поиск по содержимому, preview.
-- Пользователи и сессии: email/password, HttpOnly cookie, SQLite.
-- Vault/Cloud Sync для пользовательских ключей и настроек.
-- DeepSeek managed session: сервер может хранить Bearer/cookies и подставлять их в preset.
-- Timeweb deploy: push в `main` запускает GitHub Actions и обновляет контейнер на VPS.
+- Обычный чат с OpenAI-compatible провайдерами (OpenAI, Anthropic, Gemini, DeepSeek, z.ai / GLM, BigModel и др.)
+- Агентный режим через OpenHands: файлы workspace, bash, web-поиск, проверка кода, git
+- SSE-стриминг ответа, reasoning/thinking, tool-карточки, финальный `done`
+- Workspace: FileTree, редактор, upload/download, поиск, preview, zip-скачивание
+  - изоляция: `/workspace/chats/<chatId>` — один чат = один под-workspace
+- Пользователи и сессии: email/password, HttpOnly cookie, SQLite
+- Vault: шифрование API-ключей per-user (cryptography/Fernet)
+- Cloud Sync: настройки + чаты, импорт истории из OpenHands
+- Key rotation: проверка нового ключа перед заменой
+- DeepSeek managed session: `/api/admin/deepseek/*`
+- Health: `/api/health`, `/api/health/deep`
 
 ## Структура проекта
 
-```text
-src/                 React UI
-src/lib/             клиентские API, чаты, agent stream
-src/components/      UI-компоненты
-server/              Express API, agent loop, tools, providers, workspace
-tests/               Vitest-регрессии
-docker-compose.yml   production compose
-deploy.sh            ручной deploy helper
-.github/workflows/   CI, Timeweb deploy, Android build/release
+```
+core/                FastAPI монолит
+  server.py          ~3000 строк, все /api/* роуты, OpenHands bridge, SSE
+  auth.py            сессии, регистрация, login
+  database.py        SQLite, keys/params
+  conversations.py   маппинг BrowserAI chatId ↔ OpenHands conversation_id
+  providers.py       LLM каталог, validate_key, push_to_openhands
+  agent_state.py     runs / questions / answers
+  memory_kb.py       факты, project memory, KB RAG
+  web_image.py       web_search, generate_image
+  vault.py           шифрование ключей
+  admin_data.py      jobs / cost / operator / incidents
+  obslog.py          JSON logs + trace_id
+
+ui/                  React UI
+  src/App.jsx
+  src/components/    MessageList, Composer, Sidebar, FileTree, OpenHandsWorkspace, SettingsModal …
+  src/lib/           api.js, agentStream.js, settings.js …
+
+docker-compose.yml   browserai + openhands
+Dockerfile           2-stage: Node build UI → Python runtime
+tests/               pytest
 ```
 
 ## Быстрый запуск локально
 
+Backend:
 ```bash
-npm ci
-npm run dev:all
+pip install fastapi uvicorn httpx websockets pydantic aiosqlite bcrypt itsdangerous python-multipart cryptography
+uvicorn core.server:app --reload --port 8080
 ```
 
-Web UI: `http://localhost:5173`.
-
-Только backend:
-
+Frontend:
 ```bash
-npm run server
+cd ui
+npm ci
+npm run dev
+# http://localhost:5173
 ```
 
 Production-like Docker:
-
 ```bash
 cp .env.example .env
 # отредактируй SESSION_SECRET, AUTH_SECRET, APP_URL, DATA_DIR, WORKSPACE_DIR
 docker compose up -d --build
+# http://localhost:8080
 ```
 
 ## Переменные окружения
 
-Минимум для production:
-
+Минимум:
 ```env
-NODE_ENV=production
-PORT=8080
-APP_URL=https://your-domain.example
+APP_URL=http://186.246.14.141
 SESSION_SECRET=long-random-string
 AUTH_SECRET=another-long-random-string
-DATA_DIR=/opt/browserai-data
-WORKSPACE_DIR=/opt/browserai-workspace
+BROWSERAI_DB=/data/browserai.db
 WORKSPACE_ROOT=/workspace
+OPENHANDS_AGENT_SERVER=http://openhands:18000
 ```
 
 Опционально:
+- `BROWSERAI_DEFAULT_MODEL=glm-4.5-flash`
+- `OPENHANDS_LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4`
+- `BIGMODEL_API_KEY=...`
+- `REGISTRATION_SECRET=...`
+- `BROWSERAI_STREAM_RECHUNK=1`
+- `BROWSERAI_STREAM_CHUNK_CHARS=24`
+- `BROWSERAI_AGENT_MAX_ITERATIONS=50`
+- `BROWSERAI_EVENT_POLL_INTERVAL=0.6`
 
-- `REGISTRATION_SECRET` — если нужны новые регистрации после первого owner.
-- `CORS_ORIGIN` — дополнительный origin.
-- `DEEPSEEK_USER_TOKEN`, `DEEPSEEK_COOKIES` — bootstrap для DeepSeek managed session.
-- `TG_BOT_TOKEN`, `TG_ADMIN_CHAT_ID` — Telegram-уведомления и админ-команды.
-- `BROWSERAI_DISABLE_STREAMING=1` — отключить provider-side SSE, если конкретный провайдер ломает стрим.
-- `BROWSERAI_MAX_OUTPUT_TOKENS=4096` — лимит ответа для Anthropic/Gemini official API.
+Полный список см. `.env.example`.
 
-Полный список см. в `.env.example`.
+## API
 
-## Агентный режим
-
-Основной endpoint: `POST /api/agent/chat`.
+Основной endpoint: `POST /api/agent/chat` — SSE
 
 Ключевые файлы:
+- `core/server.py` — FastAPI, OpenHands bridge, SSE-трансляция, workspace API
+- `core/providers.py` — каталог моделей, `validate_key`, `push_to_openhands`
+- `core/conversations.py` — `get_or_create_conversation`
+- `ui/src/lib/agentStream.js` — клиент SSE
 
-- `server/agentLoop.js` — цикл LLM ↔ tools, SSE, watchdog, tool routing.
-- `server/agentTools.js` — реальный реестр инструментов.
-- `server/clinePrompt.js` — системный prompt агента.
-- `server/llmClient.js` — OpenAI-compatible, Anthropic, Gemini, DeepSeek managed transports.
-- `src/lib/agentStream.js` — клиент SSE.
-- `src/lib/useChats.js` — обновление сообщений, tool cards, pending/done state.
+Инструменты агента выполняются в OpenHands runtime, BrowserAI транслирует события:
+`agent_state`, `thinking_delta`, `tool_start`, `tool_result`, `assistant_delta`, `done`
 
-### Deterministic action router
+Workspace API:
+- `GET /api/workspace/tree?chatId=...`
+- `GET /api/workspace/file?path=...`
+- `PUT /api/workspace/file`
+- `POST /api/workspace/upload`
+- `POST /api/workspace/upload-url` — git clone / zip / tar auto-extract
+- `GET /api/workspace/download`
 
-Простые команды не должны идти в LLM. `server/deterministicActionRouter.js` распознаёт безопасные одношаговые действия и сразу запускает нужный tool:
+Auth / keys:
+- `POST /api/auth/register`, `/api/auth/login`, `/api/auth/logout`
+- `GET /api/keys`, `POST /api/keys`, `POST /api/keys/rotate`
+- `GET /api/vault/status`, `POST /api/vault/unlock`
 
-- `repo_download` → `git_clone` для «скачай/клонируй GitHub repo»;
-- `archive_zip` → `zip_files` для «запакуй/заархивируй/zip».
-
-Новые простые операции добавляются декларативно в этот router: matcher + tool + args + success/error text. Сложные задачи продолжают идти в обычный agent loop.
-
-### Зарегистрированные базовые инструменты
-
-- План/вопросы: `plan_set`, `plan_check`, `ask_user`.
-- Память/RAG: `recall_facts`, `remember_fact`, `forget_fact`, `kb_search`, `kb_list`, `kb_add`, `kb_delete`.
-- Workspace: `read_project_rules`, `list_files`, `read_file`, `search_files`, `write_file`, `edit_file`, `delete_file`.
-- Команды/проверки: `bash`, `npm_install`, `npm_test`, `verify_code`.
-- Git: `git_status`, `git_commit` (`git_commit` также push-ит в `main`).
-- Web: `web_search`, `web_fetch`.
-- Media/browser/ops: `generate_image`, `edit_image`, `generate_video`, `analyze_image`, `text_to_speech`, `transcribe_audio`, `browser_*`, `computer_*`, `docker_ps`, `docker_logs`, `ops_list_services`, `ops_run_action`.
-
-Важно: prompt и tool profiles должны ссылаться только на реально зарегистрированные инструменты. Для этого есть регрессия `tests/agent-tool-registry.test.js`.
-
-## Исправление зависания агента на «раздумье»
-
-В агенте были три причины, из-за которых модель могла думать и не переходить к действиям:
-
-1. Prompt и tool profiles ссылались на удалённые/несуществующие инструменты (`build_repo_map`, `run_tests`, `git_diff`, `git_push`, `replace_across_files` и т.п.).
-2. Каталог инструментов в prompt не фильтровался по активному профилю задачи.
-3. Native tool-call preview не отдавался в UI во время SSE-стрима, поэтому пользователь видел только thinking до конца ответа модели.
-
-Текущее поведение:
-
-- prompt строится только из реального registry;
-- planning/memory/question tools реально зарегистрированы;
-- native tool-call delta показывает `tool_preview` до запуска инструмента;
-- LLM idle watchdog сокращён до 2 минут;
-- Anthropic/Gemini tool calls корректно возвращаются и в fallback/non-stream путях.
-
-## Проверки перед коммитом
+## Проверки
 
 ```bash
-node --check server/agentLoop.js
-node --check server/agentTools.js
-node --check server/clinePrompt.js
-node --check server/llmClient.js
+pytest -q
+python -m py_compile core/server.py
+```
+
+UI:
+```bash
+cd ui
 npm test
 npm run build
 ```
-
-`npm run lint` сейчас проверяет весь исторический код и может падать на старые eslint-ошибки, не связанные с текущими изменениями. CI отдельно lint-ит критические agent-модули.
 
 ## Деплой на Timeweb
 
-Production workflow: `.github/workflows/deploy-timeweb.yml`.
+`.github/workflows/deploy-timeweb.yml`
 
-Нужные GitHub Secrets:
-
+Secrets:
 - `TIMEWEB_SSH_KEY`
-- `TIMEWEB_HOST`
-- `TIMEWEB_USER`
-- `TIMEWEB_APP_DIR`
+- `TIMEWEB_HOST` — `186.246.14.141`
+- `TIMEWEB_USER=root`
+- `TIMEWEB_APP_DIR=/opt/browserai`
 
-На сервере в `TIMEWEB_APP_DIR` должен быть checkout репозитория и `.env`.
-
-Ручной деплой на VPS:
-
+Ручной деплой:
 ```bash
 cd /opt/browserai
-git fetch --quiet origin main
+git fetch origin main
 git reset --hard origin/main
-docker compose up -d --build --force-recreate --remove-orphans browserai
+docker compose up -d --build --force-recreate browserai
 docker image prune -f
-curl -fsS http://localhost/api/health
+curl -fsS http://localhost:8080/api/health
 ```
 
-Автодеплой: push в `main` → GitHub Actions → SSH на Timeweb → `git reset --hard origin/main` → `docker compose up -d --build` → healthcheck.
+Автодеплой: push в `main` → GitHub Actions → SSH → `docker compose up -d --build` → healthcheck.
 
-## DeepSeek managed session
+Данные на сервере:
+- `/opt/browserai` — git checkout
+- `/opt/browserai-data` — `browserai.db`, backups, workspace
+- `/opt/browserai-data/workspace/chats/<chatId>` — изолированные workspace'ы
 
-Если задана managed-сессия, фронт выбирает preset `DeepSeek managed`, а сервер сам подставляет Bearer/cookies.
+## Лицензия
 
-Admin endpoints:
-
-- `GET /api/admin/deepseek/status`
-- `POST /api/admin/deepseek/refresh`
-- `POST /api/admin/deepseek/token`
-- `GET /api/admin/deepseek/models`
-- `GET /api/deepseek/managed`
-
-Состояние хранится в `/data/deepseek_session.json`, то есть в `DATA_DIR` на хосте, и переживает пересборку контейнера.
-
-## CI
-
-```bash
-npm ci
-npm test
-npm run build
-```
-
-Live provider smoke tests в `tests/provider-smoke.test.js` автоматически skip-аются без API keys.
+MIT
