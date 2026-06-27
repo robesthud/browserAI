@@ -70,18 +70,20 @@ from core.conversations import (
 )
 from core import providers as provs
 from core import vault as vlt
-from core.agent_state import (
-    answer_question,
-    create_question,
-    get_question,
-    get_run,
-    init_agent_state_schema,
-    list_questions,
-    list_runs,
-    set_run_status,
-    upsert_run,
+from core.memory_kb import (
+    delete_fact,
+    delete_project_memory,
+    kb_add,
+    kb_delete,
+    kb_list,
+    kb_search,
+    list_facts,
+    list_project_memory,
+    search_semantic,
+    upsert_fact,
+    upsert_project_memory,
 )
-import uuid
+from core.web_image import generate_image, web_search as do_web_search
 
 log = logging.getLogger("browserai.core")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -105,8 +107,7 @@ async def _startup_init() -> None:
         init_db()
         init_auth_schema()
         init_conversations_schema()
-        init_agent_state_schema()
-        log.info("all schemas ready (db, auth, conversations, vault, agent_state)")
+        log.info("all schemas ready (db, auth, conversations, vault)")
     except Exception as e:
         log.error("schema init failed: %s", e)
 
@@ -445,10 +446,6 @@ async def vault_restore(request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# ── OpenHands settings sync helper ──────────────────�eError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
 # ── OpenHands settings sync helper ─────────────────────────────────────────
 
 
@@ -636,44 +633,6 @@ def _split_think(text: str) -> tuple[str, str]:
         cleaned = cleaned[m.end():]
 
     return "\n".join(t.strip() for t in thoughts_parts if t.strip()), cleaned.strip()
-
-
-def _extract_ask_user_payload(text: str) -> Optional[Dict[str, Any]]:
-    """Best-effort parser for agent questions.
-
-    Supports:
-      1) JSON block like:
-         ASK_USER:{"question":"...","options":[{"id":"a","label":"A"}]}
-      2) Plain Russian question ending with '?' and short bullet/numbered options.
-    """
-    if not text:
-        return None
-    m = _re.search(r"ASK_USER\s*:\s*(\{.*\})", text, _re.DOTALL)
-    if m:
-        try:
-            data = json.loads(m.group(1))
-            q = (data.get("question") or "").strip()
-            opts = data.get("options") or []
-            if q:
-                return {"question": q, "options": opts}
-        except Exception:
-            pass
-
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    if not lines:
-        return None
-    qline = next((ln for ln in lines if ln.endswith("?")), "")
-    if not qline:
-        return None
-    opts = []
-    for ln in lines:
-        mm = _re.match(r"^(?:[-*]|\d+[\.)]|[A-Za-zА-Яа-я][\.)])\s+(.+)$", ln)
-        if mm:
-            label = mm.group(1).strip()
-            if label and label != qline:
-                oid = f"opt_{len(opts)+1}"
-                opts.append({"id": oid, "label": label})
-    return {"question": qline, "options": opts[:6]}
 
 
 def _translate_event(evt: Dict[str, Any], step: int) -> List[Dict[str, Any]]:
@@ -904,7 +863,6 @@ async def _stream_chat(
     step = 0
     full_answer = ""
     turn_complete = False  # set as soon as OpenHands emits awaiting_user_input
-    ask_user_sent = False
 
     # 1) Send stream protocol + initial agent_context up-front so the UI shows
     #    activity even while OpenHands is cold-booting a runtime image.
@@ -958,17 +916,11 @@ async def _stream_chat(
                 prompt,
                 extra_system,
             )
-            if chat_id:
-                upsert_run(chat_id, cid, user_id, "running", last_prompt=prompt, last_event_id=last_seen_event_id)
         except HTTPException as e:
-            if chat_id:
-                upsert_run(chat_id, None, user_id, "error", last_prompt=prompt, last_error=str(e.detail))
             yield _sse("error", {"message": str(e.detail)}).encode("utf-8")
             yield _sse("done", {"reason": "engine-error", "steps": step}).encode("utf-8")
             return
         except Exception as e:
-            if chat_id:
-                upsert_run(chat_id, None, user_id, "error", last_prompt=prompt, last_error=str(e))
             yield _sse("error", {"message": f"OpenHands bridge: {e}"}).encode("utf-8")
             yield _sse("done", {"reason": "engine-error", "steps": step}).encode("utf-8")
             return
@@ -1043,20 +995,6 @@ async def _stream_chat(
                             ev_data["step"] = step
                         if ev_name == "assistant_delta":
                             full_answer += ev_data.get("chunk", "")
-                            if not ask_user_sent:
-                                ask_payload = _extract_ask_user_payload(full_answer)
-                                if ask_payload and chat_id:
-                                    qid = f"q_{uuid.uuid4().hex[:12]}"
-                                    create_question(qid, chat_id, cid, user_id, ask_payload.get("question") or "", ask_payload.get("options") or [])
-                                    yield _sse(
-                                        "ask_user",
-                                        {
-                                            "question_id": qid,
-                                            "question": ask_payload.get("question"),
-                                            "options": ask_payload.get("options") or [],
-                                        },
-                                    ).encode("utf-8")
-                                    ask_user_sent = True
                         yield _sse(ev_name, ev_data).encode("utf-8")
             except httpx.TimeoutException:
                 pass
@@ -1108,20 +1046,6 @@ async def _stream_chat(
         if full_answer:
             _, clean = _split_think(full_answer)
             if clean:
-                if not ask_user_sent:
-                    ask_payload = _extract_ask_user_payload(clean)
-                    if ask_payload and chat_id:
-                        qid = f"q_{uuid.uuid4().hex[:12]}"
-                        create_question(qid, chat_id, cid, user_id, ask_payload.get("question") or "", ask_payload.get("options") or [])
-                        yield _sse(
-                            "ask_user",
-                            {
-                                "question_id": qid,
-                                "question": ask_payload.get("question"),
-                                "options": ask_payload.get("options") or [],
-                            },
-                        ).encode("utf-8")
-                        ask_user_sent = True
                 yield _sse("assistant", {"step": step, "text": clean}).encode("utf-8")
         elif step > 0 and done:
             # Agent finished via pure tool execution with no natural-language
@@ -1137,17 +1061,9 @@ async def _stream_chat(
         # this chat skips replaying old events from THIS turn.
         if chat_id and seen_ids:
             try:
-                max_seen = max(seen_ids)
-                update_last_event(chat_id, max_seen)
-                set_run_status(chat_id, "done" if done else "timeout")
-                upsert_run(chat_id, cid, user_id, "done" if done else "timeout", last_prompt=prompt, last_event_id=max_seen)
+                update_last_event(chat_id, max(seen_ids))
             except Exception as e:
                 log.warning("update_last_event failed: %s", e)
-        elif chat_id:
-            try:
-                set_run_status(chat_id, "done" if done else "timeout")
-            except Exception:
-                pass
 
         yield _sse(
             "done",
@@ -1206,11 +1122,7 @@ async def regular_chat(request: Request):
 @app.post("/api/agent/chat/stop")
 async def stop_chat(request: Request):
     data = await request.json()
-    cid = data.get("conversationId") or data.get("id")
-    chat_id = data.get("chatId")
-    if not cid and chat_id:
-        run = get_run(chat_id)
-        cid = run.get("conversation_id") if run else None
+    cid = data.get("conversationId") or data.get("chatId") or data.get("id")
     if not cid:
         return {"ok": False, "error": "no conversationId"}
     async with httpx.AsyncClient() as client:
@@ -1218,159 +1130,9 @@ async def stop_chat(request: Request):
             await client.post(
                 f"{OPENHANDS_SERVER}/api/conversations/{cid}/stop", json={}, timeout=10.0
             )
-            if chat_id:
-                set_run_status(chat_id, "stopped")
-            return {"ok": True, "conversationId": cid, "graceful": True}
+            return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
-
-
-@app.get("/api/agent/questions")
-async def agent_questions(request: Request, chatId: Optional[str] = None):
-    user = current_user(request)
-    items = list_questions(chat_id=chatId, user_id=(user["id"] if user and not chatId else None))
-    return {"ok": True, "items": items}
-
-
-@app.post("/api/agent/answer")
-async def agent_answer(request: Request):
-    user = current_user(request)
-    body = await request.json()
-    qid = body.get("question_id") or body.get("questionId")
-    if not qid:
-        raise HTTPException(status_code=400, detail="question_id required")
-    q = get_question(qid)
-    if not q:
-        raise HTTPException(status_code=404, detail="question_not_found")
-    answer = {
-        "answer": body.get("answer"),
-        "selectedOptionId": body.get("selectedOptionId"),
-        "customResponse": body.get("customResponse"),
-        "answeredBy": user["id"] if user else None,
-    }
-    saved = answer_question(qid, answer)
-    text = answer.get("customResponse") or answer.get("answer") or answer.get("selectedOptionId") or "ok"
-    cid = q.get("conversation_id")
-    if cid:
-        async with httpx.AsyncClient() as client:
-            try:
-                await client.post(
-                    f"{OPENHANDS_SERVER}/api/conversations/{cid}/message",
-                    json={"message": f"User answered question '{q.get('question')}': {text}"},
-                    timeout=15.0,
-                )
-            except Exception as e:
-                log.warning("agent answer relay failed: %s", e)
-    return {"ok": True, "question": saved}
-
-
-@app.post("/api/agent/runs/{chat_id}/reset")
-async def agent_run_reset(chat_id: str):
-    m = get_mapping(chat_id)
-    cid = m["conversation_id"] if m else None
-    if cid:
-        async with httpx.AsyncClient() as client:
-            try:
-                await client.delete(f"{OPENHANDS_SERVER}/api/conversations/{cid}", timeout=15.0)
-            except Exception:
-                pass
-    drop_mapping(chat_id)
-    set_run_status(chat_id, "reset")
-    return {"ok": True, "chatId": chat_id, "conversationId": cid, "reset": True}
-
-
-@app.get("/api/agent/runs/{chat_id}/history")
-async def agent_run_history(chat_id: str):
-    m = get_mapping(chat_id)
-    if not m:
-        return {"ok": True, "chatId": chat_id, "items": []}
-    cid = m["conversation_id"]
-    async with httpx.AsyncClient() as client:
-        try:
-            r = await client.get(f"{OPENHANDS_SERVER}/api/conversations/{cid}/events?limit=100", timeout=20.0)
-            body = r.json() if r.status_code == 200 else []
-            events = body if isinstance(body, list) else (body.get("events") or body.get("results") or [])
-            transformed = []
-            step = 0
-            for e in events:
-                for t in _translate_event(e, step + 1):
-                    if t["event"] == "tool_start":
-                        step += 1
-                        t["data"]["step"] = step
-                    transformed.append(t)
-            return {"ok": True, "chatId": chat_id, "conversationId": cid, "items": transformed[-200:]}
-        except Exception as e:
-            return {"ok": False, "chatId": chat_id, "items": [], "error": str(e)}
-
-
-@app.get("/api/agent/control-plane")
-async def agent_control_plane(request: Request):
-    user = current_user(request)
-    runs = list_runs(user["id"] if user else None)
-    return {"ok": True, "runs": runs, "count": len(runs)}
-
-
-@app.post("/api/agent/control-plane")
-async def agent_control_plane_action(request: Request):
-    body = await request.json()
-    action = body.get("action")
-    chat_id = body.get("chatId")
-    if action == "abort" and chat_id:
-        run = get_run(chat_id)
-        cid = run.get("conversation_id") if run else None
-        if cid:
-            async with httpx.AsyncClient() as client:
-                try:
-                    await client.post(f"{OPENHANDS_SERVER}/api/conversations/{cid}/stop", json={}, timeout=10.0)
-                except Exception as e:
-                    return {"ok": False, "error": str(e)}
-        set_run_status(chat_id, "aborted")
-        return {"ok": True, "action": action, "chatId": chat_id}
-    if action == "pause" and chat_id:
-        set_run_status(chat_id, "paused")
-        return {"ok": True, "action": action, "chatId": chat_id}
-    if action == "resume" and chat_id:
-        set_run_status(chat_id, "running")
-        return {"ok": True, "action": action, "chatId": chat_id}
-    return {"ok": False, "error": "unsupported_action"}
-
-
-@app.get("/api/agent/recipes")
-async def agent_recipes():
-    return {"ok": True, "items": [
-        {"id": "repo_audit", "title": "Аудит репозитория", "prompt": "Проанализируй репозиторий и перечисли ключевые риски и next steps."},
-        {"id": "bugfix", "title": "Исправить баг", "prompt": "Найди причину бага, исправь код и кратко опиши изменения."},
-        {"id": "deploy_check", "title": "Проверить деплой", "prompt": "Проверь состояние сервера, контейнеров и health endpoint'ов."},
-    ]}
-
-
-@app.post("/api/agent/self-test")
-async def agent_self_test(request: Request):
-    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
-    provider = _resolve_provider(body, user=current_user(request))
-    model = provider.get("model") or DEFAULT_MODEL
-    prompt = body.get("prompt") or "Ответь ровно словом pong"
-    return StreamingResponse(
-        _stream_chat(
-            f"self-test-{uuid.uuid4().hex[:8]}",
-            model,
-            prompt,
-            body.get("extraSystem") or "",
-            provider,
-            user_id=(current_user(request) or {}).get("id"),
-        ),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
-    )
-
-
-@app.get("/api/agent/workflows")
-async def agent_workflows():
-    return {"ok": True, "items": []}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1581,7 +1343,113 @@ def _stub_response(name: str):
     return _h
 
 
+@app.get("/api/memory/facts")
+async def memory_facts_get(request: Request):
+    user = _require_user(request)
+    return {"ok": True, "items": list_facts(user["id"])}
+
+
+@app.post("/api/memory/facts")
+async def memory_facts_post(request: Request):
+    user = _require_user(request)
+    body = await request.json()
+    key = (body.get("key") or "").strip()
+    value = (body.get("value") or "").strip()
+    if not key or not value:
+        raise HTTPException(status_code=400, detail="key and value required")
+    return {"ok": True, "item": upsert_fact(user["id"], key, value)}
+
+
+@app.delete("/api/memory/facts")
+async def memory_facts_delete(request: Request):
+    user = _require_user(request)
+    body = await request.json()
+    key = (body.get("key") or "").strip()
+    return {"ok": delete_fact(user["id"], key)}
+
+
+@app.get("/api/memory/semantic")
+async def memory_semantic_get(request: Request, q: str = "", limit: int = 10):
+    user = _require_user(request)
+    return {"ok": True, "items": search_semantic(user["id"], q, limit=max(1, min(limit, 50)))}
+
+
+@app.get("/api/memory/project")
+async def memory_project_get(request: Request, chatId: Optional[str] = None):
+    user = _require_user(request)
+    return {"ok": True, "items": list_project_memory(user["id"], chatId)}
+
+
+@app.post("/api/memory/project")
+async def memory_project_post(request: Request):
+    user = _require_user(request)
+    body = await request.json()
+    chat_id = (body.get("chatId") or "").strip()
+    key = (body.get("key") or "").strip()
+    value = (body.get("value") or "").strip()
+    if not chat_id or not key:
+        raise HTTPException(status_code=400, detail="chatId and key required")
+    return {"ok": True, "item": upsert_project_memory(user["id"], chat_id, key, value)}
+
+
+@app.delete("/api/memory/project")
+async def memory_project_delete(request: Request):
+    user = _require_user(request)
+    body = await request.json()
+    return {"ok": delete_project_memory(user["id"], (body.get("chatId") or "").strip(), (body.get("key") or "").strip())}
+
+
+@app.get("/api/kb/list")
+async def kb_list_get(request: Request):
+    user = _require_user(request)
+    return {"ok": True, "items": kb_list(user["id"])}
+
+
+@app.get("/api/web/search")
+async def api_web_search(request: Request, q: str = "", limit: int = 8):
+    _require_user(request)
+    return {"ok": True, "items": await do_web_search(q, limit=max(1, min(limit, 20)))}
+
+
+@app.post("/api/image/generate")
+async def api_image_generate(request: Request):
+    _require_user(request)
+    body = await request.json()
+    result = await generate_image(body.get("prompt") or "", body.get("size") or "1024x1024")
+    return {"ok": True, "image": result}
+
+
+@app.get("/api/kb/search")
+async def kb_search_get(request: Request, q: str = "", limit: int = 10):
+    user = _require_user(request)
+    return {"ok": True, "items": kb_search(user["id"], q, limit=max(1, min(limit, 50)))}
+
+
+@app.post("/api/kb/add")
+async def kb_add_post(request: Request):
+    user = _require_user(request)
+    body = await request.json()
+    title = (body.get("title") or "").strip()
+    text = body.get("text") or body.get("content") or ""
+    source = (body.get("source") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    return {"ok": True, "document": kb_add(user["id"], title, text, source)}
+
+
+@app.delete("/api/kb/delete")
+async def kb_delete_post(request: Request):
+    user = _require_user(request)
+    body = await request.json()
+    doc_id = (body.get("id") or body.get("docId") or "").strip()
+    if not doc_id:
+        raise HTTPException(status_code=400, detail="id required")
+    return {"ok": kb_delete(user["id"], doc_id)}
+
+
 for _path in _STUB_ROUTES:
+    if _path in {"/api/memory/facts", "/api/memory/project", "/api/memory/semantic", "/api/web/search", "/api/image/generate"}:
+        continue
     app.add_api_route(_path, _stub_response(_path), methods=["GET", "POST", "PUT", "DELETE"])
 
 
