@@ -281,32 +281,8 @@ function BrowserApp({ user, reloadAuth }) {
         activeChat={activeChat}
         isOpen={workspaceOpen}
         onToggle={() => setWorkspaceOpen(false)}
-        files={(() => {
-          const fl = []
-          for (const m of messages) {
-            for (const tc of m.toolCalls || []) {
-              if (tc.name === 'write_file' || tc.name === 'edit_file' || tc.name === 'read_file') {
-                const p = tc.args?.path || tc.args?.file || tc.result?.path
-                if (p && !fl.find((f) => f.path === p)) fl.push({ path: p, content: tc.args?.content || tc.result?.content || '', size: tc.args?.content?.length || 1024 })
-              }
-            }
-          }
-          return fl
-        })()}
-        terminalLogs={(() => {
-          const lg = []
-          for (const m of messages) {
-            for (const tc of m.toolCalls || []) {
-              if (tc.name === 'bash' || tc.name === 'cmd') {
-                lg.push(`$ ${tc.args?.command || tc.args?.cmd}`)
-                if (tc.result) lg.push(String(tc.result))
-              }
-            }
-          }
-          return lg
-        })()}
-        browserScreenshot={messages.slice(-1)[0]?.toolCalls?.slice(-1)[0]?.result?.screenshot || null}
-        onDownloadZip={() => window.open(`/api/conversations/${activeChat?.id || 'default'}/zip-directory`)}
+        workspaceRevision={workspaceRevision}
+        aiWorking={aiWorking}
       />
       <SettingsModal
         key={settingsOpen ? 'open' : 'closed'} open={settingsOpen} settings={settings} online={online} vault={vault}
