@@ -10,6 +10,10 @@ services:
     - BROWSERAI_DB=/data/browserai.db
     - OPENHANDS_AGENT_SERVER=http://openhands:18000
     - BIGMODEL_API_KEY=${BIGMODEL_API_KEY:-}
+    - AUTH_SECRET=${AUTH_SECRET}
+    - SESSION_SECRET=${SESSION_SECRET}
+    - APP_URL=${APP_URL:-http://186.246.14.141}
+    - REGISTRATION_SECRET=${REGISTRATION_SECRET:-}
     volumes:
     - ${DATA_DIR:-./data}:/data
     - ${WORKSPACE_DIR:-./workspace}:/workspace
@@ -17,6 +21,8 @@ services:
     - openhands
     extra_hosts:
     - host.docker.internal:host-gateway
+    env_file:
+    - .env
   openhands:
     image: ghcr.io/all-hands-ai/openhands:main
     container_name: openhands

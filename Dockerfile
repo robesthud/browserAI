@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sqlite3 curl git bash \
  && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir fastapi uvicorn httpx websockets pydantic aiosqlite
+RUN pip install --no-cache-dir fastapi uvicorn httpx websockets pydantic aiosqlite bcrypt itsdangerous python-multipart
 
 COPY --from=builder /app/ui/dist ./ui/dist
 COPY core ./core

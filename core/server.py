@@ -41,6 +41,21 @@ from core.database import (
     set_active_key,
     upsert_key,
 )
+from core.auth import (
+    SESSION_COOKIE_NAME,
+    check_registration_allowed,
+    clear_session_cookie,
+    cloud_load,
+    cloud_save,
+    create_session,
+    create_user,
+    current_user,
+    get_user_by_email,
+    init_auth_schema,
+    revoke_session,
+    set_session_cookie,
+    _verify_password,
+)
 
 log = logging.getLogger("browserai.core")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -55,7 +70,16 @@ MAX_AGENT_ITERATIONS = int(os.environ.get("BROWSERAI_AGENT_MAX_ITERATIONS", "50"
 EVENT_POLL_INTERVAL = float(os.environ.get("BROWSERAI_EVENT_POLL_INTERVAL", "0.6"))
 EVENT_POLL_TIMEOUT_S = int(os.environ.get("BROWSERAI_EVENT_POLL_TIMEOUT_S", "900"))
 
-app = FastAPI(title="BrowserAI-OpenHands Core Monolith", version="0.2.0")
+app = FastAPI(title="BrowserAI-OpenHands Core Monolith", version="0.3.0")
+
+
+@app.on_event("startup")
+async def _startup_init() -> None:
+    try:
+        init_auth_schema()
+        log.info("auth schema ready")
+    except Exception as e:
+        log.error("auth init failed: %s", e)
 
 # CORS: must NOT be wildcard when allow_credentials is true, otherwise cookies
 # are silently dropped by browsers.
@@ -228,44 +252,116 @@ async def put_params(request: Request):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Auth / cloud stubs — full implementation lands in Step 3
+# Auth + per-user cloud sync (Step 3)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _user_public(user: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip secrets from a user row before returning to client."""
+    return {
+        "id": user.get("id"),
+        "email": user.get("email"),
+        "role": user.get("role") or "user",
+        "createdAt": user.get("created_at") or user.get("createdAt"),
+    }
+
+
 @app.get("/api/auth/me")
-async def auth_me():
-    # Anonymous-mode: UI will treat the app as logged-out and rely on
-    # localStorage until Step 3 wires real auth.
-    return JSONResponse({"authenticated": False, "user": None}, status_code=200)
+async def auth_me(request: Request):
+    user = current_user(request)
+    if not user:
+        return JSONResponse({"authenticated": False, "user": None}, status_code=200)
+    return {"authenticated": True, "user": _user_public(user)}
 
 
 @app.post("/api/auth/register")
+async def auth_register(request: Request, response: Response):
+    body = await request.json()
+    email = (body.get("email") or "").strip().lower()
+    password = body.get("password") or ""
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="email и password обязательны")
+
+    allowed, default_role = check_registration_allowed(request)
+    if not allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="Регистрация закрыта. Нужен X-Registration-Secret.",
+        )
+
+    user = create_user(email, password, role=default_role)
+    sid = create_session(user["id"], request)
+    set_session_cookie(response, sid)
+    log.info("registered user %s (role=%s)", email, user["role"])
+    return {"authenticated": True, "user": _user_public(user)}
+
+
 @app.post("/api/auth/login")
+async def auth_login(request: Request, response: Response):
+    body = await request.json()
+    email = (body.get("email") or "").strip().lower()
+    password = body.get("password") or ""
+    user = get_user_by_email(email)
+    if not user or not _verify_password(password, user.get("password_hash", "")):
+        # Generic message — do not leak whether email exists.
+        raise HTTPException(status_code=401, detail="Неверный email или пароль")
+    sid = create_session(user["id"], request)
+    set_session_cookie(response, sid)
+    return {"authenticated": True, "user": _user_public(user)}
+
+
 @app.post("/api/auth/logout")
+async def auth_logout(request: Request, response: Response):
+    user = current_user(request)
+    if user and user.get("_session_id"):
+        revoke_session(user["_session_id"])
+    clear_session_cookie(response)
+    return {"ok": True}
+
+
+# ─── Password recovery: stubs that return 200 so UI doesn't error.
+# Real email / SMS delivery is a Step-9 concern.
+
+
 @app.post("/api/auth/forgot-password")
+async def auth_forgot(request: Request):
+    return {
+        "ok": True,
+        "message": "Если такой email существует, на него отправлено письмо. (Email-доставка ещё не настроена в этом окружении.)",
+    }
+
+
 @app.post("/api/auth/reset-password")
+async def auth_reset():
+    raise HTTPException(status_code=501, detail="reset_password_not_configured")
+
+
 @app.post("/api/auth/sms-send")
 @app.post("/api/auth/sms-verify")
 @app.put("/api/auth/phone")
-async def auth_stub():
-    return JSONResponse(
-        {
-            "error": "auth_not_implemented",
-            "message": "Auth backend is being wired up (Step 3). Use the app in local-only mode for now.",
-        },
-        status_code=501,
-    )
+async def auth_sms_stub():
+    raise HTTPException(status_code=501, detail="sms_provider_not_configured")
+
+
+# ─── Cloud sync (per-user settings + chats)
 
 
 @app.get("/api/cloud")
-async def cloud_get():
-    return {"settings": None, "chats": None}
+async def cloud_get(request: Request):
+    user = current_user(request)
+    if not user:
+        # Allow anon read with empty payload so UI's CloudSync doesn't crash.
+        return {"settings": None, "chats": None, "updatedAt": 0}
+    return cloud_load(user["id"])
 
 
 @app.put("/api/cloud")
 async def cloud_put(request: Request):
-    # No-op until Step 3 binds it to a user account.
-    return {"ok": True}
+    user = current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="auth_required")
+    body = await request.json()
+    return cloud_save(user["id"], body.get("settings"), body.get("chats"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
