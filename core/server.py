@@ -993,6 +993,60 @@ async def cloud_put(request: Request):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Chats — rename / delete (OpenHands-backed)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.patch("/api/chats/{chat_id}")
+@app.put("/api/chats/{chat_id}")
+async def rename_chat(chat_id: str, request: Request):
+    """Rename a BrowserAI chat → OpenHands conversation title.
+    
+    Body: { "title": "..." }
+    Returns: { ok: true, chatId, title, conversationId }
+    """
+    body = await request.json()
+    title = (body.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title required")
+    if len(title) > 200:
+        title = title[:200]
+    
+    # Find OpenHands conversation_id for this BrowserAI chat_id
+    m = get_mapping(chat_id)
+    if not m:
+        # No OH conversation yet (chat never sent) — nothing to rename in OH,
+        # return ok so UI can keep local title. Next /api/cloud will still
+        # pull from OH once conversation is created.
+        return {"ok": True, "chatId": chat_id, "title": title, "conversationId": None, "local_only": True}
+    
+    cid = m["conversation_id"]
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.patch(
+                f"{OPENHANDS_SERVER}/api/conversations/{cid}",
+                json={"title": title},
+            )
+            if r.status_code == 404:
+                raise HTTPException(status_code=404, detail="conversation_not_found_in_openhands")
+            if r.status_code >= 400:
+                # Try to surface OH error details
+                try:
+                    detail = r.json()
+                except Exception:
+                    detail = r.text
+                raise HTTPException(status_code=502, detail=f"openhands_rename_failed: {detail}")
+            ok = r.json() if r.headers.get("content-type", "").startswith("application/json") else True
+            if ok is False:
+                raise HTTPException(status_code=502, detail="openhands_rename_rejected")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"openhands_unreachable: {e}")
+
+    return {"ok": True, "chatId": chat_id, "title": title, "conversationId": cid}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # OpenHands bridge — agent chat with proper SSE
 # ─────────────────────────────────────────────────────────────────────────────
 

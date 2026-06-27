@@ -67,7 +67,7 @@ function BrowserApp({ user, reloadAuth }) {
 
   const {
     chats, activeChat, workspaceRevision, activeId, isStreaming, jobBusy,
-    markJobDone, newChat, selectChat, deleteChat, branchFromMessage,
+    markJobDone, newChat, selectChat, deleteChat, renameChat, branchFromMessage,
     updateChat, sendMessage, sendAgentMessage, sendBackgroundAgentMessage, answerAgentQuestion,
     cancelAgentQuestion, stop,
   } = useChats(settings)
@@ -233,7 +233,7 @@ function BrowserApp({ user, reloadAuth }) {
       <Sidebar
         collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} onNewChat={() => { newChat(); if (window.innerWidth < 768) setCollapsed(true) }}
         chats={chats} activeId={activeId} onSelect={(id) => { selectChat(id); if (window.innerWidth < 768) setCollapsed(true) }}
-        onDelete={deleteChat} onOpenSettings={() => setSettingsOpen(true)}
+        onDelete={deleteChat} onRename={renameChat} onOpenSettings={() => setSettingsOpen(true)}
         agentMode={effectiveAgentMode} onToggleAgentMode={setAgentMode} devtoolsEnabled={isDevTools}
         useWebAI={settings.useWebAI} onToggleWebAI={(next) => setParams({ useWebAI: next })}
         onResumeAgentTask={() => handleSendMessage('продолжай')} onFlash={setFlash}

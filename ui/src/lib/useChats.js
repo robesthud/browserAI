@@ -281,10 +281,38 @@ export function useChats(settings) {
     return branch.id
   }, [chats])
 
-  const renameChat = useCallback((id, title) => {
+  const renameChat = useCallback(async (id, title) => {
+    const clean = String(title || '').trim().slice(0, 200)
+    if (!clean) throw new Error('title required')
+    // optimistic UI
     setChats((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, title } : c)),
+      prev.map((c) => (c.id === id ? { ...c, title: clean } : c)),
     )
+    try {
+      const r = await fetch(`/api/chats/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: clean }),
+      })
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}))
+        throw new Error(err.detail || `HTTP ${r.status}`)
+      }
+      const data = await r.json()
+      // server is source of truth (OpenHands may trim)
+      const finalTitle = data.title || clean
+      setChats((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, title: finalTitle } : c)),
+      )
+      return finalTitle
+    } catch (e) {
+      // revert on error – reload chats from server via cloud sync?
+      // for now just rethrow, UI keeps optimistic title but will be
+      // corrected on next /api/cloud refresh
+      console.error('renameChat failed', e)
+      throw e
+    }
   }, [])
 
   const updateChat = useCallback((id, updater) => {

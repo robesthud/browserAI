@@ -41,6 +41,7 @@ export default function Sidebar({
   activeId,
   onSelect,
   onDelete,
+  onRename,
   onOpenSettings,
   // Перенесённые из Topbar тогглы — все «глобальные» переключатели режима
   // должны жить в одном месте, иначе на мобилке шапка переполняется
@@ -166,18 +167,31 @@ export default function Sidebar({
                         )}
                       </div>
                     </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        if (window.confirm(`Удалить чат «${c.title}»?`)) onDelete(c.id)
-                      }}
-                      className="absolute right-1.5 top-2 grid h-6 w-6 place-items-center rounded-md
-                                 text-cream-faint opacity-0 transition-opacity hover:bg-graphite-700 hover:text-red-300
-                                 group-hover:opacity-100"
-                      title="Удалить чат"
-                    >
-                      <IconTrash />
-                    </button>
+                    <div className="absolute right-1.5 top-2 flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          const next = window.prompt('Новое название чата', c.title || '')
+                          if (next && next.trim() && next.trim() !== c.title) {
+                            onRename?.(c.id, next.trim()).catch(err => alert('Переименование не удалось: ' + (err.message || err)))
+                          }
+                        }}
+                        className="grid h-6 w-6 place-items-center rounded-md text-cream-faint hover:bg-graphite-700 hover:text-cream"
+                        title="Переименовать"
+                      >
+                        <span className="text-[12px]">✎</span>
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (window.confirm(`Удалить чат «${c.title}»?`)) onDelete(c.id)
+                        }}
+                        className="grid h-6 w-6 place-items-center rounded-md text-cream-faint hover:bg-graphite-700 hover:text-red-300"
+                        title="Удалить чат"
+                      >
+                        <IconTrash />
+                      </button>
+                    </div>
                   </li>
                 )
               })}
