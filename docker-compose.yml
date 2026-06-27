@@ -5,35 +5,37 @@ services:
     container_name: browserai
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:8080"
+    - 127.0.0.1:8080:8080
     environment:
-      - BROWSERAI_DB=/data/browserai.db
-      - OPENHANDS_AGENT_SERVER=http://openhands:18000
-      - BIGMODEL_API_KEY=${BIGMODEL_API_KEY:-}
+    - BROWSERAI_DB=/data/browserai.db
+    - OPENHANDS_AGENT_SERVER=http://openhands:18000
+    - BIGMODEL_API_KEY=${BIGMODEL_API_KEY:-}
     volumes:
-      - ${DATA_DIR:-./data}:/data
-      - ${WORKSPACE_DIR:-./workspace}:/workspace
+    - ${DATA_DIR:-./data}:/data
+    - ${WORKSPACE_DIR:-./workspace}:/workspace
     depends_on:
-      - openhands
-
-  # ──────────────────────────────────────────────────────────────────────
-  # openhands — OpenHands Agent Server (backend-only, port 18000)
-  # ──────────────────────────────────────────────────────────────────────
+    - openhands
   openhands:
     image: ghcr.io/all-hands-ai/openhands:main
     container_name: openhands
-    command: ["uvicorn", "openhands.server.listen:app", "--host", "0.0.0.0", "--port", "18000"]
+    command:
+    - uvicorn
+    - openhands.server.listen:app
+    - --host
+    - 0.0.0.0
+    - --port
+    - '18000'
     restart: unless-stopped
     ports:
-      - "127.0.0.1:18000:18000"
+    - 127.0.0.1:18000:18000
     environment:
-      - PORT=18000
-      - BACKEND_ONLY=true
-      - SANDBOX_RUNTIME_CONTAINER_IMAGE=browserai-runtime:latest
-      - WORKSPACE_MOUNT_PATH=${WORKSPACE_DIR:-/opt/browserai-data/workspace}
-      - LLM_BASE_URL=${OPENHANDS_LLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
-      - LLM_API_KEY=${OPENHANDS_LLM_API_KEY:-${BIGMODEL_API_KEY:-}}
-      - LLM_MODEL=${OPENHANDS_LLM_MODEL:-glm-4.5-flash}
+    - PORT=18000
+    - BACKEND_ONLY=true
+    - WORKSPACE_MOUNT_PATH=${WORKSPACE_DIR:-/opt/browserai-data/workspace}
+    - LLM_BASE_URL=${OPENHANDS_LLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
+    - LLM_API_KEY=${OPENHANDS_LLM_API_KEY:-${BIGMODEL_API_KEY:-}}
+    - LLM_MODEL=${OPENHANDS_LLM_MODEL:-glm-4.5-flash}
+    - RUNTIME=docker
     volumes:
-      - ${WORKSPACE_DIR:-./workspace}:/workspace
-      - /var/run/docker.sock:/var/run/docker.sock
+    - ${WORKSPACE_DIR:-./workspace}:/workspace
+    - /var/run/docker.sock:/var/run/docker.sock

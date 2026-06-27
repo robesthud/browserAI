@@ -1,31 +1,182 @@
-import os
-import json
-import time
+"""
+BrowserAI ↔ OpenHands core monolith (Step 2).
+
+This server is a thin FastAPI app that:
+  * Serves the legacy BrowserAI React UI from /app/ui/dist.
+  * Exposes the BrowserAI HTTP API contract that the UI expects
+    (/api/health, /api/settings, /api/keys, /api/params, /api/chat,
+    /api/agent/chat, /api/agent/chat/stop, /api/auth/me, /api/cloud, ...).
+  * Bridges agent chats to an OpenHands Agent Server, translating
+    OpenHands events into the SSE event stream the BrowserAI UI parses.
+
+Goals for Step 2:
+  1. /api/health returns {ok: true, ...} so the UI exits its offline mode.
+  2. /api/agent/chat accepts the UI's body shape, pushes the picked LLM to
+     OpenHands settings per-call, creates conversation, polls events,
+     and emits well-formed SSE for the UI.
+  3. CORS configured for credentials (no wildcard).
+  4. Stub endpoints (auth/cloud/workspace/...) return safe shapes so the UI
+     does not error-out before later steps fill them in.
+"""
+
+from __future__ import annotations
+
 import asyncio
+import json
+import logging
+import os
+import time
+from typing import Any, AsyncIterator, Dict, List, Optional
+
 import httpx
-import websockets
-from fastapi import FastAPI, Request, HTTPException, status
-from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
-from core.database import list_keys, upsert_key, delete_key, set_active_key, get_active_key
+from core.database import (
+    delete_key,
+    get_active_key,
+    list_keys,
+    set_active_key,
+    upsert_key,
+)
 
-app = FastAPI(title="BrowserAI-OpenHands Core Monolith")
+log = logging.getLogger("browserai.core")
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 
+OPENHANDS_SERVER = os.environ.get("OPENHANDS_AGENT_SERVER", "http://openhands:18000")
+DEFAULT_MODEL = os.environ.get("BROWSERAI_DEFAULT_MODEL", "glm-4.5-flash")
+DEFAULT_BASE_URL = os.environ.get(
+    "OPENHANDS_LLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"
+)
+APP_URL = os.environ.get("APP_URL", "http://localhost")
+MAX_AGENT_ITERATIONS = int(os.environ.get("BROWSERAI_AGENT_MAX_ITERATIONS", "50"))
+EVENT_POLL_INTERVAL = float(os.environ.get("BROWSERAI_EVENT_POLL_INTERVAL", "0.6"))
+EVENT_POLL_TIMEOUT_S = int(os.environ.get("BROWSERAI_EVENT_POLL_TIMEOUT_S", "900"))
+
+app = FastAPI(title="BrowserAI-OpenHands Core Monolith", version="0.2.0")
+
+# CORS: must NOT be wildcard when allow_credentials is true, otherwise cookies
+# are silently dropped by browsers.
+_cors_origins = [APP_URL.rstrip("/")]
+if "localhost" not in APP_URL:
+    _cors_origins += ["http://localhost:5173", "http://127.0.0.1:5173"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-OPENHANDS_SERVER = os.environ.get("OPENHANDS_AGENT_SERVER", "http://openhands:18000")
 
-# ── API Роуты Настроек и Ключей (Изоляция от BrowserAI UI) ──
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _resolve_provider(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Reconstruct provider config from UI body. The UI flattens fields directly
+    onto the request body of /api/agent/chat:
+      keyId, useStoredSecret, baseUrl, apiKey, authType, authHeader,
+      extraHeaders, model, temperature
+    Older code paths may instead send providerInput / provider objects.
+    Fallback: use the DB-active key.
+    """
+    pi = body.get("providerInput") or body.get("provider")
+    if isinstance(pi, dict) and (pi.get("baseUrl") or pi.get("apiKey") or pi.get("keyId")):
+        return pi
+
+    flat = {
+        "keyId": body.get("keyId"),
+        "useStoredSecret": body.get("useStoredSecret"),
+        "baseUrl": body.get("baseUrl"),
+        "apiKey": body.get("apiKey"),
+        "authType": body.get("authType"),
+        "authHeader": body.get("authHeader"),
+        "extraHeaders": body.get("extraHeaders"),
+        "model": body.get("model"),
+        "temperature": body.get("temperature"),
+    }
+    if any(flat.values()):
+        # Resolve stored secret if requested
+        if flat.get("useStoredSecret") and flat.get("keyId"):
+            stored = next((k for k in list_keys() if k["id"] == flat["keyId"]), None)
+            if stored:
+                flat["apiKey"] = stored.get("apiKey") or flat.get("apiKey")
+                flat["baseUrl"] = flat.get("baseUrl") or stored.get("baseUrl")
+                flat["model"] = flat.get("model") or stored.get("model")
+        return flat
+
+    # Last resort: DB-active key
+    active = get_active_key() or {}
+    return {
+        "keyId": active.get("id"),
+        "useStoredSecret": True,
+        "baseUrl": active.get("baseUrl") or DEFAULT_BASE_URL,
+        "apiKey": active.get("apiKey") or os.environ.get("BIGMODEL_API_KEY", ""),
+        "model": active.get("model") or DEFAULT_MODEL,
+    }
+
+
+def _qualify_model(base_url: str, model: str) -> str:
+    """LiteLLM (used inside OpenHands) needs `openai/<model>` for any
+    OpenAI-compatible-but-not-OpenAI endpoint."""
+    if not model:
+        return f"openai/{DEFAULT_MODEL}"
+    if "/" in model:
+        return model
+    if any(host in (base_url or "") for host in ("bigmodel.cn", "api.z.ai", "deepseek.com")):
+        return f"openai/{model}"
+    return model
+
+
+def _history_to_prompt(history: List[Dict[str, Any]]) -> str:
+    """Find the latest user turn to drive OpenHands. We do NOT replay history
+    into OpenHands every call — instead the UI maintains its own chat thread
+    and we open a fresh conversation per send. (Multi-turn within one
+    OpenHands conversation will be added in Step 6 along with /api/agent/answer.)"""
+    for m in reversed(history or []):
+        role = m.get("role")
+        content = m.get("content")
+        if role == "user" and content:
+            if isinstance(content, list):
+                # OpenAI vision-style; concat text parts
+                text = " ".join(
+                    p.get("text", "") for p in content if isinstance(p, dict)
+                )
+                if text:
+                    return text
+            elif isinstance(content, str):
+                return content
+    return ""
+
+
+def _sse(event: str, data: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Health / settings / keys / params
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@app.get("/api/health")
+async def get_health():
+    # Critical: UI checks `data.ok` to decide online/offline. Without it the
+    # whole app falls back to localStorage and CloudSync never fires.
+    return {
+        "ok": True,
+        "engine": "openhands",
+        "monolith": True,
+        "openhands": True,
+        "deepseekManaged": False,
+        "sandbox": True,
+        "browser": True,
+    }
+
 
 @app.get("/api/settings")
 @app.get("/api/keys")
@@ -35,9 +186,15 @@ async def get_settings():
     return {
         "keys": keys,
         "activeKeyId": active["id"] if active else None,
-        "params": {"systemPrompt": "Ты — точный и прямой ассистент.", "temperature": 0.7, "stream": True, "useWebAI": False},
-        "vault": {"enabled": False, "locked": False}
+        "params": {
+            "systemPrompt": "Ты — точный и прямой ассистент.",
+            "temperature": 0.7,
+            "stream": True,
+            "useWebAI": False,
+        },
+        "vault": {"enabled": False, "locked": False},
     }
+
 
 @app.post("/api/keys")
 async def post_key(request: Request):
@@ -48,10 +205,12 @@ async def post_key(request: Request):
     active = next((k for k in keys if k.get("isActive")), keys[0] if keys else None)
     return {"keys": keys, "activeKeyId": active["id"] if active else None}
 
+
 @app.post("/api/keys/{key_id}/activate")
 async def activate_key(key_id: str):
     keys = set_active_key(key_id)
     return {"keys": keys, "activeKeyId": key_id}
+
 
 @app.delete("/api/keys/{key_id}")
 async def remove_key(key_id: str):
@@ -59,178 +218,566 @@ async def remove_key(key_id: str):
     active = next((k for k in keys if k.get("isActive")), keys[0] if keys else None)
     return {"keys": keys, "activeKeyId": active["id"] if active else None}
 
-@app.get("/api/health")
-async def get_health():
-    return {"deepseekManaged": True, "sandbox": True, "browser": True, "openhands": True, "monolith": True}
 
-# ── Совершенный Прокси-Мост к OpenHands Agent Server ──
+@app.put("/api/params")
+async def put_params(request: Request):
+    # Persisting params (systemPrompt, temperature, stream, useWebAI) per-user
+    # is part of Step 3 (auth). For now we just echo.
+    data = await request.json()
+    return {"ok": True, "params": data}
 
-async def init_openhands_settings(client: httpx.AsyncClient, model: str, provider: dict):
-    url = f"{OPENHANDS_SERVER}/api/settings"
-    base_model = provider.get("model") or model or "glm-4.5-flash"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Auth / cloud stubs — full implementation lands in Step 3
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@app.get("/api/auth/me")
+async def auth_me():
+    # Anonymous-mode: UI will treat the app as logged-out and rely on
+    # localStorage until Step 3 wires real auth.
+    return JSONResponse({"authenticated": False, "user": None}, status_code=200)
+
+
+@app.post("/api/auth/register")
+@app.post("/api/auth/login")
+@app.post("/api/auth/logout")
+@app.post("/api/auth/forgot-password")
+@app.post("/api/auth/reset-password")
+@app.post("/api/auth/sms-send")
+@app.post("/api/auth/sms-verify")
+@app.put("/api/auth/phone")
+async def auth_stub():
+    return JSONResponse(
+        {
+            "error": "auth_not_implemented",
+            "message": "Auth backend is being wired up (Step 3). Use the app in local-only mode for now.",
+        },
+        status_code=501,
+    )
+
+
+@app.get("/api/cloud")
+async def cloud_get():
+    return {"settings": None, "chats": None}
+
+
+@app.put("/api/cloud")
+async def cloud_put(request: Request):
+    # No-op until Step 3 binds it to a user account.
+    return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenHands bridge — agent chat with proper SSE
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def _push_oh_settings(
+    client: httpx.AsyncClient,
+    provider: Dict[str, Any],
+) -> None:
+    """Push the chosen LLM into the OpenHands global Settings before each
+    conversation. OpenHands consults global Settings when initialising a
+    new agent loop."""
+    base_url = provider.get("baseUrl") or DEFAULT_BASE_URL
+    raw_model = provider.get("model") or DEFAULT_MODEL
     api_key = provider.get("apiKey") or os.environ.get("BIGMODEL_API_KEY", "")
-    base_url = provider.get("baseUrl") or os.environ.get("OPENHANDS_LLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
-
-    if ("bigmodel.cn" in base_url or "api.z.ai" in base_url) and not base_model.startswith("openai/"):
-        base_model = f"openai/{base_model}"
-
     payload = {
         "agent": "CodeActAgent",
-        "llm_model": base_model,
+        "llm_model": _qualify_model(base_url, raw_model),
         "llm_api_key": api_key,
         "llm_base_url": base_url,
-        "max_iterations": 50,
+        "max_iterations": MAX_AGENT_ITERATIONS,
         "confirmation_mode": False,
         "enable_default_condenser": True,
-        "enable_solvability_analysis": True
     }
     try:
-        r = await client.post(url, json=payload, timeout=10.0)
-        print(f"[OpenHands Bridge] Settings push: {r.status_code}")
+        r = await client.post(
+            f"{OPENHANDS_SERVER}/api/settings", json=payload, timeout=10.0
+        )
+        if r.status_code >= 400:
+            log.warning("OpenHands settings push %s: %s", r.status_code, r.text[:300])
     except Exception as e:
-        print(f"[OpenHands Bridge] Settings push error: {e}")
+        log.warning("OpenHands settings push error: %s", e)
 
-async def create_conversation(client: httpx.AsyncClient, prompt: str, model: str, workspace_scope: str, provider: dict):
-    await init_openhands_settings(client, model, provider)
-    url = f"{OPENHANDS_SERVER}/api/conversations"
-    
-    # 100% точное соответствие InitSessionRequest OpenAPI схеме OpenHands:
-    payload = {
-        "initial_user_msg": prompt or "hi",
-        "conversation_instructions": "You are BrowserAI CodeAct Agent. Use your tools and bash terminal to solve tasks."
-    }
-    headers = {"Content-Type": "application/json"}
-    api_key = provider.get("apiKey") or os.environ.get("BIGMODEL_API_KEY", "")
-    if api_key and api_key != "__managed__":
-        headers["Authorization"] = f"Bearer {api_key}"
 
-    r = await client.post(url, json=payload, headers=headers, timeout=15.0)
+async def _create_and_start(
+    client: httpx.AsyncClient,
+    prompt: str,
+    extra_system: str = "",
+) -> str:
+    payload: Dict[str, Any] = {"initial_user_msg": prompt or "hi"}
+    if extra_system:
+        payload["conversation_instructions"] = extra_system
+
+    r = await client.post(
+        f"{OPENHANDS_SERVER}/api/conversations", json=payload, timeout=30.0
+    )
     if r.status_code >= 400:
-        raise HTTPException(status_code=r.status_code, detail=f"OpenHands init failed: {r.text}")
-    return r.json()
+        raise HTTPException(
+            status_code=502,
+            detail=f"OpenHands conversation init failed: {r.status_code} {r.text}",
+        )
+    body = r.json()
+    cid = body.get("conversation_id") or body.get("id")
+    if not cid:
+        raise HTTPException(
+            status_code=502, detail=f"OpenHands returned no conversation_id: {body}"
+        )
 
-async def start_conversation(client: httpx.AsyncClient, conv_id: str):
-    url = f"{OPENHANDS_SERVER}/api/conversations/{conv_id}/start"
-    r = await client.post(url, json={}, timeout=15.0)
-    if r.status_code >= 400:
-        raise HTTPException(status_code=r.status_code, detail=f"OpenHands start failed: {r.text}")
-    return r.json()
+    # `/start` may take a long time on cold runtime (image build).
+    # Use a generous timeout to ride through it.
+    try:
+        await client.post(
+            f"{OPENHANDS_SERVER}/api/conversations/{cid}/start",
+            json={},
+            timeout=600.0,
+        )
+    except httpx.TimeoutException:
+        log.warning("OpenHands /start timed out for %s — continuing to poll", cid)
+    return cid
 
-async def event_stream_generator(conv_id: str, model: str):
-    ws_url = OPENHANDS_SERVER.replace("http", "ws") + f"/api/sockets/events/{conv_id}"
+
+def _translate_event(evt: Dict[str, Any], step: int) -> List[Dict[str, Any]]:
+    """
+    Map an OpenHands V1 event dict into one or more SSE events that the
+    BrowserAI UI understands.
+
+    OpenHands events shape (varies by version, we accept the union):
+      * action:        {id, source: 'agent'|'user', action: {kind:..., ...}, ...}
+      * observation:   {id, source: 'environment', observation: {kind:..., ...}}
+      * message:       {role: 'assistant'|'user', content: '...'}
+    """
+    out: List[Dict[str, Any]] = []
+
+    # Older/newer schemas — try multiple keys
+    action = evt.get("action")
+    observation = evt.get("observation")
+    msg = evt.get("message") or evt
+    role = evt.get("role") or (msg.get("role") if isinstance(msg, dict) else None)
+    content = (
+        evt.get("content")
+        or (msg.get("content") if isinstance(msg, dict) else None)
+        or ""
+    )
+
+    kind = (
+        (action.get("kind") if isinstance(action, dict) else None)
+        or (observation.get("kind") if isinstance(observation, dict) else None)
+        or evt.get("kind")
+        or evt.get("type")
+        or evt.get("event_type")
+        or ""
+    )
+
+    # Thinking / thought
+    if isinstance(action, dict) and (action.get("thought") or kind in ("think", "AgentThinkAction")):
+        text = action.get("thought") or action.get("content") or ""
+        if text:
+            out.append({"event": "thinking_delta", "data": {"step": step, "chunk": text}})
+            out.append({"event": "thought", "data": {"step": step, "text": text}})
+
+    # Bash / cmd run
+    if kind in ("execute_bash", "CmdRunAction", "run_command", "cmd", "ExecuteBashAction"):
+        cmd = (
+            (action or {}).get("command")
+            or (action or {}).get("cmd")
+            or (action or {}).get("content")
+            or ""
+        )
+        out.append(
+            {"event": "tool_start", "data": {"step": step, "name": "bash", "args": {"command": cmd}}}
+        )
+
+    # Cmd / observation
+    if kind in ("CmdOutputObservation", "cmd_output", "execute_bash_observation"):
+        output = (
+            (observation or {}).get("content")
+            or (observation or {}).get("output")
+            or ""
+        )
+        exit_code = (observation or {}).get("exit_code", 0)
+        out.append(
+            {
+                "event": "tool_result",
+                "data": {
+                    "step": step,
+                    "name": "bash",
+                    "ok": int(exit_code) == 0,
+                    "result": output,
+                    "error": output if int(exit_code) != 0 else None,
+                },
+            }
+        )
+
+    # File ops
+    if kind in ("write_file", "str_replace_editor", "FileWriteAction", "edit_file"):
+        path = (action or {}).get("path") or (action or {}).get("file") or "file"
+        out.append(
+            {"event": "tool_start", "data": {"step": step, "name": "write_file", "args": {"path": path}}}
+        )
+    if kind in ("FileWriteObservation", "file_write_observation"):
+        out.append(
+            {
+                "event": "tool_result",
+                "data": {
+                    "step": step,
+                    "name": "write_file",
+                    "ok": True,
+                    "result": {"path": (observation or {}).get("path", ""), "success": True},
+                },
+            }
+        )
+    if kind in ("read_file", "FileReadAction"):
+        path = (action or {}).get("path") or (action or {}).get("file") or "file"
+        out.append(
+            {"event": "tool_start", "data": {"step": step, "name": "read_file", "args": {"path": path}}}
+        )
+    if kind in ("FileReadObservation", "file_read_observation"):
+        out.append(
+            {
+                "event": "tool_result",
+                "data": {
+                    "step": step,
+                    "name": "read_file",
+                    "ok": True,
+                    "result": {
+                        "path": (observation or {}).get("path", ""),
+                        "content": (observation or {}).get("content", ""),
+                    },
+                },
+            }
+        )
+
+    # Browser
+    if kind in ("browse", "browse_interactive", "BrowseURLAction", "BrowseInteractiveAction"):
+        url = (action or {}).get("url") or ""
+        out.append(
+            {"event": "tool_start", "data": {"step": step, "name": "browser", "args": {"url": url}}}
+        )
+
+    # Final assistant message
+    if isinstance(action, dict) and (action.get("kind") in ("message", "AgentFinishAction") or action.get("response")):
+        text = action.get("response") or action.get("content") or ""
+        if text:
+            out.append({"event": "assistant_delta", "data": {"step": step, "chunk": text}})
+
+    if role == "assistant" and isinstance(content, str) and content.strip():
+        out.append({"event": "assistant_delta", "data": {"step": step, "chunk": content}})
+
+    return out
+
+
+async def _stream_chat(
+    chat_id: str,
+    model: str,
+    prompt: str,
+    extra_system: str,
+    provider: Dict[str, Any],
+) -> AsyncIterator[bytes]:
     step = 0
     full_answer = ""
 
-    def sse_chunk(event: str, data: dict):
-        return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+    # 1) Send stream protocol + initial agent_context up-front so the UI shows
+    #    activity even while OpenHands is cold-booting a runtime image.
+    yield _sse(
+        "stream_protocol",
+        {
+            "version": 1,
+            "events": [
+                "stream_protocol",
+                "agent_context",
+                "agent_state",
+                "thinking",
+                "thinking_delta",
+                "thought",
+                "tool_preview",
+                "tool_start",
+                "tool_progress",
+                "tool_result",
+                "assistant_delta",
+                "assistant",
+                "done",
+                "error",
+            ],
+        },
+    ).encode("utf-8")
+    yield _sse(
+        "agent_context",
+        {
+            "model": model or DEFAULT_MODEL,
+            "provider": provider.get("baseUrl") or DEFAULT_BASE_URL,
+            "maxSteps": MAX_AGENT_ITERATIONS,
+            "serverRoute": "/api/agent/chat",
+            "engine": "openhands",
+        },
+    ).encode("utf-8")
+    yield _sse("thinking", {"step": 1}).encode("utf-8")
+    yield _sse(
+        "agent_state",
+        {"phase": "plan", "step": 1, "maxSteps": MAX_AGENT_ITERATIONS, "engine": "openhands"},
+    ).encode("utf-8")
 
-    yield sse_chunk("stream_protocol", {"version": 1, "events": ["stream_protocol","agent_context","agent_task","agent_state","thinking","thinking_delta","assistant_delta","assistant","thought","tool_preview","tool_start","tool_progress","tool_result","done","error"]})
-    yield sse_chunk("agent_context", {"model": model or "glm-4.5-flash", "provider": OPENHANDS_SERVER, "maxSteps": 50, "serverRoute": "/api/agent/chat", "engine": "openhands"})
-    
-    step += 1
-    yield sse_chunk("thinking", {"step": step})
-    yield sse_chunk("agent_state", {"phase": "plan", "step": step, "maxSteps": 50, "engine": "openhands"})
+    # 2) Push settings + create conversation
+    async with httpx.AsyncClient() as client:
+        try:
+            await _push_oh_settings(client, provider)
+            cid = await _create_and_start(client, prompt, extra_system)
+        except HTTPException as e:
+            yield _sse("error", {"message": str(e.detail)}).encode("utf-8")
+            yield _sse("done", {"reason": "engine-error", "steps": step}).encode("utf-8")
+            return
+        except Exception as e:
+            yield _sse("error", {"message": f"OpenHands bridge: {e}"}).encode("utf-8")
+            yield _sse("done", {"reason": "engine-error", "steps": step}).encode("utf-8")
+            return
 
-    try:
-        async with websockets.connect(ws_url) as ws:
-            async for message in ws:
-                msg = json.loads(message)
-                action = msg.get("action", {})
-                observation = msg.get("observation", {})
-                evt_type = msg.get("type") or action.get("type") or observation.get("type") or msg.get("event_type") or ""
+        # 3) Poll events
+        seen_ids: set = set()
+        t0 = time.time()
+        last_event_ts = time.time()
+        done = False
 
-                if evt_type in ("AgentThinkAction", "think", "thinking"):
-                    text = action.get("thought") or action.get("content") or msg.get("content") or ""
-                    if text:
-                        yield sse_chunk("thinking_delta", {"step": step, "chunk": text})
-                        yield sse_chunk("thought", {"step": step, "text": text})
-
-                elif evt_type in ("CmdRunAction", "run_command", "cmd"):
-                    cmd = action.get("command") or action.get("cmd") or action.get("content") or "bash"
-                    step += 1
-                    yield sse_chunk("tool_start", {"step": step, "name": "bash", "args": {"command": cmd}})
-
-                elif evt_type in ("CmdOutputObservation", "cmd_output"):
-                    output = observation.get("content") or observation.get("output") or msg.get("content") or ""
-                    yield sse_chunk("tool_progress", {"step": step, "name": "bash", "partial": output})
-                    yield sse_chunk("tool_result", {"step": step, "name": "bash", "ok": observation.get("exit_code", 0) == 0, "result": output, "error": output if observation.get("exit_code", 0) > 0 else None})
-
-                elif evt_type in ("FileWriteAction", "write_file"):
-                    path = action.get("path") or action.get("file") or "file"
-                    step += 1
-                    yield sse_chunk("tool_start", {"step": step, "name": "write_file", "args": {"path": path, "content": action.get("content", "")}})
-
-                elif evt_type == "FileWriteObservation":
-                    yield sse_chunk("tool_result", {"step": step, "name": "write_file", "ok": True, "result": {"path": observation.get("path", "file"), "success": True}})
-
-                elif evt_type in ("FileReadAction", "read_file"):
-                    path = action.get("path") or action.get("file") or "file"
-                    step += 1
-                    yield sse_chunk("tool_start", {"step": step, "name": "read_file", "args": {"path": path}})
-
-                elif evt_type == "FileReadObservation":
-                    yield sse_chunk("tool_result", {"step": step, "name": "read_file", "ok": True, "result": {"path": observation.get("path", "file"), "content": observation.get("content", "")}})
-
-                elif evt_type in ("AgentFinishAction", "assistant", "final_response"):
-                    chunk = action.get("response") or action.get("content") or msg.get("content") or ""
-                    if chunk:
-                        full_answer += chunk
-                        yield sse_chunk("assistant_delta", {"step": step, "chunk": chunk})
-
-                elif evt_type == "status" and msg.get("status") == "completed":
-                    if full_answer:
-                        yield sse_chunk("assistant", {"step": step, "text": full_answer})
-                    yield sse_chunk("done", {"reason": "complete", "steps": step})
+        while not done and (time.time() - t0) < EVENT_POLL_TIMEOUT_S:
+            try:
+                r = await client.get(
+                    f"{OPENHANDS_SERVER}/api/conversations/{cid}/events", timeout=20.0
+                )
+                if r.status_code == 404:
+                    # Conversation gone
+                    yield _sse("error", {"message": "OpenHands conversation lost"}).encode("utf-8")
                     break
+                if r.status_code >= 400:
+                    await asyncio.sleep(EVENT_POLL_INTERVAL)
+                    continue
+                body = r.json()
+                events = body if isinstance(body, list) else (body.get("events") or body.get("results") or [])
+                new_events = [e for e in events if e.get("id") not in seen_ids]
+                for e in new_events:
+                    seen_ids.add(e.get("id"))
+                    last_event_ts = time.time()
+                    for translated in _translate_event(e, step + 1):
+                        ev_name = translated["event"]
+                        ev_data = translated["data"]
+                        if ev_name == "tool_start":
+                            step += 1
+                            ev_data["step"] = step
+                        if ev_name == "assistant_delta":
+                            full_answer += ev_data.get("chunk", "")
+                        yield _sse(ev_name, ev_data).encode("utf-8")
+            except httpx.TimeoutException:
+                pass
+            except Exception as e:
+                log.warning("event poll error: %s", e)
 
-                elif evt_type == "error" or (evt_type == "status" and msg.get("status") == "error"):
-                    err_msg = msg.get("message") or msg.get("content") or msg.get("error") or "OpenHands runtime error"
-                    yield sse_chunk("error", {"message": err_msg})
-                    yield sse_chunk("done", {"reason": "engine-error", "steps": step})
-                    break
+            # Status check
+            try:
+                rs = await client.get(
+                    f"{OPENHANDS_SERVER}/api/conversations/{cid}", timeout=10.0
+                )
+                if rs.status_code == 200:
+                    status = (rs.json() or {}).get("conversation_status", "")
+                    if status in ("STOPPED", "FINISHED", "COMPLETED", "ERROR"):
+                        done = True
+            except Exception:
+                pass
 
-    except Exception as e:
-        print(f"[OpenHands Bridge] WS stream error: {e}")
-        yield sse_chunk("error", {"message": str(e)})
-        yield sse_chunk("done", {"reason": "engine-error", "steps": step})
+            # Idle watchdog: no new events for 3 minutes → assume hung
+            if (time.time() - last_event_ts) > 180:
+                yield _sse(
+                    "error",
+                    {
+                        "message": "Агент не отвечает (нет событий 3 минуты). Попробуйте ещё раз."
+                    },
+                ).encode("utf-8")
+                break
 
-@app.post("/api/chat")
+            await asyncio.sleep(EVENT_POLL_INTERVAL)
+
+        if full_answer:
+            yield _sse("assistant", {"step": step, "text": full_answer}).encode("utf-8")
+
+        yield _sse(
+            "done",
+            {
+                "reason": "complete" if done else "timeout",
+                "steps": step,
+                "conversationId": cid,
+            },
+        ).encode("utf-8")
+
+
 @app.post("/api/agent/chat")
 @app.post("/api/chat-pi")
-async def chat_endpoint(request: Request):
-    data = await request.json()
-    history = data.get("history", [])
-    last_user_msg = next((m for m in reversed(history) if m.get("role") == "user"), None)
-    prompt = last_user_msg.get("content") if last_user_msg else data.get("prompt", "hi")
-    model = data.get("model") or (data.get("providerInput", {}).get("model")) or "glm-4.5-flash"
-    workspace_scope = data.get("chatId", "")
-    
-    provider = data.get("providerInput") or data.get("provider") or get_active_key() or {}
+async def agent_chat(request: Request):
+    body = await request.json()
+    history = body.get("history") or body.get("messages") or []
+    extra_system = body.get("extraSystem") or ""
+    chat_id = body.get("chatId") or ""
+    provider = _resolve_provider(body)
+    model = provider.get("model") or body.get("model") or DEFAULT_MODEL
+    prompt = _history_to_prompt(history) or body.get("prompt") or "hi"
 
-    async with httpx.AsyncClient() as client:
-        conv = await create_conversation(client, prompt, model, workspace_scope, provider)
-        conv_id = conv.get("id") or conv.get("conversation_id") or workspace_scope or str(int(time.time()))
-        await start_conversation(client, conv_id)
+    return StreamingResponse(
+        _stream_chat(chat_id, model, prompt, extra_system, provider),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
-    return StreamingResponse(event_stream_generator(conv_id, model), media_type="text/event-stream")
+
+@app.post("/api/chat")
+async def regular_chat(request: Request):
+    """
+    Non-agent chat. For now we still route through OpenHands to keep one
+    backend; Step 2.5 will add a direct LiteLLM proxy for cheaper/faster
+    plain chat. The SSE event names are the subset {assistant_delta, done}.
+    """
+    return await agent_chat(request)
+
 
 @app.post("/api/chat/stop")
 @app.post("/api/agent/chat/stop")
-async def stop_endpoint(request: Request):
+async def stop_chat(request: Request):
     data = await request.json()
-    conv_id = data.get("chatId") or data.get("id")
-    if not conv_id:
-        raise HTTPException(status_code=400, detail="chatId required")
-    url = f"{OPENHANDS_SERVER}/api/conversations/{conv_id}/stop"
+    cid = data.get("conversationId") or data.get("chatId") or data.get("id")
+    if not cid:
+        return {"ok": False, "error": "no conversationId"}
     async with httpx.AsyncClient() as client:
         try:
-            await client.post(url, json={}, timeout=5.0)
+            await client.post(
+                f"{OPENHANDS_SERVER}/api/conversations/{cid}/stop", json={}, timeout=10.0
+            )
             return {"ok": True}
-        except:
-            return {"ok": False}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
-# ── Раздача статики React UI (Vite Build) ──
-if os.path.exists("/app/ui/dist"):
-    app.mount("/", StaticFiles(directory="/app/ui/dist", html=True), name="ui")
-elif os.path.exists("./ui/dist"):
-    app.mount("/", StaticFiles(directory="./ui/dist", html=True), name="ui")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Workspace / agent ancillary stubs (filled in Steps 4–8)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@app.get("/api/agent/health")
+async def agent_health():
+    return {"ok": True, "engine": "openhands", "openhands": True}
+
+
+@app.get("/api/workspace")
+@app.get("/api/workspace/tree")
+async def workspace_tree(chatId: Optional[str] = None):
+    # TODO Step 4: real workspace listing per chat through OpenHands /list-files
+    return {"items": [], "chatId": chatId}
+
+
+@app.get("/api/workspace/metadata")
+async def workspace_meta(chatId: Optional[str] = None):
+    return {"chatId": chatId, "items": []}
+
+
+@app.get("/api/workspace/file")
+async def workspace_file(path: str, chatId: Optional[str] = None):
+    return JSONResponse({"path": path, "content": ""}, status_code=200)
+
+
+# Generic catch-all for unimplemented agent endpoints so the UI does not
+# blow up with HTML 404s.  We always return JSON {ok:false,...} so the UI's
+# JSON-only fetch helpers can swallow it cleanly.
+
+
+_STUB_ROUTES = [
+    "/api/agent/answer",
+    "/api/agent/control-plane",
+    "/api/agent/questions",
+    "/api/agent/recipes",
+    "/api/agent/runs",
+    "/api/agent/self-test",
+    "/api/agent/workflows",
+    "/api/agent/policy",
+    "/api/agent/provider/diagnose",
+    "/api/agent/tasks",
+    "/api/agent/jobs",
+    "/api/jobs",
+    "/api/checkpoints",
+    "/api/cost/today",
+    "/api/cron",
+    "/api/notifications",
+    "/api/notifications/summary",
+    "/api/notifications/read-all",
+    "/api/memory/facts",
+    "/api/memory/project",
+    "/api/memory/semantic",
+    "/api/admin/deepseek/status",
+    "/api/admin/deepseek/refresh",
+    "/api/admin/deepseek/token",
+    "/api/mcp/config",
+    "/api/mcp/status",
+    "/api/mcp/restart",
+    "/api/ops/services",
+    "/api/ops/action",
+    "/api/ops/audit",
+    "/api/gateway/status",
+    "/api/approval/policy",
+    "/api/push/vapid",
+    "/api/push/subscribe",
+    "/api/push/unsubscribe",
+    "/api/push/test",
+    "/api/webhooks/github",
+    "/api/webhooks/github/config",
+    "/api/webhooks/github/secret",
+    "/api/incidents",
+    "/api/debug/client-error",
+    "/api/operator/missions",
+    "/api/operator/projects",
+    "/api/operator/projects/analyze",
+    "/api/operator/runbooks",
+    "/api/operator/runtime-adapters",
+    "/api/operator/deploy-sessions",
+    "/api/operator/status",
+    "/api/operator/recoveries",
+    "/api/operator/recoveries/graph",
+    "/api/operator/recoveries/supervise",
+    "/api/operator/failure/classify",
+    "/api/operator/failure/execute",
+    "/api/operator/failure/incident",
+    "/api/operator/github-automation/comment",
+    "/api/operator/github-automation/events",
+    "/api/operator/mcp/catalog",
+    "/api/operator/mcp/install",
+    "/api/operator/project-policy-presets",
+    "/api/operator/project-templates",
+]
+
+
+def _stub_response(name: str):
+    async def _h(request: Request):
+        if request.method.lower() == "get":
+            return JSONResponse(
+                {"ok": True, "stub": True, "endpoint": name, "data": []}, status_code=200
+            )
+        return JSONResponse(
+            {"ok": True, "stub": True, "endpoint": name}, status_code=200
+        )
+
+    return _h
+
+
+for _path in _STUB_ROUTES:
+    app.add_api_route(_path, _stub_response(_path), methods=["GET", "POST", "PUT", "DELETE"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Static UI mount (must be last so /api/* takes precedence)
+# ─────────────────────────────────────────────────────────────────────────────
+
+for _ui_dir in ("/app/ui/dist", "./ui/dist"):
+    if os.path.isdir(_ui_dir):
+        app.mount("/", StaticFiles(directory=_ui_dir, html=True), name="ui")
+        log.info("UI mounted from %s", _ui_dir)
+        break
+else:
+    log.warning("UI dist not found; only /api/* will be served")
