@@ -25,4 +25,9 @@ ENV BROWSERAI_DB=/data/browserai.db
 ENV PORT=8080
 EXPOSE 8080
 
+
+# Health-check: /api/health возвращает {"ok": true, ...}; UI использует это поле
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python3 -c "import urllib.request,json,sys; d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/health',timeout=4)); sys.exit(0 if d.get('ok') else 1)" || exit 1
+
 CMD ["uvicorn", "core.server:app", "--host", "0.0.0.0", "--port", "8080"]
