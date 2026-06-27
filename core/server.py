@@ -84,6 +84,14 @@ from core.memory_kb import (
     upsert_project_memory,
 )
 from core.web_image import generate_image, web_search as do_web_search
+from core.admin_data import (
+    cost_today as _cost_today,
+    get_job as _get_job,
+    list_jobs as _list_jobs,
+    list_notifications as _list_notifications,
+    mark_all_read as _mark_all_read,
+    notifications_summary as _notifications_summary,
+)
 
 log = logging.getLogger("browserai.core")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -1447,8 +1455,65 @@ async def kb_delete_post(request: Request):
     return {"ok": kb_delete(user["id"], doc_id)}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 8 — Jobs / Cost / Notifications (real data from legacy tables)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _is_owner(user: Optional[Dict[str, Any]]) -> bool:
+    return bool(user and (user.get("role") == "owner"))
+
+
+@app.get("/api/jobs")
+async def jobs_list(request: Request, status: Optional[str] = None, limit: int = 100):
+    user = _require_user(request)
+    return {"ok": True, "items": _list_jobs(user["id"], _is_owner(user), status, limit)}
+
+
+@app.get("/api/jobs/{job_id}")
+async def jobs_get(job_id: str, request: Request):
+    user = _require_user(request)
+    job = _get_job(user["id"], _is_owner(user), job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job_not_found")
+    return {"ok": True, "job": job}
+
+
+@app.get("/api/cost/today")
+async def cost_today_get(request: Request):
+    user = _require_user(request)
+    return _cost_today(user["id"], _is_owner(user))
+
+
+@app.get("/api/notifications")
+async def notifications_list(request: Request, limit: int = 50):
+    user = _require_user(request)
+    return {"ok": True, "items": _list_notifications(user["id"], _is_owner(user), limit)}
+
+
+@app.get("/api/notifications/summary")
+async def notifications_summary_get(request: Request):
+    user = _require_user(request)
+    return _notifications_summary(user["id"], _is_owner(user))
+
+
+@app.put("/api/notifications/read-all")
+@app.post("/api/notifications/read-all")
+async def notifications_read_all(request: Request):
+    user = _require_user(request)
+    return _mark_all_read(user["id"], _is_owner(user))
+
+
+# Paths now backed by real handlers — exclude from stub registration.
+_REAL_NOW = {
+    "/api/jobs", "/api/cost/today", "/api/notifications",
+    "/api/notifications/summary", "/api/notifications/read-all",
+    "/api/memory/facts", "/api/memory/project", "/api/memory/semantic",
+    "/api/web/search", "/api/image/generate",
+}
+
 for _path in _STUB_ROUTES:
-    if _path in {"/api/memory/facts", "/api/memory/project", "/api/memory/semantic", "/api/web/search", "/api/image/generate"}:
+    if _path in _REAL_NOW:
         continue
     app.add_api_route(_path, _stub_response(_path), methods=["GET", "POST", "PUT", "DELETE"])
 
