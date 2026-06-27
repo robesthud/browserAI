@@ -387,6 +387,27 @@ export function useSettings() {
     [refreshModelsForKey, settings.keys],
   )
 
+  // Step 10.8 — rotate a key's secret: server validates the new secret, then
+  // overwrites the old one in place (same key id) and makes it active. Returns
+  // { ok, message, ... } so the UI can show success/failure inline.
+  const rotateKey = useCallback(async (payload) => {
+    if (!onlineRef.current) {
+      return { ok: false, message: 'Ротация доступна только онлайн (нужен сервер).' }
+    }
+    try {
+      const data = await backend.rotateKey(payload)
+      if (data?.ok && Array.isArray(data.keys)) {
+        const keys = data.keys.map(normalizeKey)
+        setSettings((s) => ({ ...s, keys, activeKeyId: data.activeKeyId }))
+        const active = keys.find((k) => k.id === data.activeKeyId)
+        if (active) void refreshModelsForKey(active)
+      }
+      return data
+    } catch (e) {
+      return { ok: false, message: e?.message || 'Ошибка ротации ключа' }
+    }
+  }, [refreshModelsForKey])
+
   useEffect(() => {
     const active = getActiveKey(settings)
     if (!active?.id || !active.baseUrl || (!active.apiKey && !active.hasSecret)) return
@@ -454,6 +475,7 @@ export function useSettings() {
     saveKey,
     deleteKey,
     activateKey,
+    rotateKey,
     setActiveModel,
     setParams,
     importKeys,

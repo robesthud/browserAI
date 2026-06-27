@@ -372,6 +372,87 @@ async def activate_key(key_id: str, request: Request):
     return {"keys": keys, "activeKeyId": key_id}
 
 
+@app.post("/api/keys/rotate")
+async def rotate_key(request: Request):
+    """Step 10.8 — rotate the secret of a key in place.
+
+    Flow (server-side, atomic from the UI's perspective):
+      1) validate the NEW secret against the provider (real 1-token probe);
+      2) on success, overwrite the stored secret (vault-encrypted) on the
+         SAME key id — this revokes the old secret by replacement while keeping
+         the key id stable so chats / OpenHands settings keep pointing at it;
+      3) make it active and push to OpenHands.
+
+    Body: { keyId?, apiKey (new secret, required), baseUrl?, model?, authType?,
+            skipValidate? }. If keyId is omitted the currently-active key is used.
+    """
+    body = await request.json()
+    new_secret = (body.get("apiKey") or "").strip()
+    if not new_secret:
+        raise HTTPException(status_code=400, detail="apiKey (new secret) required")
+
+    key_id = body.get("keyId")
+    stored = get_key(key_id, include_secret=True) if key_id else get_active_key(include_secret=True)
+    if not stored:
+        raise HTTPException(status_code=404, detail="key not found")
+    key_id = stored["id"]
+
+    # Build the provider dict we will validate against (new secret + existing
+    # endpoint/model, overridable by the request).
+    provider = {
+        **stored,
+        "apiKey": new_secret,
+        "baseUrl": body.get("baseUrl") or stored.get("baseUrl"),
+        "model": body.get("model") or stored.get("model"),
+        "authType": body.get("authType") or stored.get("authType") or "bearer",
+    }
+
+    # 1) Validate the new secret (unless explicitly skipped).
+    validation = {"ok": True, "skipped": True}
+    if not body.get("skipValidate"):
+        validation = await provs.validate_key(provider)
+        if not validation.get("ok"):
+            return {
+                "ok": False,
+                "stage": "validate",
+                "message": "Новый ключ не прошёл проверку — ротация отменена, старый ключ не тронут.",
+                "validation": validation,
+            }
+
+    # 2) Persist the new secret onto the same key id (vault-encrypted if unlocked).
+    user = current_user(request)
+    to_store = new_secret
+    if user and vlt.is_available():
+        st = vlt.status(user["id"])
+        if st.get("enabled") and not st.get("locked"):
+            enc = vlt.encrypt(user["id"], new_secret)
+            if enc:
+                to_store = enc
+    record = {
+        **{k: v for k, v in stored.items() if k not in ("apiKey", "maskedApiKey")},
+        "id": key_id,
+        "apiKey": to_store,
+        "baseUrl": provider["baseUrl"],
+        "model": provider["model"],
+        "isActive": True,
+    }
+    keys = upsert_key(record)
+    set_active_key(key_id)
+
+    # 3) Push to OpenHands so the next chat uses the new secret immediately.
+    asyncio.create_task(_sync_active_provider_to_openhands(request))
+
+    safe_keys = list_keys(include_secrets=False)
+    return {
+        "ok": True,
+        "stage": "rotated",
+        "message": "Ключ успешно заменён. Старый секрет перезаписан.",
+        "validation": validation,
+        "keys": safe_keys,
+        "activeKeyId": key_id,
+    }
+
+
 @app.delete("/api/keys/{key_id}")
 async def remove_key(key_id: str):
     keys = delete_key(key_id)

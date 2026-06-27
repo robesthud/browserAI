@@ -59,7 +59,7 @@ function CloudSync({ settings, chats }) {
 
 function BrowserApp({ user, reloadAuth }) {
   const {
-    settings, online, vault, saveKey, deleteKey, activateKey,
+    settings, online, vault, saveKey, deleteKey, activateKey, rotateKey,
     setActiveModel, setParams, importKeys, validateKey,
     vaultSetup, vaultUnlock, vaultLock, vaultChange, vaultDisable,
     vaultAutolock, vaultBackup, vaultRestore,
@@ -310,7 +310,7 @@ function BrowserApp({ user, reloadAuth }) {
       />
       <SettingsModal
         key={settingsOpen ? 'open' : 'closed'} open={settingsOpen} settings={settings} online={online} vault={vault}
-        onSaveKey={saveKey} onDeleteKey={deleteKey} onActivateKey={activateKey} onSetParams={setParams} onImportKeys={importKeys} onValidateKey={validateKey}
+        onSaveKey={saveKey} onDeleteKey={deleteKey} onActivateKey={activateKey} onRotateKey={rotateKey} onSetParams={setParams} onImportKeys={importKeys} onValidateKey={validateKey}
         onVaultSetup={vaultSetup} onVaultUnlock={vaultUnlock} onVaultLock={vaultLock} onVaultChange={vaultChange} onVaultDisable={vaultDisable} onVaultAutolock={vaultAutolock} onVaultBackup={vaultBackup} onVaultRestore={vaultRestore} onClose={() => setSettingsOpen(false)}
       />
       {flash && (

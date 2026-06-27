@@ -818,6 +818,100 @@ function VaultSection({ vault, onSetup, onLock, onChange, onDisable, onAutolock,
   )
 }
 
+function RotateKeyPanel({ activeKey, onRotate }) {
+  const [open, setOpen] = useState(false)
+  const [secret, setSecret] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState(null)
+
+  const rotate = async () => {
+    if (!secret.trim()) return
+    setBusy(true)
+    setResult(null)
+    try {
+      const r = await onRotate({
+        keyId: activeKey.id,
+        apiKey: secret.trim(),
+        baseUrl: activeKey.baseUrl,
+        model: activeKey.model,
+        authType: activeKey.authType || 'bearer',
+      })
+      setResult(r || { ok: false, message: 'Нет ответа сервера' })
+      if (r?.ok) {
+        setSecret('')
+        // collapse shortly after success so the panel doesn't linger
+        setTimeout(() => setOpen(false), 1800)
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded-xl border border-amber-400/20 bg-amber-400/5 p-3">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between text-left"
+      >
+        <span className="text-[13px] font-medium text-amber-200">
+          🔑 Ротация ключа
+          <span className="ml-2 text-[11px] font-normal text-amber-200/70">
+            заменить секрет активного ключа
+          </span>
+        </span>
+        <span className="text-amber-200/70 text-[12px]">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="mt-3 space-y-2">
+          <p className="text-[11px] leading-snug text-amber-100/80">
+            Введите <b>новый</b> ключ для «{activeKey.name || activeKey.id}». Сервер
+            сначала проверит его реальным запросом к провайдеру, и только при успехе
+            заменит старый секрет (старый перезаписывается = отзывается). Id ключа
+            и текущие чаты не меняются.
+          </p>
+          <input
+            type="password"
+            value={secret}
+            onChange={(e) => setSecret(e.target.value)}
+            placeholder="новый ключ, напр. sk-..."
+            autoComplete="off"
+            className="w-full rounded-lg border border-white/10 bg-graphite-900/60 px-3 py-2 text-[13px] text-cream placeholder:text-cream-faint focus:border-amber-400/40 focus:outline-none"
+          />
+          {result && (
+            <div
+              className={`rounded-lg px-3 py-2 text-[12px] ${
+                result.ok
+                  ? 'border border-green-500/30 bg-green-500/10 text-green-300'
+                  : 'border border-red-500/30 bg-red-500/10 text-red-300'
+              }`}
+            >
+              {result.ok ? '✓ ' : '⚠ '}
+              {result.message || (result.ok ? 'Ключ заменён.' : 'Не удалось заменить ключ.')}
+            </div>
+          )}
+          <div className="flex justify-end gap-2 pt-1">
+            <button
+              onClick={() => { setSecret(''); setResult(null); setOpen(false) }}
+              className="rounded-lg border border-white/10 px-3 py-1.5 text-[12px] text-cream-soft transition-colors hover:bg-graphite-750 hover:text-cream"
+            >
+              Отмена
+            </button>
+            <button
+              onClick={rotate}
+              disabled={busy || !secret.trim()}
+              className="rounded-lg bg-amber-400 px-3 py-1.5 text-[12px] font-medium text-graphite-900 transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-40 disabled:hover:scale-100"
+            >
+              {busy ? 'Проверяю и заменяю…' : 'Проверить и заменить'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 export default function SettingsModal({
   open,
   settings,
@@ -826,6 +920,7 @@ export default function SettingsModal({
   onSaveKey,
   onDeleteKey,
   onActivateKey,
+  onRotateKey,
   onSetParams,
   onImportKeys,
   onValidateKey,
@@ -988,6 +1083,11 @@ export default function SettingsModal({
                   />
                 ))}
               </div>
+            )}
+
+            {/* Step 10.8 — rotate the active key's secret in place. */}
+            {active?.id && onRotateKey && (
+              <RotateKeyPanel activeKey={active} onRotate={onRotateKey} />
             )}
           </section>
 

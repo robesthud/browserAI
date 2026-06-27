@@ -85,6 +85,9 @@ export const backend = {
   deleteKey: (id) => req(`/keys/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   activateKey: (id) =>
     req(`/keys/${encodeURIComponent(id)}/activate`, { method: 'POST' }),
+  // Step 10.8 — rotate a key's secret in place (validate new → overwrite old).
+  rotateKey: (payload) =>
+    req('/keys/rotate', { method: 'POST', body: JSON.stringify(payload) }),
   importKeys: (keys, activeKeyId) =>
     req('/keys/import', {
       method: 'POST',
