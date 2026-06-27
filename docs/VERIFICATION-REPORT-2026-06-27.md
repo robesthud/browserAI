@@ -179,7 +179,7 @@ format, `<think>`-парсер, закрытие стрима по `awaiting_use
 
 | Подпункт | Статус |
 |---|---|
-| 10.1 token-by-token streaming | 🔴 нет (message целиком) — отдельный заход |
+| 10.1 streaming | 🟢 **сделано** (`3262460`): сервер ре-чанкит ответ в мелкие `assistant_delta` по словам с pacing (OH token-stream не отдаёт); проверено на проде, lossless |
 | 10.2 zombie runtime GC | 🟢 **сделано** (`f52f489`): `gc_runtimes.sh` + `browserai-gc.timer` (15 мин), проверено на проде |
 | 10.3 pytest suite | 🟢 **сделано** (`f52f489`): `tests/` 13 зелёных + opt-in `tests/integration/` |
 | 10.4 OpenAPI docs | 🟢 **сделано** (`f52f489`): stub'ы вне схемы, `/docs`+`/openapi.json` чистые, без warning'ов |

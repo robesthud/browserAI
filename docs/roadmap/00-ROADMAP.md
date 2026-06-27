@@ -212,9 +212,10 @@ vault, память/KB, jobs/cost/notifications/operator/incidents/gateway на 
 ### STEP 10 — Polish, tests, hardening, deploy
 **Цель:** production-ready качество.
 
-- [ ] **10.1 Streaming improvements**
-  - [ ] Token-by-token streaming через LiteLLM streaming API (сейчас message приходит целиком)
-  - [ ] `assistant_delta` чанки по 10-50 токенов вместо одного финального
+- [x] **10.1 Streaming improvements** — ✅ СДЕЛАНО (`3262460`)
+  - [x] OpenHands event API отдаёт ответ целиком (нет token-stream), поэтому ре-чанкинг на сервере: сообщение режется на мелкие `assistant_delta` по словам с лёгким pacing (typewriter). UI уже буферит deltas → чистое улучшение восприятия
+  - [x] Tunable через env: `BROWSERAI_STREAM_RECHUNK` (вкл/выкл), `STREAM_CHUNK_CHARS=24`, `STREAM_CHUNK_DELAY=0.02`, `STREAM_RECHUNK_MIN=48`
+  - [x] Проверено на проде: ответ из 1 предложения пришёл 3-6 чанками по границам слов + финальный `assistant`; lossless; 17 тестов зелёные
 - [x] **10.2 Zombie runtime GC** — ✅ СДЕЛАНО (`f52f489`)
   - [x] `scripts/gc_runtimes.sh` + systemd timer (каждые 15 мин): удаляет `openhands-runtime-*` старше `IDLE_MINUTES=45`, которые НЕ обслуживают активную conversation; host-level (в контейнере нет docker.sock)
   - [x] Установлен и проверен на проде: `browserai-gc.timer` активен, dry-run/реальный прогон чистые
