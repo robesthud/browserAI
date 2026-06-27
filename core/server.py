@@ -133,6 +133,13 @@ APP_URL = os.environ.get("APP_URL", "http://localhost")
 MAX_AGENT_ITERATIONS = int(os.environ.get("BROWSERAI_AGENT_MAX_ITERATIONS", "50"))
 EVENT_POLL_INTERVAL = float(os.environ.get("BROWSERAI_EVENT_POLL_INTERVAL", "0.6"))
 EVENT_POLL_TIMEOUT_S = int(os.environ.get("BROWSERAI_EVENT_POLL_TIMEOUT_S", "900"))
+# Step 10.1 — progressive output. OpenHands' event API delivers the assistant
+# message as one complete chunk (no token stream), so we re-chunk it server-side
+# into small deltas with light pacing for a typewriter feel. Tunable/disableable.
+STREAM_RECHUNK = os.environ.get("BROWSERAI_STREAM_RECHUNK", "1") not in ("0", "false", "False")
+STREAM_CHUNK_CHARS = int(os.environ.get("BROWSERAI_STREAM_CHUNK_CHARS", "24"))
+STREAM_CHUNK_DELAY = float(os.environ.get("BROWSERAI_STREAM_CHUNK_DELAY", "0.02"))
+STREAM_RECHUNK_MIN = int(os.environ.get("BROWSERAI_STREAM_RECHUNK_MIN", "48"))
 
 app = FastAPI(title="BrowserAI-OpenHands Core Monolith", version="0.3.0")
 
@@ -704,6 +711,30 @@ def _split_think(text: str) -> tuple[str, str]:
     return "\n".join(t.strip() for t in thoughts_parts if t.strip()), cleaned.strip()
 
 
+def _chunk_text(text: str, size: int) -> List[str]:
+    """Split text into ~`size`-char chunks, preferring word boundaries so the
+    typewriter effect doesn't cut words awkwardly (Step 10.1). Falls back to a
+    hard cut for very long whitespace-free runs (e.g. code/URLs)."""
+    if size <= 0 or len(text) <= size:
+        return [text] if text else []
+    chunks: List[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        end = min(i + size, n)
+        if end < n:
+            # extend to the next whitespace to avoid splitting mid-word,
+            # but cap the look-ahead so we never run away.
+            j = end
+            limit = min(end + size, n)
+            while j < limit and not text[j].isspace():
+                j += 1
+            if j < limit:
+                end = j
+        chunks.append(text[i:end])
+        i = end
+    return chunks
+
+
 def _extract_ask_user_payload(text: str) -> Optional[Dict[str, Any]]:
     """Best-effort parser for agent questions.
 
@@ -1133,7 +1164,27 @@ async def _stream_chat(
                                         },
                                     ).encode("utf-8")
                                     ask_user_sent = True
-                        yield _sse(ev_name, ev_data).encode("utf-8")
+                        # Step 10.1 — re-chunk the (whole) assistant message into
+                        # small paced deltas for a streaming/typewriter feel.
+                        # The UI already buffers assistant_delta, so this is a
+                        # pure presentation improvement. Disable via env if the
+                        # provider ever delivers true token deltas.
+                        if (
+                            ev_name == "assistant_delta"
+                            and STREAM_RECHUNK
+                            and len(ev_data.get("chunk", "")) > STREAM_RECHUNK_MIN
+                        ):
+                            _whole = ev_data.get("chunk", "")
+                            _step = ev_data.get("step")
+                            for _piece in _chunk_text(_whole, STREAM_CHUNK_CHARS):
+                                yield _sse(
+                                    "assistant_delta",
+                                    {"step": _step, "chunk": _piece},
+                                ).encode("utf-8")
+                                if STREAM_CHUNK_DELAY > 0:
+                                    await asyncio.sleep(STREAM_CHUNK_DELAY)
+                        else:
+                            yield _sse(ev_name, ev_data).encode("utf-8")
             except httpx.TimeoutException:
                 pass
             except Exception as e:
