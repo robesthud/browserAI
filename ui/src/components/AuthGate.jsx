@@ -6,30 +6,97 @@ const SETTINGS_KEY = 'browserai.settings.v2'
 const CHATS_KEY = 'browserai.chats.v1'
 const AUTH_FLAG = 'browserai.auth.enabled'
 
-function writeCloudToLocal(data) {
-  if (!data) return
-  // Восстанавливаем настройки пользователя (системный промпт, температура и т.д.)
-  // Ключи API приходят отдельно через /api/settings и не хранятся в cloud напрямую
+export function mergeChats(localChats = [], cloudChats = []) {
+  const map = new Map()
+  const norm = (c) => ({
+    ...c,
+    id: String(c.id || ''),
+    updatedAt: Number(c.updatedAt || c.updated_at || 0),
+    createdAt: Number(c.createdAt || c.created_at || Date.now()),
+    messages: Array.isArray(c.messages) ? c.messages : [],
+  })
+  for (const raw of localChats) {
+    const c = norm(raw)
+    if (!c.id) continue
+    map.set(c.id, c)
+  }
+  for (const raw of cloudChats) {
+    const c = norm(raw)
+    if (!c.id) continue
+    const prev = map.get(c.id)
+    if (!prev) {
+      map.set(c.id, c)
+      continue
+    }
+    // берём более свежий по updatedAt, при равенстве — с большим кол-вом сообщений
+    const prevScore = (prev.updatedAt || 0) * 1000 + (prev.messages?.length || 0)
+    const nextScore = (c.updatedAt || 0) * 1000 + (c.messages?.length || 0)
+    if (nextScore >= prevScore) {
+      // cloud новее — мержим сообщения, избегая дублей по id
+      const mergedMessages = [...(prev.messages || [])]
+      const seen = new Set(mergedMessages.map(m => m.id))
+      for (const m of c.messages || []) {
+        if (m?.id && !seen.has(m.id)) {
+          mergedMessages.push(m)
+          seen.add(m.id)
+        }
+      }
+      map.set(c.id, { ...prev, ...c, messages: mergedMessages.length ? mergedMessages : c.messages })
+    }
+    // иначе оставляем локальную версию — она новее
+  }
+  return Array.from(map.values())
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+}
+
+function writeCloudToLocal(data, opts = {}) {
+  if (!data) return { merged: false }
+  const { merge = true, source = 'cloud' } = opts
+  let mergedChats = null
+  let mergedSettings = null
+
+  // Восстанавливаем настройки пользователя
   if (data.settings) {
     try {
       const existing = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')
-      // Мержим: параметры генерации из cloud, но не затираем ключи если они уже есть
-      const merged = {
+      mergedSettings = {
         ...existing,
         ...data.settings,
-        // Ключи придут отдельно из /api/settings, не перезатираем
         keys: existing.keys?.length > 0 ? existing.keys : (data.settings.keys || []),
       }
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged))
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(mergedSettings))
     } catch {
+      mergedSettings = data.settings
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(data.settings))
     }
   }
-  // Восстанавливаем историю чатов
+
+  // Восстанавливаем историю чатов — с merge, чтобы не терять локальные черновики
   if (Array.isArray(data.chats)) {
-    localStorage.setItem(CHATS_KEY, JSON.stringify(data.chats))
+    try {
+      const localRaw = localStorage.getItem(CHATS_KEY)
+      const localChats = localRaw ? JSON.parse(localRaw) : []
+      if (merge && localChats.length) {
+        mergedChats = mergeChats(localChats, data.chats)
+        localStorage.setItem(CHATS_KEY, JSON.stringify(mergedChats))
+        // debug trace
+        try { console.log(`[BrowserAI cloud sync] merge: local ${localChats.length} + cloud ${data.chats.length} → ${mergedChats.length}  source=${source}`) } catch {}
+      } else {
+        mergedChats = data.chats
+        localStorage.setItem(CHATS_KEY, JSON.stringify(data.chats))
+      }
+    } catch {
+      mergedChats = data.chats
+      localStorage.setItem(CHATS_KEY, JSON.stringify(data.chats))
+    }
   }
+
+  return { merged: true, chats: mergedChats, settings: mergedSettings }
 }
+
+// экспорт для useChats / тестов
+export { writeCloudToLocal }
+export const __cloudSyncInternals = { mergeChats, CHATS_KEY, SETTINGS_KEY }
 
 const inputCls = 'w-full rounded-xl border border-white/10 bg-graphite-900 px-4 py-3 text-cream placeholder:text-cream-faint focus:border-cream/30 focus:outline-none'
 const passwordInputCls = `${inputCls} pr-12`
