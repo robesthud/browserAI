@@ -1,0 +1,70 @@
+# Dev mode: source mounted as volumes — no rebuild needed for code changes.
+# Python: uvicorn --reload picks up core/ edits automatically.
+# UI: run `./scripts/dev-ui.sh` to rebuild UI in ~5s without container restart.
+#
+# Usage:  docker compose -f docker-compose.dev.yml up -d
+
+services:
+  browserai:
+    image: browserai-monolith:latest
+    container_name: browserai
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - python3 -c "import urllib.request,json,sys; d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/health',timeout=4)); sys.exit(0 if d.get('ok') else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    ports:
+    - 127.0.0.1:8080:8080
+    environment:
+    - BROWSERAI_DB=/data/browserai.db
+    - OPENHANDS_AGENT_SERVER=http://openhands:18000
+    - BIGMODEL_API_KEY=${BIGMODEL_API_KEY:-}
+    - AUTH_SECRET=${AUTH_SECRET}
+    - SESSION_SECRET=${SESSION_SECRET}
+    - APP_URL=${APP_URL:-http://186.246.14.141}
+    - REGISTRATION_SECRET=${REGISTRATION_SECRET:-}
+    volumes:
+    - ${DATA_DIR:-./data}:/data
+    - ${WORKSPACE_DIR:-./workspace}:/workspace
+    # ── Dev mounts: source code overrides baked-in copy ──
+    - ./core:/app/core:ro
+    - ./ui/dist:/app/ui/dist:ro
+    depends_on:
+    - openhands
+    extra_hosts:
+    - host.docker.internal:host-gateway
+    env_file:
+    - .env
+    # Override entrypoint: --reload watches /app/core for changes
+    command: ["uvicorn", "core.server:app", "--host", "0.0.0.0", "--port", "8080", "--reload", "--reload-dir", "/app/core"]
+
+  openhands:
+    image: ghcr.io/all-hands-ai/openhands:main
+    container_name: openhands
+    command:
+    - uvicorn
+    - openhands.server.listen:app
+    - --host
+    - 0.0.0.0
+    - --port
+    - '18000'
+    restart: unless-stopped
+    ports:
+    - 127.0.0.1:18000:18000
+    environment:
+    - PORT=18000
+    - BACKEND_ONLY=true
+    - WORKSPACE_MOUNT_PATH=${WORKSPACE_DIR:-/opt/browserai-data/workspace}
+    - LLM_BASE_URL=${OPENHANDS_LLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
+    - LLM_API_KEY=${OPENHANDS_LLM_API_KEY:-${BIGMODEL_API_KEY:-}}
+    - LLM_MODEL=${OPENHANDS_LLM_MODEL:-glm-4.5-flash}
+    - RUNTIME=docker
+    volumes:
+    - ${WORKSPACE_DIR:-./workspace}:/workspace
+    - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+    - host.docker.internal:host-gateway
