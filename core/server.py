@@ -2166,7 +2166,40 @@ async def workspace_chat_init(request: Request):
     chat_id = _request_chat_id(request, body.get("chatId"))
     base = _workspace_base_for_chat(chat_id, create=True)
     root_label = f"/workspace/{_chat_workspace_rel(chat_id)}" if chat_id else "/workspace"
-    return {"ok": True, "chatId": chat_id, "conversationId": _bind_chat_to_oh(chat_id), "root": root_label, "hostPath": str(base)}
+
+    # Ensure an OpenHands conversation exists for this chat immediately,
+    # so the chat appears in /api/cloud and is visible across devices/sessions.
+    cid = _bind_chat_to_oh(chat_id)
+    if not cid and chat_id:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.post(
+                    f"{OPENHANDS_SERVER}/api/conversations",
+                    json={},  # no initial_user_msg — conversation is created empty
+                    timeout=30.0,
+                )
+                r.raise_for_status()
+                oh_body = r.json()
+                cid = oh_body.get("conversation_id") or oh_body.get("id")
+                if cid:
+                    upsert_mapping(chat_id, cid, None)
+                    # Start the runtime in background — don't block the init response.
+                    # The runtime will be ready by the time the user sends their first message.
+                    async def _bg_start():
+                        try:
+                            await client.post(
+                                f"{OPENHANDS_SERVER}/api/conversations/{cid}/start",
+                                json={},
+                                timeout=600.0,
+                            )
+                        except Exception:
+                            pass
+                    import asyncio
+                    asyncio.create_task(_bg_start())
+        except Exception as e:
+            log.warning("workspace_chat_init: failed to create OH conversation for chat_id=%s: %s", chat_id, e)
+
+    return {"ok": True, "chatId": chat_id, "conversationId": cid, "root": root_label, "hostPath": str(base)}
 
 
 @app.delete("/api/workspace/chat")

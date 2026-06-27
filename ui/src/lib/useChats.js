@@ -237,7 +237,18 @@ export function useChats(settings) {
     const chat = createChat()
     setChats((prev) => [chat, ...prev])
     setActiveId(chat.id)
-    workspaceApi.initChatWorkspace(chat.id).catch(() => {})
+    // Init workspace + create OH conversation so chat appears in cloud sync
+    workspaceApi.initChatWorkspace(chat.id).then((res) => {
+      if (res?.conversationId) {
+        setChats((prev) =>
+          prev.map((c) =>
+            c.id === chat.id
+              ? { ...c, openhands: { ...(c.openhands || {}), conversationId: res.conversationId } }
+              : c
+          )
+        )
+      }
+    }).catch(() => {})
     return chat.id
   }, [])
 
