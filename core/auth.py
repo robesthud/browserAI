@@ -58,6 +58,21 @@ def _serializer() -> URLSafeTimedSerializer:
 def init_auth_schema() -> None:
     conn = get_conn()
     try:
+        # ── Migration: an older Node-era `sessions` table used a different
+        #    schema (had a `token_hash` column, no `expires_at`). If we detect
+        #    it, drop & recreate so deploys onto legacy DBs are idempotent and
+        #    don't crash on INSERT with the new columns.
+        try:
+            cols = {
+                r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()
+            }
+            if cols and ("token_hash" in cols or "expires_at" not in cols):
+                conn.execute("DROP TABLE IF EXISTS sessions")
+                conn.commit()
+        except Exception:
+            # table doesn't exist yet — nothing to migrate
+            pass
+
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS users (
