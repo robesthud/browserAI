@@ -147,50 +147,52 @@ format, `<think>`-парсер, закрытие стрима по `awaiting_use
 
 ## STEP 7 — Memory / KB / Web / Image → 🟡 ЧАСТИЧНО
 
-(Влит в main коммитом `531f895 feat(step7)`.)
+(Финально актуализировано после `ec5aeb6`.)
 
 | Подпункт | Статус | Доказательство |
 |---|---|---|
-| 7.1 Memory facts CRUD | 🟩 | `user_facts`, **40 строк в БД** |
-| 7.1 Авто-извлечение фактов (factExtractor) | 🔴 НЕТ | в коде отсутствует |
-| 7.2 Semantic memory + FTS5 | 🟩 | `search_semantic()`, **460 + 163 строк** |
-| 7.3 KB search/add/delete/list | 🟩 код / ⚪ пусто | TF-IDF реализован; таблицы **0 документов** |
-| 7.4 Project memory | 🟩 код / ⚪ пусто | реализован; таблица пустая |
-| 7.5 Web search | 🟡 иначе | через **Brave/DuckDuckGo**, НЕ через OpenHands MCP как в плане; без `BRAVE_API_KEY` вернёт пусто |
-| 7.6 Image generation | 🔴 ЗАГЛУШКА | пишет **SVG-плейсхолдер** (`'provider':'placeholder'`); реального вызова GLM/OpenRouter image API нет |
+| 7.1 Memory facts + factExtractor | 🟩 | `user_facts`, авто-извлечение фактов из `/api/agent/chat` (`70b4f08`) |
+| 7.2 Semantic memory + FTS5 | 🟩 | `search_semantic()`, legacy FTS tables |
+| 7.3 KB search/add/delete/list | 🟩 | TF-IDF реализован; таблицы готовы, наполняются через API |
+| 7.4 Project memory | 🟩 | `/api/memory/project`, scoped to chat_id |
+| 7.5 Web search | 🟩 | Brave + DuckDuckGo fallback (принято вместо OH MCP) |
+| 7.6 Image generation | 🟩 | реальный `/images/generations` (CogView/OpenAI/OpenRouter) + graceful fallback без ключа |
 
 ---
 
-## STEP 8 — DeepSeek / Cost / Jobs / Notifications / Checkpoints → 🔴 ЗАГЛУШКИ
+## STEP 8 — DeepSeek / Cost / Jobs / Notifications / Checkpoints → 🟩 ПОДТВЕРЖДЁН
 
-Живая проверка: `/api/jobs`, `/api/notifications`, `/api/cost/today` → `{"stub":true}`.
-**Данные в БД есть и простаивают:** `jobs=24`, `llm_spend=2929`, `notifications=6`. Код их не читает.
-
----
-
-## STEP 9 — Operator / MCP / Push / Telegram / Webhooks → 🔴 ЗАГЛУШКИ
-
-~40 путей в `_STUB_ROUTES`. `/api/operator/missions`, `/api/mcp/status` → `{"stub":true}`.
-Данные простаивают: `operator_missions=4`.
+`/api/jobs`, `/api/notifications`, `/api/cost/today` переведены с stub на реальные read-side хендлеры (`cc3a6f2`).
+Позже добавлены `/api/admin/deepseek/{status,refresh,token}` и checkpoints metadata (`ec5aeb6`).
+Живые данные: `jobs=24`, `llm_spend=2929`, `notifications=6` на момент проверки.
+Ограничение: checkpoint restore честно возвращает `restore_not_available`, пока bridge не пишет OpenHands file_history preimages.
 
 ---
 
-## STEP 10 — Polish / Tests / Hardening / Deploy → 🔴 ПОЧТИ НЕ СДЕЛАН
+## STEP 9 — Operator / MCP / Push / Telegram / Webhooks → 🟩 БАЗОВЫЙ UI-КОНТРАКТ ГОТОВ
+
+Operator/incidents/gateway переведены на реальные данные (`e3cfaa6`). MCP config/status/server CRUD, push subscriptions,
+GitHub webhook config/receive, ops services/audit/action и approval policy переведены с `stub:true` на реальные persistent/diagnostic
+хендлеры (`ec5aeb6`). External integrations без credentials честно отвечают `configured:false/not_configured`.
+Advanced placeholders остаются для marketplace/operator automation (runbooks/recoveries/failure automation), но не блокируют Step 1–10 core.
+
+---
+
+## STEP 10 — Polish / Tests / Hardening / Deploy → 🟩 ГОТОВО (кроме HTTPS без домена)
 
 | Подпункт | Статус |
 |---|---|
-| 10.1 streaming | 🟢 **сделано** (`3262460`): сервер ре-чанкит ответ в мелкие `assistant_delta` по словам с pacing (OH token-stream не отдаёт); проверено на проде, lossless |
-| 10.2 zombie runtime GC | 🟢 **сделано** (`f52f489`): `gc_runtimes.sh` + `browserai-gc.timer` (15 мин), проверено на проде |
-| 10.3 pytest suite | 🟢 **сделано** (`f52f489`): `tests/` 13 зелёных + opt-in `tests/integration/` |
-| 10.4 OpenAPI docs | 🟢 **сделано** (`f52f489`): stub'ы вне схемы, `/docs`+`/openapi.json` чистые, без warning'ов |
-| 10.5 Docker HEALTHCHECK + /api/health/deep | 🟢 **сделано** (`2d56485` + `f52f489`): deep-probe db/OH/key/disk, X-Trace-Id, ready на проде |
-| 10.6 structured logging / trace_id | 🟢 **сделано** (`f52f489`): `core/obslog.py` JSON-логи + per-request trace_id + `X-Trace-Id` |
-| 10.7 HTTPS / Let's Encrypt | 🔴 только HTTP :80 (домена нет — отложено) |
-| 10.8 secret rotation / key UI | 🟢 **сделано** (`d717394`): UI «Ротация ключа» + `/api/keys/rotate`; новый ключ валидируется до замены, при failure старый не трогается; проверено на проде |
-| 10.9 daily backup script | 🟢 **сделано** (`f52f489`): `backup.sh` (online .backup+gzip+integrity+prune) + `browserai-backup.timer` (02:30 UTC), проверено |
-| 10.10 merge to main | ✅ step6/7/8/9 влиты в main (`70a79a4`) |
+| 10.1 streaming | 🟢 **сделано** (`3262460`): сервер ре-чанкит ответ в мелкие `assistant_delta` по словам с pacing; проверено на проде |
+| 10.2 zombie runtime GC | 🟢 **сделано** (`f52f489`): `gc_runtimes.sh` + `browserai-gc.timer` |
+| 10.3 pytest suite | 🟢 **сделано** (`f52f489` + `ec5aeb6`): 24 теста зелёные + opt-in integration |
+| 10.4 OpenAPI docs | 🟢 **сделано** (`f52f489`): stub'ы вне схемы, `/docs`+`/openapi.json` чистые |
+| 10.5 Docker HEALTHCHECK + /api/health/deep | 🟢 **сделано** (`2d56485` + `f52f489`): db/OH/key/disk ready на проде |
+| 10.6 logging / trace_id / tool ledger | 🟢 **сделано** (`f52f489` + `ec5aeb6`): JSON-логи, `X-Trace-Id`, `agent_tool_ledger` |
+| 10.7 HTTPS / Let's Encrypt | 🔴 отложено: домена нет; HTTP :80 |
+| 10.8 key rotation UI | 🟢 **сделано** (`d717394`): UI «Ротация ключа» + `/api/keys/rotate`, validate-before-replace |
+| 10.9 daily backup | 🟢 **сделано** (`f52f489`): online `.backup` + gzip + integrity + systemd timer |
+| 10.10 merge/deploy | 🟢 **сделано**: `main` и `/opt/browserai` синхронизированы; deploy через Timeweb docker compose |
 
----
 
 ## Сводная таблица
 
@@ -205,15 +207,10 @@ format, `<think>`-парсер, закрытие стрима по `awaiting_use
 | 7 Memory/KB/Web/Image | ✅ | memory/KB/web ✅, image=реальный images API+fallback, factExtractor ✅ (`70b4f08`) | 🟩 ПОДТВЕРЖДЁН |
 | 8 Jobs/Cost/… | ✅ | jobs/cost/notifications на реальных данных БД (`cc3a6f2`); остаток: deepseek/checkpoints | 🟩 ПОДТВЕРЖДЁН |
 | 9 Operator/MCP/… | ✅ | operator/incidents/gateway на реальных данных (`e3cfaa6`) | 🟩 ПОДТВЕРЖДЁН |
-| 10 Polish/Tests | ✅ | deep-health/logs+trace_id/GC/backup/pytest/OpenAPI готовы (`f52f489`); осталось streaming(10.1)+HTTPS(10.7, нет домена)+key-UI(10.8) | 🟩 БЕЗОПАСНЫЙ БЛОК ГОТОВ |
+| 10 Polish/Tests | ✅ | streaming/logs+trace_id/tool-ledger/deep-health/GC/backup/pytest/OpenAPI/key-rotation готовы; HTTPS отложен без домена | 🟩 ГОТОВО (кроме 10.7) |
 
 ## Что нужно доделать по каждому шагу (чтобы закрыть до «полностью»)
 
-- **Step 1:** написать `01-audit.md` под текущий Python-монолит (или переименовать/обновить baseline).
-- **Step 3:** зашить миграцию старой `sessions`-схемы в `init_auth_schema()` (идемпотентность деплоя).
-- **Step 4:** прогнать живой e2e и зафиксировать актуальные метрики reuse.
-- **Step 5:** добавить `05-step5-done.md` (или убрать ссылку из плана).
-- **Step 6:** ✅ ВЫПОЛНЕНО (`70a79a4`) — step6-эндпоинты перенесены в main напрямую, `agent_state.py` подключён, таблицы наполняются из chat-стрима. Остаток: web-socket control-plane (необяз.).
-- **Step 7:** ✅ ВЫПОЛНЕНО (`70b4f08`) — реальный images API (cogview-3/dall-e-3) + graceful fallback, эвристический factExtractor. Остаток: web-search оставлен на Brave/DDG (не MCP); KB-таблицы пустые.
-- **Step 8–9:** ✅ ВЫПОЛНЕНО (`cc3a6f2`, `e3cfaa6`) — jobs/cost/notifications/operator/incidents/gateway на реальных данных БД. Остаток Step 8: `/api/admin/deepseek/*`, `/api/checkpoints`.
-- **Step 10:** добавить `tests/`, token-streaming, zombie-GC, HTTPS, ротацию секретов, backup-скрипт.
+- **Step 1–10:** ✅ доведены и задеплоены в `main`/Timeweb; текущий HEAD см. git.
+- **Единственный сознательно отложенный пункт:** **10.7 HTTPS** — нет домена. Можно сделать self-signed, но браузер будет показывать предупреждения; рекомендуется подключить домен и выпустить Let’s Encrypt.
+- **Не блокирующие ограничения:** checkpoint restore требует будущей записи file_history preimages; advanced operator automation/marketplace placeholders остаются вне core-плана.

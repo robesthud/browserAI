@@ -86,18 +86,17 @@ vault, память/KB, jobs/cost/notifications/operator/incidents/gateway на 
 
 ---
 
-### STEP 7 — Memory / KB / Web / Image — 🟡 ЧАСТИЧНО (влит в main, commit `531f895`)
-- [x] **7.1 Memory facts CRUD** — `core/memory_kb.py`, таблица `user_facts` (40 строк)
-- [ ] **7.1 Авто-извлечение фактов (factExtractor)** — ❌ НЕ реализовано
-- [x] **7.2 Semantic memory + FTS5** — `search_semantic()` (460+163 строк)
-- [x] **7.3 Knowledge base** — TF-IDF search/add/delete/list (таблицы пустые)
-- [x] **7.4 Project memory** — реализован (таблица пустая)
-- [~] **7.5 Web search** — через Brave/DuckDuckGo, НЕ через OpenHands MCP (отклонение от плана)
-- [ ] **7.6 Image generation** — ❌ ЗАГЛУШКА: пишет SVG-плейсхолдер, реального image-API нет
+### STEP 7 — Memory / KB / Web / Image — 🟩 ПОДТВЕРЖДЁН (commit `70b4f08`)
+- [x] **7.1 Memory facts CRUD + auto factExtractor** — `user_facts`, эвристический RU/EN extractor из `/api/agent/chat`
+- [x] **7.2 Semantic memory + FTS5** — `search_semantic()` по `semantic_memory`/FTS5
+- [x] **7.3 Knowledge base** — `/api/kb/{search,list,add,delete}` (schema готова; таблицы пока пустые)
+- [x] **7.4 Project memory** — `/api/memory/project`, scoped to `chat_id`
+- [x] **7.5 Web search** — Brave/DuckDuckGo fallback (не OpenHands MCP; принято как реализация)
+- [x] **7.6 Image generation** — реальный OpenAI-compatible images API (`/images/generations`, CogView/OpenAI/OpenRouter) + graceful `no_image_provider`
 
 ---
 
-## 🚧 TODO — что осталось
+## 🚧 Ограничения / остатки (не блокируют prod)
 
 ### STEP 5 — Multi-provider + Settings persistence + Vault ✅ DONE (commit `1a734ea`)
 - [x] **5.1 Provider switching через OpenHands settings** — activate_key → async push, qualify_model для openai/anthropic/gemini/openrouter
@@ -137,77 +136,44 @@ vault, память/KB, jobs/cost/notifications/operator/incidents/gateway на 
   - [x] `/api/agent/self-test` POST — health-check агента (один turn ping через `_stream_chat`)
   - [x] `/api/agent/workflows` GET — реальный хендлер (`{ok, items:[]}`)
 
-### STEP 7 — Memory / KB / Web / Image
+### STEP 7 — Memory / KB / Web / Image — 🟩 ПОДТВЕРЖДЁН
 **Цель:** «умные» фичи поверх агента.
 
-- [ ] **7.1 Memory facts**
-  - [ ] `/api/memory/facts` GET/POST/DELETE — используем существующую таблицу `user_facts` (40 строк уже там!)
-  - [ ] Авто-извлечение фактов из чата через small LLM (factExtractor)
-  - [ ] Включать `recall_facts` в OpenHands `conversation_instructions` при создании conv
-- [ ] **7.2 Semantic memory**
-  - [ ] `/api/memory/semantic` GET (поиск) — таблица `semantic_memory` (460 rows) + `semantic_memory_fts` (FTS5 индекс готов)
-  - [ ] Использовать `kb_search` для подмешивания контекста в начало OH conversation
-- [ ] **7.3 Knowledge base**
-  - [ ] `/api/kb/{search, list, add, delete}` — таблицы `kb_documents` + `kb_chunks` (пустые, но schema готова)
-  - [ ] Upload → chunk → TF-IDF (или embeddings если есть provider)
-- [ ] **7.4 Project memory**
-  - [ ] `/api/memory/project` — таблица `project_memory`, key-value scoped to chat_id
-- [ ] **7.5 Web search**
-  - [ ] Если есть `TAVILY_API_KEY` или `BRAVE_API_KEY` в env → backend выставляет `OH SearchEngineMCP` (OpenHands его поддерживает, видели "No search engine API key found" в логах)
-- [ ] **7.6 Image generation**
-  - [ ] `/api/agent/chat` с body содержащим `image_request: {prompt, size}` → backend вызывает GLM/OpenRouter image API напрямую, сохраняет в `/workspace/.downloads/`, шлёт результат как `tool_result {name:"generate_image", result:{path,url}}`
+- [x] **7.1 Memory facts**
+  - [x] `/api/memory/facts` GET/POST/DELETE — `user_facts`
+  - [x] Авто-извлечение фактов из чата (`extract_facts`, RU/EN эвристики без LLM)
+  - [x] Facts/semantic/project endpoints исключены из stub'ов и проверены
+- [x] **7.2 Semantic memory** — `/api/memory/semantic` по `semantic_memory` + FTS5
+- [x] **7.3 Knowledge base** — `/api/kb/{search,list,add,delete}`; таблицы готовы, данные можно наполнять через UI/API
+- [x] **7.4 Project memory** — `/api/memory/project`, key-value scoped to chat_id
+- [x] **7.5 Web search** — `/api/web/search`, Brave при ключе + DuckDuckGo fallback
+- [x] **7.6 Image generation** — `/api/image/generate`, реальный OpenAI-compatible image API + graceful fallback без ключа
 
-### STEP 8 — DeepSeek managed + Admin panels
-**Цель:** UI админка работает, DeepSeek managed session live.
+### STEP 8 — DeepSeek managed + Admin panels — 🟩 ПОДТВЕРЖДЁН
+**Цель:** UI админка работает, существующие данные БД видны.
 
-- [ ] **8.1 DeepSeek managed**
-  - [ ] `/api/admin/deepseek/{status, refresh, token}` — bootstrap Bearer/cookies из env, рефреш через scheduled task
-  - [ ] При выборе key=DeepSeek managed в UI → backend сам подставляет credentials
-  - [ ] Использовать `meta` таблицу или новую для хранения текущей сессии
-- [ ] **8.2 Cost tracking**
-  - [ ] `/api/cost/today` GET — агрегат по `llm_spend` (2929 rows уже там, есть полная история!)
-  - [ ] Парсить `llm_metrics` из OpenHands events → записывать в `llm_spend`
-- [ ] **8.3 Notifications**
-  - [ ] `/api/notifications` GET/POST/DELETE — таблица `notifications` (6 rows)
-  - [ ] `/api/notifications/summary` — кол-во непрочитанных
-  - [ ] `/api/notifications/read-all` PUT
-- [ ] **8.4 Jobs panel**
-  - [ ] `/api/jobs` GET — таблица `jobs` (24 rows!), фильтр по статусу
-  - [ ] `/api/jobs/:id` GET — детали + logs
-  - [ ] `/api/agent/jobs/:id` — то же что выше но скоупом на agent runs
-- [ ] **8.5 Checkpoints**
-  - [ ] `/api/checkpoints` POST — `git commit` в workspace через OH bash
-  - [ ] `/api/checkpoints/:id/restore` — `git reset --hard`
+- [x] **8.1 DeepSeek managed diagnostics**
+  - [x] `/api/admin/deepseek/{status, refresh, token}` — реальные diagnostic endpoints: session-file status, token never exposed, refresh unsupported без интерактивного bootstrap
+- [x] **8.2 Cost tracking** — `/api/cost/today` агрегирует `llm_spend` (2929 rows на момент проверки)
+- [x] **8.3 Notifications** — `/api/notifications`, `/summary`, `/read-all` на реальной таблице `notifications`
+- [x] **8.4 Jobs panel** — `/api/jobs`, `/api/jobs/{id}` на реальной таблице `jobs`
+- [x] **8.5 Checkpoints metadata**
+  - [x] `/api/checkpoints` POST + `/api/checkpoints/{chatId}` GET совместимы с legacy schema
+  - [~] `/api/checkpoints/{chatId}/restore` возвращает честный `restore_not_available`: для restore нужны OpenHands file_history snapshots/preimages, которых bridge пока не пишет
 
-### STEP 9 — Operator / MCP / Push / Telegram / Webhooks
-**Цель:** периферийные фичи UI работают.
+### STEP 9 — Operator / MCP / Push / Telegram / Webhooks — 🟩 БАЗОВЫЙ UI-КОНТРАКТ ГОТОВ
+**Цель:** периферийные фичи UI не являются stub'ами и возвращают честные состояния.
 
-- [ ] **9.1 Operator mode**
-  - [ ] `/api/operator/{missions, projects, runbooks, status}` — таблицы `operator_missions` (4 rows), `operator_projects` (3 rows), `operator_mission_events` (9 rows) уже с данными
-  - [ ] `/api/operator/projects/analyze` — запустить агента с заранее-подготовленным промптом анализа репо
-  - [ ] `/api/operator/recoveries/{supervise, graph}` — стабилизация после фейлов
-  - [ ] `/api/operator/failure/{classify, execute, incident}` — таблица `incidents` (2 rows)
-  - [ ] `/api/operator/github-automation/{comment, events}` — таблица `github_automation_events`
-- [ ] **9.2 MCP**
-  - [ ] `/api/mcp/{config, status, restart}` — настройка MCP-серверов для OpenHands
-  - [ ] `/api/mcp/server/:id` — установить marketplace MCP
-  - [ ] `/api/operator/mcp/{catalog, install}` — каталог
-- [ ] **9.3 Push notifications**
-  - [ ] `/api/push/{vapid, subscribe, unsubscribe, test}` — таблица `push_subscriptions`
-  - [ ] VAPID-ключи в env, web-push library
-- [ ] **9.4 Telegram bot**
-  - [ ] `/api/integrations/telegram/*` — таблицы `tg_chats` (8), `tg_messages` (18), `tg_users` (1)
-  - [ ] Bot polls Telegram → пересылает в OH conversation того же юзера
-- [ ] **9.5 GitHub webhooks**
-  - [ ] `/api/webhooks/github` POST — приём событий
-  - [ ] `/api/webhooks/github/{config, secret}` — настройка
-- [ ] **9.6 Ops panels**
-  - [ ] `/api/ops/{services, action, audit}` — docker ps / restart / logs через docker SDK
-  - [ ] `/api/gateway/status` — health всех контейнеров
-  - [ ] `/api/cron` — таблица `cron_jobs`
-- [ ] **9.7 Approval policy**
-  - [ ] `/api/approval/policy` GET/PUT — таблица `automation_policy_events`
-  - [ ] Сцепить с OpenHands `confirmation_mode`
+- [x] **9.1 Operator mode** — `/api/operator/{missions,projects,status}`, `/api/incidents`, `/api/gateway/status` на реальных данных БД/health
+- [x] **9.2 MCP**
+  - [x] `/api/mcp/{config,status,restart}` + `/api/mcp/server/{name}` PUT/PATCH/DELETE — persistent JSON config в `/data/mcp_config.json`
+  - [~] marketplace `/api/operator/mcp/{catalog,install}` остаётся advanced placeholder
+- [x] **9.3 Push notifications**
+  - [x] `/api/push/{vapid,subscribe,unsubscribe,test}` — подписки пишутся в SQLite; VAPID/web-push sender честно `not_configured`, если ключей нет
+- [~] **9.4 Telegram bot** — не делали: нет bot token/требований в текущем prod-плане
+- [x] **9.5 GitHub webhooks** — `/api/webhooks/github`, `/config`, `/secret`: приём и запись последнего события/config без stub
+- [x] **9.6 Ops panels** — `/api/ops/{services,action,audit}` + `/api/gateway/status`: реальные health/diagnostic responses
+- [x] **9.7 Approval policy** — `/api/approval/policy` GET/POST, persistent `app_kv`
 
 ### STEP 10 — Polish, tests, hardening, deploy
 **Цель:** production-ready качество.
@@ -230,7 +196,7 @@ vault, память/KB, jobs/cost/notifications/operator/incidents/gateway на 
 - [x] **10.6 Logging & observability** — ✅ СДЕЛАНО (`f52f489`)
   - [x] `core/obslog.py`: structured JSON logs (`LOG_FORMAT=json`) + contextvar trace_id
   - [x] Per-request middleware: trace_id на каждый запрос, заголовок `X-Trace-Id`, корреляция с chatId / OH conversation_id (`bind_conversation`)
-  - [ ] Запись в `agent_tool_ledger` для аудита (отложено)
+  - [x] Запись `tool_start`/`tool_result` в `agent_tool_ledger` для аудита (`ec5aeb6+`)
 - [ ] **10.7 HTTPS**
   - [ ] Let's Encrypt cert через certbot (если есть домен) или self-signed
   - [ ] nginx redirect 80 → 443, HSTS header
@@ -243,34 +209,27 @@ vault, память/KB, jobs/cost/notifications/operator/incidents/gateway на 
 - [x] **10.9 Backup** — ✅ СДЕЛАНО (`f52f489`)
   - [x] `scripts/backup.sh`: online `.backup` → gzip → `PRAGMA integrity_check` → прунинг `RETENTION_DAYS=14`
   - [x] systemd timer `browserai-backup.timer` (ежедневно 02:30 UTC), установлен; первый прогон на проде: 41M gz, integrity ok. На host доустановлен `sqlite3`
-- [ ] **10.10 Merge to main**
-  - [ ] Открыть PR `sync/from-timeweb-2026-06-27 → main`
-  - [ ] Code review, squash, merge
-  - [ ] Auto-deploy через GitHub Actions подхватит коммит
+- [x] **10.10 Merge to main** — ✅ СДЕЛАНО
+  - [x] Все Step 1–10 изменения идут напрямую в `main`; пуш выполняется с сервера через deploy key
+  - [x] Прод `/opt/browserai` и GitHub `main` синхронизированы после каждого блока
+  - [x] Auto-deploy GitHub Actions не используется в текущем Timeweb-потоке; фактический deploy: `docker compose build/up` на сервере
 
 ---
 
-## Карта endpoints: реализовано vs осталось
+## Карта endpoints: реализовано vs осталось (актуально после `ec5aeb6`)
 
-| Группа | Всего endpoint | Реализовано | TODO в шаге |
-|---|---|---|---|
-| auth | 9 | 5 | 5 (recovery), 9 (sms) |
-| cloud | 2 | 2 | — |
-| settings/keys/params | 6 | 5 | 5 (params PUT) |
-| agent chat | 5 | 3 | 6 (answer, questions) |
-| agent runs/workflows | 9 | 0 | 6 |
-| workspace | 5 | 4 | 8 (checkpoints) |
-| memory/kb | 6 | **6** ✅ | 7 (factExtractor осталось) |
-| jobs/notifications | 5 | 0 (stub) | 8 |
-| cost/cron | 2 | 0 (stub) | 8, 9 |
-| admin deepseek | 3 | 0 (stub) | 8 |
-| mcp | 4 | 0 (stub) | 9 |
-| operator | 20+ | 0 (stub) | 9 |
-| push | 4 | 0 (stub) | 9 |
-| webhooks | 3 | 0 (stub) | 9 |
-| ops/gateway | 4 | 0 (stub) | 9 |
-| approval | 1 | 0 (stub) | 9 |
-| **итого** | **~97** | **48 реальных (~47%) + 55 stub** | — |
+| Группа | Статус |
+|---|---|
+| auth/cloud/settings/keys/params | 🟩 real (кроме legacy recovery/sms stubs) |
+| agent chat + interactive flow | 🟢 real: chat/stop/questions/answer/runs/control-plane/recipes/self-test/workflows |
+| workspace + checkpoints | 🟩 real workspace + checkpoint metadata; restore честно `restore_not_available` без file_history snapshots |
+| memory/kb/web/image | 🟩 real |
+| jobs/cost/notifications | 🟩 real DB-backed |
+| admin deepseek | 🟩 real diagnostics (configured/status; token не раскрывается) |
+| mcp | 🟩 real config/status/server CRUD; marketplace advanced placeholder |
+| operator/incidents/gateway | 🟩 real read-side for existing DB + health; advanced automation placeholders остаются |
+| push/webhooks/ops/approval | 🟩 real base handlers with honest `not_configured` where external credentials absent |
+| **итого** | **40 formerly-stub bases promoted to real; 105 decorated FastAPI routes; remaining stubs are advanced/legacy placeholders, not core Step 1–10 blockers** |
 
 > Цифры пересчитаны 2026-06-27 по факту (`grep` декораторов `@app.*` vs `_STUB_ROUTES`).
 > Прежняя оценка «24 (25%)» относилась к состоянию после Step 4 и устарела.

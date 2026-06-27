@@ -1226,6 +1226,11 @@ async def _stream_chat(
                         if ev_name == "tool_start":
                             step += 1
                             ev_data["step"] = step
+                        if ev_name in ("tool_start", "tool_result") and chat_id:
+                            try:
+                                _ledger_tool_event(chat_id, cid, user_id, ev_name, ev_data)
+                            except Exception as e:
+                                log.debug("tool ledger skipped: %s", e)
                         if ev_name == "assistant_delta":
                             full_answer += ev_data.get("chunk", "")
                             if not ask_user_sent and chat_id:
@@ -1758,6 +1763,17 @@ def _init_ops_schema() -> None:
               files_json TEXT NOT NULL DEFAULT '[]',
               created_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS agent_tool_ledger (
+              id TEXT PRIMARY KEY,
+              chat_id TEXT,
+              conversation_id TEXT,
+              user_id TEXT,
+              event TEXT NOT NULL,
+              tool_name TEXT,
+              step INTEGER,
+              data_json TEXT NOT NULL,
+              created_at INTEGER NOT NULL
+            );
             """
         )
         conn.commit()
@@ -1786,6 +1802,24 @@ def _kv_set(key: str, value: Any) -> Any:
         )
         conn.commit()
         return value
+    finally:
+        conn.close()
+
+
+def _ledger_tool_event(chat_id: str, conversation_id: Optional[str], user_id: Optional[str], event: str, data: Dict[str, Any]) -> None:
+    """Step 10.6 audit: append tool_start/tool_result to agent_tool_ledger."""
+    _init_ops_schema()
+    conn = get_conn()
+    try:
+        conn.execute(
+            "INSERT INTO agent_tool_ledger (id,chat_id,conversation_id,user_id,event,tool_name,step,data_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                f"tl_{uuid.uuid4().hex[:16]}", chat_id, conversation_id, user_id,
+                event, data.get("name") or data.get("tool") or data.get("title"),
+                data.get("step"), json.dumps(data, ensure_ascii=False), int(time.time() * 1000),
+            ),
+        )
+        conn.commit()
     finally:
         conn.close()
 
