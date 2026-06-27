@@ -438,3 +438,71 @@ async def gateway_status(openhands_url: str) -> Dict[str, Any]:
 
     overall = "up" if all(s["status"] == "up" for s in services) else "degraded"
     return {"ok": True, "overall": overall, "services": services}
+
+
+async def deep_health(openhands_url: str) -> Dict[str, Any]:
+    """Step 10.5 — deep readiness probe.
+
+    Checks: db reachable, OpenHands reachable, an active LLM key is configured,
+    free disk > 5 GB. Returns {ok, status: ready|degraded, checks:[...]}.
+    The shallow /api/health stays as the UI online/offline signal; this is for
+    ops dashboards and load-balancer readiness.
+    """
+    import shutil
+    import httpx as _httpx
+    from core.database import get_active_key
+
+    checks: List[Dict[str, Any]] = []
+
+    # 1) database
+    db = {"name": "database", "ok": False, "detail": "sqlite"}
+    try:
+        conn = get_conn()
+        conn.execute("SELECT 1").fetchone()
+        conn.close()
+        db["ok"] = True
+    except Exception as e:
+        db["detail"] = str(e)[:120]
+    checks.append(db)
+
+    # 2) openhands reachability
+    oh = {"name": "openhands", "ok": False, "detail": ""}
+    try:
+        async with _httpx.AsyncClient() as c:
+            r = await c.get(f"{openhands_url}/api/options/models", timeout=5.0)
+            oh["ok"] = r.status_code < 500
+            oh["detail"] = f"HTTP {r.status_code}"
+    except Exception as e:
+        oh["detail"] = str(e)[:120]
+    checks.append(oh)
+
+    # 3) active LLM key configured
+    key = {"name": "llm_key", "ok": False, "detail": "no active key"}
+    try:
+        ak = get_active_key(include_secret=True)
+        if ak and (ak.get("apiKey") or ak.get("secret")):
+            key["ok"] = True
+            key["detail"] = f"provider={ak.get('provider') or ak.get('type') or 'unknown'}"
+        elif ak:
+            key["detail"] = "active key present but no secret"
+    except Exception as e:
+        key["detail"] = str(e)[:120]
+    checks.append(key)
+
+    # 4) free disk > 5 GB
+    disk = {"name": "disk", "ok": False, "detail": ""}
+    try:
+        total, used, free = shutil.disk_usage("/")
+        free_gb = free / (1024 ** 3)
+        disk["ok"] = free_gb > 5.0
+        disk["detail"] = f"{free_gb:.1f} GB free"
+    except Exception as e:
+        disk["detail"] = str(e)[:120]
+    checks.append(disk)
+
+    all_ok = all(c["ok"] for c in checks)
+    return {
+        "ok": all_ok,
+        "status": "ready" if all_ok else "degraded",
+        "checks": checks,
+    }

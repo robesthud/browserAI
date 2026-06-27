@@ -1,0 +1,10 @@
+[Unit]
+Description=BrowserAI — run runtime GC every 15 minutes (Step 10.2)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

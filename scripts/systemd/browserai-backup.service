@@ -1,0 +1,9 @@
+[Unit]
+Description=BrowserAI — daily SQLite backup (Step 10.9)
+
+[Service]
+Type=oneshot
+Environment=DB_PATH=/opt/browserai-data/browserai.db
+Environment=BACKUP_DIR=/opt/browserai-data/backups
+Environment=RETENTION_DAYS=14
+ExecStart=/opt/browserai/scripts/backup.sh

@@ -99,6 +99,7 @@ from core.memory_kb import (
 from core.web_image import generate_image, web_search as do_web_search
 from core.admin_data import (
     cost_today as _cost_today,
+    deep_health as _deep_health,
     gateway_status as _gateway_status,
     get_job as _get_job,
     get_operator_mission as _get_operator_mission,
@@ -112,8 +113,16 @@ from core.admin_data import (
     operator_status as _operator_status,
 )
 
+from core.obslog import (
+    configure_logging as _configure_logging,
+    set_trace_context as _set_trace_context,
+    trace_id_var as _trace_id_var,
+)
+
 log = logging.getLogger("browserai.core")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+# Step 10.6 — JSON logs (LOG_FORMAT=json) + per-request trace_id correlation.
+_configure_logging()
 
 OPENHANDS_SERVER = os.environ.get("OPENHANDS_AGENT_SERVER", "http://openhands:18000")
 DEFAULT_MODEL = os.environ.get("BROWSERAI_DEFAULT_MODEL", "glm-4.5-flash")
@@ -151,6 +160,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _trace_requests(request: Request, call_next):
+    """Step 10.6 — assign a trace_id to every request, correlate it with the
+    chatId when present, log start/finish as structured records, and echo the
+    id back via X-Trace-Id so the UI/ops can grep one request end-to-end."""
+    incoming = request.headers.get("X-Trace-Id")
+    chat_id = request.query_params.get("chatId") or request.headers.get("X-Chat-Id")
+    tid = _set_trace_context(trace_id=incoming, chat_id=chat_id)
+    started = time.time()
+    log.info("request %s %s", request.method, request.url.path)
+    try:
+        response = await call_next(request)
+    except Exception:
+        dt = (time.time() - started) * 1000
+        log.exception("request failed %s %s after %.1fms", request.method, request.url.path, dt)
+        raise
+    dt = (time.time() - started) * 1000
+    log.info("response %s %s -> %s in %.1fms",
+             request.method, request.url.path, response.status_code, dt)
+    response.headers["X-Trace-Id"] = tid
+    return response
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -262,6 +294,15 @@ async def get_health():
         "sandbox": True,
         "browser": True,
     }
+
+
+@app.get("/api/health/deep")
+async def get_health_deep():
+    """Step 10.5 — deep readiness probe (db, OpenHands, active key, disk>5GB).
+    Returns 200 with status=ready, or 503 with status=degraded so a
+    load-balancer / uptime check can act on it."""
+    result = await _deep_health(OPENHANDS_SERVER)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 503)
 
 
 def _settings_payload(request: Request) -> Dict[str, Any]:
@@ -986,6 +1027,11 @@ async def _stream_chat(
             )
             if chat_id:
                 upsert_run(chat_id, cid, user_id, "running", last_prompt=prompt, last_event_id=last_seen_event_id)
+            try:
+                from core.obslog import bind_conversation as _bind_conv
+                _bind_conv(cid)
+            except Exception:
+                pass
         except HTTPException as e:
             if chat_id:
                 upsert_run(chat_id, None, user_id, "error", last_prompt=prompt, last_error=str(e.detail))
@@ -1847,7 +1893,17 @@ _REAL_NOW = {
 for _path in _STUB_ROUTES:
     if _path in _REAL_NOW:
         continue
-    app.add_api_route(_path, _stub_response(_path), methods=["GET", "POST", "PUT", "DELETE"])
+    # Unique operation name per stub + keep stubs out of the OpenAPI schema so
+    # /docs only documents real endpoints (Step 10.4) and FastAPI doesn't warn
+    # about duplicate operation IDs.
+    _op_name = "stub_" + _path.strip("/").replace("/", "_").replace("{", "").replace("}", "")
+    app.add_api_route(
+        _path,
+        _stub_response(_path),
+        methods=["GET", "POST", "PUT", "DELETE"],
+        name=_op_name,
+        include_in_schema=False,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

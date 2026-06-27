@@ -1,0 +1,10 @@
+[Unit]
+Description=BrowserAI — GC idle OpenHands runtime containers (Step 10.2)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+Environment=IDLE_MINUTES=45
+Environment=OH_URL=http://127.0.0.1:18000
+ExecStart=/opt/browserai/scripts/gc_runtimes.sh
