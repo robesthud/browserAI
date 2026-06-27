@@ -34,6 +34,42 @@ def _dot(a: Dict[str, float], b: Dict[str, float]) -> float:
     return sum(v * b.get(k, 0.0) for k, v in a.items())
 
 
+# ── Auto fact extraction (Step 7.1) ──────────────────────────────────────────
+# Heuristic, LLM-free extractor: scans a user message for common
+# self-statements and stores them as durable facts. Cheap and offline.
+
+_FACT_PATTERNS = [
+    (r"\b(?:меня зовут|моё имя|мое имя)\s+([A-Za-zА-Яа-яЁё][\w\- ]{1,40})", "name"),
+    (r"\bmy name is\s+([A-Za-z][\w\- ]{1,40})", "name"),
+    (r"\bя работаю\s+([\wА-Яа-яЁё\-]{2,30})", "occupation"),
+    (r"\bi work as\s+(?:an?\s+)?([\w\-]{2,30})", "occupation"),
+    (r"\b(?:я живу в|я из)\s+([A-Za-zА-Яа-яЁё][\wА-Яа-яЁё\-]{1,30})", "location"),
+    (r"\bi (?:live in|am from)\s+([A-Za-z][\w\-]{1,30})", "location"),
+    (r"\b(?:я предпочитаю|мне нравится)\s+([\wА-Яа-яЁё\- ]{2,40}?)(?:[.,;!?]|$)", "preference"),
+    (r"\bi (?:prefer|like)\s+([\w\- ]{2,40}?)(?:[.,;!?]|$)", "preference"),
+    (r"\b(?:мой любимый|моя любимая)\s+([\wА-Яа-яЁё\- ]{2,40}?)(?:[.,;!?]|$)", "favorite"),
+]
+_FACT_RE = [(re.compile(p, re.IGNORECASE), key) for p, key in _FACT_PATTERNS]
+
+
+def extract_facts(user_id: str, text: str) -> List[Dict[str, Any]]:
+    """Scan text, persist any detected self-statements as facts.
+    Returns the list of facts that were stored/updated."""
+    if not user_id or not text:
+        return []
+    stored: List[Dict[str, Any]] = []
+    for rx, key in _FACT_RE:
+        m = rx.search(text)
+        if m:
+            value = m.group(1).strip().rstrip(".,!?;:")
+            if 1 < len(value) <= 80:
+                try:
+                    stored.append(upsert_fact(user_id, key, value))
+                except Exception:
+                    pass
+    return stored
+
+
 def list_facts(user_id: str) -> List[Dict[str, Any]]:
     conn = get_conn()
     try:

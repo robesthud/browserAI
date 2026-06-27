@@ -73,6 +73,7 @@ from core import vault as vlt
 from core.memory_kb import (
     delete_fact,
     delete_project_memory,
+    extract_facts,
     kb_add,
     kb_delete,
     kb_list,
@@ -1103,6 +1104,13 @@ async def agent_chat(request: Request):
     model = provider.get("model") or body.get("model") or DEFAULT_MODEL
     prompt = _history_to_prompt(history) or body.get("prompt") or "hi"
 
+    # Step 7.1 — auto-extract durable facts from the user's message (best-effort)
+    if user_id and prompt:
+        try:
+            extract_facts(user_id, prompt)
+        except Exception as e:
+            log.debug("fact extraction skipped: %s", e)
+
     # If the provider has no usable secret (vault locked, no key), fail fast
     # so the UI shows a clean message instead of OH returning 502 later.
     if not provider.get("apiKey") and (provider.get("authType") or "bearer") == "bearer":
@@ -1427,10 +1435,18 @@ async def api_web_search(request: Request, q: str = "", limit: int = 8):
 
 @app.post("/api/image/generate")
 async def api_image_generate(request: Request):
-    _require_user(request)
+    user = _require_user(request)
     body = await request.json()
-    result = await generate_image(body.get("prompt") or "", body.get("size") or "1024x1024")
-    return {"ok": True, "image": result}
+    # Resolve the active provider (with vault decryption) so we hit a real
+    # images API instead of returning a placeholder.
+    provider = _resolve_provider(body, user=user)
+    result = await generate_image(
+        body.get("prompt") or "",
+        body.get("size") or "1024x1024",
+        provider=provider,
+        model=body.get("model") or "",
+    )
+    return {"ok": bool(result.get("ok", True)), "image": result}
 
 
 @app.get("/api/kb/search")

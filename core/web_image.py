@@ -64,28 +64,110 @@ async def web_search(query: str, limit: int = 8) -> List[Dict[str, Any]]:
         return out[: max(1, min(limit, 20))]
 
 
-async def generate_image(prompt: str, size: str = '1024x1024', workspace_dir: str = '/workspace/.downloads') -> Dict[str, Any]:
+def _detect_image_endpoint(base_url: str) -> Optional[str]:
+    """Return the images/generations URL for a known OpenAI-compatible base."""
+    bu = (base_url or '').rstrip('/')
+    if not bu:
+        return None
+    # Zhipu/GLM (CogView), z.ai, DeepSeek, OpenAI, OpenRouter all expose
+    # POST {base}/images/generations (OpenAI-compatible).
+    return bu + '/images/generations'
+
+
+def _pick_image_model(base_url: str, requested: str = '') -> str:
+    if requested:
+        return requested
+    bu = (base_url or '').lower()
+    if 'bigmodel.cn' in bu or 'z.ai' in bu:
+        return 'cogview-3'
+    if 'openai.com' in bu:
+        return 'dall-e-3'
+    if 'openrouter' in bu:
+        return 'openai/dall-e-3'
+    return 'cogview-3'
+
+
+async def generate_image(
+    prompt: str,
+    size: str = '1024x1024',
+    workspace_dir: str = '/workspace/.downloads',
+    provider: Optional[Dict[str, Any]] = None,
+    model: str = '',
+) -> Dict[str, Any]:
+    """Generate a real image via an OpenAI-compatible images API.
+
+    `provider` = {baseUrl, apiKey, ...} (resolved active key). If no usable
+    provider/key is available, returns a clear error result instead of a fake
+    image, so the UI can show an actionable message.
+    """
     prompt = (prompt or '').strip()
     if not prompt:
         raise ValueError('prompt required')
     os.makedirs(workspace_dir, exist_ok=True)
-    # Placeholder image artifact if no provider key available.
-    # This keeps the UI flow unblocked; real provider integration can replace it.
-    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024">
-    <rect width="100%" height="100%" fill="#111827"/>
-    <text x="50%" y="46%" text-anchor="middle" fill="#ffffff" font-size="28" font-family="Arial">BrowserAI image placeholder</text>
-    <text x="50%" y="53%" text-anchor="middle" fill="#9ca3af" font-size="20" font-family="Arial">{prompt[:120].replace('&','and').replace('<','').replace('>','')}</text>
-    </svg>'''
-    file_id = uuid.uuid4().hex[:12]
-    path = os.path.join(workspace_dir, f'generated-{file_id}.svg')
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write(svg)
-    return {
-        'id': file_id,
-        'prompt': prompt,
-        'size': size,
-        'path': path,
-        'url': path,
-        'createdAt': _now(),
-        'provider': 'placeholder',
-    }
+
+    base_url = (provider or {}).get('baseUrl') or ''
+    api_key = (provider or {}).get('apiKey') or ''
+    endpoint = _detect_image_endpoint(base_url)
+
+    if not endpoint or not api_key:
+        return {
+            'ok': False,
+            'error': 'no_image_provider',
+            'message': 'Генерация изображений недоступна: не настроен API-ключ с поддержкой images API. Откройте Настройки и активируйте ключ (например GLM/Zhipu с cogview-3).',
+            'prompt': prompt,
+            'provider': 'none',
+            'createdAt': _now(),
+        }
+
+    use_model = _pick_image_model(base_url, model)
+    payload = {'model': use_model, 'prompt': prompt, 'size': size, 'n': 1}
+    headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(endpoint, json=payload, headers=headers)
+            if r.status_code >= 400:
+                return {
+                    'ok': False,
+                    'error': f'provider_{r.status_code}',
+                    'message': f'Провайдер вернул ошибку {r.status_code}: {r.text[:200]}',
+                    'prompt': prompt, 'provider': use_model, 'createdAt': _now(),
+                }
+            body = r.json() or {}
+            data = (body.get('data') or [{}])[0]
+            img_url = data.get('url') or ''
+            b64 = data.get('b64_json') or ''
+
+            file_id = uuid.uuid4().hex[:12]
+            saved_path = ''
+            if b64:
+                saved_path = os.path.join(workspace_dir, f'generated-{file_id}.png')
+                with open(saved_path, 'wb') as f:
+                    f.write(base64.b64decode(b64))
+            elif img_url:
+                # download to workspace
+                try:
+                    async with httpx.AsyncClient(timeout=120.0) as dl:
+                        ir = await dl.get(img_url)
+                        if ir.status_code < 400:
+                            saved_path = os.path.join(workspace_dir, f'generated-{file_id}.png')
+                            with open(saved_path, 'wb') as f:
+                                f.write(ir.content)
+                except Exception:
+                    saved_path = ''
+
+            return {
+                'ok': True,
+                'id': file_id,
+                'prompt': prompt,
+                'size': size,
+                'model': use_model,
+                'url': img_url or (saved_path or ''),
+                'path': saved_path or None,
+                'createdAt': _now(),
+                'provider': use_model,
+            }
+    except httpx.TimeoutException:
+        return {'ok': False, 'error': 'timeout', 'message': 'Таймаут генерации изображения.', 'prompt': prompt, 'createdAt': _now()}
+    except Exception as e:
+        return {'ok': False, 'error': 'exception', 'message': str(e)[:200], 'prompt': prompt, 'createdAt': _now()}
