@@ -1,7 +1,8 @@
 // Персистентность чатов в localStorage.
 // Структура чата:
 // { id, title, createdAt, updatedAt, summary, summarizedUntil,
-//   messages: [{ id, role, content, attachments?, error? }] }
+//   messages: [{ id, role, content, attachments?, error? }],
+//   openhands?: { conversationId?, status?, ... } }
 
 import { uid } from './uid.js'
 
@@ -136,6 +137,7 @@ export function createChat() {
     summary: '',
     summarizedUntil: 0,
     messages: [],
+    openhands: {},
   }
 }
 
