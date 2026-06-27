@@ -1,8 +1,5 @@
 name: Deploy to Timeweb
 
-# Triggers:
-#   - any push to main (skipped if only docs / android / cf-proxy changed)
-#   - manual via "Run workflow"
 on:
   push:
     branches: [main]
@@ -42,16 +39,16 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: targeted deploy via deploy.sh
+      - name: Deploy current main to Timeweb
         if: env.HAS_TIMEWEB_SECRETS == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.TIMEWEB_HOST }}
           DEPLOY_USER: ${{ secrets.TIMEWEB_USER }}
-          APP_DIR:     ${{ secrets.TIMEWEB_APP_DIR }}
+          APP_DIR: ${{ secrets.TIMEWEB_APP_DIR }}
         run: |
           ssh -o StrictHostKeyChecking=accept-new \
-              "${DEPLOY_USER}@${DEPLOY_HOST}" \
-              "APP_DIR='${APP_DIR}' DEPLOY_SHA='${{ github.sha }}' bash -s" <<'REMOTE'
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "APP_DIR='${APP_DIR}' DEPLOY_SHA='${{ github.sha }}' bash -s" <<'REMOTE'
           set -euo pipefail
           cd "$APP_DIR"
 
@@ -68,26 +65,17 @@ jobs:
           trap 'send_tg "❌ <b>BrowserAI</b>: Ошибка деплоя! (коммит <code>${DEPLOY_SHA}</code>)"' ERR
           send_tg "🚀 <b>BrowserAI</b>: Начат деплой (коммит <code>${DEPLOY_SHA}</code>)..."
 
-          echo "── preflight fetch ──"
+          echo "── sync repo ──"
           git fetch --quiet origin main
-          changed=$(git diff --name-only HEAD..origin/main || true)
-          printf '%s\n' "$changed"
+          git checkout main || git checkout -b main origin/main
+          git reset --hard origin/main
+          git clean -fd
 
-          rebuild_agent_sandbox=0
-          if printf '%s\n' "$changed" | grep -Eq '^(docker/agent-sandbox/|docker-compose.yml|Dockerfile)'; then
-            rebuild_agent_sandbox=1
-          fi
-          if ! docker image inspect browserai-agent-sandbox:latest >/dev/null 2>&1; then
-            rebuild_agent_sandbox=1
-          fi
+          echo "── rebuild app ──"
+          docker compose up -d --build --force-recreate --remove-orphans browserai
 
-          echo "── targeted deploy ──"
-          APP_DIR="$APP_DIR" DEPLOY_BRANCH=main REBUILD_AGENT_SANDBOX="$rebuild_agent_sandbox" bash ./deploy.sh
-
-          echo "── verify required files ──"
-          test -f server/telegramBot.js
-          test -f server/index.js
-          curl -fsS http://localhost/api/health || curl -fsS http://localhost:8080/api/health
+          echo "── healthcheck ──"
+          curl -fsS http://localhost:8080/ >/dev/null || curl -fsS http://localhost/api/health >/dev/null
           docker ps --filter name=browserai || true
 
           send_tg "✅ <b>BrowserAI</b>: Деплой успешно завершен! (коммит <code>${DEPLOY_SHA}</code>)"

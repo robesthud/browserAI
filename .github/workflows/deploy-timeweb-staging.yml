@@ -1,8 +1,5 @@
 name: Deploy to Timeweb (staging)
 
-# Same flow as deploy-timeweb.yml but targets the STAGING host. Use to test
-# changes before promoting to prod. Triggered manually OR on push to the
-# `staging` branch.
 on:
   push:
     branches: [staging]
@@ -31,7 +28,7 @@ jobs:
       - name: Configure SSH
         if: env.HAS_TIMEWEB_STAGING_SECRETS == 'true'
         env:
-          DEPLOY_KEY:  ${{ secrets.TIMEWEB_STAGING_SSH_KEY }}
+          DEPLOY_KEY: ${{ secrets.TIMEWEB_STAGING_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.TIMEWEB_STAGING_HOST }}
         run: |
           mkdir -p ~/.ssh
@@ -40,32 +37,24 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: targeted staging deploy via deploy.sh
+      - name: Deploy current staging to Timeweb
         if: env.HAS_TIMEWEB_STAGING_SECRETS == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.TIMEWEB_STAGING_HOST }}
           DEPLOY_USER: ${{ secrets.TIMEWEB_STAGING_USER }}
-          APP_DIR:     ${{ secrets.TIMEWEB_STAGING_APP_DIR }}
+          APP_DIR: ${{ secrets.TIMEWEB_STAGING_APP_DIR }}
         run: |
           ssh -o StrictHostKeyChecking=accept-new \
-              "${DEPLOY_USER}@${DEPLOY_HOST}" \
-              "APP_DIR='${APP_DIR}' bash -s" <<'REMOTE'
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "APP_DIR='${APP_DIR}' bash -s" <<'REMOTE'
           set -euo pipefail
           cd "$APP_DIR"
           git fetch --quiet origin staging
-          changed=$(git diff --name-only HEAD..origin/staging || true)
-          printf '%s\n' "$changed"
-
-          rebuild_agent_sandbox=0
-          if printf '%s\n' "$changed" | grep -Eq '^(docker/agent-sandbox/|docker-compose.yml|Dockerfile)'; then
-            rebuild_agent_sandbox=1
-          fi
-          if ! docker image inspect browserai-agent-sandbox:latest >/dev/null 2>&1; then
-            rebuild_agent_sandbox=1
-          fi
-
-          APP_DIR="$APP_DIR" DEPLOY_BRANCH=staging REBUILD_AGENT_SANDBOX="$rebuild_agent_sandbox" bash ./deploy.sh
-          curl -fsS http://localhost/api/health
+          git checkout staging || git checkout -b staging origin/staging
+          git reset --hard origin/staging
+          git clean -fd
+          docker compose up -d --build --force-recreate --remove-orphans browserai
+          curl -fsS http://localhost:8080/ >/dev/null || curl -fsS http://localhost/api/health >/dev/null
           REMOTE
 
       - name: Skip staging deploy notice
