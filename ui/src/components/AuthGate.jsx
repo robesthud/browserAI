@@ -415,8 +415,11 @@ export default function AuthGate({ children }) {
       const me = await backend.authMe()
       if (me.user) {
         localStorage.setItem(AUTH_FLAG, '1')
-        const cloud = await backend.getCloud().catch(() => ({ data: null }))
-        writeCloudToLocal(cloud.data)
+        const cloud = await backend.getCloud().catch(() => null)
+        // backend.getCloud() returns the JSON payload directly, not { data }.
+        // Older code read cloud.data and silently skipped restoring chats,
+        // so OpenHands conversations imported by /api/cloud never appeared in UI.
+        writeCloudToLocal(cloud?.data ?? cloud)
         setUser(me.user)
         setRenderKey((v) => v + 1)
       } else {

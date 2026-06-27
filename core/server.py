@@ -22,12 +22,23 @@ Goals for Step 2:
 from __future__ import annotations
 
 import asyncio
+import base64
+import fnmatch
 import json
 import logging
+import mimetypes
 import os
+import shutil
+import subprocess
+import tarfile
+import tempfile
 import time
 import uuid
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -69,6 +80,7 @@ from core.conversations import (
     get_or_create_conversation,
     init_conversations_schema,
     update_last_event,
+    upsert_mapping,
 )
 from core.agent_state import (
     answer_question,
@@ -282,6 +294,44 @@ def _history_to_prompt(history: List[Dict[str, Any]]) -> str:
 
 def _sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _safe_chat_id_for_path(chat_id: Optional[str]) -> str:
+    raw = str(chat_id or "").strip()
+    safe = "".join(ch if (ch.isalnum() or ch in "_-.") else "_" for ch in raw)
+    return safe[:96] or "default"
+
+
+def _chat_workspace_rel(chat_id: Optional[str]) -> str:
+    return f"chats/{_safe_chat_id_for_path(chat_id)}"
+
+
+def _chat_workspace_abs(chat_id: Optional[str]) -> Path:
+    # _WORKSPACE_ROOT is defined in the workspace section below; Python resolves
+    # it at call time. One BrowserAI chat = one isolated OpenHands subworkspace.
+    return (_WORKSPACE_ROOT / _chat_workspace_rel(chat_id)).resolve()
+
+
+def _ensure_chat_workspace(chat_id: Optional[str]) -> Optional[Path]:
+    if not chat_id:
+        return None
+    p = _chat_workspace_abs(chat_id)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _chat_workspace_instruction(chat_id: Optional[str]) -> str:
+    if not chat_id:
+        return ""
+    rel = _chat_workspace_rel(chat_id)
+    abs_path = f"/workspace/{rel}"
+    return (
+        "\n\n[BrowserAI workspace isolation]\n"
+        f"This BrowserAI chat_id is {chat_id}. Treat {abs_path} as the ONLY project workspace for this chat. "
+        f"Before creating, editing, reading, testing or serving files, run/use `mkdir -p {abs_path}` and work inside `{abs_path}`. "
+        "Do not create or modify project files directly in /workspace or in another /workspace/chats/* directory unless the user explicitly asks to inspect another chat. "
+        f"For shell commands prefer: `cd {abs_path} && <command>`.\n"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -717,22 +767,229 @@ async def auth_sms_stub():
 # ─── Cloud sync (per-user settings + chats)
 
 
+def _parse_oh_ts(value: Any, fallback_ms: Optional[int] = None) -> int:
+    """OpenHands returns ISO strings; BrowserAI chats use epoch millis."""
+    if isinstance(value, (int, float)):
+        # Be tolerant of either seconds or millis.
+        return int(value if value > 10_000_000_000 else value * 1000)
+    if isinstance(value, str) and value:
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            pass
+    return fallback_ms if fallback_ms is not None else int(time.time() * 1000)
+
+
+def _browserai_chat_id_for_oh(conversation_id: str, mapping_by_cid: Optional[Dict[str, str]] = None) -> str:
+    if mapping_by_cid and conversation_id in mapping_by_cid:
+        return mapping_by_cid[conversation_id]
+    return f"oh_{conversation_id}"
+
+
+def _mapping_by_conversation_id() -> Dict[str, str]:
+    init_conversations_schema()
+    conn = get_conn()
+    try:
+        rows = conn.execute("SELECT chat_id, conversation_id FROM chat_conversations").fetchall()
+        return {r["conversation_id"]: r["chat_id"] for r in rows if r["conversation_id"] and r["chat_id"]}
+    finally:
+        conn.close()
+
+
+def _last_oh_event_id(events: List[Dict[str, Any]]) -> int:
+    vals = []
+    for e in events or []:
+        try:
+            vals.append(int(e.get("id", -1)))
+        except Exception:
+            pass
+    return max(vals) if vals else -1
+
+
+def _oh_events_to_browserai_messages(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Lossy but practical import of OpenHands history into BrowserAI chat.
+
+    We only turn real user/assistant chat messages into BrowserAI messages and
+    skip environment noise, recall actions and the giant system prompt event.
+    Tool/action events still remain accessible through /api/agent/runs/<chat>/history.
+    """
+    out: List[Dict[str, Any]] = []
+    for e in events or []:
+        source = e.get("source")
+        action = e.get("action")
+        args = e.get("args") or {}
+        text = args.get("content") if isinstance(args, dict) else None
+        if not text:
+            text = e.get("message") or e.get("content") or ""
+        text = str(text or "").strip()
+        if not text:
+            continue
+        # Skip OpenHands' injected system prompt and helper user actions. Keep
+        # agent `finish` as a normal assistant message: many file/edit tasks end
+        # with action=finish + args.final_thought rather than action=message.
+        if source == "agent" and action == "finish":
+            text = str((args.get("final_thought") if isinstance(args, dict) else "") or text or "Готово.").strip()
+        elif source == "agent" and action != "message":
+            continue
+        if source == "user" and action != "message":
+            continue
+        if source == "agent" and text.startswith("You are OpenHands agent"):
+            continue
+        if source not in ("user", "agent"):
+            continue
+        ts = _parse_oh_ts(e.get("timestamp"))
+        role = "assistant" if source == "agent" else "user"
+        item: Dict[str, Any] = {
+            "id": f"oh_evt_{e.get('id', uuid.uuid4().hex[:8])}",
+            "role": role,
+            "content": text,
+            "createdAt": ts,
+        }
+        if role == "assistant":
+            item.update({"pending": False, "agent": True, "toolCalls": []})
+        else:
+            item["attachments"] = []
+        out.append(item)
+    return out
+
+
+async def _fetch_oh_conversations_for_cloud(limit: int = 100) -> List[Dict[str, Any]]:
+    """Read OpenHands' own conversation store and convert it to BrowserAI chats.
+
+    This is the missing part that caused the visible mismatch: OpenHands kept
+    20+ sessions, while BrowserAI only rendered the local/cloud BrowserAI chat
+    list. We merge the OH list into /api/cloud so login/reload shows both.
+    """
+    chats: List[Dict[str, Any]] = []
+    mapping_by_cid = _mapping_by_conversation_id()
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        page_id: Optional[str] = None
+        fetched = 0
+        while fetched < limit:
+            params: Dict[str, Any] = {"limit": min(100, limit - fetched)}
+            if page_id:
+                params["page_id"] = page_id
+            r = await client.get(f"{OPENHANDS_SERVER}/api/conversations", params=params)
+            if r.status_code >= 400:
+                break
+            body = r.json()
+            items = body if isinstance(body, list) else (body.get("results") or [])
+            if not items:
+                break
+            for conv in items:
+                cid = conv.get("conversation_id") or conv.get("id")
+                if not cid:
+                    continue
+                chat_id = _browserai_chat_id_for_oh(str(cid), mapping_by_cid)
+                events: List[Dict[str, Any]] = []
+                try:
+                    er = await client.get(
+                        f"{OPENHANDS_SERVER}/api/conversations/{cid}/events",
+                        params={"limit": 100},
+                        timeout=20.0,
+                    )
+                    if er.status_code == 200:
+                        eb = er.json()
+                        events = eb if isinstance(eb, list) else (eb.get("events") or eb.get("results") or [])
+                except Exception:
+                    events = []
+                created = _parse_oh_ts(conv.get("created_at") or conv.get("createdAt"))
+                updated = _parse_oh_ts(conv.get("last_updated_at") or conv.get("updated_at"), created)
+                title = (conv.get("title") or "").strip() or f"OpenHands {str(cid)[:8]}"
+                messages = _oh_events_to_browserai_messages(events)
+                # Keep the mapping, so selecting this imported chat and sending
+                # a new message continues the SAME OpenHands conversation.
+                try:
+                    upsert_mapping(chat_id, str(cid), None)
+                    if events:
+                        update_last_event(chat_id, _last_oh_event_id(events))
+                except Exception:
+                    pass
+                chats.append({
+                    "id": chat_id,
+                    "title": title,
+                    "createdAt": created,
+                    "updatedAt": updated,
+                    "summary": "",
+                    "summarizedUntil": 0,
+                    "messages": messages,
+                    "openhands": {
+                        "conversationId": str(cid),
+                        "status": conv.get("status"),
+                        "runtimeStatus": conv.get("runtime_status"),
+                        "conversationVersion": conv.get("conversation_version"),
+                        "trigger": conv.get("trigger"),
+                    },
+                })
+                fetched += 1
+                if fetched >= limit:
+                    break
+            page_id = body.get("next_page_id") if isinstance(body, dict) else None
+            if not page_id:
+                break
+    return chats
+
+
+async def _cloud_with_openhands_chats(user_id: str) -> Dict[str, Any]:
+    data = cloud_load(user_id)
+    try:
+        imported = await _fetch_oh_conversations_for_cloud(
+            int(os.environ.get("BROWSERAI_IMPORT_OPENHANDS_CHATS_LIMIT", "100"))
+        )
+    except Exception as e:
+        log.warning("OpenHands conversation import skipped: %s", e)
+        # If OpenHands is temporarily unavailable, return an empty chat list
+        # instead of resurrecting BrowserAI's old cached copy. OpenHands is the
+        # source of truth; BrowserAI is only the shell.
+        data["chats"] = []
+        data["openhandsImported"] = 0
+        data["openhandsError"] = str(e)
+        return data
+
+    # IMPORTANT MERGE POLICY:
+    # OpenHands is canonical for chat/conversation history. BrowserAI must not
+    # keep a second persisted chat list and then merge it back, because that is
+    # exactly how deleted/stale chats reappear. The UI may keep transient local
+    # state while a stream is running, but reload/login should render the OH
+    # conversation store directly.
+    data["chats"] = sorted(imported, key=lambda c: int(c.get("updatedAt") or 0), reverse=True)
+    data["openhandsImported"] = len(imported)
+    data["chatSource"] = "openhands"
+    return data
+
+
 @app.get("/api/cloud")
 async def cloud_get(request: Request):
     user = current_user(request)
     if not user:
         # Allow anon read with empty payload so UI's CloudSync doesn't crash.
         return {"settings": None, "chats": None, "updatedAt": 0}
-    return cloud_load(user["id"])
+    return await _cloud_with_openhands_chats(user["id"])
+
+
+@app.get("/api/openhands/conversations")
+async def openhands_conversations():
+    """Debug/sync endpoint for the BrowserAI↔OpenHands merge."""
+    chats = await _fetch_oh_conversations_for_cloud(
+        int(os.environ.get("BROWSERAI_IMPORT_OPENHANDS_CHATS_LIMIT", "100"))
+    )
+    return {"ok": True, "count": len(chats), "chats": chats}
 
 
 @app.put("/api/cloud")
-async def cloud_put(request: Request):
+async def cloud_put(request: Request): 
     user = current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="auth_required")
     body = await request.json()
-    return cloud_save(user["id"], body.get("settings"), body.get("chats"))
+    # BrowserAI is an OpenHands shell: persist user settings, but do NOT persist
+    # BrowserAI's local chat array as canonical history. Chat history is read
+    # from OpenHands on /api/cloud. Keeping local chats here would create a
+    # second source of truth and resurrect stale/deleted conversations.
+    return cloud_save(user["id"], body.get("settings"), [])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -818,42 +1075,29 @@ def _chunk_text(text: str, size: int) -> List[str]:
 
 
 def _extract_ask_user_payload(text: str) -> Optional[Dict[str, Any]]:
-    """Best-effort parser for agent questions.
+    """Parse an explicit ask-user marker from model text.
 
-    Supports:
-      1) JSON block like:
-         ASK_USER:{"question":"...","options":[{"id":"a","label":"A"}]}
-      2) Plain Russian/English question ending with '?' and short bullet/
-         numbered options.
+    In OpenHands bridge mode, normal assistant replies often end with a human
+    question like "How can I help you today?". BrowserAI must render that as a
+    regular assistant message, NOT as an interactive ask_user card. Therefore
+    only an explicit marker is accepted:
+
+        ASK_USER:{"question":"...","options":[{"id":"a","label":"A"}]}
     """
     if not text:
         return None
     m = _re.search(r"ASK_USER\s*:\s*(\{.*\})", text, _re.DOTALL)
-    if m:
-        try:
-            data = json.loads(m.group(1))
-            q = (data.get("question") or "").strip()
-            opts = data.get("options") or []
-            if q:
-                return {"question": q, "options": opts}
-        except Exception:
-            pass
-
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    if not lines:
+    if not m:
         return None
-    qline = next((ln for ln in lines if ln.endswith("?")), "")
-    if not qline:
-        return None
-    opts = []
-    for ln in lines:
-        mm = _re.match(r"^(?:[-*]|\d+[\.)]|[A-Za-zА-Яа-я][\.)])\s+(.+)$", ln)
-        if mm:
-            label = mm.group(1).strip()
-            if label and label != qline:
-                oid = f"opt_{len(opts)+1}"
-                opts.append({"id": oid, "label": label})
-    return {"question": qline, "options": opts[:6]}
+    try:
+        data = json.loads(m.group(1))
+        q = (data.get("question") or "").strip()
+        opts = data.get("options") or []
+        if q:
+            return {"question": q, "options": opts}
+    except Exception:
+        pass
+    return None
 
 
 def _translate_event(evt: Dict[str, Any], step: int) -> List[Dict[str, Any]]:
@@ -1130,13 +1374,21 @@ async def _stream_chat(
     async with httpx.AsyncClient() as client:
         try:
             await _push_oh_settings(client, provider)
+            if chat_id:
+                _ensure_chat_workspace(chat_id)
+            isolated_extra_system = (extra_system or "") + _chat_workspace_instruction(chat_id)
+            isolated_prompt = prompt
+            if chat_id:
+                # Repeated lightweight reminder helps reused OpenHands conversations
+                # keep file/terminal work inside the per-chat directory.
+                isolated_prompt = f"{prompt}\n\n[Use workspace: /workspace/{_chat_workspace_rel(chat_id)}]"
             cid, was_created, last_seen_event_id = await get_or_create_conversation(
                 client,
                 OPENHANDS_SERVER,
                 chat_id,
                 user_id,
-                prompt,
-                extra_system,
+                isolated_prompt,
+                isolated_extra_system,
             )
             if chat_id:
                 upsert_run(chat_id, cid, user_id, "running", last_prompt=prompt, last_event_id=last_seen_event_id)
@@ -1613,8 +1865,30 @@ async def agent_health():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Workspace — per-chat, via OpenHands sandbox (Step 4)
+# Workspace — BrowserAI UI contract backed by the OpenHands shared sandbox
 # ─────────────────────────────────────────────────────────────────────────────
+
+# BrowserAI UI has a rich workspace contract (tree, read/save, upload, search,
+# diff, download) while OpenHands exposes only a smaller runtime file API
+# (list/select/upload/zip/git-diff). In this deployment both containers and the
+# OpenHands runtime mount the same host directory as /workspace, so the most
+# reliable "full merge" is:
+#   * agent chat / events are proxied through OpenHands conversation APIs;
+#   * workspace UI reads/writes the same mounted /workspace directly;
+#   * when a chatId already has an OpenHands conversation we also expose the
+#     conversationId in metadata, but file operations do not require a running
+#     conversation.
+
+_WORKSPACE_ROOT = Path(os.environ.get("WORKSPACE_ROOT") or "/workspace").resolve()
+_TEXT_EXTS = {
+    ".txt", ".md", ".markdown", ".json", ".js", ".jsx", ".ts", ".tsx",
+    ".css", ".scss", ".html", ".htm", ".xml", ".yml", ".yaml", ".csv",
+    ".py", ".java", ".c", ".cpp", ".h", ".go", ".rs", ".rb", ".php",
+    ".sh", ".sql", ".env", ".ini", ".toml", ".log", ".vue", ".svelte",
+}
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+_MAX_PREVIEW_BYTES = int(os.environ.get("BROWSERAI_WORKSPACE_PREVIEW_BYTES", "524288"))
+_MAX_TREE_ITEMS = int(os.environ.get("BROWSERAI_WORKSPACE_MAX_TREE_ITEMS", "5000"))
 
 
 def _bind_chat_to_oh(chat_id: Optional[str]) -> Optional[str]:
@@ -1625,107 +1899,482 @@ def _bind_chat_to_oh(chat_id: Optional[str]) -> Optional[str]:
     return m["conversation_id"] if m else None
 
 
-def _to_tree_item(raw_path: str, base: str = "/workspace") -> Dict[str, Any]:
-    """Normalize OpenHands list-files entries into the {name, path, type}
-    shape the BrowserAI UI's FileTree expects."""
-    if not raw_path:
-        return {"name": "", "path": "", "type": "file"}
-    p = raw_path.rstrip("/")
-    is_dir = raw_path.endswith("/") or raw_path == base
-    # Strip leading /workspace/ so UI shows relative paths
-    rel = p
-    if base and rel.startswith(base + "/"):
-        rel = rel[len(base) + 1 :]
-    elif rel == base:
-        rel = ""
-    name = rel.split("/")[-1] if rel else ""
-    return {"name": name, "path": rel, "type": "dir" if is_dir else "file"}
+def _request_chat_id(request: Optional[Request] = None, chat_id: Optional[str] = None) -> Optional[str]:
+    if chat_id:
+        return chat_id
+    if request:
+        return (
+            request.query_params.get("chatId")
+            or request.headers.get("X-BrowserAI-Chat-Id")
+            or request.headers.get("X-Chat-Id")
+        )
+    return None
+
+
+def _safe_rel(raw: Optional[str], allow_empty: bool = True) -> str:
+    value = str(raw or "").replace("\\", "/")
+    if value.startswith("/workspace/"):
+        value = value[len("/workspace/"):]
+    elif value == "/workspace":
+        value = ""
+    value = value.lstrip("/")
+    norm = os.path.normpath(value) if value else ""
+    if norm in (".", ""):
+        if allow_empty:
+            return ""
+        raise HTTPException(status_code=400, detail="path_required")
+    if norm.startswith("../") or norm == ".." or "\x00" in norm:
+        raise HTTPException(status_code=400, detail="invalid_path")
+    return norm.replace("\\", "/")
+
+
+def _safe_abs(raw: Optional[str], allow_empty: bool = True, base: Optional[Path] = None) -> Path:
+    rel = _safe_rel(raw, allow_empty=allow_empty)
+    root = (base or _WORKSPACE_ROOT).resolve()
+    target = (root / rel).resolve()
+    if target != root and root not in target.parents:
+        raise HTTPException(status_code=400, detail="invalid_path")
+    return target
+
+
+def _workspace_base_for_chat(chat_id: Optional[str], create: bool = True) -> Path:
+    if chat_id:
+        p = _chat_workspace_abs(chat_id)
+        if create:
+            p.mkdir(parents=True, exist_ok=True)
+        return p
+    _WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+    return _WORKSPACE_ROOT
+
+
+def _node_for_path(path: Path, rel: str, show_hidden: bool, counter: Dict[str, int]) -> Optional[Dict[str, Any]]:
+    name = path.name if rel else "workspace"
+    if not show_hidden and name.startswith(".") and rel:
+        return None
+    if counter["n"] > _MAX_TREE_ITEMS:
+        return None
+    counter["n"] += 1
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    item: Dict[str, Any] = {
+        "name": name,
+        "path": rel,
+        "type": "dir" if path.is_dir() else "file",
+        "size": 0 if path.is_dir() else int(st.st_size),
+        "mtime": int(st.st_mtime * 1000),
+    }
+    if path.is_dir():
+        children: List[Dict[str, Any]] = []
+        try:
+            entries = sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+        except OSError:
+            entries = []
+        for child in entries:
+            child_rel = f"{rel}/{child.name}" if rel else child.name
+            node = _node_for_path(child, child_rel, show_hidden, counter)
+            if node:
+                children.append(node)
+        item["children"] = children
+        item["size"] = sum(int(c.get("size") or 0) for c in children)
+    return item
+
+
+def _read_file_payload(path: Path, rel: str) -> Dict[str, Any]:
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="file_not_found")
+    size = path.stat().st_size
+    name = path.name
+    mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    ext = path.suffix.lower()
+    base = {"path": rel, "name": name, "size": size, "mime": mime, "type": mime}
+    raw = path.read_bytes()[:_MAX_PREVIEW_BYTES + 1]
+    truncated = len(raw) > _MAX_PREVIEW_BYTES
+    raw = raw[:_MAX_PREVIEW_BYTES]
+    if ext in _TEXT_EXTS or mime.startswith("text/") or mime in ("application/json", "application/xml"):
+        text = raw.decode("utf-8", errors="replace")
+        return {**base, "kind": "text", "text": text, "content": text, "truncated": truncated}
+    if ext in _IMAGE_EXTS or mime.startswith("image/"):
+        data_url = f"{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+        return {**base, "kind": "image", "dataUrl": f"data:{data_url}", "truncated": truncated}
+    if mime == "application/pdf" or ext == ".pdf":
+        data_url = f"{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+        return {**base, "kind": "pdf", "dataUrl": f"data:{data_url}", "truncated": truncated}
+    return {**base, "kind": "binary", "text": None, "content": "", "truncated": truncated}
+
+
+def _write_bytes(rel: str, data: bytes, base: Optional[Path] = None) -> Dict[str, Any]:
+    path = _safe_abs(rel, allow_empty=False, base=base)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return {"ok": True, "path": _safe_rel(rel, allow_empty=False), "size": len(data)}
+
+
+def _decode_upload_content(content: Any) -> bytes:
+    if content is None:
+        return b""
+    if isinstance(content, str):
+        # UI sends base64; for convenience accept data URLs and plain text too.
+        val = content.split(",", 1)[1] if content.startswith("data:") and "," in content else content
+        try:
+            return base64.b64decode(val, validate=True)
+        except Exception:
+            return content.encode("utf-8")
+    if isinstance(content, bytes):
+        return content
+    return json.dumps(content, ensure_ascii=False).encode("utf-8")
+
+
+def _copy_tree_contents(src: Path, dst: Path) -> None:
+    dst.mkdir(parents=True, exist_ok=True)
+    for item in src.iterdir():
+        target = dst / item.name
+        if item.is_dir():
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(item, target)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(item, target)
+
+
+async def _download_url_into(parent: Path, url: str, branch: str = "", strip_top_level: bool = False) -> Dict[str, Any]:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="unsupported_url")
+    parent.mkdir(parents=True, exist_ok=True)
+
+    # GitHub repository URL: clone it. This is the path used by the UI's
+    # "Import GitHub" button.
+    host = parsed.netloc.lower()
+    parts = [p for p in parsed.path.strip("/").split("/") if p]
+    is_github_repo = host.endswith("github.com") and len(parts) >= 2 and (len(parts) == 2 or parts[2] in ("tree", "blob"))
+    if is_github_repo and (len(parts) == 2 or parts[2] == "tree"):
+        repo = f"https://github.com/{parts[0]}/{parts[1].removesuffix('.git')}.git"
+        ref = branch or (parts[3] if len(parts) >= 4 and parts[2] == "tree" else "")
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td) / "repo"
+            cmd = ["git", "clone", "--depth", "1"]
+            if ref:
+                cmd += ["--branch", ref]
+            cmd += [repo, str(tmp)]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            if proc.returncode != 0:
+                raise HTTPException(status_code=502, detail=(proc.stderr or proc.stdout)[-800:])
+            shutil.rmtree(tmp / ".git", ignore_errors=True)
+            if strip_top_level:
+                _copy_tree_contents(tmp, parent)
+                dest = parent
+            else:
+                dest = parent / parts[1].removesuffix(".git")
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.copytree(tmp, dest)
+        return {"ok": True, "kind": "git", "path": str(dest.relative_to(parent)).replace("\\", "/") if dest != parent else ""}
+
+    # GitHub blob URL: rewrite to raw URL.
+    if host.endswith("github.com") and len(parts) >= 5 and parts[2] == "blob":
+        raw_path = "/".join(parts[4:])
+        url = f"https://raw.githubusercontent.com/{parts[0]}/{parts[1]}/{parts[3]}/{raw_path}"
+        filename = parts[-1]
+    else:
+        filename = Path(parsed.path).name or "download"
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=120.0) as client:
+        r = await client.get(url)
+        if r.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"download_failed: HTTP {r.status_code}")
+        data = r.content
+    dest = parent / filename
+    dest.write_bytes(data)
+
+    # Auto-extract common archives into parent/archive-name.
+    lower = filename.lower()
+    if lower.endswith(".zip"):
+        out = parent / Path(filename).stem
+        out.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(dest) as z:
+            z.extractall(out)
+        return {"ok": True, "kind": "zip", "path": str(out.relative_to(parent)).replace("\\", "/")}
+    if lower.endswith((".tar", ".tar.gz", ".tgz")):
+        out = parent / Path(filename).name.split(".tar")[0]
+        out.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(dest) as t:
+            t.extractall(out)
+        return {"ok": True, "kind": "tar", "path": str(out.relative_to(parent)).replace("\\", "/")}
+    return {"ok": True, "kind": "file", "path": str(dest.relative_to(parent)).replace("\\", "/"), "size": len(data)}
+
+
+@app.post("/api/workspace/chat/init")
+async def workspace_chat_init(request: Request):
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    chat_id = _request_chat_id(request, body.get("chatId"))
+    base = _workspace_base_for_chat(chat_id, create=True)
+    root_label = f"/workspace/{_chat_workspace_rel(chat_id)}" if chat_id else "/workspace"
+    return {"ok": True, "chatId": chat_id, "conversationId": _bind_chat_to_oh(chat_id), "root": root_label, "hostPath": str(base)}
+
+
+@app.delete("/api/workspace/chat")
+async def workspace_chat_delete(request: Request):
+    # BrowserAI chat deletion must be mirrored to OpenHands; otherwise the next
+    # /api/cloud merge imports the same OpenHands conversation again and the
+    # user sees a "deleted" chat resurrected. We still do NOT delete the shared
+    # /workspace files here, only the OH conversation/mapping.
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    chat_id = _request_chat_id(request, body.get("chatId"))
+    cid = _bind_chat_to_oh(chat_id)
+    deleted_oh = False
+    if cid:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            try:
+                r = await client.delete(f"{OPENHANDS_SERVER}/api/conversations/{cid}")
+                deleted_oh = r.status_code < 400
+            except Exception as e:
+                log.warning("workspace chat delete: OpenHands delete failed cid=%s: %s", cid, e)
+        try:
+            drop_mapping(chat_id)
+        except Exception:
+            pass
+    return {"ok": True, "chatId": chat_id, "conversationId": cid, "deletedOpenHands": deleted_oh, "workspacePreserved": True}
 
 
 @app.get("/api/workspace")
 @app.get("/api/workspace/tree")
-async def workspace_tree(chatId: Optional[str] = None, path: Optional[str] = None):
-    cid = _bind_chat_to_oh(chatId)
-    if not cid:
-        return {"items": [], "chatId": chatId, "path": path or ""}
-    qs = ""
-    if path:
-        qs = f"?path={path.lstrip('/')}"
-    async with httpx.AsyncClient() as client:
-        try:
-            r = await client.get(
-                f"{OPENHANDS_SERVER}/api/conversations/{cid}/list-files{qs}",
-                timeout=15.0,
-            )
-            if r.status_code >= 400:
-                return {"items": [], "chatId": chatId, "path": path or "", "error": r.text[:200]}
-            entries = r.json() or []
-        except Exception as e:
-            return {"items": [], "chatId": chatId, "path": path or "", "error": str(e)}
-    items = [_to_tree_item(p) for p in entries if isinstance(p, str)]
-    return {"items": items, "chatId": chatId, "path": path or ""}
+async def workspace_tree(request: Request, chatId: Optional[str] = None, path: Optional[str] = None, hidden: Optional[str] = None):
+    chat_id = _request_chat_id(request, chatId)
+    base = _workspace_base_for_chat(chat_id, create=True)
+    show_hidden = str(hidden or request.query_params.get("hidden") or "0").lower() in ("1", "true", "yes")
+    root_path = _safe_abs(path or "", allow_empty=True, base=base)
+    if not root_path.exists():
+        root_path.mkdir(parents=True, exist_ok=True)
+    counter = {"n": 0}
+    tree = _node_for_path(root_path, _safe_rel(path or "", allow_empty=True), show_hidden, counter) or {
+        "name": "workspace", "path": "", "type": "dir", "children": []
+    }
+    # BrowserAI's current Workspace.jsx expects {tree}; older adapters used {items}.
+    root_label = f"/workspace/{_chat_workspace_rel(chat_id)}" if chat_id else "/workspace"
+    return {"ok": True, "tree": tree, "items": tree.get("children", []), "chatId": chat_id, "path": path or "", "root": root_label}
 
 
 @app.get("/api/workspace/metadata")
-async def workspace_meta(chatId: Optional[str] = None):
-    cid = _bind_chat_to_oh(chatId)
-    return {"chatId": chatId, "conversationId": cid, "ready": bool(cid)}
+async def workspace_meta(request: Request, chatId: Optional[str] = None):
+    chat_id = _request_chat_id(request, chatId)
+    cid = _bind_chat_to_oh(chat_id)
+    root_label = f"/workspace/{_chat_workspace_rel(chat_id)}" if chat_id else "/workspace"
+    return {"chatId": chat_id, "conversationId": cid, "ready": bool(cid), "root": root_label}
 
 
 @app.get("/api/workspace/file")
-async def workspace_file(path: str, chatId: Optional[str] = None):
-    cid = _bind_chat_to_oh(chatId)
-    if not cid:
-        return JSONResponse(
-            {"path": path, "content": "", "error": "no_conversation_for_chat"},
-            status_code=200,
+async def workspace_file(request: Request, path: str, chatId: Optional[str] = None):
+    chat_id = _request_chat_id(request, chatId)
+    base = _workspace_base_for_chat(chat_id, create=True)
+    rel = _safe_rel(path, allow_empty=False)
+    return _read_file_payload(_safe_abs(rel, allow_empty=False, base=base), rel)
+
+
+@app.post("/api/workspace/file")
+async def workspace_create_file(request: Request):
+    body = await request.json()
+    chat_id = _request_chat_id(request, body.get("chatId"))
+    base = _workspace_base_for_chat(chat_id, create=True)
+    parent = _safe_rel(body.get("parentPath") or "", allow_empty=True)
+    name = _safe_rel(body.get("name") or body.get("path"), allow_empty=False)
+    # If name already contains a directory, honour it. Otherwise place under parent.
+    rel = name if "/" in name or not parent else f"{parent}/{name}"
+    return _write_bytes(rel, str(body.get("content") or "").encode("utf-8"), base=base)
+
+
+@app.put("/api/workspace/file")
+async def workspace_save_file(request: Request):
+    body = await request.json()
+    chat_id = _request_chat_id(request, body.get("chatId"))
+    base = _workspace_base_for_chat(chat_id, create=True)
+    rel = _safe_rel(body.get("path"), allow_empty=False)
+    return _write_bytes(rel, str(body.get("content") or "").encode("utf-8"), base=base)
+
+
+@app.post("/api/workspace/folder")
+async def workspace_create_folder(request: Request):
+    body = await request.json()
+    chat_id = _request_chat_id(request, body.get("chatId"))
+    base = _workspace_base_for_chat(chat_id, create=True)
+    parent = _safe_rel(body.get("parentPath") or "", allow_empty=True)
+    name = _safe_rel(body.get("name") or body.get("path"), allow_empty=False)
+    rel = name if "/" in name or not parent else f"{parent}/{name}"
+    _safe_abs(rel, allow_empty=False, base=base).mkdir(parents=True, exist_ok=True)
+    return {"ok": True, "path": rel}
+
+
+@app.post("/api/workspace/upload")
+async def workspace_upload(request: Request):
+    body = await request.json()
+    chat_id = _request_chat_id(request, body.get("chatId"))
+    base = _workspace_base_for_chat(chat_id, create=True)
+    parent = _safe_rel(body.get("parentPath") or "", allow_empty=True)
+    files = body.get("files") or []
+    saved = []
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        raw_path = f.get("path") or f.get("name") or "upload.bin"
+        rel_name = _safe_rel(raw_path, allow_empty=False)
+        rel = rel_name if not parent else f"{parent}/{rel_name}"
+        data = _decode_upload_content(f.get("content"))
+        saved.append(_write_bytes(rel, data, base=base))
+    return {"ok": True, "saved": saved, "count": len(saved)}
+
+
+@app.post("/api/workspace/upload-url")
+async def workspace_upload_url(request: Request):
+    body = await request.json()
+    chat_id = _request_chat_id(request, body.get("chatId"))
+    base = _workspace_base_for_chat(chat_id, create=True)
+    parent = _safe_abs(body.get("parentPath") or "", allow_empty=True, base=base)
+    result = await _download_url_into(
+        parent,
+        str(body.get("url") or ""),
+        branch=str(body.get("branch") or ""),
+        strip_top_level=bool(body.get("stripTopLevel")),
+    )
+    return result
+
+
+@app.post("/api/workspace/rename")
+async def workspace_rename(request: Request):
+    body = await request.json()
+    chat_id = _request_chat_id(request, body.get("chatId"))
+    base = _workspace_base_for_chat(chat_id, create=True)
+    src = _safe_abs(body.get("path"), allow_empty=False, base=base)
+    new_name = _safe_rel(body.get("newName"), allow_empty=False)
+    if "/" in new_name:
+        raise HTTPException(status_code=400, detail="newName_must_be_name_only")
+    dst = src.with_name(new_name)
+    src.rename(dst)
+    return {"ok": True, "path": str(dst.relative_to(base)).replace("\\", "/")}
+
+
+@app.post("/api/workspace/move")
+async def workspace_move(request: Request):
+    body = await request.json()
+    chat_id = _request_chat_id(request, body.get("chatId"))
+    base = _workspace_base_for_chat(chat_id, create=True)
+    src = _safe_abs(body.get("sourcePath"), allow_empty=False, base=base)
+    target_dir = _safe_abs(body.get("targetDirPath") or "", allow_empty=True, base=base)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dst = target_dir / src.name
+    shutil.move(str(src), str(dst))
+    return {"ok": True, "path": str(dst.relative_to(base)).replace("\\", "/")}
+
+
+@app.delete("/api/workspace/item")
+async def workspace_delete_item(request: Request):
+    body = await request.json()
+    chat_id = _request_chat_id(request, body.get("chatId"))
+    base = _workspace_base_for_chat(chat_id, create=True)
+    target = _safe_abs(body.get("path"), allow_empty=False, base=base)
+    if target.is_dir():
+        shutil.rmtree(target)
+    elif target.exists():
+        target.unlink()
+    return {"ok": True}
+
+
+@app.get("/api/workspace/search")
+async def workspace_search(request: Request, q: str = "", hidden: Optional[str] = None):
+    chat_id = _request_chat_id(request)
+    base = _workspace_base_for_chat(chat_id, create=True)
+    query = str(q or "").lower()
+    show_hidden = str(hidden or "0").lower() in ("1", "true", "yes")
+    results: List[Dict[str, Any]] = []
+    if not query:
+        return {"ok": True, "results": []}
+    for path in base.rglob("*"):
+        if len(results) >= 200:
+            break
+        rel = str(path.relative_to(base)).replace("\\", "/")
+        if not show_hidden and any(part.startswith(".") for part in rel.split("/")):
+            continue
+        if path.is_file() and (path.suffix.lower() in _TEXT_EXTS or query in path.name.lower()):
+            try:
+                text = path.read_text(errors="replace")[:200_000]
+            except Exception:
+                text = ""
+            idx = text.lower().find(query)
+            if query in path.name.lower() or idx >= 0:
+                snippet = text[max(0, idx - 80): idx + 180] if idx >= 0 else ""
+                results.append({"path": rel, "name": path.name, "snippet": snippet, "size": path.stat().st_size})
+    return {"ok": True, "results": results}
+
+
+@app.get("/api/workspace/history")
+async def workspace_history(path: str):
+    # Local history is not maintained in the OpenHands-backed workspace yet.
+    return {"ok": True, "path": path, "items": []}
+
+
+@app.post("/api/workspace/history/restore")
+async def workspace_history_restore():
+    raise HTTPException(status_code=501, detail="workspace_history_not_configured")
+
+
+@app.get("/api/workspace/events")
+async def workspace_events(limit: int = 200, runId: Optional[str] = None, path: Optional[str] = None):
+    return {"ok": True, "events": [], "items": []}
+
+
+@app.get("/api/workspace/diff")
+async def workspace_diff(request: Request, path: str = "", limit: int = 500, runId: Optional[str] = None, chatId: Optional[str] = None):
+    chat_id = _request_chat_id(request, chatId)
+    base = _workspace_base_for_chat(chat_id, create=True)
+    # If the chat workspace is a git repo, return a lightweight diff list;
+    # otherwise an empty list keeps the BrowserAI diff modal usable.
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(base), "diff", "--", _safe_rel(path, allow_empty=True)],
+            capture_output=True,
+            text=True,
+            timeout=20,
         )
-    async with httpx.AsyncClient() as client:
-        try:
-            r = await client.get(
-                f"{OPENHANDS_SERVER}/api/conversations/{cid}/select-file",
-                params={"file": path},
-                timeout=15.0,
-            )
-            if r.status_code >= 400:
-                return JSONResponse(
-                    {"path": path, "content": "", "error": r.text[:200]},
-                    status_code=200,
-                )
-            body = r.json() or {}
-            return {
-                "path": path,
-                "content": body.get("code") or body.get("content") or "",
-            }
-        except Exception as e:
-            return JSONResponse(
-                {"path": path, "content": "", "error": str(e)}, status_code=200
-            )
+        text = proc.stdout if proc.returncode == 0 else ""
+    except Exception:
+        text = ""
+    return {"ok": True, "diffs": [{"path": path or ".", "diff": text[:200_000]}] if text else []}
 
 
 @app.get("/api/workspace/download")
-async def workspace_download(chatId: str, path: Optional[str] = None):
-    """Download the whole workspace (or a sub-path) as a zip stream."""
-    cid = _bind_chat_to_oh(chatId)
-    if not cid:
-        raise HTTPException(status_code=404, detail="no_conversation_for_chat")
-    qs = ""
-    if path:
-        qs = f"?path={path.lstrip('/')}"
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            f"{OPENHANDS_SERVER}/api/conversations/{cid}/zip-directory{qs}",
-            timeout=120.0,
-        )
-        if r.status_code >= 400:
-            raise HTTPException(status_code=r.status_code, detail=r.text[:300])
+async def workspace_download(chatId: Optional[str] = None, path: Optional[str] = None, inline: Optional[str] = None):
+    base = _workspace_base_for_chat(chatId, create=True)
+    target = _safe_abs(path or "", allow_empty=True, base=base)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="not_found")
+    if target.is_file():
+        media = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        disposition = "inline" if str(inline or "").lower() in ("1", "true", "yes") else "attachment"
         return Response(
-            content=r.content,
-            media_type="application/zip",
-            headers={
-                "Content-Disposition": f'attachment; filename="workspace-{chatId or "chat"}.zip"'
-            },
+            content=target.read_bytes(),
+            media_type=media,
+            headers={"Content-Disposition": f'{disposition}; filename="{target.name}"'},
         )
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as z:
+            for item in target.rglob("*"):
+                if item.is_file():
+                    z.write(item, item.relative_to(target))
+        content = tmp_path.read_bytes()
+    finally:
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+    name = target.name or "workspace"
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{name}.zip"'},
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
