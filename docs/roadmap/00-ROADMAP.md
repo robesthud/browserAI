@@ -235,9 +235,11 @@ vault, память/KB, jobs/cost/notifications/operator/incidents/gateway на 
   - [ ] Let's Encrypt cert через certbot (если есть домен) или self-signed
   - [ ] nginx redirect 80 → 443, HSTS header
   - [ ] `APP_URL=https://...` → cookies автоматом становятся Secure
-- [ ] **10.8 Secret rotation**
-  - [ ] BigModel API ключ `dba035e8...` сейчас лежит в `.env` и в БД — нужно ротировать (упоминался в коммитах несколько раз, могла утечь)
-  - [ ] Add `/api/admin/keys/rotate` чтобы перегенерить
+- [x] **10.8 Secret rotation / Key UI** — ✅ СДЕЛАНО (`d717394`)
+  - [x] UI: в Settings → Keys добавлен блок **«Ротация ключа»** для активного ключа: ввести новый секрет → **«Проверить и заменить»**
+  - [x] Backend: `/api/keys/rotate` — сначала реальный `validate_key` (1-token probe), и только при успехе перезаписывает старый секрет тем же `keyId`, делает ключ active и пушит настройки в OpenHands
+  - [x] Безопасность: если проверка нового ключа падает (401/403/любая ошибка), старый ключ НЕ трогается. Проверено на проде плохим ключом → `stage=validate`, deep-health после этого `ready`
+  - [x] Тесты: `tests/test_key_rotation.py`; всего 20 тестов зелёные
 - [x] **10.9 Backup** — ✅ СДЕЛАНО (`f52f489`)
   - [x] `scripts/backup.sh`: online `.backup` → gzip → `PRAGMA integrity_check` → прунинг `RETENTION_DAYS=14`
   - [x] systemd timer `browserai-backup.timer` (ежедневно 02:30 UTC), установлен; первый прогон на проде: 41M gz, integrity ok. На host доустановлен `sqlite3`

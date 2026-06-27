@@ -186,7 +186,7 @@ format, `<think>`-парсер, закрытие стрима по `awaiting_use
 | 10.5 Docker HEALTHCHECK + /api/health/deep | 🟢 **сделано** (`2d56485` + `f52f489`): deep-probe db/OH/key/disk, X-Trace-Id, ready на проде |
 | 10.6 structured logging / trace_id | 🟢 **сделано** (`f52f489`): `core/obslog.py` JSON-логи + per-request trace_id + `X-Trace-Id` |
 | 10.7 HTTPS / Let's Encrypt | 🔴 только HTTP :80 (домена нет — отложено) |
-| 10.8 secret rotation | 🟠 механизм отложен → доработка ввода/ротации ключа в UI отдельным заходом |
+| 10.8 secret rotation / key UI | 🟢 **сделано** (`d717394`): UI «Ротация ключа» + `/api/keys/rotate`; новый ключ валидируется до замены, при failure старый не трогается; проверено на проде |
 | 10.9 daily backup script | 🟢 **сделано** (`f52f489`): `backup.sh` (online .backup+gzip+integrity+prune) + `browserai-backup.timer` (02:30 UTC), проверено |
 | 10.10 merge to main | ✅ step6/7/8/9 влиты в main (`70a79a4`) |
 
