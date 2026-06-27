@@ -1,71 +1,20 @@
 services:
   browserai:
-    mem_limit: 1500m
-    memswap_limit: 1700m
     build: .
-    image: browserai:latest
+    image: browserai-monolith:latest
     container_name: browserai
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
     environment:
-      - BROWSERAI_RUNTIME_MODE=privileged
-      - BROWSERAI_DISABLE_CATASTROPHIC_APPROVAL=1
-      - NODE_ENV=production
-      - PORT=8080
-      - OPS_APP_DIR=/opt/browserai
-      - DEEPSEEK_STATE_FILE=/data/deepseek_session.json
-      - ZAI_STATE_FILE=/data/zai_session.json
-      - ZAI_HEARTBEAT_MS=${ZAI_HEARTBEAT_MS:-600000}
-      - ZAI_MODELS_REFRESH_MS=${ZAI_MODELS_REFRESH_MS:-3600000}
-      - ZAI_COOKIES=${ZAI_COOKIES:-}
-      - ZAI_API_KEY=${ZAI_API_KEY:-}
-      - BIGMODEL_API_KEY=${BIGMODEL_API_KEY:-}
-      - GLM_PROXY_URL=${GLM_PROXY_URL:-http://glm-free-api:8000}
-      - CHAT_DEBUG_LOG=/data/chat-debug.log
-      - TG_BOT_TOKEN=${TG_BOT_TOKEN:-}
-      - TG_ADMIN_CHAT_ID=${TG_ADMIN_CHAT_ID:-}
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      - GITHUB_REPO=${GITHUB_REPO:-robesthud/browserAI}
-      - CF_PROXY_URL=${CF_PROXY_URL:-}
-      - CF_PROXY_SECRET=${CF_PROXY_SECRET:-}
-      - SESSION_SECRET=${SESSION_SECRET:-change-me}
-      - AUTH_SECRET=${AUTH_SECRET:-}
-      - APP_URL=${APP_URL:-http://localhost}
-      - WORKSPACE_ROOT=${WORKSPACE_ROOT:-/workspace}
-      - BROWSERAI_LIGHTWEIGHT_ROUTE=${BROWSERAI_LIGHTWEIGHT_ROUTE:-0}
-      - BROWSERAI_COMPUTER_USE=off
+      - BROWSERAI_DB=/data/browserai.db
       - OPENHANDS_AGENT_SERVER=http://openhands:18000
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - LUMA_API_KEY=${LUMA_API_KEY:-}
-      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - BIGMODEL_API_KEY=${BIGMODEL_API_KEY:-}
     volumes:
       - ${DATA_DIR:-./data}:/data
       - ${WORKSPACE_DIR:-./workspace}:/workspace
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /opt/browserai:/opt/browserai
-      - /opt/browserai/server:/app/server
-      - /opt/browserai/runtime:/app/runtime
     depends_on:
       - openhands
-
-  # ──────────────────────────────────────────────────────────────────────
-  # postgres — built-in robust database for sandbox and app data
-  # ──────────────────────────────────────────────────────────────────────
-  db:
-    image: postgres:15-alpine
-    container_name: browserai-db
-    restart: unless-stopped
-    environment:
-      - POSTGRES_USER=browserai
-      - POSTGRES_PASSWORD=browserai_secret
-      - POSTGRES_DB=browserai
-    volumes:
-      - ${DATA_DIR:-./data}/postgres:/var/lib/postgresql/data
-    mem_limit: 256m
-    cpus: 0.25
 
   # ──────────────────────────────────────────────────────────────────────
   # openhands — OpenHands Agent Server (backend-only, port 18000)
@@ -80,10 +29,10 @@ services:
     environment:
       - PORT=18000
       - BACKEND_ONLY=true
-      - SANDBOX_RUNTIME_CONTAINER_IMAGE=ghcr.io/all-hands-ai/runtime:main
+      - SANDBOX_RUNTIME_CONTAINER_IMAGE=browserai-runtime:latest
       - WORKSPACE_MOUNT_PATH=${WORKSPACE_DIR:-/opt/browserai-data/workspace}
       - LLM_BASE_URL=${OPENHANDS_LLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
-      - LLM_API_KEY=${OPENHANDS_LLM_API_KEY:-${BIGMODEL_API_KEY:-dba035e8741f4f68afdd0f58951e0ee0.zOIQpvWagZlY5r7e}}
+      - LLM_API_KEY=${OPENHANDS_LLM_API_KEY:-${BIGMODEL_API_KEY:-}}
       - LLM_MODEL=${OPENHANDS_LLM_MODEL:-glm-4.5-flash}
     volumes:
       - ${WORKSPACE_DIR:-./workspace}:/workspace
