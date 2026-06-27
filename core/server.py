@@ -38,6 +38,7 @@ from fastapi.staticfiles import StaticFiles
 from core.database import (
     delete_key,
     get_active_key,
+    get_conn,
     get_key,
     get_params,
     import_keys,
@@ -1722,6 +1723,360 @@ async def workspace_download(chatId: str, path: Optional[str] = None):
         )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 8/9/10 finishing pass — real diagnostic/settings handlers for formerly
+# stubbed UI endpoints. These are intentionally conservative: when an external
+# integration is not configured, they return configured:false / unsupported
+# instead of pretending success with {stub:true}.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DATA_DIR = os.environ.get("BROWSERAI_DATA_DIR", "/data")
+_MCP_CONFIG_PATH = os.environ.get("BROWSERAI_MCP_CONFIG", os.path.join(_DATA_DIR, "mcp_config.json"))
+
+def _init_ops_schema() -> None:
+    conn = get_conn()
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS app_kv (
+              key TEXT PRIMARY KEY,
+              value_json TEXT NOT NULL,
+              updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS push_subscriptions (
+              endpoint TEXT PRIMARY KEY,
+              user_id TEXT,
+              data_json TEXT NOT NULL,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS checkpoints (
+              id TEXT PRIMARY KEY,
+              chat_id TEXT NOT NULL,
+              step INTEGER NOT NULL,
+              label TEXT NOT NULL,
+              files_json TEXT NOT NULL DEFAULT '[]',
+              created_at INTEGER NOT NULL
+            );
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _kv_get(key: str, default: Any = None) -> Any:
+    _init_ops_schema()
+    conn = get_conn()
+    try:
+        r = conn.execute("SELECT value_json FROM app_kv WHERE key=?", (key,)).fetchone()
+        return json.loads(r["value_json"]) if r else default
+    finally:
+        conn.close()
+
+
+def _kv_set(key: str, value: Any) -> Any:
+    _init_ops_schema()
+    conn = get_conn()
+    try:
+        conn.execute(
+            "INSERT INTO app_kv (key,value_json,updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
+            (key, json.dumps(value, ensure_ascii=False), int(time.time() * 1000)),
+        )
+        conn.commit()
+        return value
+    finally:
+        conn.close()
+
+
+def _mcp_load() -> Dict[str, Any]:
+    try:
+        if os.path.exists(_MCP_CONFIG_PATH):
+            with open(_MCP_CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+                return {"servers": data.get("servers") or {}}
+    except Exception as e:
+        log.warning("mcp config load failed: %s", e)
+    return {"servers": {}}
+
+
+def _mcp_save(data: Dict[str, Any]) -> Dict[str, Any]:
+    os.makedirs(os.path.dirname(_MCP_CONFIG_PATH), exist_ok=True)
+    payload = {"servers": data.get("servers") or {}}
+    with open(_MCP_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return payload
+
+
+@app.on_event("startup")
+async def _startup_ops_schema() -> None:
+    try:
+        _init_ops_schema()
+    except Exception as e:
+        log.warning("ops schema init failed: %s", e)
+
+
+@app.get("/api/checkpoints/{chat_id}")
+async def checkpoints_list(chat_id: str):
+    _init_ops_schema()
+    conn = get_conn()
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(checkpoints)").fetchall()}
+        items = []
+        if "files_json" in cols and "created_at" in cols:
+            rows = conn.execute(
+                "SELECT * FROM checkpoints WHERE chat_id=? ORDER BY step DESC, created_at DESC LIMIT 100",
+                (chat_id,),
+            ).fetchall()
+            for r in rows:
+                files = json.loads(r["files_json"] or "[]")
+                items.append({
+                    "id": r["id"], "chatId": r["chat_id"], "step": r["step"],
+                    "label": r["label"], "files": files, "fileCount": len(files),
+                    "ts": r["created_at"],
+                })
+        else:
+            # Legacy Node-era schema: one row per file snapshot
+            rows = conn.execute(
+                "SELECT step, label, ts, file_path FROM checkpoints WHERE chat_id=? ORDER BY step DESC, ts DESC LIMIT 500",
+                (chat_id,),
+            ).fetchall()
+            grouped: Dict[Tuple[int, int, str], List[str]] = {}
+            for r in rows:
+                key = (int(r["step"]), int(r["ts"]), r["label"] or f"checkpoint #{r['step']}")
+                grouped.setdefault(key, []).append(r["file_path"])
+            for (step, ts, label), files in grouped.items():
+                items.append({"id": f"{chat_id}:{step}:{ts}", "chatId": chat_id, "step": step, "label": label, "files": files, "fileCount": len(files), "ts": ts})
+        return {"ok": True, "checkpoints": items}
+    finally:
+        conn.close()
+
+
+@app.post("/api/checkpoints")
+async def checkpoints_create(request: Request):
+    body = await request.json()
+    chat_id = body.get("chatId") or body.get("chat_id")
+    if not chat_id:
+        raise HTTPException(status_code=400, detail="chatId required")
+    _init_ops_schema()
+    conn = get_conn()
+    try:
+        last = conn.execute("SELECT max(step) AS s FROM checkpoints WHERE chat_id=?", (chat_id,)).fetchone()
+        step = int(body.get("step") or ((last["s"] or 0) + 1))
+        files = body.get("files") or []
+        label = body.get("label") or f"checkpoint #{step}"
+        cid = f"cp_{uuid.uuid4().hex[:12]}"
+        now = int(time.time() * 1000)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(checkpoints)").fetchall()}
+        if "files_json" in cols and "created_at" in cols:
+            conn.execute(
+                "INSERT INTO checkpoints (id,chat_id,step,label,files_json,created_at) VALUES (?,?,?,?,?,?)",
+                (cid, chat_id, step, label, json.dumps(files, ensure_ascii=False), now),
+            )
+        else:
+            # Legacy schema: one row per file. If no files supplied, store a
+            # metadata marker path so the checkpoint still appears in UI.
+            for fp in (files or ["(manual checkpoint)"]):
+                conn.execute(
+                    "INSERT INTO checkpoints (chat_id,step,ts,label,file_path,revision_id) VALUES (?,?,?,?,?,?)",
+                    (chat_id, step, now, label, fp, ""),
+                )
+        conn.commit()
+        return {"ok": True, "checkpoint": {"id": cid, "chatId": chat_id, "step": step, "label": label, "files": files, "fileCount": len(files), "ts": now}}
+    finally:
+        conn.close()
+
+
+@app.post("/api/checkpoints/{chat_id}/restore")
+async def checkpoints_restore(chat_id: str, request: Request):
+    body = await request.json()
+    step = int(body.get("step") or 0)
+    # Real restore requires OpenHands file_history snapshots. The current OH
+    # bridge exposes workspace read/write but not per-edit preimages. Return a
+    # truthful, non-stub response so the UI can show the limitation cleanly.
+    return {"ok": False, "error": "restore_not_available", "chatId": chat_id, "step": step, "restored": [], "failed": [], "message": "Checkpoint metadata is available; file restore needs OpenHands file_history snapshots."}
+
+
+@app.get("/api/admin/deepseek/status")
+async def admin_deepseek_status():
+    session_path = os.environ.get("DEEPSEEK_SESSION_PATH", os.path.join(_DATA_DIR, "deepseek_session.json"))
+    exists = os.path.exists(session_path)
+    return {"ok": True, "configured": exists, "sessionPath": session_path, "managed": exists, "message": "DeepSeek managed session present" if exists else "DeepSeek managed session not configured"}
+
+
+@app.post("/api/admin/deepseek/refresh")
+async def admin_deepseek_refresh():
+    st = await admin_deepseek_status()
+    return {**st, "refreshed": False, "message": "Interactive DeepSeek refresh is not automated; upload/update session file on server."}
+
+
+@app.get("/api/admin/deepseek/token")
+async def admin_deepseek_token():
+    st = await admin_deepseek_status()
+    return {"ok": bool(st.get("configured")), "configured": bool(st.get("configured")), "token": None, "message": "Token is never exposed by API; use status for configuration check."}
+
+
+@app.get("/api/mcp/config")
+async def mcp_config_get():
+    return _mcp_load()
+
+
+@app.get("/api/mcp/status")
+async def mcp_status_get():
+    cfg = _mcp_load().get("servers") or {}
+    servers = []
+    for name, meta in cfg.items():
+        servers.append({"name": name, **(meta or {}), "status": "configured" if (meta or {}).get("enabled", True) else "disabled"})
+    return {"ok": True, "servers": servers, "count": len(servers)}
+
+
+@app.put("/api/mcp/server/{name}")
+@app.post("/api/mcp/server/{name}")
+async def mcp_server_upsert(name: str, request: Request):
+    body = await request.json()
+    cfg = _mcp_load()
+    servers = cfg.setdefault("servers", {})
+    servers[name] = {**(servers.get(name) or {}), **body, "name": name, "updatedAt": int(time.time() * 1000)}
+    _mcp_save(cfg)
+    return {"ok": True, "server": servers[name], "servers": servers}
+
+
+@app.patch("/api/mcp/server/{name}")
+async def mcp_server_patch(name: str, request: Request):
+    return await mcp_server_upsert(name, request)
+
+
+@app.delete("/api/mcp/server/{name}")
+async def mcp_server_delete(name: str):
+    cfg = _mcp_load()
+    removed = (cfg.get("servers") or {}).pop(name, None)
+    _mcp_save(cfg)
+    return {"ok": True, "removed": bool(removed), "servers": cfg.get("servers") or {}}
+
+
+@app.post("/api/mcp/restart")
+async def mcp_restart():
+    return {"ok": True, "restarted": False, "message": "MCP config saved. OpenHands restart is managed by its container lifecycle."}
+
+
+@app.get("/api/approval/policy")
+async def approval_policy_get():
+    default = {"read":"auto", "write":"ask", "net":"ask", "bash":"ask", "git":"ask", "mcp":"ask", "deploy":"ask"}
+    return {"ok": True, "policy": _kv_get("approval_policy", default)}
+
+
+@app.post("/api/approval/policy")
+async def approval_policy_set(request: Request):
+    body = await request.json()
+    return {"ok": True, "policy": _kv_set("approval_policy", body.get("policy") or body)}
+
+
+@app.get("/api/push/vapid")
+async def push_vapid():
+    public_key = os.environ.get("VAPID_PUBLIC_KEY", "")
+    return {"ok": True, "configured": bool(public_key), "publicKey": public_key}
+
+
+@app.post("/api/push/subscribe")
+async def push_subscribe(request: Request):
+    _init_ops_schema()
+    user = current_user(request)
+    body = await request.json()
+    endpoint = body.get("endpoint") or (body.get("subscription") or {}).get("endpoint")
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="endpoint required")
+    now = int(time.time() * 1000)
+    conn = get_conn()
+    try:
+        conn.execute(
+            "INSERT INTO push_subscriptions (endpoint,user_id,data_json,created_at,updated_at) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id, data_json=excluded.data_json, updated_at=excluded.updated_at",
+            (endpoint, (user or {}).get("id"), json.dumps(body, ensure_ascii=False), now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "subscribed": True}
+
+
+@app.post("/api/push/unsubscribe")
+async def push_unsubscribe(request: Request):
+    body = await request.json()
+    endpoint = body.get("endpoint") or (body.get("subscription") or {}).get("endpoint")
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="endpoint required")
+    conn = get_conn()
+    try:
+        cur = conn.execute("DELETE FROM push_subscriptions WHERE endpoint=?", (endpoint,))
+        conn.commit()
+        return {"ok": True, "removed": cur.rowcount}
+    finally:
+        conn.close()
+
+
+@app.post("/api/push/test")
+async def push_test():
+    return {"ok": False, "configured": False, "error": "webpush_sender_not_configured", "message": "Subscriptions are stored; VAPID/web-push sender is not configured."}
+
+
+@app.get("/api/webhooks/github/config")
+async def github_webhook_config():
+    cfg = _kv_get("github_webhook", {}) or {}
+    return {"ok": True, "configured": bool(cfg.get("secret") or os.environ.get("GITHUB_WEBHOOK_SECRET")), "events": cfg.get("events") or ["push", "pull_request"], "hasSecret": bool(cfg.get("secret") or os.environ.get("GITHUB_WEBHOOK_SECRET"))}
+
+
+@app.post("/api/webhooks/github/config")
+async def github_webhook_config_set(request: Request):
+    body = await request.json()
+    cfg = _kv_get("github_webhook", {}) or {}
+    cfg.update({k: v for k, v in body.items() if k != "secret"})
+    _kv_set("github_webhook", cfg)
+    return await github_webhook_config()
+
+
+@app.post("/api/webhooks/github/secret")
+async def github_webhook_secret_set(request: Request):
+    body = await request.json()
+    secret = body.get("secret") or ""
+    cfg = _kv_get("github_webhook", {}) or {}
+    cfg["secret"] = "***" if secret else ""
+    cfg["hasSecret"] = bool(secret)
+    _kv_set("github_webhook", cfg)
+    return {"ok": True, "hasSecret": bool(secret)}
+
+
+@app.post("/api/webhooks/github")
+async def github_webhook_receive(request: Request):
+    event = request.headers.get("X-GitHub-Event") or "unknown"
+    delivery = request.headers.get("X-GitHub-Delivery") or ""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    _kv_set("github_webhook_last", {"event": event, "delivery": delivery, "ts": int(time.time() * 1000), "repository": (payload.get("repository") or {}).get("full_name")})
+    return {"ok": True, "event": event, "delivery": delivery, "processed": False, "message": "Webhook received and recorded."}
+
+
+@app.get("/api/ops/services")
+async def ops_services():
+    return await _gateway_status(OPENHANDS_SERVER)
+
+
+@app.post("/api/ops/action")
+async def ops_action(request: Request):
+    body = await request.json()
+    action = body.get("action")
+    if action in ("health", "status"):
+        return await _gateway_status(OPENHANDS_SERVER)
+    return {"ok": False, "error": "unsupported_action", "action": action}
+
+
+@app.get("/api/ops/audit")
+async def ops_audit():
+    return {"ok": True, "items": [_kv_get("github_webhook_last", {})], "message": "Minimal audit feed; structured logs carry trace_id."}
+
+
 # Generic catch-all for unimplemented agent endpoints so the UI does not
 # blow up with HTML 404s.  We always return JSON {ok:false,...} so the UI's
 # JSON-only fetch helpers can swallow it cleanly.
@@ -2020,6 +2375,11 @@ _REAL_NOW = {
     "/api/agent/questions", "/api/agent/answer", "/api/agent/runs",
     "/api/agent/control-plane", "/api/agent/recipes", "/api/agent/self-test",
     "/api/agent/workflows",
+    "/api/checkpoints", "/api/admin/deepseek/status", "/api/admin/deepseek/refresh",
+    "/api/admin/deepseek/token", "/api/mcp/config", "/api/mcp/status", "/api/mcp/restart",
+    "/api/ops/services", "/api/ops/action", "/api/ops/audit", "/api/approval/policy",
+    "/api/push/vapid", "/api/push/subscribe", "/api/push/unsubscribe", "/api/push/test",
+    "/api/webhooks/github", "/api/webhooks/github/config", "/api/webhooks/github/secret",
 }
 
 for _path in _STUB_ROUTES:

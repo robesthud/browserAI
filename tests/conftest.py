@@ -15,6 +15,7 @@ import pytest
 # Isolate the DB before core.* imports read DB_PATH at module load.
 _TMP_DB = os.path.join(tempfile.gettempdir(), "browserai_test.db")
 os.environ["BROWSERAI_DB"] = _TMP_DB
+os.environ["BROWSERAI_DATA_DIR"] = tempfile.gettempdir()
 os.environ.setdefault("OPENHANDS_AGENT_SERVER", "http://127.0.0.1:9")  # unreachable on purpose
 os.environ.setdefault("APP_URL", "http://localhost")
 
