@@ -11,12 +11,12 @@
 **Branch:** `sync/from-timeweb-2026-06-27`
 **Прод:** `root@186.246.14.141`, путь `/opt/browserai`
 **UI URL:** `http://186.246.14.141/`
-**Текущий статус (ВЕРИФИЦИРОВАНО 2026-06-27 по коммиту `2854457`):**
-В проде (`main`) работают Step 1–5 + Step 7 (частично). Чат отвечает, multi-turn
-с reuse, workspace, auth + cloud sync, мульти-провайдер, vault, память/KB.
-Покрытие UI-endpoints — **~47% (48 реальных путей из ~97, + 55 заглушек)**,
-а НЕ 25%. Step 6 написан, но **не влит в main** (ветка `feat/step6-...`).
-Полный разбор: см. `docs/VERIFICATION-REPORT-2026-06-27.md`.
+**Текущий статус (ВЕРИФИЦИРОВАНО 2026-06-27 по коммиту `70a79a4`):**
+В проде (`main`) работают Step 1–9 (Step 10 — частично, только healthcheck).
+Чат отвечает, multi-turn с reuse, workspace, auth + cloud sync, мульти-провайдер,
+vault, память/KB, jobs/cost/notifications/operator/incidents/gateway на реальных
+данных, интерактивный agent-flow (вопросы/ответы/runs/control-plane). Step 6 влит
+в main (`70a79a4`) и задеплоен. Полный разбор: см. `docs/VERIFICATION-REPORT-2026-06-27.md`.
 
 **Архитектурный принцип:** UI ходит к `core/server.py`, тот переводит вызовы
 в OpenHands. Старые таблицы от Node-стека (40+ табл., `agent_workflows`,
@@ -111,30 +111,31 @@
 - [x] **Bug fix:** Anthropic использует `x-api-key`, Gemini использует query `?key=` (не Bearer)
 - См. `05-step5-done.md`
 
-### STEP 6 — Agent interactive flow — 🟠 КОД ЕСТЬ, НО НЕ В MAIN
+### STEP 6 — Agent interactive flow — 🟢 ГОТОВО (в main + прод)
 **Цель:** агент может задавать вопросы юзеру, юзер видит progress, может прерывать.
 
-> ⚠️ **ВЕРИФИЦИРОВАНО:** Step 6 реализован в ветке `feat/step6-agent-interactive-flow`
-> (commits `d4f4350`, `870335b`), но **НЕ влит в `main`**. В проде все эндпоинты ниже —
-> заглушки (`{"stub":true}`). `core/agent_state.py` есть в main, но не импортируется.
-> **Действие:** review + merge ветки. До этого функциональность пользователю недоступна.
+> ✅ **ВЕРИФИЦИРОВАНО (2026-06-27, commit `70a79a4`):** уникальные step6-эндпоинты
+> перенесены в `core/server.py` напрямую (НЕ merge ветки — он затёр бы Step 7/8/9),
+> `core/agent_state.py` теперь импортируется и `init_agent_state_schema()` вызывается
+> на старте. Таблицы `agent_runs` + `agent_questions` наполняются прямо из chat-стрима
+> (`upsert_run`/`set_run_status`/`create_question`). Все 7 путей исключены из stub'ов
+> (`_REAL_NOW`). Проверено вживую на проде: recipes→3 рецепта, control-plane→`{runs,count}`,
+> answer без qid→400, runs/{id}/reset+history→реальные хендлеры. Контейнер healthy.
 
-- [ ] **6.1 ask_user через OpenHands**
-  - [ ] Поддержать OpenHands action `wait_for_user_input` (если есть) или эмулировать через специальные prompts
-  - [ ] Если агент задаёт вопрос → backend парсит, шлёт SSE `ask_user {question, options[]}` + создаёт row в `agent_questions` таблице
-  - [ ] `/api/agent/answer` POST с `{question_id, answer}` → backend пушит ответ через `/api/conversations/{id}/message`
-- [ ] **6.2 Runs & resume**
-  - [ ] `/api/agent/runs/:chatId/reset` POST — `drop_mapping(chatId)` + DELETE OH conversation → следующий submit = fresh start
-  - [ ] `/api/agent/runs/:chatId/history` GET — последние N events transformed под UI
-- [ ] **6.3 Control plane**
-  - [ ] `/api/agent/control-plane` GET/POST — список активных runs, abort, pause, resume
-  - [ ] Использовать таблицу `agent_workflows` (уже есть в БД)
-- [ ] **6.4 Stop/abort**
-  - [ ] `/api/agent/chat/stop` уже работает (POST /stop в OH), но добавить мягкий "graceful stop" с уведомлением UI через `error` event
-- [ ] **6.5 Recipes / self-test / workflows**
-  - [ ] `/api/agent/recipes` GET — список преднастроенных промптов из `agent_recipes` (если есть таблица)
-  - [ ] `/api/agent/self-test` POST — простой health-check агента (один turn ping)
-  - [ ] `/api/agent/workflows` — переиспользовать существующие таблицы `agent_workflows` + `agent_workflow_steps`
+- [x] **6.1 ask_user через OpenHands**
+  - [x] Агент задаёт вопрос → backend парсит (`_extract_ask_user_payload`: JSON `ASK_USER:{...}` или текст с `?`+опциями), шлёт SSE `ask_user {question_id, question, options[]}` + создаёт row в `agent_questions`
+  - [x] `/api/agent/answer` POST с `{question_id, answer}` → сохраняет ответ + пушит его в OH через `/api/conversations/{id}/message`
+- [x] **6.2 Runs & resume**
+  - [x] `/api/agent/runs/:chatId/reset` POST — `drop_mapping(chatId)` + DELETE OH conversation + `set_run_status('reset')` → следующий submit = fresh start
+  - [x] `/api/agent/runs/:chatId/history` GET — последние N events transformed под UI (`_translate_event`)
+- [x] **6.3 Control plane**
+  - [x] `/api/agent/control-plane` GET (список runs из `agent_runs`) / POST (abort/pause/resume)
+- [x] **6.4 Stop/abort**
+  - [x] `/api/agent/chat/stop` работает (POST /stop в OH) + `set_run_status('stopped')`
+- [x] **6.5 Recipes / self-test / workflows**
+  - [x] `/api/agent/recipes` GET — список преднастроенных промптов (repo_audit / bugfix / deploy_check)
+  - [x] `/api/agent/self-test` POST — health-check агента (один turn ping через `_stream_chat`)
+  - [x] `/api/agent/workflows` GET — реальный хендлер (`{ok, items:[]}`)
 
 ### STEP 7 — Memory / KB / Web / Image
 **Цель:** «умные» фичи поверх агента.

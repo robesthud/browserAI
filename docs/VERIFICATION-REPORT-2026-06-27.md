@@ -119,19 +119,29 @@ format, `<think>`-парсер, закрытие стрима по `awaiting_use
 
 ---
 
-## STEP 6 — Agent interactive flow → 🟠 СДЕЛАН, НО НЕ В ПРОДЕ
+## STEP 6 — Agent interactive flow → 🟢 ГОТОВО (в main + прод)
 
-🔴 **Ключевая находка всего отчёта.** Код Step 6 **написан**, но живёт в ветке
-`feat/step6-agent-interactive-flow` (коммиты `d4f4350 feat(step6): add agent questions,
-runs, control plane, self-test`, `870335b fix(step6): import agent_state helpers`).
-**В `main` его НЕТ.**
+✅ **РЕШЕНО (2026-06-27, commit `70a79a4`).** Уникальные step6-эндпоинты перенесены
+в `core/server.py` напрямую (НЕ через `git merge` ветки `feat/step6-...` — её merge-base
+устарел, и merge затёр бы Step 7/8/9). `core/agent_state.py` теперь импортируется,
+`init_agent_state_schema()` вызывается на старте, а таблицы `agent_runs` + `agent_questions`
+наполняются прямо из chat-стрима (`upsert_run`/`set_run_status`/`create_question`).
 
-| Эндпоинт | В проде (`main`) | Живая проверка |
+| Эндпоинт | В проде (`main`) | Живая проверка (прод) |
 |---|---|---|
-| `/api/agent/answer`, `/control-plane`, `/runs`, `/questions`, `/self-test`, `/workflows`, `/recipes` | ❌ заглушки | `/api/agent/control-plane` → `{"stub":true}` |
-| `core/agent_state.py` | файл есть в `main`, но **не импортируется** в `server.py` (мёртвый код; задействован только в step6-ветке) | — |
+| `/api/agent/recipes` | ✅ реальный | 3 рецепта (repo_audit/bugfix/deploy_check) |
+| `/api/agent/workflows` | ✅ реальный | `{ok:true, items:[]}` |
+| `/api/agent/control-plane` GET | ✅ реальный | `{ok:true, runs:[], count:0}` |
+| `/api/agent/control-plane` POST | ✅ реальный | abort/pause/resume → `set_run_status` |
+| `/api/agent/questions` | ✅ реальный | `{ok:true, items:[]}` из `agent_questions` |
+| `/api/agent/answer` | ✅ реальный | без `question_id` → **400** (валидация) |
+| `/api/agent/runs/{id}/reset` | ✅ реальный | `{ok:true, reset:true}` + drop_mapping |
+| `/api/agent/runs/{id}/history` | ✅ реальный | transformed events через `_translate_event` |
+| `/api/agent/self-test` | ✅ реальный | SSE ping через `_stream_chat` |
+| `core/agent_state.py` | ✅ импортируется + schema на старте | CRUD проверен (runs/questions) |
 
-**Действие:** требуется review и merge ветки `feat/step6-...` в `main`, иначе функциональность недоступна пользователю.
+**Способ:** все 7 базовых путей исключены из `_STUB_ROUTES` через `_REAL_NOW`.
+Контейнер `browserai` healthy после деплоя.
 
 ---
 
@@ -178,7 +188,7 @@ runs, control plane, self-test`, `870335b fix(step6): import agent_state helpers
 | 10.7 HTTPS / Let's Encrypt | 🔴 только HTTP :80 |
 | 10.8 secret rotation | 🔴 нет (ключ всё ещё в `.env`+БД) |
 | 10.9 daily backup script | ⚠️ бэкапы есть на проде вручную, скрипта/таймера в репо нет |
-| 10.10 merge to main | ⚠️ step7 влит; step6 — нет |
+| 10.10 merge to main | ✅ step6/7/8/9 влиты в main (`70a79a4`) |
 
 ---
 
@@ -191,11 +201,11 @@ runs, control plane, self-test`, `870335b fix(step6): import agent_state helpers
 | 3 Auth | ✅ | работает; миграция sessions не в коде | 🟩 ПОДТВЕРЖДЁН |
 | 4 Conv+Workspace | ✅ | работает; метрики не перепроверены | 🟩 ПОДТВЕРЖДЁН |
 | 5 Provider+Vault | ✅ | работает; нет `05-step5-done.md` | 🟩 ПОДТВЕРЖДЁН |
-| 6 Interactive | TODO | код в ветке, НЕ в main | 🟠 НЕ В ПРОДЕ |
-| 7 Memory/KB/Web/Image | TODO | memory/KB/web ✅, image=плейсхолдер, factExtractor нет | 🟡 ЧАСТИЧНО |
-| 8 Jobs/Cost/… | TODO | заглушки (данные простаивают) | 🔴 ЗАГЛУШКИ |
-| 9 Operator/MCP/… | TODO | заглушки | 🔴 ЗАГЛУШКИ |
-| 10 Polish/Tests | TODO | только healthcheck (наш) | 🔴 ПОЧТИ НЕТ |
+| 6 Interactive | ✅ | questions/answer/runs/control-plane/recipes/self-test/workflows на реальных хендлерах (`70a79a4`) | 🟢 ПОЛНОСТЬЮ |
+| 7 Memory/KB/Web/Image | ✅ | memory/KB/web ✅, image=реальный images API+fallback, factExtractor ✅ (`70b4f08`) | 🟩 ПОДТВЕРЖДЁН |
+| 8 Jobs/Cost/… | ✅ | jobs/cost/notifications на реальных данных БД (`cc3a6f2`); остаток: deepseek/checkpoints | 🟩 ПОДТВЕРЖДЁН |
+| 9 Operator/MCP/… | ✅ | operator/incidents/gateway на реальных данных (`e3cfaa6`) | 🟩 ПОДТВЕРЖДЁН |
+| 10 Polish/Tests | ⚠️ | только healthcheck (10.5); tests/backup/rotation/streaming TODO | 🔴 ПОЧТИ НЕТ |
 
 ## Что нужно доделать по каждому шагу (чтобы закрыть до «полностью»)
 
@@ -203,7 +213,7 @@ runs, control plane, self-test`, `870335b fix(step6): import agent_state helpers
 - **Step 3:** зашить миграцию старой `sessions`-схемы в `init_auth_schema()` (идемпотентность деплоя).
 - **Step 4:** прогнать живой e2e и зафиксировать актуальные метрики reuse.
 - **Step 5:** добавить `05-step5-done.md` (или убрать ссылку из плана).
-- **Step 6:** **смержить ветку `feat/step6-...` в main** + удалить мёртвый `agent_state.py` если не нужен, или подключить.
-- **Step 7:** заменить SVG-плейсхолдер на реальный image-API; реализовать factExtractor; решить — web-search через MCP или оставить Brave/DDG (обновить план).
-- **Step 8–9:** подключить уже существующие данные БД (`jobs`, `llm_spend`, `notifications`, `operator_*`) к реальным хендлерам вместо stub.
+- **Step 6:** ✅ ВЫПОЛНЕНО (`70a79a4`) — step6-эндпоинты перенесены в main напрямую, `agent_state.py` подключён, таблицы наполняются из chat-стрима. Остаток: web-socket control-plane (необяз.).
+- **Step 7:** ✅ ВЫПОЛНЕНО (`70b4f08`) — реальный images API (cogview-3/dall-e-3) + graceful fallback, эвристический factExtractor. Остаток: web-search оставлен на Brave/DDG (не MCP); KB-таблицы пустые.
+- **Step 8–9:** ✅ ВЫПОЛНЕНО (`cc3a6f2`, `e3cfaa6`) — jobs/cost/notifications/operator/incidents/gateway на реальных данных БД. Остаток Step 8: `/api/admin/deepseek/*`, `/api/checkpoints`.
 - **Step 10:** добавить `tests/`, token-streaming, zombie-GC, HTTPS, ротацию секретов, backup-скрипт.
