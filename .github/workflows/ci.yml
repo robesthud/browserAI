@@ -15,9 +15,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  web-and-agent-checks:
-    name: Build + agent runtime checks
+  ui-build:
+    name: UI build
     runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ui
 
     steps:
       - name: Checkout repository
@@ -28,42 +32,33 @@ jobs:
         with:
           node-version: '22'
           cache: npm
+          cache-dependency-path: ui/package-lock.json
 
-      - name: Install dependencies
+      - name: Install UI dependencies
         run: npm ci
 
-      - name: Syntax-check critical server modules
-        run: |
-          node --check server/agentCore.js
-          node --check server/agentLoop.js
-          node --check server/agentSelfTest.js
-          node --check server/agentSandbox.js
-          node --check server/askUserRegistry.js
-          node --check server/contextManager.js
-          node --check server/index.js
-          node --check server/llmClient.js
-          node --check server/sandboxPolicy.js
-          node --check server/telegramBot.js
-          node --check server/workspace.js
-
-      - name: ESLint critical agent modules
-        run: |
-          npx eslint \
-            server/agentSelfTest.js \
-            server/askUserRegistry.js \
-            server/contextManager.js \
-            server/sandboxPolicy.js \
-            server/agentCore.js \
-            server/llmClient.js
-
-      - name: Build web app
+      - name: Build UI
         run: npm run build
 
-      - name: Run E2E and Unit tests
-        run: npm test
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+  backend-syntax:
+    name: Backend syntax checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify Python files compile
+        run: |
+          python -m py_compile \
+            core/auth.py \
+            core/conversations.py \
+            core/database.py \
+            core/providers.py \
+            core/server.py \
+            core/vault.py
