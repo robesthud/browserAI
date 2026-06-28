@@ -77,22 +77,28 @@
 - [x] On `tool_result` for write/bash-like tools, UI sends structured workspaceRevision and refreshes with `ifRevision`
 - [x] Workspace UI smart-polls during streaming with revision validation
 
-### Phase 2.3 — Isolation removal 🚧
-- [ ] `core/isolation.py` still active
-- [ ] `/var/run/docker.sock` still mounted for `browserai`; removal deferred until OpenHands config-based runtime mounting is verified
+### Phase 2.3 — Isolation removal ✅
+- [x] Removed BrowserAI-side Docker remount hack (`docker inspect/stop/rm/create`)
+- [x] `core/isolation.py` is now a config helper only; legacy `remount_runtime_async()` is a no-op compatibility shim
+- [x] Added `BROWSERAI_USE_ISOLATION=0` default and `BROWSERAI_OPENHANDS_CONFIG=/data/oh-config.toml`
+- [x] BrowserAI generates OpenHands `config.toml` with `[sandbox].volumes`
+- [x] Removed `/var/run/docker.sock` from the `browserai` service
+- [x] Removed `docker-cli` from the BrowserAI Docker image
+- [x] OpenHands remains the only service with docker.sock because it owns runtime container creation
 
 ## Current State on Prod (reference)
 - Health: OK (~5ms)
 - AUTH_SECRET: present
 - SQLite journal: WAL (already)
 - OpenHands WS: Socket.IO `/socket.io/` verified; BrowserAI uses WS with REST polling fallback
+- Isolation: BrowserAI has no docker.sock; OpenHands runtime workspaces use `config.toml` `[sandbox].volumes`
 
 ## Next Immediate Steps
-1. Phase 2.3 — start isolation deprecation behind `BROWSERAI_USE_ISOLATION`
-2. Phase 2.3 — feature-flag isolation and plan docker.sock removal
-3. Phase 3 — start replacing remaining stub endpoints
+1. Phase 3 — start replacing remaining stub endpoints
+2. Phase 4 — split `core/server.py` monolith into modules
+3. Phase 5 — production hardening / security polish
 
-## Current Status (after Phase 2 partial)
+## Current Status (after Phase 2 complete)
 - Fast sidebar load (<1s expected)
 - No more N+1 event fetches on app start
 - Messages loaded only when user opens/selects a chat

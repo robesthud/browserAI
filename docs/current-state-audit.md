@@ -23,13 +23,13 @@
 - `/api/operator/*`, `/api/jobs`, `/api/incidents` (many stubs)
 
 ### Architectural Debt Indicators
-- `core/server.py`: **3244 lines** (monolith)
-- `core/isolation.py`: **163 lines** (still active)
+- `core/server.py`: monolith (still large; Phase 4 target)
+- `core/isolation.py`: config helper only; Docker remount hack removed in Phase 2.3
 - `chat_conversations` table: exists in schema
-- `docker.sock` mounted in `browserai` service (docker-compose.yml)
+- `docker.sock` is NOT mounted in `browserai`; only OpenHands keeps it for runtime creation
 - SQLite WAL/busy_timeout: implemented in Phase 1.1
 - `AUTH_SECRET` startup validation: implemented in Phase 1.1
-- Heavy polling at 0.6s: still active; Phase 2 target
+- Streaming uses OpenHands Socket.IO/WebSocket with REST polling fallback
 
 ### Current Strengths
 - Mature auth + vault

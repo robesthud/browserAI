@@ -12,7 +12,7 @@ FROM python:3.12-slim AS runtime
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    sqlite3 curl git bash docker-cli \
+    sqlite3 curl git bash \
  && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir fastapi uvicorn httpx websockets pydantic aiosqlite bcrypt itsdangerous python-multipart cryptography

@@ -1,13 +1,13 @@
 """
 Per-chat OpenHands conversation reuse.
 
-New conversations: create WITHOUT initial_user_msg → /start → remount → POST /message.
-Reused conversations: just POST /message (mount already correct from init).
+Phase 2.3: new conversations create WITHOUT initial_user_msg → /start →
+POST /message. Workspace mounting is handled by OpenHands config.toml
+`sandbox.volumes`; BrowserAI does not remount runtime containers.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import time
@@ -132,31 +132,18 @@ async def conversation_alive(client: httpx.AsyncClient, oh_url: str, cid: str) -
         return False
 
 
-async def _remount_and_send(
+async def _send_initial_message(
     client: httpx.AsyncClient,
     oh_url: str,
     cid: str,
-    chat_id: str,
     initial_message: str,
 ) -> None:
-    """Remount runtime with per-chat mount, then send initial message.
-    Only called for NEW conversations — reused ones already have correct mount."""
-    from core.isolation import remount_runtime_async
-
-    try:
-        ok = await remount_runtime_async(cid, chat_id)
-        if ok:
-            log.info("_remount_and_send: remounted cid=%s chat_id=%s", cid, chat_id)
-        else:
-            log.warning("_remount_and_send: remount failed cid=%s chat_id=%s", cid, chat_id)
-    except Exception as e:
-        log.warning("_remount_and_send: remount error: %s", e)
-
-    # Give OH a moment to reconnect after remount
-    await asyncio.sleep(1)
-
+    """Send the initial user message after OpenHands has started the runtime."""
     if not initial_message:
         return
+    # Give OH a short moment to attach after /start. The old Docker remount hack
+    # needed this too; now it is only a startup grace period.
+    await asyncio_sleep(1)
     for attempt in range(3):
         try:
             r = await client.post(
@@ -165,14 +152,25 @@ async def _remount_and_send(
                 timeout=15.0,
             )
             if r.status_code < 400:
-                log.info("_remount_and_send: message sent to cid=%s", cid)
+                log.info("_send_initial_message: message sent to cid=%s", cid)
                 return
-            log.warning("_remount_and_send: POST /message returned %s (attempt %d)",
-                        r.status_code, attempt + 1)
+            log.warning(
+                "_send_initial_message: POST /message returned %s (attempt %d)",
+                r.status_code,
+                attempt + 1,
+            )
         except Exception as e:
-            log.warning("_remount_and_send: POST /message error (attempt %d): %s",
-                        attempt + 1, e)
-        await asyncio.sleep(2)
+            log.warning(
+                "_send_initial_message: POST /message error (attempt %d): %s",
+                attempt + 1,
+                e,
+            )
+        await asyncio_sleep(2)
+
+
+async def asyncio_sleep(seconds: float) -> None:
+    import asyncio
+    await asyncio.sleep(seconds)
 
 
 async def get_or_create_conversation(
@@ -248,8 +246,8 @@ async def get_or_create_conversation(
     except httpx.TimeoutException:
         log.warning("/start timeout for cid=%s (continuing to remount)", cid)
 
-    # Remount with per-chat mount, then send message
-    await _remount_and_send(client, oh_url, cid, chat_id or "", initial_message)
+    # Workspace mounting is configured in OpenHands config.toml; just send message.
+    await _send_initial_message(client, oh_url, cid, initial_message)
 
     if chat_id:
         upsert_mapping(chat_id, cid, user_id)

@@ -215,13 +215,15 @@ async def _startup_init() -> None:
     except Exception as e:
         log.error("schema init failed: %s", e)
 
-    # Ensure the sandbox directory exists for per-chat workspace isolation
+    # Phase 2.3: config-based OpenHands workspace mounting. BrowserAI no
+    # longer remounts runtime containers or needs docker.sock.
     try:
-        from core.isolation import ensure_sandbox_dir
+        from core.isolation import ensure_openhands_config, ensure_sandbox_dir
         sandbox = ensure_sandbox_dir()
-        log.info("workspace isolation sandbox ready: %s", sandbox)
+        oh_config = ensure_openhands_config()
+        log.info("workspace isolation config ready: sandbox=%s openhands_config=%s", sandbox, oh_config)
     except Exception as e:
-        log.warning("sandbox dir setup failed: %s", e)
+        log.warning("workspace isolation config setup failed: %s", e)
 
     # Push OH settings on startup (they are lost on OH container restart)
     try:
@@ -2609,7 +2611,6 @@ async def workspace_chat_init(request: Request):
                 cid = oh_body.get("conversation_id") or oh_body.get("id")
                 if cid:
                     upsert_mapping(chat_id, cid, None)
-                    import asyncio
                     async def _bg_start():
                         async with httpx.AsyncClient(timeout=30.0) as bg_client:
                             try:
@@ -2617,17 +2618,8 @@ async def workspace_chat_init(request: Request):
                                     f"{OPENHANDS_SERVER}/api/conversations/{cid}/start",
                                     json={}, timeout=600.0,
                                 )
-                            except Exception:
-                                pass
-                        from core.isolation import remount_runtime_async
-                        try:
-                            ok = await remount_runtime_async(cid, chat_id)
-                            if ok:
-                                log.info("workspace_chat_init: remounted runtime for chat_id=%s cid=%s", chat_id, cid)
-                            else:
-                                log.warning("workspace_chat_init: remount failed for chat_id=%s cid=%s", chat_id, cid)
-                        except Exception as e:
-                            log.warning("workspace_chat_init: remount error: %s", e)
+                            except Exception as e:
+                                log.debug("workspace_chat_init: background start skipped: %s", e)
                     asyncio.create_task(_bg_start())
         except Exception as e:
             log.warning("workspace_chat_init: failed to create OH conversation for chat_id=%s: %s", chat_id, e)
