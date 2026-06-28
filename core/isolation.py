@@ -1,12 +1,15 @@
 """
 Per-chat workspace isolation for OpenHands runtimes.
 
-OpenHands creates one runtime container per sandbox and reuses it across
-conversations, always mounting whatever WORKSPACE_MOUNT_PATH / sandbox.volumes
-was set at startup.  That means every chat sees the same /workspace.
-
-Fix: after OH creates a runtime, we stop it, recreate it with the correct
-per-chat bind mount, and start it again.  OH reconnects automatically.
+Strategy:
+  1. OH config.toml mounts an EMPTY directory (_sandbox) as /workspace.
+     New runtimes can't see any chat data — safe by default.
+  2. After OH creates a runtime, we stop it, recreate it with the per-chat
+     bind mount, and start it again. OH reconnects automatically.
+  3. For new conversations: create WITHOUT initial_user_msg, start, remount,
+     THEN send the message. This ensures the agent only works in its
+     per-chat directory.
+  4. A threading.Lock serializes concurrent remounts to prevent race conditions.
 """
 
 import asyncio
@@ -14,17 +17,71 @@ import json
 import logging
 import os
 import subprocess
+import threading
+import time
 
 log = logging.getLogger("browserai.isolation")
 
 DATA_DIR = os.environ.get("DATA_DIR", "/opt/browserai-data")
 WORKSPACE_ROOT = os.path.join(DATA_DIR, "workspace", "chats")
+SANDBOX_DIR = os.path.join(DATA_DIR, "workspace", "_sandbox")
+
+# Thread-level lock to serialize concurrent remounts — prevents
+# the Beta bug where parallel remounts interfere with each other.
+_remount_lock = threading.Lock()
+
+
+def _safe_chat_id(chat_id: str) -> str:
+    """Sanitize chat_id for use in filesystem paths."""
+    raw = str(chat_id or "").strip()
+    safe = "".join(ch if (ch.isalnum() or ch in "_-.") else "_" for ch in raw)
+    return safe[:96] or "default"
+
+
+def ensure_sandbox_dir() -> str:
+    """Create the empty sandbox directory used as default /workspace mount.
+    This is set in oh-config.toml so that new runtimes mount an empty
+    directory instead of the full workspace.
+    """
+    os.makedirs(SANDBOX_DIR, exist_ok=True)
+    return SANDBOX_DIR
+
+
+def verify_runtime_mount(conversation_id: str, chat_id: str) -> bool:
+    """Check if the runtime container already has the correct per-chat mount.
+    Returns True if the mount is correct, False otherwise.
+    """
+    runtime_name = f"openhands-runtime-{conversation_id}"
+    safe_id = _safe_chat_id(chat_id)
+    expected_path = os.path.join(WORKSPACE_ROOT, safe_id)
+
+    try:
+        inspect = subprocess.run(
+            ["docker", "inspect", runtime_name],
+            capture_output=True, text=True, timeout=10,
+        )
+        if inspect.returncode != 0:
+            return False
+        cfg = json.loads(inspect.stdout)[0]
+        mounts = cfg.get("Mounts", []) or []
+        for m in mounts:
+            if m.get("Destination") == "/workspace":
+                src = m.get("Source", "")
+                # Resolve both paths to handle symlinks
+                if os.path.realpath(src) == os.path.realpath(expected_path):
+                    return True
+                return False
+    except Exception as e:
+        log.warning("verify_runtime_mount: inspect failed: %s", e)
+    return False
 
 
 def remount_runtime(conversation_id: str, chat_id: str) -> bool:
     """Recreate an OH runtime container with a per-chat /workspace mount.
 
-    1. Find the running runtime container for this conversation_id.
+    Thread-safe: uses a lock to serialize concurrent remounts.
+
+    1. Find the runtime container for this conversation_id (short retries).
     2. Inspect it to capture the full container config.
     3. Stop + remove the container.
     4. Recreate it with the per-chat bind mount replacing /workspace.
@@ -32,11 +89,21 @@ def remount_runtime(conversation_id: str, chat_id: str) -> bool:
 
     Returns True if the remount succeeded, False otherwise.
     """
+    with _remount_lock:
+        return _remount_runtime_locked(conversation_id, chat_id)
+
+
+def _remount_runtime_locked(conversation_id: str, chat_id: str) -> bool:
     runtime_name = f"openhands-runtime-{conversation_id}"
 
-    # 1. Find container (retry up to 60s — OH creates it asynchronously)
+    # Quick check: if mount is already correct, skip remount
+    if verify_runtime_mount(conversation_id, chat_id):
+        log.info("remount: %s already has correct mount, skipping", runtime_name)
+        return True
+
+    # 1. Find container (short retries — /start should have created it)
     cfg = None
-    for attempt in range(30):
+    for attempt in range(15):  # 15 × 2s = 30s max
         try:
             inspect = subprocess.run(
                 ["docker", "inspect", runtime_name],
@@ -47,22 +114,22 @@ def remount_runtime(conversation_id: str, chat_id: str) -> bool:
                 break
         except Exception:
             pass
-        import time
+        log.debug("remount: waiting for %s (attempt %d/15)", runtime_name, attempt + 1)
         time.sleep(2)
-    
+
     if cfg is None:
-        log.warning("remount: container %s not found after 60s", runtime_name)
+        log.warning("remount: container %s not found after 30s", runtime_name)
         return False
+
+    log.info("remount: found container %s, proceeding", runtime_name)
 
     # 2. Extract config for recreation
     image = cfg["Config"]["Image"]
     env = cfg["Config"].get("Env", [])
     cmd = cfg["Config"].get("Cmd", [])
-    hostname = cfg["Config"].get("Hostname", "")
     working_dir = cfg["Config"].get("WorkingDir", "/workspace")
     labels = cfg["Config"].get("Labels", {}) or {}
     entrypoint = cfg["Config"].get("Entrypoint") or None
-    exposed_ports = cfg["Config"].get("ExposedPorts", {}) or {}
     host_config = cfg["HostConfig"]
     network_mode = host_config.get("NetworkMode", "default")
     port_bindings = host_config.get("PortBindings", {}) or {}
@@ -140,7 +207,9 @@ def remount_runtime(conversation_id: str, chat_id: str) -> bool:
 
     # Entrypoint
     if entrypoint:
-        create_cmd += ["--entrypoint", json.dumps(entrypoint) if len(entrypoint) > 1 else entrypoint[0] if entrypoint else ""]
+        create_cmd += ["--entrypoint",
+                       json.dumps(entrypoint) if len(entrypoint) > 1
+                       else entrypoint[0] if entrypoint else ""]
 
     # Image
     create_cmd.append(image)
@@ -166,17 +235,11 @@ def remount_runtime(conversation_id: str, chat_id: str) -> bool:
         log.error("remount: docker start error: %s", e)
         return False
 
-    log.info("remount: %s now mounts %s:/workspace", runtime_name, chat_host_path)
+    log.info("remount: %s now mounts %s:/workspace ✓", runtime_name, chat_host_path)
     return True
 
 
-def _safe_chat_id(chat_id: str) -> str:
-    raw = str(chat_id or "").strip()
-    safe = "".join(ch if (ch.isalnum() or ch in "_-.") else "_" for ch in raw)
-    return safe[:96] or "default"
-
-
 async def remount_runtime_async(conversation_id: str, chat_id: str) -> bool:
-    """Async wrapper for remount_runtime."""
+    """Async wrapper for remount_runtime (runs in thread executor)."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, remount_runtime, conversation_id, chat_id)

@@ -168,6 +168,26 @@ async def _startup_init() -> None:
     except Exception as e:
         log.error("schema init failed: %s", e)
 
+    # Ensure the sandbox directory exists for per-chat workspace isolation
+    try:
+        from core.isolation import ensure_sandbox_dir
+        sandbox = ensure_sandbox_dir()
+        log.info("workspace isolation sandbox ready: %s", sandbox)
+    except Exception as e:
+        log.warning("sandbox dir setup failed: %s", e)
+
+    # Push OH settings on startup (they are lost on OH container restart)
+    try:
+        async with httpx.AsyncClient() as c:
+            active = get_active_key(include_secret=True)
+            if active:
+                await provs.push_to_openhands(c, OPENHANDS_SERVER, active, get_params())
+                log.info("OH settings pushed on startup")
+            else:
+                log.info("no active key found - skipping OH settings push on startup")
+    except Exception as e:
+        log.warning("OH settings push on startup failed: %s", e)
+
 # CORS: must NOT be wildcard when allow_credentials is true, otherwise cookies
 # are silently dropped by browsers.
 _cors_origins = [APP_URL.rstrip("/")]
@@ -2181,14 +2201,18 @@ async def workspace_chat_init(request: Request):
                 cid = oh_body.get("conversation_id") or oh_body.get("id")
                 if cid:
                     upsert_mapping(chat_id, cid, None)
+                    import asyncio
                     async def _bg_start():
-                        try:
-                            await client.post(
-                                f"{OPENHANDS_SERVER}/api/conversations/{cid}/start",
-                                json={}, timeout=600.0,
-                            )
-                        except Exception:
-                            pass
+                        # Use a FRESH httpx client — the parent scope client
+                        # will be closed when its async-with block exits.
+                        async with httpx.AsyncClient(timeout=30.0) as bg_client:
+                            try:
+                                await bg_client.post(
+                                    f"{OPENHANDS_SERVER}/api/conversations/{cid}/start",
+                                    json={}, timeout=600.0,
+                                )
+                            except Exception:
+                                pass
                         # Remount the runtime with per-chat isolation
                         from core.isolation import remount_runtime_async
                         try:
@@ -2199,7 +2223,6 @@ async def workspace_chat_init(request: Request):
                                 log.warning("workspace_chat_init: remount failed for chat_id=%s cid=%s", chat_id, cid)
                         except Exception as e:
                             log.warning("workspace_chat_init: remount error: %s", e)
-                    import asyncio
                     asyncio.create_task(_bg_start())
         except Exception as e:
             log.warning("workspace_chat_init: failed to create OH conversation for chat_id=%s: %s", chat_id, e)

@@ -14,6 +14,12 @@ Lifecycle policy:
   * On user "new chat" → backend gets a brand-new chat_id, so a fresh
     conversation is born naturally.
 
+Workspace isolation:
+  New conversations are created WITHOUT initial_user_msg. After /start
+  creates the runtime container, we remount it with a per-chat /workspace
+  bind mount. Only THEN do we POST /message, so the agent works exclusively
+  in its own directory.
+
 We also tag conversations with the BrowserAI user_id so /api/cloud and
 admin tools can audit / clean up later.
 """
@@ -25,18 +31,18 @@ import logging
 import time
 from typing import Any, Dict, Optional, Tuple
 
+import httpx
+
+from core.database import get_conn
+
+log = logging.getLogger("browserai.conversations")
+
 
 def _safe_chat_id(chat_id: str) -> str:
     """Sanitize chat_id for use in filesystem paths."""
     raw = str(chat_id or "").strip()
     safe = "".join(ch if (ch.isalnum() or ch in "_-.") else "_" for ch in raw)
     return safe[:96] or "default"
-
-import httpx
-
-from core.database import get_conn
-
-log = logging.getLogger("browserai.conversations")
 
 
 def init_conversations_schema() -> None:
@@ -138,13 +144,62 @@ async def conversation_alive(client: httpx.AsyncClient, oh_url: str, cid: str) -
         if r.status_code >= 500:
             return False
         body = r.json() or {}
-        # Some statuses imply dead conv we shouldn't reuse
         if body.get("conversation_status") in ("ERROR", "DELETED"):
             return False
         return True
     except Exception as e:
         log.warning("conversation_alive probe failed for %s: %s", cid, e)
         return False
+
+
+async def _remount_and_send(
+    client: httpx.AsyncClient,
+    oh_url: str,
+    cid: str,
+    chat_id: str,
+    initial_message: str,
+) -> None:
+    """Remount the runtime container with per-chat /workspace, then send
+    the initial message. Called after /start returns.
+
+    This is the key isolation step: the agent only starts working AFTER
+    the per-chat workspace is set up.
+    """
+    from core.isolation import remount_runtime_async
+
+    # Remount with per-chat workspace
+    try:
+        ok = await remount_runtime_async(cid, chat_id)
+        if ok:
+            log.info("_remount_and_send: remounted cid=%s chat_id=%s", cid, chat_id)
+        else:
+            log.warning("_remount_and_send: remount failed cid=%s chat_id=%s", cid, chat_id)
+    except Exception as e:
+        log.warning("_remount_and_send: remount error: %s", e)
+
+    # Send the initial message (agent now works in per-chat workspace)
+    if initial_message:
+        for attempt in range(3):
+            try:
+                r = await client.post(
+                    f"{oh_url}/api/conversations/{cid}/message",
+                    json={"message": initial_message},
+                    timeout=15.0,
+                )
+                if r.status_code < 400:
+                    log.info("_remount_and_send: message sent to cid=%s", cid)
+                    return
+                log.warning(
+                    "_remount_and_send: POST /message returned %s (attempt %d)",
+                    r.status_code, attempt + 1,
+                )
+            except Exception as e:
+                log.warning(
+                    "_remount_and_send: POST /message error (attempt %d): %s",
+                    attempt + 1, e,
+                )
+            # Give OH time to reconnect after remount
+            await asyncio.sleep(2)
 
 
 async def get_or_create_conversation(
@@ -159,25 +214,26 @@ async def get_or_create_conversation(
     Returns (conversation_id, was_created, last_event_id_at_send_time).
 
     `was_created=True` means we just opened a fresh OpenHands conversation
-    and the initial_message was provided through initial_user_msg; the
-    caller should NOT also POST /message.
+    and the initial_message was sent after remount; the caller should NOT
+    also POST /message.
 
     `was_created=False` means we reused an existing conversation; the
     caller MUST POST /message with the user's text. The returned
     `last_event_id_at_send_time` is the highest event id observed BEFORE
     the new message — so polling can fetch only the response.
+
+    Workspace isolation:
+    For NEW conversations, we create WITHOUT initial_user_msg, start the
+    runtime, remount it with per-chat /workspace, THEN send the message.
+    This ensures the agent only works in its own directory.
     """
     mapping = get_mapping(chat_id) if chat_id else None
     if mapping:
         cid = mapping["conversation_id"]
         if await conversation_alive(client, oh_url, cid):
-            # Capture current max event id BEFORE posting the new message,
-            # so polling can skip everything that's already part of prior turns.
+            # Capture current max event id BEFORE posting the new message
             last_id = mapping.get("last_event_id", -1) or -1
             try:
-                # OpenHands main v0.59: /events?start_id is broken AND
-                # limit is capped at 100. We use reverse=true so the LATEST
-                # events come first, take id of first one as the watermark.
                 r = await client.get(
                     f"{oh_url}/api/conversations/{cid}/events?reverse=true&limit=1",
                     timeout=10.0,
@@ -202,8 +258,7 @@ async def get_or_create_conversation(
             if r.status_code >= 400:
                 log.warning(
                     "POST /message failed (%s) for cid=%s; rotating conversation",
-                    r.status_code,
-                    cid,
+                    r.status_code, cid,
                 )
                 drop_mapping(chat_id)
             else:
@@ -212,69 +267,59 @@ async def get_or_create_conversation(
             log.info("stale mapping for chat_id=%s cid=%s — recreating", chat_id, cid)
             drop_mapping(chat_id)
 
-    # Push per-chat workspace isolation: mount only this chat's directory as /workspace
-    # This ensures each conversation's runtime sees ONLY its own files.
-    safe_id = _safe_chat_id(chat_id) if chat_id else ""
-    if safe_id:
-        chat_host_path = f"/opt/browserai-data/workspace/chats/{safe_id}"
-        # Ensure the directory exists on the host
-        import os
-        os.makedirs(chat_host_path, exist_ok=True)
-        # Write a per-chat config.toml that overrides sandbox.volumes
-
-    # Create fresh conversation
-    payload: Dict[str, Any] = {"initial_user_msg": initial_message or "hi"}
+    # ── Create fresh conversation ──────────────────────────────────────
+    # IMPORTANT: Create WITHOUT initial_user_msg so that the agent doesn't
+    # start working until we've remounted the runtime with per-chat isolation.
+    payload: Dict[str, Any] = {}
     if conversation_instructions:
         payload["conversation_instructions"] = conversation_instructions
+
     r = await client.post(f"{oh_url}/api/conversations", json=payload, timeout=30.0)
     r.raise_for_status()
     body = r.json()
     cid = body.get("conversation_id") or body.get("id")
     if not cid:
         raise RuntimeError(f"OpenHands returned no conversation_id: {body}")
-    # /start may block for ~60s on cold runtime — caller controls timeout
+
+    # Ensure per-chat workspace directory exists on host
+    safe_id = _safe_chat_id(chat_id) if chat_id else ""
+    if safe_id:
+        import os
+        chat_host_path = os.path.join(
+            os.environ.get("DATA_DIR", "/opt/browserai-data"),
+            "workspace", "chats", safe_id,
+        )
+        os.makedirs(chat_host_path, exist_ok=True)
+
+    # /start creates the runtime container (agent is idle — no message queued)
     try:
         await client.post(
             f"{oh_url}/api/conversations/{cid}/start", json={}, timeout=600.0
         )
     except httpx.TimeoutException:
-        log.warning("/start timeout for cid=%s (continuing to poll)", cid)
+        log.warning("/start timeout for cid=%s (continuing to remount)", cid)
 
-    # Remount the runtime with per-chat workspace isolation
-    from core.isolation import remount_runtime_async
-    try:
-        ok = await remount_runtime_async(cid, chat_id or "")
-        if ok:
-            log.info("get_or_create_conversation: remounted runtime cid=%s chat_id=%s", cid, chat_id)
-        else:
-            log.warning("get_or_create_conversation: remount failed cid=%s chat_id=%s", cid, chat_id)
-    except Exception as e:
-        log.warning("get_or_create_conversation: remount error: %s", e)
+    # Remount runtime with per-chat /workspace, then send the initial message
+    await _remount_and_send(client, oh_url, cid, chat_id or "", initial_message)
+
     if chat_id:
         upsert_mapping(chat_id, cid, user_id)
-    return cid, True, -1
 
-
-
-
-def _write_oh_sandbox_volumes(volumes_spec: str) -> None:
-    """Write sandbox.volumes into the OpenHands config.toml so the next
-    runtime container mounts only the specified path as /workspace.
-    This provides per-chat filesystem isolation: each conversation's
-    runtime container sees ONLY its own /workspace/chats/{chatId}/ directory.
-    
-    IMPORTANT: The OH container must have this file mounted as config.toml
-    via docker-compose volumes. The file is written at:
-      /opt/browserai-data/oh-config.toml (host) -> /app/config.toml (container)
-    """
-    import logging
-    log = logging.getLogger("browserai.conversations")
+    # Get current max event id so caller can poll from the right point
+    last_id = -1
     try:
-        config_path = "/data/oh-config.toml"
-        # Escape any special chars in the path
-        safe_spec = volumes_spec.replace('\\', '\\\\').replace('"', '\\"')
-        with open(config_path, "w") as f:
-            f.write(f'[sandbox]\nvolumes = "{safe_spec}"\n')
-        log.info("oh-config.toml updated: sandbox.volumes = %s", volumes_spec)
-    except Exception as e:
-        log.warning("oh-config.toml write error: %s", e)
+        r = await client.get(
+            f"{oh_url}/api/conversations/{cid}/events?reverse=true&limit=1",
+            timeout=10.0,
+        )
+        if r.status_code == 200:
+            ev_body = r.json()
+            events = ev_body if isinstance(ev_body, list) else (
+                ev_body.get("events") or ev_body.get("results") or []
+            )
+            if events:
+                last_id = max(int(e.get("id", -1)) for e in events)
+    except Exception:
+        pass
+
+    return cid, True, last_id
