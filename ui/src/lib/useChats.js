@@ -874,7 +874,7 @@ export function useChats(settings) {
                     ),
                   }))
                   if (['bash', 'write_file', 'edit_file', 'download_url', 'delete_file', 'git_clone', 'zip_files'].includes(data.name)) {
-                    setWorkspaceRevision(Date.now())
+                    setWorkspaceRevision({ at: Date.now(), name: data.name, step: data.step, sub: data.sub || 0 })
                   }
                   // Small haptic so the user can feel progress in long
                   // agent runs even without looking at the screen.
@@ -893,7 +893,7 @@ export function useChats(settings) {
                         : tc,
                     ),
                   }))
-                  if ((data.events || []).length) setWorkspaceRevision(Date.now())
+                  if ((data.events || []).length) setWorkspaceRevision({ at: Date.now(), name: data.name || 'file_change', step: data.step, sub: data.sub || 0, events: data.events || [] })
                   break
                 case 'tool_diagnostic':
                   // Inline syntax-check failed after a write/edit — flag

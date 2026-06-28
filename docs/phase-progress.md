@@ -59,17 +59,23 @@
 
 ## Phase 2 — Event Streaming & Workspace Reliability 🚧 (started 2026-06-28)
 
-### Phase 2.1 — Streaming reliability / locking ✅
+### Phase 2.1 — Event streaming / WebSocket bridge ✅
+- [x] Verified prod OpenHands realtime endpoint: Socket.IO at `/socket.io/` with `oh_event` events for `conversation_id`
+- [x] Added `core/bridge/ws_client.py` Socket.IO/WebSocket client with Engine.IO heartbeat handling
+- [x] Added `_stream_chat_ws()` and automatic transport selection via `BROWSERAI_OPENHANDS_STREAM_TRANSPORT=auto|ws|poll`
+- [x] Added WS → BrowserAI SSE translation through the same `_translate_event` contract
+- [x] Added REST polling fallback if WS connect/handshake/idle fails
 - [x] Added per-chat in-process `asyncio.Lock` wrapper for `/api/agent/chat` streams
 - [x] Concurrent sends to the same chat now return SSE `done: {reason: "busy"}` instead of mixing OpenHands events
-- [ ] WebSocket bridge (`core/bridge/ws_client.py`) still pending; OpenHands WS was not exposed in OpenAPI, so polling remains primary for now
 
-### Phase 2.2 — Workspace synchronization ✅/🚧
+### Phase 2.2 — Workspace synchronization ✅
 - [x] Added workspace tree `revision` token on server (`count:size:newest_mtime`)
+- [x] Added per-file `fileRevisions` tokens (`path -> size:mtime_ns`) for file-level invalidation
 - [x] Added `ifRevision` support: unchanged workspaces return `{unchanged:true}` without full tree payload
+- [x] Added `ui/src/lib/useWorkspace.js` for smart polling / debounced refresh
 - [x] Workspace UI debounces refreshes around agent tool/file events
+- [x] On `tool_result` for write/bash-like tools, UI sends structured workspaceRevision and refreshes with `ifRevision`
 - [x] Workspace UI smart-polls during streaming with revision validation
-- [ ] File-level revision / deeper diff-driven refresh still pending
 
 ### Phase 2.3 — Isolation removal 🚧
 - [ ] `core/isolation.py` still active
@@ -79,10 +85,10 @@
 - Health: OK (~5ms)
 - AUTH_SECRET: present
 - SQLite journal: WAL (already)
-- OpenHands WS: not exposed in OpenAPI (will use REST + fallback)
+- OpenHands WS: Socket.IO `/socket.io/` verified; BrowserAI uses WS with REST polling fallback
 
 ## Next Immediate Steps
-1. Phase 2.1 — investigate OpenHands WebSocket bridge or formalize improved polling fallback
+1. Phase 2.3 — start isolation deprecation behind `BROWSERAI_USE_ISOLATION`
 2. Phase 2.3 — feature-flag isolation and plan docker.sock removal
 3. Phase 3 — start replacing remaining stub endpoints
 

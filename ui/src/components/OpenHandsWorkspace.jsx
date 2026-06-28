@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import FileTree from './FileTree.jsx'
 import { serializeUploadFiles, workspaceApi } from '../lib/workspace.js'
+import { useWorkspace } from '../lib/useWorkspace.js'
 
 function formatSize(size = 0) {
   const n = Number(size || 0)
@@ -55,65 +56,17 @@ export default function OpenHandsWorkspace({
   browserScreenshot = null,
 }) {
   const [activeTab, setActiveTab] = useState('files')
-  const [tree, setTree] = useState(null)
   const [terminalLogs, setTerminalLogs] = useState([])
   const [selectedFile, setSelectedFile] = useState(null)
   const [fileContent, setFileContent] = useState('')
   const [dirty, setDirty] = useState(false)
-  const [loadingFiles, setLoadingFiles] = useState(false)
   const [loadingTerminal, setLoadingTerminal] = useState(false)
-  const [filesError, setFilesError] = useState('')
   const [terminalError, setTerminalError] = useState('')
   const [saveError, setSaveError] = useState('')
   const [menu, setMenu] = useState(null) // {x,y,node}
 
   const chatId = activeChat?.id || ''
   const terminalEndRef = useRef(null)
-  const selectedFileRef = useRef(null)
-  const treeRevisionRef = useRef('')
-  const refreshTimerRef = useRef(null)
-  useEffect(() => { selectedFileRef.current = selectedFile }, [selectedFile])
-
-  const refreshFilesNow = useCallback(async (silent = false, smart = false) => {
-    if (!isOpen || !chatId) return
-    if (!silent) setLoadingFiles(true)
-    setFilesError('')
-    try {
-      workspaceApi.setChatId(chatId)
-      const data = await workspaceApi.getTree(false, smart ? { ifRevision: treeRevisionRef.current } : {})
-      if (data.unchanged) {
-        treeRevisionRef.current = data.revision || treeRevisionRef.current
-        return
-      }
-      treeRevisionRef.current = data.revision || ''
-      setTree(data.tree || null)
-      // если открытый файл исчез — закрыть редактор
-      const sel = selectedFileRef.current
-      if (sel?.path) {
-        // проверка будет ниже через findInTree — упрощённо: оставляем как есть,
-        // FileTree сам подсветит missing
-      }
-    } catch (e) {
-      setFilesError(e.message || 'workspace load failed')
-    } finally {
-      if (!silent) setLoadingFiles(false)
-    }
-  }, [chatId, isOpen])
-
-  const refreshFiles = useCallback((silent = false, opts = {}) => {
-    const delay = Number(opts.delay ?? 1000)
-    const smart = opts.smart !== false
-    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
-    refreshTimerRef.current = setTimeout(() => {
-      refreshTimerRef.current = null
-      void refreshFilesNow(silent, smart)
-    }, delay)
-  }, [refreshFilesNow])
-
-  useEffect(() => () => {
-    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
-  }, [])
-
   const refreshTerminal = useCallback(async (silent = false) => {
     if (!isOpen || !chatId) return
     if (!silent) setLoadingTerminal(true)
@@ -132,31 +85,18 @@ export default function OpenHandsWorkspace({
     }
   }, [chatId, isOpen])
 
-  // initial / chat switch
+  const {
+    tree, setTree, loadingFiles, filesError, setFilesError,
+    revision: treeRevision, fileRevisions, refreshFilesNow, refreshFiles, setSelectedFileRef,
+  } = useWorkspace({ chatId, isOpen, aiWorking, workspaceRevision, activeTab, refreshTerminal })
+
+  useEffect(() => { setSelectedFileRef(selectedFile) }, [selectedFile, setSelectedFileRef])
+
+  // initial / chat switch: files handled by useWorkspace; terminal refresh stays here
   useEffect(() => {
     if (!isOpen || !chatId) return
-    workspaceApi.setChatId(chatId)
-    workspaceApi.initChatWorkspace(chatId).catch(()=>{})
-    treeRevisionRef.current = ''
-    void refreshFilesNow(false, false)
     void refreshTerminal()
-  }, [isOpen, chatId, refreshFilesNow, refreshTerminal])
-
-  // agent workspaceRevision → debounce + smart revision refresh
-  useEffect(() => {
-    if (!isOpen || !chatId || !workspaceRevision) return
-    refreshFiles(true, { delay: 1000, smart: true })
-    if (activeTab === 'terminal') void refreshTerminal(true)
-  }, [workspaceRevision, isOpen, chatId, activeTab, refreshFiles, refreshTerminal])
-
-  // During streaming, poll the tree slowly and cheaply. The server returns
-  // {unchanged:true} when the revision token did not change, avoiding full tree
-  // downloads on every tick.
-  useEffect(() => {
-    if (!isOpen || !chatId || !aiWorking) return
-    const id = setInterval(() => refreshFiles(true, { delay: 250, smart: true }), 3000)
-    return () => clearInterval(id)
-  }, [isOpen, chatId, aiWorking, refreshFiles])
+  }, [isOpen, chatId, refreshTerminal])
 
   // live terminal while AI working
   useEffect(() => {
@@ -410,7 +350,7 @@ export default function OpenHandsWorkspace({
             </div>
             <div className="border-t border-white/5 px-2 py-1 text-[10px] text-cream-faint flex justify-between bg-graphite-950/60">
               <span>{fileCount} файлов</span>
-              <span>rev {workspaceRevision ? String(workspaceRevision).slice(-5) : '—'}</span>
+              <span>rev {treeRevision ? String(treeRevision).slice(-5) : (workspaceRevision ? String(workspaceRevision).slice(-5) : '—')}</span>
             </div>
           </div>
 

@@ -46,6 +46,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+
+from core.bridge.ws_client import OpenHandsWsUnavailable, stream_openhands_events_ws
+
 from core.database import (
     delete_key,
     get_active_key,
@@ -160,6 +163,7 @@ APP_URL = os.environ.get("APP_URL", "http://localhost")
 MAX_AGENT_ITERATIONS = int(os.environ.get("BROWSERAI_AGENT_MAX_ITERATIONS", "50"))
 EVENT_POLL_INTERVAL = float(os.environ.get("BROWSERAI_EVENT_POLL_INTERVAL", "0.6"))
 EVENT_POLL_TIMEOUT_S = int(os.environ.get("BROWSERAI_EVENT_POLL_TIMEOUT_S", "900"))
+OPENHANDS_STREAM_TRANSPORT = os.environ.get("BROWSERAI_OPENHANDS_STREAM_TRANSPORT", "auto").lower()
 # Step 10.1 — progressive output. OpenHands' event API delivers the assistant
 # message as one complete chunk (no token stream), so we re-chunk it server-side
 # into small deltas with light pacing for a typewriter feel. Tunable/disableable.
@@ -1602,6 +1606,271 @@ def _translate_event(evt: Dict[str, Any], step: int) -> List[Dict[str, Any]]:
     return out
 
 
+async def _prepare_openhands_turn(
+    client: httpx.AsyncClient,
+    chat_id: str,
+    model: str,
+    prompt: str,
+    extra_system: str,
+    provider: Dict[str, Any],
+    user_id: Optional[str] = None,
+) -> Tuple[str, bool, int]:
+    """Push settings, create/reuse OpenHands conversation and send prompt."""
+    await _push_oh_settings(client, provider)
+    if chat_id:
+        _ensure_chat_workspace(chat_id)
+    isolated_extra_system = (extra_system or "") + _chat_workspace_instruction(chat_id)
+    isolated_prompt = prompt
+    if chat_id:
+        isolated_prompt = f"{prompt}\n\n[Use workspace: /workspace/{_chat_workspace_rel(chat_id)}]"
+
+    cid, was_created, last_seen_event_id = await get_or_create_conversation(
+        client,
+        OPENHANDS_SERVER,
+        chat_id,
+        user_id,
+        isolated_prompt,
+        isolated_extra_system,
+    )
+
+    # Phase 1.3 memory context for warm reuse.
+    if not was_created and last_seen_event_id >= 0:
+        try:
+            ctx_r = await client.get(
+                f"{OPENHANDS_SERVER}/api/conversations/{cid}/events?limit=50",
+                timeout=15.0,
+            )
+            if ctx_r.status_code == 200:
+                ctx_body = ctx_r.json()
+                ctx_events = ctx_body if isinstance(ctx_body, list) else (ctx_body.get("events") or [])
+                recent_turns = []
+                for ce in ctx_events[-30:]:
+                    ce_action = ce.get("action", "")
+                    ce_obs = ce.get("observation", "")
+                    ce_args = ce.get("args") or {}
+                    ce_extras = ce.get("extras") or {}
+                    if ce_action == "message":
+                        msg = ce_args.get("content") or ce_args.get("text") or ""
+                        if msg and len(msg) < 2000:
+                            recent_turns.append(f"User: {msg[:500]}")
+                    elif ce_obs == "assistant":
+                        msg = ce_extras.get("content") or ce_args.get("content") or ""
+                        if msg and len(msg) < 2000:
+                            _, clean_msg = _split_think(msg)
+                            recent_turns.append(f"Assistant: {clean_msg[:500]}")
+                if recent_turns:
+                    context_block = "\n".join(recent_turns[-10:])
+                    # The actual prompt has already been sent by get_or_create_conversation
+                    # in the current OpenHands API path. Keep this fetch for continuity
+                    # and future direct-send refactors; do not send a duplicate message.
+                    log.debug("loaded warm context prefix for chat_id=%s chars=%d", chat_id, len(context_block))
+        except Exception as e:
+            log.debug("context prefix fetch failed (non-critical): %s", e)
+
+    if chat_id:
+        upsert_run(chat_id, cid, user_id, "running", last_prompt=prompt, last_event_id=last_seen_event_id)
+    try:
+        from core.obslog import bind_conversation as _bind_conv
+        _bind_conv(cid)
+    except Exception:
+        pass
+    return cid, was_created, last_seen_event_id
+
+
+def _is_turn_complete_event(e: Dict[str, Any]) -> bool:
+    return (
+        e.get("observation") == "agent_state_changed"
+        and (e.get("extras") or {}).get("agent_state")
+        in ("awaiting_user_input", "finished", "stopped", "error")
+    )
+
+
+async def _emit_translated_event(
+    translated: Dict[str, Any],
+    *,
+    chat_id: str,
+    cid: str,
+    user_id: Optional[str],
+    step: int,
+    full_answer_ref: Dict[str, str],
+    ask_user_sent_ref: Dict[str, bool],
+) -> AsyncIterator[Tuple[bytes, int]]:
+    ev_name = translated["event"]
+    ev_data = translated["data"]
+    if ev_name == "tool_start":
+        step += 1
+        ev_data["step"] = step
+    if ev_name in ("tool_start", "tool_result") and chat_id:
+        try:
+            _ledger_tool_event(chat_id, cid, user_id, ev_name, ev_data)
+        except Exception as e:
+            log.debug("tool ledger skipped: %s", e)
+    if ev_name == "assistant_delta":
+        full_answer_ref["text"] += ev_data.get("chunk", "")
+        if not ask_user_sent_ref["sent"] and chat_id:
+            ask_payload = _extract_ask_user_payload(full_answer_ref["text"])
+            if ask_payload:
+                qid = f"q_{uuid.uuid4().hex[:12]}"
+                create_question(
+                    qid, chat_id, cid, user_id,
+                    ask_payload.get("question") or "",
+                    ask_payload.get("options") or [],
+                )
+                yield _sse(
+                    "ask_user",
+                    {
+                        "question_id": qid,
+                        "question": ask_payload.get("question"),
+                        "options": ask_payload.get("options") or [],
+                    },
+                ).encode("utf-8"), step
+                ask_user_sent_ref["sent"] = True
+    if (
+        ev_name == "assistant_delta"
+        and STREAM_RECHUNK
+        and len(ev_data.get("chunk", "")) > STREAM_RECHUNK_MIN
+    ):
+        _whole = ev_data.get("chunk", "")
+        _step = ev_data.get("step")
+        for _piece in _chunk_text(_whole, STREAM_CHUNK_CHARS):
+            yield _sse("assistant_delta", {"step": _step, "chunk": _piece}).encode("utf-8"), step
+            if STREAM_CHUNK_DELAY > 0:
+                await asyncio.sleep(STREAM_CHUNK_DELAY)
+    else:
+        yield _sse(ev_name, ev_data).encode("utf-8"), step
+
+
+async def _poll_openhands_events(
+    client: httpx.AsyncClient,
+    cid: str,
+    *,
+    chat_id: str,
+    user_id: Optional[str],
+    start_after_id: int,
+    initial_seen_ids: Optional[set] = None,
+    step: int = 0,
+    full_answer_ref: Optional[Dict[str, str]] = None,
+    ask_user_sent_ref: Optional[Dict[str, bool]] = None,
+    timeout_s: Optional[int] = None,
+) -> AsyncIterator[Tuple[bytes, int, bool, set]]:
+    seen_ids = set(initial_seen_ids or set())
+    next_start_id = start_after_id + 1 if start_after_id >= 0 else 0
+    full_answer_ref = full_answer_ref or {"text": ""}
+    ask_user_sent_ref = ask_user_sent_ref or {"sent": False}
+    t0 = time.time()
+    last_event_ts = time.time()
+    done = False
+    timeout_s = timeout_s or EVENT_POLL_TIMEOUT_S
+
+    while not done and (time.time() - t0) < timeout_s:
+        try:
+            r = await client.get(f"{OPENHANDS_SERVER}/api/conversations/{cid}/events?limit=100", timeout=20.0)
+            if r.status_code == 404:
+                yield _sse("error", {"message": "OpenHands conversation lost"}).encode("utf-8"), step, True, seen_ids
+                if chat_id:
+                    drop_mapping(chat_id)
+                return
+            if r.status_code >= 400:
+                await asyncio.sleep(EVENT_POLL_INTERVAL)
+                continue
+            body = r.json()
+            events = body if isinstance(body, list) else (body.get("events") or body.get("results") or [])
+            new_events = [e for e in events if e.get("id") not in seen_ids]
+            for e in new_events:
+                seen_ids.add(e.get("id"))
+                last_event_ts = time.time()
+                eid = int(e.get("id", -1))
+                if eid >= next_start_id:
+                    next_start_id = eid + 1
+                if _is_turn_complete_event(e):
+                    done = True
+                for translated in _translate_event(e, step + 1):
+                    async for chunk, step in _emit_translated_event(
+                        translated,
+                        chat_id=chat_id,
+                        cid=cid,
+                        user_id=user_id,
+                        step=step,
+                        full_answer_ref=full_answer_ref,
+                        ask_user_sent_ref=ask_user_sent_ref,
+                    ):
+                        yield chunk, step, done, seen_ids
+        except httpx.TimeoutException:
+            pass
+        except Exception as e:
+            log.warning("event poll error: %s", e)
+
+        if done:
+            break
+        try:
+            rs = await client.get(f"{OPENHANDS_SERVER}/api/conversations/{cid}", timeout=10.0)
+            if rs.status_code == 200:
+                status = ((rs.json() or {}).get("conversation_status") or "").upper()
+                if status in ("STOPPED", "FINISHED", "COMPLETED", "ERROR"):
+                    done = True
+                    break
+        except Exception:
+            pass
+        if (full_answer_ref["text"] or step > 0) and (time.time() - last_event_ts) > 8:
+            done = True
+            break
+        if (time.time() - last_event_ts) > 180:
+            yield _sse("error", {"message": "Агент не отвечает (нет событий 3 минуты). Попробуйте ещё раз."}).encode("utf-8"), step, False, seen_ids
+            break
+        await asyncio.sleep(EVENT_POLL_INTERVAL)
+    yield b"", step, done, seen_ids
+
+
+async def _stream_chat_ws(
+    client: httpx.AsyncClient,
+    cid: str,
+    *,
+    chat_id: str,
+    user_id: Optional[str],
+    last_seen_event_id: int,
+    was_created: bool,
+    step: int,
+    full_answer_ref: Dict[str, str],
+    ask_user_sent_ref: Dict[str, bool],
+    seen_ids: Optional[set] = None,
+) -> AsyncIterator[Tuple[bytes, int, bool, set]]:
+    """Phase 2.1: stream OpenHands Socket.IO events, fallback handled by caller."""
+    if seen_ids is None:
+        seen_ids = set()
+    if not was_created and last_seen_event_id >= 0 and not seen_ids:
+        seen_ids.update(range(0, last_seen_event_id + 1))
+    done = False
+    t0 = time.time()
+    last_event_ts = time.time()
+    async for e in stream_openhands_events_ws(OPENHANDS_SERVER, cid, last_seen_event_id):
+        eid_raw = e.get("id")
+        if eid_raw in seen_ids:
+            continue
+        seen_ids.add(eid_raw)
+        last_event_ts = time.time()
+        if _is_turn_complete_event(e):
+            done = True
+        for translated in _translate_event(e, step + 1):
+            async for chunk, step in _emit_translated_event(
+                translated,
+                chat_id=chat_id,
+                cid=cid,
+                user_id=user_id,
+                step=step,
+                full_answer_ref=full_answer_ref,
+                ask_user_sent_ref=ask_user_sent_ref,
+            ):
+                yield chunk, step, done, seen_ids
+        if done:
+            break
+        if (time.time() - t0) > EVENT_POLL_TIMEOUT_S:
+            break
+        if (time.time() - last_event_ts) > 180:
+            yield _sse("error", {"message": "Агент не отвечает (нет событий 3 минуты). Попробуйте ещё раз."}).encode("utf-8"), step, False, seen_ids
+            break
+    yield b"", step, done, seen_ids
+
+
 async def _stream_chat(
     chat_id: str,
     model: str,
@@ -1611,111 +1880,40 @@ async def _stream_chat(
     user_id: Optional[str] = None,
 ) -> AsyncIterator[bytes]:
     step = 0
-    full_answer = ""
-    turn_complete = False  # set as soon as OpenHands emits awaiting_user_input
-    ask_user_sent = False  # Step 6: emit ask_user at most once per turn
+    full_answer_ref = {"text": ""}
+    ask_user_sent_ref = {"sent": False}
+    done = False
+    seen_ids: set = set()
+    was_created = False
+    cid = ""
 
-    # 1) Send stream protocol + initial agent_context up-front so the UI shows
-    #    activity even while OpenHands is cold-booting a runtime image.
     yield _sse(
         "stream_protocol",
         {
             "version": 1,
             "events": [
-                "stream_protocol",
-                "agent_context",
-                "agent_state",
-                "thinking",
-                "thinking_delta",
-                "thought",
-                "tool_preview",
-                "tool_start",
-                "tool_progress",
-                "tool_result",
-                "assistant_delta",
-                "assistant",
-                "done",
-                "error",
+                "stream_protocol", "agent_context", "agent_state", "thinking",
+                "thinking_delta", "thought", "tool_preview", "tool_start",
+                "tool_progress", "tool_result", "assistant_delta", "assistant",
+                "done", "error",
             ],
         },
     ).encode("utf-8")
-    yield _sse(
-        "agent_context",
-        {
-            "model": model or DEFAULT_MODEL,
-            "provider": provider.get("baseUrl") or DEFAULT_BASE_URL,
-            "maxSteps": MAX_AGENT_ITERATIONS,
-            "serverRoute": "/api/agent/chat",
-            "engine": "openhands",
-        },
-    ).encode("utf-8")
+    yield _sse("agent_context", {
+        "model": model or DEFAULT_MODEL,
+        "provider": provider.get("baseUrl") or DEFAULT_BASE_URL,
+        "maxSteps": MAX_AGENT_ITERATIONS,
+        "serverRoute": "/api/agent/chat",
+        "engine": "openhands",
+    }).encode("utf-8")
     yield _sse("thinking", {"step": 1}).encode("utf-8")
-    yield _sse(
-        "agent_state",
-        {"phase": "plan", "step": 1, "maxSteps": MAX_AGENT_ITERATIONS, "engine": "openhands"},
-    ).encode("utf-8")
+    yield _sse("agent_state", {"phase": "plan", "step": 1, "maxSteps": MAX_AGENT_ITERATIONS, "engine": "openhands"}).encode("utf-8")
 
-    # 2) Push settings + open/reuse conversation
     async with httpx.AsyncClient() as client:
         try:
-            await _push_oh_settings(client, provider)
-            if chat_id:
-                _ensure_chat_workspace(chat_id)
-            isolated_extra_system = (extra_system or "") + _chat_workspace_instruction(chat_id)
-            isolated_prompt = prompt
-            if chat_id:
-                # Repeated lightweight reminder helps reused OpenHands conversations
-                # keep file/terminal work inside the per-chat directory.
-                isolated_prompt = f"{prompt}\n\n[Use workspace: /workspace/{_chat_workspace_rel(chat_id)}]"
-            cid, was_created, last_seen_event_id = await get_or_create_conversation(
-                client,
-                OPENHANDS_SERVER,
-                chat_id,
-                user_id,
-                isolated_prompt,
-                isolated_extra_system,
+            cid, was_created, last_seen_event_id = await _prepare_openhands_turn(
+                client, chat_id, model, prompt, extra_system, provider, user_id
             )
-
-            # Phase 1: Agent memory fix — for warm reuse, load recent events
-            # so the agent has context from previous turns. OpenHands doesn't
-            # automatically replay context, so we build a compact summary.
-            if not was_created and last_seen_event_id >= 0:
-                try:
-                    ctx_r = await client.get(
-                        f"{OPENHANDS_SERVER}/api/conversations/{cid}/events?limit=50",
-                        timeout=15.0,
-                    )
-                    if ctx_r.status_code == 200:
-                        ctx_body = ctx_r.json()
-                        ctx_events = ctx_body if isinstance(ctx_body, list) else (ctx_body.get("events") or [])
-                        # Build compact context from recent user+assistant turns
-                        recent_turns = []
-                        for ce in ctx_events[-30:]:  # last 30 events max
-                            ce_action = ce.get("action", "")
-                            ce_obs = ce.get("observation", "")
-                            ce_args = ce.get("args") or {}
-                            ce_extras = ce.get("extras") or {}
-                            if ce_action == "message":
-                                msg = ce_args.get("content") or ce_args.get("text") or ""
-                                if msg and len(msg) < 2000:
-                                    recent_turns.append(f"User: {msg[:500]}")
-                            elif ce_obs == "assistant":
-                                msg = ce_extras.get("content") or ce_args.get("content") or ""
-                                if msg and len(msg) < 2000:
-                                    _, clean_msg = _split_think(msg)
-                                    recent_turns.append(f"Assistant: {clean_msg[:500]}")
-                        if recent_turns:
-                            context_block = "\n".join(recent_turns[-10:])  # last 10 turns
-                            isolated_prompt = f"[Previous conversation context:]\n{context_block}\n\n[New message:]\n{isolated_prompt}"
-                except Exception as e:
-                    log.debug("context prefix fetch failed (non-critical): %s", e)
-            if chat_id:
-                upsert_run(chat_id, cid, user_id, "running", last_prompt=prompt, last_event_id=last_seen_event_id)
-            try:
-                from core.obslog import bind_conversation as _bind_conv
-                _bind_conv(cid)
-            except Exception:
-                pass
         except HTTPException as e:
             if chat_id:
                 upsert_run(chat_id, None, user_id, "error", last_prompt=prompt, last_error=str(e.detail))
@@ -1729,204 +1927,89 @@ async def _stream_chat(
             yield _sse("done", {"reason": "engine-error", "steps": step}).encode("utf-8")
             return
 
-        # Tell the UI whether this is a fresh sandbox boot or a warm reuse.
-        # That lets the UI show a smarter "cold start in progress" hint.
-        yield _sse(
-            "agent_state",
-            {
-                "step": 0,
-                "phase": "warm" if not was_created else "cold",
-                "raw": "warm" if not was_created else "cold",
-                "conversationId": cid,
-            },
-        ).encode("utf-8")
+        yield _sse("agent_state", {
+            "step": 0,
+            "phase": "warm" if not was_created else "cold",
+            "raw": "warm" if not was_created else "cold",
+            "conversationId": cid,
+        }).encode("utf-8")
 
-        # 3) Poll events incrementally — start AFTER the last event we already
-        #    showed for this chat. For new conversations this is 0; for reused
-        #    ones it's the id of the event just before our new POST /message.
-        seen_ids: set = set()
-        next_start_id = last_seen_event_id + 1 if last_seen_event_id >= 0 else 0
-        t0 = time.time()
-        last_event_ts = time.time()
-        done = False
-
-        # OpenHands main v0.59 has both:
-        #   * a broken /events?start_id filter (returns []),
-        #   * a hard max of limit<=100.
-        # We always fetch the tail with limit=100 and dedup via seen_ids.
-        # For warm reuse we pre-seed seen_ids with everything prior to this
-        # turn so we only stream the response to THIS message.
-        if not was_created and last_seen_event_id >= 0:
-            seen_ids = set(range(0, last_seen_event_id + 1))
-
-        while not done and (time.time() - t0) < EVENT_POLL_TIMEOUT_S:
+        initial_seen_ids = set(range(0, last_seen_event_id + 1)) if (not was_created and last_seen_event_id >= 0) else set()
+        use_ws = OPENHANDS_STREAM_TRANSPORT in ("auto", "ws", "websocket", "socketio")
+        transport_used = "poll"
+        if use_ws:
             try:
-                r = await client.get(
-                    f"{OPENHANDS_SERVER}/api/conversations/{cid}/events?limit=100",
-                    timeout=20.0,
-                )
-                if r.status_code == 404:
-                    yield _sse("error", {"message": "OpenHands conversation lost"}).encode("utf-8")
-                    # Forget the mapping so the next user message creates a fresh one
-                    if chat_id:
-                        drop_mapping(chat_id)
-                    break
-                if r.status_code >= 400:
-                    await asyncio.sleep(EVENT_POLL_INTERVAL)
-                    continue
-                body = r.json()
-                events = body if isinstance(body, list) else (body.get("events") or body.get("results") or [])
-                # `start_id` is inclusive, so we still de-dup against seen_ids
-                new_events = [e for e in events if e.get("id") not in seen_ids]
-                for e in new_events:
-                    seen_ids.add(e.get("id"))
-                    last_event_ts = time.time()
-                    eid = int(e.get("id", -1))
-                    if eid >= next_start_id:
-                        next_start_id = eid + 1
-                    # End-of-turn signal from OpenHands itself
-                    if (
-                        e.get("observation") == "agent_state_changed"
-                        and (e.get("extras") or {}).get("agent_state")
-                        in ("awaiting_user_input", "finished", "stopped", "error")
-                    ):
-                        turn_complete = True
-                    for translated in _translate_event(e, step + 1):
-                        ev_name = translated["event"]
-                        ev_data = translated["data"]
-                        if ev_name == "tool_start":
-                            step += 1
-                            ev_data["step"] = step
-                        if ev_name in ("tool_start", "tool_result") and chat_id:
-                            try:
-                                _ledger_tool_event(chat_id, cid, user_id, ev_name, ev_data)
-                            except Exception as e:
-                                log.debug("tool ledger skipped: %s", e)
-                        if ev_name == "assistant_delta":
-                            full_answer += ev_data.get("chunk", "")
-                            if not ask_user_sent and chat_id:
-                                ask_payload = _extract_ask_user_payload(full_answer)
-                                if ask_payload:
-                                    qid = f"q_{uuid.uuid4().hex[:12]}"
-                                    create_question(
-                                        qid, chat_id, cid, user_id,
-                                        ask_payload.get("question") or "",
-                                        ask_payload.get("options") or [],
-                                    )
-                                    yield _sse(
-                                        "ask_user",
-                                        {
-                                            "question_id": qid,
-                                            "question": ask_payload.get("question"),
-                                            "options": ask_payload.get("options") or [],
-                                        },
-                                    ).encode("utf-8")
-                                    ask_user_sent = True
-                        # Step 10.1 — re-chunk the (whole) assistant message into
-                        # small paced deltas for a streaming/typewriter feel.
-                        # The UI already buffers assistant_delta, so this is a
-                        # pure presentation improvement. Disable via env if the
-                        # provider ever delivers true token deltas.
-                        if (
-                            ev_name == "assistant_delta"
-                            and STREAM_RECHUNK
-                            and len(ev_data.get("chunk", "")) > STREAM_RECHUNK_MIN
-                        ):
-                            _whole = ev_data.get("chunk", "")
-                            _step = ev_data.get("step")
-                            for _piece in _chunk_text(_whole, STREAM_CHUNK_CHARS):
-                                yield _sse(
-                                    "assistant_delta",
-                                    {"step": _step, "chunk": _piece},
-                                ).encode("utf-8")
-                                if STREAM_CHUNK_DELAY > 0:
-                                    await asyncio.sleep(STREAM_CHUNK_DELAY)
-                        else:
-                            yield _sse(ev_name, ev_data).encode("utf-8")
-            except httpx.TimeoutException:
-                pass
-            except Exception as e:
-                log.warning("event poll error: %s", e)
+                transport_used = "ws"
+                yield _sse("agent_state", {"step": 0, "phase": "stream-ws", "raw": "websocket", "conversationId": cid}).encode("utf-8")
+                ws_seen_ids = set(initial_seen_ids)
+                async for chunk, step, done, seen_ids in _stream_chat_ws(
+                    client,
+                    cid,
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    last_seen_event_id=last_seen_event_id,
+                    was_created=was_created,
+                    step=step,
+                    full_answer_ref=full_answer_ref,
+                    ask_user_sent_ref=ask_user_sent_ref,
+                    seen_ids=ws_seen_ids,
+                ):
+                    if chunk:
+                        yield chunk
+                    if done:
+                        break
+            except OpenHandsWsUnavailable as e:
+                transport_used = "poll"
+                log.info("OpenHands WS unavailable; falling back to polling: %s", e)
+                yield _sse("agent_state", {"step": 0, "phase": "stream-poll", "raw": "ws-fallback", "reason": str(e), "conversationId": cid}).encode("utf-8")
+                async for chunk, step, done, seen_ids in _poll_openhands_events(
+                    client,
+                    cid,
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    start_after_id=last_seen_event_id,
+                    initial_seen_ids=seen_ids or initial_seen_ids,
+                    step=step,
+                    full_answer_ref=full_answer_ref,
+                    ask_user_sent_ref=ask_user_sent_ref,
+                ):
+                    if chunk:
+                        yield chunk
+        else:
+            yield _sse("agent_state", {"step": 0, "phase": "stream-poll", "raw": "polling", "conversationId": cid}).encode("utf-8")
+            async for chunk, step, done, seen_ids in _poll_openhands_events(
+                client,
+                cid,
+                chat_id=chat_id,
+                user_id=user_id,
+                start_after_id=last_seen_event_id,
+                initial_seen_ids=initial_seen_ids,
+                step=step,
+                full_answer_ref=full_answer_ref,
+                ask_user_sent_ref=ask_user_sent_ref,
+            ):
+                if chunk:
+                    yield chunk
 
-            # Primary end-of-turn signal: OpenHands sent agent_state_changed
-            # to awaiting_user_input/finished/stopped/error. We DON'T wait for
-            # /conversations status to flip (it stays RUNNING until conv is
-            # actually deleted) — the event is the source of truth.
-            #
-            # Note: 'finished' can come WITHOUT any full_answer (e.g. GLM ends
-            # via a 'finish' action after a tool call, without summarising in
-            # natural language). Close the stream anyway — the UI already saw
-            # the tool_result cards.
-            if turn_complete:
-                done = True
-
-            # Belt-and-suspenders: hard status check
-            try:
-                rs = await client.get(
-                    f"{OPENHANDS_SERVER}/api/conversations/{cid}", timeout=10.0
-                )
-                if rs.status_code == 200:
-                    status = ((rs.json() or {}).get("conversation_status") or "").upper()
-                    if status in ("STOPPED", "FINISHED", "COMPLETED", "ERROR"):
-                        done = True
-            except Exception:
-                pass
-
-            # Soft fallback: if we have an answer OR tool steps and the agent
-            # has been quiet for >8 seconds, close the stream so the UI does
-            # not hang if OpenHands forgets to emit awaiting_user_input.
-            if (full_answer or step > 0) and (time.time() - last_event_ts) > 8:
-                done = True
-
-            # Idle watchdog: no new events for 3 minutes → assume hung
-            if (time.time() - last_event_ts) > 180:
-                yield _sse(
-                    "error",
-                    {
-                        "message": "Агент не отвечает (нет событий 3 минуты). Попробуйте ещё раз."
-                    },
-                ).encode("utf-8")
-                break
-
-            await asyncio.sleep(EVENT_POLL_INTERVAL)
-
+        full_answer = full_answer_ref["text"]
         if full_answer:
             _, clean = _split_think(full_answer)
             if clean:
-                if not ask_user_sent and chat_id:
+                if not ask_user_sent_ref["sent"] and chat_id:
                     ask_payload = _extract_ask_user_payload(clean)
                     if ask_payload:
                         qid = f"q_{uuid.uuid4().hex[:12]}"
-                        create_question(
-                            qid, chat_id, cid, user_id,
-                            ask_payload.get("question") or "",
-                            ask_payload.get("options") or [],
-                        )
-                        yield _sse(
-                            "ask_user",
-                            {
-                                "question_id": qid,
-                                "question": ask_payload.get("question"),
-                                "options": ask_payload.get("options") or [],
-                            },
-                        ).encode("utf-8")
-                        ask_user_sent = True
+                        create_question(qid, chat_id, cid, user_id, ask_payload.get("question") or "", ask_payload.get("options") or [])
+                        yield _sse("ask_user", {"question_id": qid, "question": ask_payload.get("question"), "options": ask_payload.get("options") or []}).encode("utf-8")
+                        ask_user_sent_ref["sent"] = True
                 yield _sse("assistant", {"step": step, "text": clean}).encode("utf-8")
         elif step > 0 and done:
-            # Agent finished via pure tool execution with no natural-language
-            # summary (common with GLM after a single write/edit). Emit a
-            # generic 'assistant' so the UI shows something instead of an
-            # empty bubble.
-            yield _sse(
-                "assistant",
-                {"step": step, "text": "✅ Готово."},
-            ).encode("utf-8")
+            yield _sse("assistant", {"step": step, "text": "✅ Готово."}).encode("utf-8")
 
-        # Persist max event id we've seen so the next /api/agent/chat for
-        # this chat skips replaying old events from THIS turn.
         if chat_id and seen_ids:
             try:
-                max_seen = max(seen_ids)
+                numeric_ids = [int(x) for x in seen_ids if isinstance(x, int) or str(x).lstrip("-").isdigit()]
+                max_seen = max(numeric_ids) if numeric_ids else last_seen_event_id
                 update_last_event(chat_id, max_seen)
                 set_run_status(chat_id, "done" if done else "timeout")
                 upsert_run(chat_id, cid, user_id, "done" if done else "timeout", last_prompt=prompt, last_event_id=max_seen)
@@ -1938,15 +2021,13 @@ async def _stream_chat(
             except Exception:
                 pass
 
-        yield _sse(
-            "done",
-            {
-                "reason": "complete" if done else "timeout",
-                "steps": step,
-                "conversationId": cid,
-                "reused": not was_created,
-            },
-        ).encode("utf-8")
+        yield _sse("done", {
+            "reason": "complete" if done else "timeout",
+            "steps": step,
+            "conversationId": cid,
+            "reused": not was_created,
+            "transport": transport_used,
+        }).encode("utf-8")
 
 
 async def _locked_stream_chat(
@@ -2614,32 +2695,42 @@ async def workspace_cleanup(request: Request):
     return {"ok": True, "removed": removed, "removedCount": len(removed), "keptCount": len(kept)}
 
 
-def _workspace_revision(root: Path) -> str:
-    """Cheap workspace tree revision token for UI cache validation.
+def _workspace_snapshot(root: Path) -> Tuple[str, Dict[str, str]]:
+    """Return (tree revision, per-file revisions) for workspace sync.
 
-    Uses file count + total bytes + newest mtime. It is not a cryptographic
-    hash; it is a fast invalidation token so smart polling can avoid sending the
-    full tree while an agent is running and nothing changed.
+    File revisions are path-local tokens (`size:mtime_ns`). The tree revision is
+    a cheap aggregate that changes when any file changes, appears or disappears.
     """
     count = 0
     total = 0
     newest = 0
+    files: Dict[str, str] = {}
     try:
-        for dirpath, dirnames, filenames in os.walk(root):
+        base = root.resolve()
+        for dirpath, dirnames, filenames in os.walk(base):
             dirnames[:] = [d for d in dirnames if d not in {".git", "node_modules", "__pycache__"}]
             for name in filenames:
                 count += 1
                 if count > _MAX_TREE_ITEMS:
-                    return f"{count}:{total}:{newest}:truncated"
+                    return f"{count}:{total}:{newest}:truncated", files
+                p = Path(dirpath) / name
                 try:
-                    st = (Path(dirpath) / name).stat()
-                    total += int(st.st_size)
-                    newest = max(newest, int(st.st_mtime_ns))
+                    st = p.stat()
+                    size = int(st.st_size)
+                    mtime_ns = int(st.st_mtime_ns)
+                    total += size
+                    newest = max(newest, mtime_ns)
+                    rel = str(p.relative_to(base)).replace("\\", "/")
+                    files[rel] = f"{size}:{mtime_ns}"
                 except OSError:
                     continue
     except Exception:
-        return "0:0:0:error"
-    return f"{count}:{total}:{newest}"
+        return "0:0:0:error", files
+    return f"{count}:{total}:{newest}", files
+
+
+def _workspace_revision(root: Path) -> str:
+    return _workspace_snapshot(root)[0]
 
 
 @app.get("/api/workspace")
@@ -2651,17 +2742,17 @@ async def workspace_tree(request: Request, chatId: Optional[str] = None, path: O
     root_path = _safe_abs(path or "", allow_empty=True, base=base)
     if not root_path.exists():
         root_path.mkdir(parents=True, exist_ok=True)
-    revision = _workspace_revision(root_path)
+    revision, file_revisions = _workspace_snapshot(root_path)
     requested_revision = ifRevision or request.query_params.get("ifRevision") or request.headers.get("X-Workspace-Revision")
     root_label = f"/workspace/{_chat_workspace_rel(chat_id)}" if chat_id else "/workspace"
     if requested_revision and requested_revision == revision:
-        return {"ok": True, "unchanged": True, "revision": revision, "chatId": chat_id, "path": path or "", "root": root_label}
+        return {"ok": True, "unchanged": True, "revision": revision, "fileRevisions": file_revisions, "chatId": chat_id, "path": path or "", "root": root_label}
     counter = {"n": 0}
     tree = _node_for_path(root_path, _safe_rel(path or "", allow_empty=True), show_hidden, counter) or {
         "name": "workspace", "path": "", "type": "dir", "children": []
     }
     # BrowserAI's current Workspace.jsx expects {tree}; older adapters used {items}.
-    return {"ok": True, "tree": tree, "items": tree.get("children", []), "chatId": chat_id, "path": path or "", "root": root_label, "revision": revision}
+    return {"ok": True, "tree": tree, "items": tree.get("children", []), "chatId": chat_id, "path": path or "", "root": root_label, "revision": revision, "fileRevisions": file_revisions}
 
 
 @app.get("/api/workspace/metadata")
