@@ -1636,38 +1636,53 @@ async def _prepare_openhands_turn(
     )
 
     # Phase 1.3 memory context for warm reuse.
+    # BrowserAI is responsible for reminding the reused OpenHands conversation
+    # of the last few user/assistant turns. Without this, warm chats can become
+    # amnesic after long tool-heavy runs because the latest OH state may be too
+    # sparse for the model to infer intent from the new prompt alone.
+    context_prefix = ""
     if not was_created and last_seen_event_id >= 0:
         try:
             ctx_r = await client.get(
-                f"{OPENHANDS_SERVER}/api/conversations/{cid}/events?limit=50",
+                f"{OPENHANDS_SERVER}/api/conversations/{cid}/events?limit=80",
                 timeout=15.0,
             )
             if ctx_r.status_code == 200:
                 ctx_body = ctx_r.json()
                 ctx_events = ctx_body if isinstance(ctx_body, list) else (ctx_body.get("events") or [])
                 recent_turns = []
-                for ce in ctx_events[-30:]:
+                for ce in ctx_events[-50:]:
                     ce_action = ce.get("action", "")
                     ce_obs = ce.get("observation", "")
                     ce_args = ce.get("args") or {}
                     ce_extras = ce.get("extras") or {}
                     if ce_action == "message":
                         msg = ce_args.get("content") or ce_args.get("text") or ""
-                        if msg and len(msg) < 2000:
-                            recent_turns.append(f"User: {msg[:500]}")
+                        if msg:
+                            recent_turns.append(f"User: {msg[:700]}")
                     elif ce_obs == "assistant":
-                        msg = ce_extras.get("content") or ce_args.get("content") or ""
-                        if msg and len(msg) < 2000:
+                        msg = ce_extras.get("content") or ce_args.get("content") or ce_extras.get("message") or ""
+                        if msg:
                             _, clean_msg = _split_think(msg)
-                            recent_turns.append(f"Assistant: {clean_msg[:500]}")
+                            clean_msg = (clean_msg or msg).strip()
+                            if clean_msg:
+                                recent_turns.append(f"Assistant: {clean_msg[:700]}")
+                recent_turns = recent_turns[-20:]
                 if recent_turns:
-                    context_block = "\n".join(recent_turns[-10:])
-                    # The actual prompt has already been sent by get_or_create_conversation
-                    # in the current OpenHands API path. Keep this fetch for continuity
-                    # and future direct-send refactors; do not send a duplicate message.
-                    log.debug("loaded warm context prefix for chat_id=%s chars=%d", chat_id, len(context_block))
+                    context_prefix = (
+                        "[Previous turns in this conversation; use as continuity context, "
+                        "do not repeat verbatim]\n" + "\n".join(recent_turns)
+                    )
+                    log.debug("loaded warm context prefix for chat_id=%s turns=%d chars=%d", chat_id, len(recent_turns), len(context_prefix))
         except Exception as e:
             log.debug("context prefix fetch failed (non-critical): %s", e)
+
+    if context_prefix:
+        await client.post(
+            f"{OPENHANDS_SERVER}/api/conversations/{cid}/message",
+            json={"message": context_prefix},
+            timeout=20.0,
+        )
 
     if chat_id:
         upsert_run(chat_id, cid, user_id, "running", last_prompt=prompt, last_event_id=last_seen_event_id)
@@ -1911,119 +1926,119 @@ async def _stream_chat(
     yield _sse("thinking", {"step": 1}).encode("utf-8")
     yield _sse("agent_state", {"phase": "plan", "step": 1, "maxSteps": MAX_AGENT_ITERATIONS, "engine": "openhands"}).encode("utf-8")
 
-    async with httpx.AsyncClient() as client:
+    client = get_http_client()
+    try:
+        cid, was_created, last_seen_event_id = await _prepare_openhands_turn(
+            client, chat_id, model, prompt, extra_system, provider, user_id
+        )
+    except HTTPException as e:
+        if chat_id:
+            upsert_run(chat_id, None, user_id, "error", last_prompt=prompt, last_error=str(e.detail))
+        yield _sse("error", {"message": str(e.detail)}).encode("utf-8")
+        yield _sse("done", {"reason": "engine-error", "steps": step}).encode("utf-8")
+        return
+    except Exception as e:
+        if chat_id:
+            upsert_run(chat_id, None, user_id, "error", last_prompt=prompt, last_error=str(e))
+        yield _sse("error", {"message": f"OpenHands bridge: {e}"}).encode("utf-8")
+        yield _sse("done", {"reason": "engine-error", "steps": step}).encode("utf-8")
+        return
+
+    yield _sse("agent_state", {
+        "step": 0,
+        "phase": "warm" if not was_created else "cold",
+        "raw": "warm" if not was_created else "cold",
+        "conversationId": cid,
+    }).encode("utf-8")
+
+    initial_seen_ids = set(range(0, last_seen_event_id + 1)) if (not was_created and last_seen_event_id >= 0) else set()
+    use_ws = OPENHANDS_STREAM_TRANSPORT in ("auto", "ws", "websocket", "socketio")
+    transport_used = "poll"
+    if use_ws:
         try:
-            cid, was_created, last_seen_event_id = await _prepare_openhands_turn(
-                client, chat_id, model, prompt, extra_system, provider, user_id
-            )
-        except HTTPException as e:
-            if chat_id:
-                upsert_run(chat_id, None, user_id, "error", last_prompt=prompt, last_error=str(e.detail))
-            yield _sse("error", {"message": str(e.detail)}).encode("utf-8")
-            yield _sse("done", {"reason": "engine-error", "steps": step}).encode("utf-8")
-            return
-        except Exception as e:
-            if chat_id:
-                upsert_run(chat_id, None, user_id, "error", last_prompt=prompt, last_error=str(e))
-            yield _sse("error", {"message": f"OpenHands bridge: {e}"}).encode("utf-8")
-            yield _sse("done", {"reason": "engine-error", "steps": step}).encode("utf-8")
-            return
-
-        yield _sse("agent_state", {
-            "step": 0,
-            "phase": "warm" if not was_created else "cold",
-            "raw": "warm" if not was_created else "cold",
-            "conversationId": cid,
-        }).encode("utf-8")
-
-        initial_seen_ids = set(range(0, last_seen_event_id + 1)) if (not was_created and last_seen_event_id >= 0) else set()
-        use_ws = OPENHANDS_STREAM_TRANSPORT in ("auto", "ws", "websocket", "socketio")
-        transport_used = "poll"
-        if use_ws:
-            try:
-                transport_used = "ws"
-                yield _sse("agent_state", {"step": 0, "phase": "stream-ws", "raw": "websocket", "conversationId": cid}).encode("utf-8")
-                ws_seen_ids = set(initial_seen_ids)
-                async for chunk, step, done, seen_ids in _stream_chat_ws(
-                    client,
-                    cid,
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    last_seen_event_id=last_seen_event_id,
-                    was_created=was_created,
-                    step=step,
-                    full_answer_ref=full_answer_ref,
-                    ask_user_sent_ref=ask_user_sent_ref,
-                    seen_ids=ws_seen_ids,
-                ):
-                    if chunk:
-                        yield chunk
-                    if done:
-                        break
-            except OpenHandsWsUnavailable as e:
-                transport_used = "poll"
-                log.info("OpenHands WS unavailable; falling back to polling: %s", e)
-                yield _sse("agent_state", {"step": 0, "phase": "stream-poll", "raw": "ws-fallback", "reason": str(e), "conversationId": cid}).encode("utf-8")
-                async for chunk, step, done, seen_ids in _poll_openhands_events(
-                    client,
-                    cid,
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    start_after_id=last_seen_event_id,
-                    initial_seen_ids=seen_ids or initial_seen_ids,
-                    step=step,
-                    full_answer_ref=full_answer_ref,
-                    ask_user_sent_ref=ask_user_sent_ref,
-                ):
-                    if chunk:
-                        yield chunk
-        else:
-            yield _sse("agent_state", {"step": 0, "phase": "stream-poll", "raw": "polling", "conversationId": cid}).encode("utf-8")
+            transport_used = "ws"
+            yield _sse("agent_state", {"step": 0, "phase": "stream-ws", "raw": "websocket", "conversationId": cid}).encode("utf-8")
+            ws_seen_ids = set(initial_seen_ids)
+            async for chunk, step, done, seen_ids in _stream_chat_ws(
+                client,
+                cid,
+                chat_id=chat_id,
+                user_id=user_id,
+                last_seen_event_id=last_seen_event_id,
+                was_created=was_created,
+                step=step,
+                full_answer_ref=full_answer_ref,
+                ask_user_sent_ref=ask_user_sent_ref,
+                seen_ids=ws_seen_ids,
+            ):
+                if chunk:
+                    yield chunk
+                if done:
+                    break
+        except OpenHandsWsUnavailable as e:
+            transport_used = "poll"
+            log.info("OpenHands WS unavailable; falling back to polling: %s", e)
+            yield _sse("agent_state", {"step": 0, "phase": "stream-poll", "raw": "ws-fallback", "reason": str(e), "conversationId": cid}).encode("utf-8")
             async for chunk, step, done, seen_ids in _poll_openhands_events(
                 client,
                 cid,
                 chat_id=chat_id,
                 user_id=user_id,
                 start_after_id=last_seen_event_id,
-                initial_seen_ids=initial_seen_ids,
+                initial_seen_ids=seen_ids or initial_seen_ids,
                 step=step,
                 full_answer_ref=full_answer_ref,
                 ask_user_sent_ref=ask_user_sent_ref,
             ):
                 if chunk:
                     yield chunk
+    else:
+        yield _sse("agent_state", {"step": 0, "phase": "stream-poll", "raw": "polling", "conversationId": cid}).encode("utf-8")
+        async for chunk, step, done, seen_ids in _poll_openhands_events(
+            client,
+            cid,
+            chat_id=chat_id,
+            user_id=user_id,
+            start_after_id=last_seen_event_id,
+            initial_seen_ids=initial_seen_ids,
+            step=step,
+            full_answer_ref=full_answer_ref,
+            ask_user_sent_ref=ask_user_sent_ref,
+        ):
+            if chunk:
+                yield chunk
 
-        full_answer = full_answer_ref["text"]
-        if full_answer:
-            _, clean = _split_think(full_answer)
-            if clean:
-                if not ask_user_sent_ref["sent"] and chat_id:
-                    ask_payload = _extract_ask_user_payload(clean)
-                    if ask_payload:
-                        qid = f"q_{uuid.uuid4().hex[:12]}"
-                        create_question(qid, chat_id, cid, user_id, ask_payload.get("question") or "", ask_payload.get("options") or [])
-                        yield _sse("ask_user", {"question_id": qid, "question": ask_payload.get("question"), "options": ask_payload.get("options") or []}).encode("utf-8")
-                        ask_user_sent_ref["sent"] = True
-                yield _sse("assistant", {"step": step, "text": clean}).encode("utf-8")
-        elif step > 0 and done:
-            yield _sse("assistant", {"step": step, "text": "✅ Готово."}).encode("utf-8")
+    full_answer = full_answer_ref["text"]
+    if full_answer:
+        _, clean = _split_think(full_answer)
+        if clean:
+            if not ask_user_sent_ref["sent"] and chat_id:
+                ask_payload = _extract_ask_user_payload(clean)
+                if ask_payload:
+                    qid = f"q_{uuid.uuid4().hex[:12]}"
+                    create_question(qid, chat_id, cid, user_id, ask_payload.get("question") or "", ask_payload.get("options") or [])
+                    yield _sse("ask_user", {"question_id": qid, "question": ask_payload.get("question"), "options": ask_payload.get("options") or []}).encode("utf-8")
+                    ask_user_sent_ref["sent"] = True
+            yield _sse("assistant", {"step": step, "text": clean}).encode("utf-8")
+    elif step > 0 and done:
+        yield _sse("assistant", {"step": step, "text": "✅ Готово."}).encode("utf-8")
 
-        if chat_id and seen_ids:
-            try:
-                numeric_ids = [int(x) for x in seen_ids if isinstance(x, int) or str(x).lstrip("-").isdigit()]
-                max_seen = max(numeric_ids) if numeric_ids else last_seen_event_id
-                update_last_event(chat_id, max_seen)
-                set_run_status(chat_id, "done" if done else "timeout")
-                upsert_run(chat_id, cid, user_id, "done" if done else "timeout", last_prompt=prompt, last_event_id=max_seen)
-            except Exception as e:
-                log.warning("update_last_event failed: %s", e)
-        elif chat_id:
-            try:
-                set_run_status(chat_id, "done" if done else "timeout")
-            except Exception:
-                pass
+    if chat_id and seen_ids:
+        try:
+            numeric_ids = [int(x) for x in seen_ids if isinstance(x, int) or str(x).lstrip("-").isdigit()]
+            max_seen = max(numeric_ids) if numeric_ids else last_seen_event_id
+            update_last_event(chat_id, max_seen)
+            set_run_status(chat_id, "done" if done else "timeout")
+            upsert_run(chat_id, cid, user_id, "done" if done else "timeout", last_prompt=prompt, last_event_id=max_seen)
+        except Exception as e:
+            log.warning("update_last_event failed: %s", e)
+    elif chat_id:
+        try:
+            set_run_status(chat_id, "done" if done else "timeout")
+        except Exception:
+            pass
 
-        yield _sse("done", {
+    yield _sse("done", {
             "reason": "complete" if done else "timeout",
             "steps": step,
             "conversationId": cid,

@@ -22,6 +22,40 @@ const RECENT_CONTEXT_MESSAGES = 10
 const MAX_CONTEXT_CHARS = 18000
 
 
+async function fetchChatListFromServer() {
+  try {
+    const r = await fetch('/api/chats/list', { credentials: 'include' })
+    if (!r.ok) return null
+    const data = await r.json().catch(() => null)
+    return Array.isArray(data?.chats) ? data.chats : null
+  } catch {
+    return null
+  }
+}
+
+function mergeServerChatMetadata(localChats = [], serverChats = []) {
+  const localById = new Map(localChats.map((chat) => [chat.id, chat]))
+  const merged = []
+  for (const meta of serverChats) {
+    const local = localById.get(meta.id) || {}
+    merged.push({
+      ...local,
+      id: meta.id,
+      title: meta.title || local.title || 'New chat',
+      updatedAt: meta.updatedAt || local.updatedAt || Date.now(),
+      openhands: { ...(local.openhands || {}), conversationId: meta.conversationId || local?.openhands?.conversationId || null },
+      messages: Array.isArray(local.messages) ? local.messages : [],
+      summary: local.summary || '',
+      summarizedUntil: local.summarizedUntil || 0,
+      _loadedFromServer: Boolean(local._loadedFromServer),
+    })
+    localById.delete(meta.id)
+  }
+  for (const leftover of localById.values()) merged.push(leftover)
+  return merged.sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+}
+
+
 function dataUrlToWorkspaceFile(dataUrl, index = 0) {
   const match = String(dataUrl || '').match(/^data:([^;,]+)(?:;[^,]*)?,(.*)$/s)
   if (!match) return null
@@ -233,6 +267,23 @@ export function useChats(settings) {
     saveTimeoutRef.current = setTimeout(() => saveChats(chats), 800)
     return () => clearTimeout(saveTimeoutRef.current)
   }, [chats])
+
+  // Phase 1.2: server is the canonical source for chat metadata.
+  // localStorage keeps message cache and optimistic local-only chats, but the
+  // sidebar should hydrate from /api/chats/list to avoid heavy full-history loads.
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const serverChats = await fetchChatListFromServer()
+      if (!serverChats || cancelled) return
+      setChats((prev) => mergeServerChatMetadata(prev, serverChats))
+      setActiveId((prev) => {
+        if (prev && serverChats.some((chat) => chat.id === prev)) return prev
+        return serverChats[0]?.id || prev || null
+      })
+    })()
+    return () => { cancelled = true }
+  }, [])
 
   const activeChat = chats.find((c) => c.id === activeId) || null
 
