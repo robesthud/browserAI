@@ -2202,6 +2202,13 @@ async def workspace_chat_init(request: Request):
                 if cid:
                     upsert_mapping(chat_id, cid, None)
                     import asyncio
+                    # Track mount readiness so get_or_create_conversation knows
+                    # whether to wait for the background remount.
+                    if not hasattr(app.state, "mount_ready"):
+                        app.state.mount_ready = {}  # cid -> asyncio.Event
+                    mount_event = asyncio.Event()
+                    app.state.mount_ready[cid] = mount_event
+
                     async def _bg_start():
                         # Use a FRESH httpx client — the parent scope client
                         # will be closed when its async-with block exits.
@@ -2223,6 +2230,10 @@ async def workspace_chat_init(request: Request):
                                 log.warning("workspace_chat_init: remount failed for chat_id=%s cid=%s", chat_id, cid)
                         except Exception as e:
                             log.warning("workspace_chat_init: remount error: %s", e)
+                        finally:
+                            # Signal that remount is done (success or failure)
+                            mount_event.set()
+                            app.state.mount_ready.pop(cid, None)
                     asyncio.create_task(_bg_start())
         except Exception as e:
             log.warning("workspace_chat_init: failed to create OH conversation for chat_id=%s: %s", chat_id, e)

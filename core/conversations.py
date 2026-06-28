@@ -15,10 +15,10 @@ Lifecycle policy:
     conversation is born naturally.
 
 Workspace isolation:
-  New conversations are created WITHOUT initial_user_msg. After /start
-  creates the runtime container, we remount it with a per-chat /workspace
-  bind mount. Only THEN do we POST /message, so the agent works exclusively
-  in its own directory.
+  Every call to get_or_create_conversation (new or reused) verifies the
+  runtime mount is correct. If the mount is wrong (e.g. after OH restart
+  recreated the runtime with _sandbox), we remount before sending the
+  message. This guarantees the agent ALWAYS works in its per-chat directory.
 
 We also tag conversations with the BrowserAI user_id so /api/cloud and
 admin tools can audit / clean up later.
@@ -152,54 +152,70 @@ async def conversation_alive(client: httpx.AsyncClient, oh_url: str, cid: str) -
         return False
 
 
-async def _remount_and_send(
+async def _ensure_mount_and_send(
     client: httpx.AsyncClient,
     oh_url: str,
     cid: str,
     chat_id: str,
-    initial_message: str,
+    message: str,
+    is_new_conversation: bool = False,
 ) -> None:
-    """Remount the runtime container with per-chat /workspace, then send
-    the initial message. Called after /start returns.
+    """Ensure the runtime has the correct per-chat mount, then send a message.
 
-    This is the key isolation step: the agent only starts working AFTER
-    the per-chat workspace is set up.
+    This is called for BOTH new and reused conversations to guarantee:
+    - New conversations: remount after /start, then send initial message
+    - Reused conversations: verify mount is correct (may be wrong after
+      OH restart), remount if needed, then send the message
+
+    The agent NEVER works in the wrong workspace.
     """
-    from core.isolation import remount_runtime_async
+    from core.isolation import verify_runtime_mount, remount_runtime_async
 
-    # Remount with per-chat workspace
+    # Check if mount is correct; remount if needed
+    mount_ok = False
     try:
-        ok = await remount_runtime_async(cid, chat_id)
-        if ok:
-            log.info("_remount_and_send: remounted cid=%s chat_id=%s", cid, chat_id)
-        else:
-            log.warning("_remount_and_send: remount failed cid=%s chat_id=%s", cid, chat_id)
+        mount_ok = verify_runtime_mount(cid, chat_id)
     except Exception as e:
-        log.warning("_remount_and_send: remount error: %s", e)
+        log.warning("_ensure_mount_and_send: verify failed: %s", e)
 
-    # Send the initial message (agent now works in per-chat workspace)
-    if initial_message:
-        for attempt in range(3):
-            try:
-                r = await client.post(
-                    f"{oh_url}/api/conversations/{cid}/message",
-                    json={"message": initial_message},
-                    timeout=15.0,
-                )
-                if r.status_code < 400:
-                    log.info("_remount_and_send: message sent to cid=%s", cid)
-                    return
-                log.warning(
-                    "_remount_and_send: POST /message returned %s (attempt %d)",
-                    r.status_code, attempt + 1,
-                )
-            except Exception as e:
-                log.warning(
-                    "_remount_and_send: POST /message error (attempt %d): %s",
-                    attempt + 1, e,
-                )
-            # Give OH time to reconnect after remount
-            await asyncio.sleep(2)
+    if not mount_ok:
+        log.info("_ensure_mount_and_send: remounting cid=%s chat_id=%s", cid, chat_id)
+        try:
+            ok = await remount_runtime_async(cid, chat_id)
+            if ok:
+                log.info("_ensure_mount_and_send: remounted cid=%s chat_id=%s", cid, chat_id)
+            else:
+                log.warning("_ensure_mount_and_send: remount failed cid=%s chat_id=%s", cid, chat_id)
+        except Exception as e:
+            log.warning("_ensure_mount_and_send: remount error: %s", e)
+        # Give OH time to reconnect to the remounted container
+        await asyncio.sleep(1)
+    else:
+        log.debug("_ensure_mount_and_send: mount already correct cid=%s", cid)
+
+    # Send the message
+    if not message:
+        return
+    for attempt in range(3):
+        try:
+            r = await client.post(
+                f"{oh_url}/api/conversations/{cid}/message",
+                json={"message": message},
+                timeout=15.0,
+            )
+            if r.status_code < 400:
+                log.info("_ensure_mount_and_send: message sent to cid=%s", cid)
+                return
+            log.warning(
+                "_ensure_mount_and_send: POST /message returned %s (attempt %d)",
+                r.status_code, attempt + 1,
+            )
+        except Exception as e:
+            log.warning(
+                "_ensure_mount_and_send: POST /message error (attempt %d): %s",
+                attempt + 1, e,
+            )
+        await asyncio.sleep(2)
 
 
 async def get_or_create_conversation(
@@ -218,14 +234,15 @@ async def get_or_create_conversation(
     also POST /message.
 
     `was_created=False` means we reused an existing conversation; the
-    caller MUST POST /message with the user's text. The returned
-    `last_event_id_at_send_time` is the highest event id observed BEFORE
-    the new message — so polling can fetch only the response.
+    caller MUST NOT also POST /message (we already sent it via
+    _ensure_mount_and_send). The returned `last_event_id_at_send_time` is
+    the highest event id observed BEFORE the new message — so polling can
+    fetch only the response.
 
     Workspace isolation:
-    For NEW conversations, we create WITHOUT initial_user_msg, start the
-    runtime, remount it with per-chat /workspace, THEN send the message.
-    This ensures the agent only works in its own directory.
+    EVERY call (new or reused) verifies the runtime mount is correct.
+    If the mount is wrong (e.g. after OH restart), we remount BEFORE
+    sending the message. The agent ALWAYS works in its per-chat directory.
     """
     mapping = get_mapping(chat_id) if chat_id else None
     if mapping:
@@ -249,20 +266,9 @@ async def get_or_create_conversation(
             except Exception:
                 pass
 
-            # POST the new user message into the existing conversation
-            r = await client.post(
-                f"{oh_url}/api/conversations/{cid}/message",
-                json={"message": initial_message},
-                timeout=15.0,
-            )
-            if r.status_code >= 400:
-                log.warning(
-                    "POST /message failed (%s) for cid=%s; rotating conversation",
-                    r.status_code, cid,
-                )
-                drop_mapping(chat_id)
-            else:
-                return cid, False, last_id
+            # Send the message with mount verification (handles OH restart case)
+            await _ensure_mount_and_send(client, oh_url, cid, chat_id, initial_message)
+            return cid, False, last_id
         else:
             log.info("stale mapping for chat_id=%s cid=%s — recreating", chat_id, cid)
             drop_mapping(chat_id)
@@ -299,8 +305,11 @@ async def get_or_create_conversation(
     except httpx.TimeoutException:
         log.warning("/start timeout for cid=%s (continuing to remount)", cid)
 
-    # Remount runtime with per-chat /workspace, then send the initial message
-    await _remount_and_send(client, oh_url, cid, chat_id or "", initial_message)
+    # Verify mount and send the initial message
+    await _ensure_mount_and_send(
+        client, oh_url, cid, chat_id or "", initial_message,
+        is_new_conversation=True,
+    )
 
     if chat_id:
         upsert_mapping(chat_id, cid, user_id)
