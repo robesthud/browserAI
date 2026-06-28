@@ -42,7 +42,11 @@ export const workspaceApi = {
       body: JSON.stringify({ chatId }),
     }),
 
-  getTree: (showHidden = false) => req(`/tree?hidden=${showHidden ? '1' : '0'}`),
+  getTree: (showHidden = false, opts = {}) => {
+    const params = [`hidden=${showHidden ? '1' : '0'}`]
+    if (opts.ifRevision) params.push(`ifRevision=${encodeURIComponent(opts.ifRevision)}`)
+    return req(`/tree?${params.join('&')}`)
+  },
 
   readFile: (path) => req(`/file?path=${encodeURIComponent(path)}`),
 

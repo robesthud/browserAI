@@ -1,7 +1,7 @@
 # BrowserAI + OpenHands — Hybrid True Merge Plan
 
 **Version:** 2026-06-28 (Hybrid v1.0)  
-**Status:** Phase 0–1.4 completed; Phase 2 next
+**Status:** Phase 0–1.4 completed; Phase 2 partially implemented
 **Goal:** One cohesive product. BrowserAI = best-in-class shell. OpenHands = reliable agent engine. Zero dual sources of truth.
 
 ---
@@ -174,14 +174,14 @@ Shared Volume: /workspace/chats/<chatId>  (both sides)
 #### 2.1 WebSocket Bridge (Primary Path)
 - [ ] Create `core/bridge/ws_client.py`
 - [ ] Implement `_stream_chat_ws()` with fallback to polling
-- [ ] Add per-chat lock (`asyncio.Lock`) to prevent concurrent streams
+- [x] Add per-chat lock (`asyncio.Lock`) to prevent concurrent streams
 - [ ] Translate OH WebSocket events → BrowserAI SSE (reuse `_translate_event`)
 
 #### 2.2 Workspace Synchronization
-- [ ] Add `useWorkspace.js` with smart polling (only during streaming)
-- [ ] Debounce tree refresh (1000ms)
+- [x] Add smart workspace polling during streaming
+- [x] Debounce tree refresh (1000ms)
 - [ ] On `tool_result` for `write_file` / `bash` → trigger refresh
-- [ ] Add file revision token to reduce unnecessary full trees
+- [x] Add file revision token to reduce unnecessary full trees
 
 #### 2.3 Remove / Deprecate Isolation Hack (Gradual)
 - [ ] Add feature flag: `BROWSERAI_USE_ISOLATION=1`

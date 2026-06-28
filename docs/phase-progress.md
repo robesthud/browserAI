@@ -56,6 +56,25 @@
 - [x] Abort/stop path flushes pending deltas before cancelling the request
 - [x] Existing optimistic assistant state in `useChats.js` remains intact and receives smoother batched events
 
+
+## Phase 2 — Event Streaming & Workspace Reliability 🚧 (started 2026-06-28)
+
+### Phase 2.1 — Streaming reliability / locking ✅
+- [x] Added per-chat in-process `asyncio.Lock` wrapper for `/api/agent/chat` streams
+- [x] Concurrent sends to the same chat now return SSE `done: {reason: "busy"}` instead of mixing OpenHands events
+- [ ] WebSocket bridge (`core/bridge/ws_client.py`) still pending; OpenHands WS was not exposed in OpenAPI, so polling remains primary for now
+
+### Phase 2.2 — Workspace synchronization ✅/🚧
+- [x] Added workspace tree `revision` token on server (`count:size:newest_mtime`)
+- [x] Added `ifRevision` support: unchanged workspaces return `{unchanged:true}` without full tree payload
+- [x] Workspace UI debounces refreshes around agent tool/file events
+- [x] Workspace UI smart-polls during streaming with revision validation
+- [ ] File-level revision / deeper diff-driven refresh still pending
+
+### Phase 2.3 — Isolation removal 🚧
+- [ ] `core/isolation.py` still active
+- [ ] `/var/run/docker.sock` still mounted for `browserai`; removal deferred until OpenHands config-based runtime mounting is verified
+
 ## Current State on Prod (reference)
 - Health: OK (~5ms)
 - AUTH_SECRET: present
@@ -63,11 +82,11 @@
 - OpenHands WS: not exposed in OpenAPI (will use REST + fallback)
 
 ## Next Immediate Steps
-1. Phase 2 — event/workspace reliability
-2. Phase 2.1 — WebSocket bridge or improved polling fallback
-3. Phase 2.2 — workspace synchronization/debounce
+1. Phase 2.1 — investigate OpenHands WebSocket bridge or formalize improved polling fallback
+2. Phase 2.3 — feature-flag isolation and plan docker.sock removal
+3. Phase 3 — start replacing remaining stub endpoints
 
-## Current Status (after Phase 1.4)
+## Current Status (after Phase 2 partial)
 - Fast sidebar load (<1s expected)
 - No more N+1 event fetches on app start
 - Messages loaded only when user opens/selects a chat
@@ -75,3 +94,5 @@
 - Server-side SSRF/path/AUTH/WAL foundation complete for Phase 1.1
 - Reused conversations now receive compact previous-turn context before the new request
 - Streaming deltas are coalesced per animation frame for smoother UI and fewer React updates
+- Per-chat stream lock prevents concurrent agent runs from mixing events
+- Workspace tree refresh is debounced and revision-aware during streaming

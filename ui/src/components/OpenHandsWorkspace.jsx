@@ -70,15 +70,22 @@ export default function OpenHandsWorkspace({
   const chatId = activeChat?.id || ''
   const terminalEndRef = useRef(null)
   const selectedFileRef = useRef(null)
+  const treeRevisionRef = useRef('')
+  const refreshTimerRef = useRef(null)
   useEffect(() => { selectedFileRef.current = selectedFile }, [selectedFile])
 
-  const refreshFiles = useCallback(async (silent = false) => {
+  const refreshFilesNow = useCallback(async (silent = false, smart = false) => {
     if (!isOpen || !chatId) return
     if (!silent) setLoadingFiles(true)
     setFilesError('')
     try {
       workspaceApi.setChatId(chatId)
-      const data = await workspaceApi.getTree(false)
+      const data = await workspaceApi.getTree(false, smart ? { ifRevision: treeRevisionRef.current } : {})
+      if (data.unchanged) {
+        treeRevisionRef.current = data.revision || treeRevisionRef.current
+        return
+      }
+      treeRevisionRef.current = data.revision || ''
       setTree(data.tree || null)
       // если открытый файл исчез — закрыть редактор
       const sel = selectedFileRef.current
@@ -92,6 +99,20 @@ export default function OpenHandsWorkspace({
       if (!silent) setLoadingFiles(false)
     }
   }, [chatId, isOpen])
+
+  const refreshFiles = useCallback((silent = false, opts = {}) => {
+    const delay = Number(opts.delay ?? 1000)
+    const smart = opts.smart !== false
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null
+      void refreshFilesNow(silent, smart)
+    }, delay)
+  }, [refreshFilesNow])
+
+  useEffect(() => () => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+  }, [])
 
   const refreshTerminal = useCallback(async (silent = false) => {
     if (!isOpen || !chatId) return
@@ -116,16 +137,26 @@ export default function OpenHandsWorkspace({
     if (!isOpen || !chatId) return
     workspaceApi.setChatId(chatId)
     workspaceApi.initChatWorkspace(chatId).catch(()=>{})
-    void refreshFiles()
+    treeRevisionRef.current = ''
+    void refreshFilesNow(false, false)
     void refreshTerminal()
-  }, [isOpen, chatId, refreshFiles, refreshTerminal])
+  }, [isOpen, chatId, refreshFilesNow, refreshTerminal])
 
-  // agent workspaceRevision → автообновление
+  // agent workspaceRevision → debounce + smart revision refresh
   useEffect(() => {
     if (!isOpen || !chatId || !workspaceRevision) return
-    void refreshFiles(true)
+    refreshFiles(true, { delay: 1000, smart: true })
     if (activeTab === 'terminal') void refreshTerminal(true)
   }, [workspaceRevision, isOpen, chatId, activeTab, refreshFiles, refreshTerminal])
+
+  // During streaming, poll the tree slowly and cheaply. The server returns
+  // {unchanged:true} when the revision token did not change, avoiding full tree
+  // downloads on every tick.
+  useEffect(() => {
+    if (!isOpen || !chatId || !aiWorking) return
+    const id = setInterval(() => refreshFiles(true, { delay: 250, smart: true }), 3000)
+    return () => clearInterval(id)
+  }, [isOpen, chatId, aiWorking, refreshFiles])
 
   // live terminal while AI working
   useEffect(() => {
@@ -341,7 +372,7 @@ export default function OpenHandsWorkspace({
               <span className="font-mono text-cream-soft truncate flex-1" title={`/workspace/chats/${chatId || 'default'}`}>
                 /chats/{chatId ? chatId.slice(0,8) : '…'}
               </span>
-              <button onClick={()=>void refreshFiles()} className="px-1.5 py-0.5 rounded hover:bg-white/10" title="Обновить">↻</button>
+              <button onClick={()=>void refreshFilesNow(false, false)} className="px-1.5 py-0.5 rounded hover:bg-white/10" title="Обновить">↻</button>
             </div>
             <div className="px-2 py-1.5 flex flex-wrap gap-1 border-b border-white/5 bg-graphite-900/80 text-[10px]">
               <button onClick={()=>createFile()} className="rounded border border-white/10 px-2 py-1 hover:bg-white/5">+ файл</button>

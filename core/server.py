@@ -168,6 +168,20 @@ STREAM_CHUNK_CHARS = int(os.environ.get("BROWSERAI_STREAM_CHUNK_CHARS", "24"))
 STREAM_CHUNK_DELAY = float(os.environ.get("BROWSERAI_STREAM_CHUNK_DELAY", "0.02"))
 STREAM_RECHUNK_MIN = int(os.environ.get("BROWSERAI_STREAM_RECHUNK_MIN", "48"))
 
+# Phase 2.1 — per-chat stream lock. OpenHands conversations are stateful; two
+# concurrent sends to the same conversation corrupt event boundaries and mix
+# tool calls in the UI. Keep this in-process lock until the bridge is split out.
+_chat_stream_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _stream_lock_for(chat_id: str) -> asyncio.Lock:
+    key = str(chat_id or "").strip() or "__default__"
+    lock = _chat_stream_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _chat_stream_locks[key] = lock
+    return lock
+
 app = FastAPI(title="BrowserAI-OpenHands Core Monolith", version="0.3.0")
 
 
@@ -1935,6 +1949,31 @@ async def _stream_chat(
         ).encode("utf-8")
 
 
+async def _locked_stream_chat(
+    chat_id: str,
+    model: str,
+    prompt: str,
+    extra_system: str,
+    provider: Dict[str, Any],
+    user_id: Optional[str] = None,
+) -> AsyncIterator[bytes]:
+    """Phase 2.1: prevent concurrent streams for the same BrowserAI chat."""
+    lock: Optional[asyncio.Lock] = None
+    if chat_id:
+        lock = _stream_lock_for(chat_id)
+        if lock.locked():
+            yield _sse("error", {"message": "Этот чат уже выполняет агентскую задачу. Дождитесь завершения или нажмите Stop."}).encode("utf-8")
+            yield _sse("done", {"reason": "busy", "chatId": chat_id}).encode("utf-8")
+            return
+        await lock.acquire()
+    try:
+        async for chunk in _stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id):
+            yield chunk
+    finally:
+        if lock and lock.locked():
+            lock.release()
+
+
 @app.post("/api/agent/chat")
 @app.post("/api/chat-pi")
 async def agent_chat(request: Request):
@@ -1964,7 +2003,7 @@ async def agent_chat(request: Request):
         return StreamingResponse(_err_stream(), media_type="text/event-stream")
 
     return StreamingResponse(
-        _stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id),
+        _locked_stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
@@ -2575,22 +2614,54 @@ async def workspace_cleanup(request: Request):
     return {"ok": True, "removed": removed, "removedCount": len(removed), "keptCount": len(kept)}
 
 
+def _workspace_revision(root: Path) -> str:
+    """Cheap workspace tree revision token for UI cache validation.
+
+    Uses file count + total bytes + newest mtime. It is not a cryptographic
+    hash; it is a fast invalidation token so smart polling can avoid sending the
+    full tree while an agent is running and nothing changed.
+    """
+    count = 0
+    total = 0
+    newest = 0
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in {".git", "node_modules", "__pycache__"}]
+            for name in filenames:
+                count += 1
+                if count > _MAX_TREE_ITEMS:
+                    return f"{count}:{total}:{newest}:truncated"
+                try:
+                    st = (Path(dirpath) / name).stat()
+                    total += int(st.st_size)
+                    newest = max(newest, int(st.st_mtime_ns))
+                except OSError:
+                    continue
+    except Exception:
+        return "0:0:0:error"
+    return f"{count}:{total}:{newest}"
+
+
 @app.get("/api/workspace")
 @app.get("/api/workspace/tree")
-async def workspace_tree(request: Request, chatId: Optional[str] = None, path: Optional[str] = None, hidden: Optional[str] = None):
+async def workspace_tree(request: Request, chatId: Optional[str] = None, path: Optional[str] = None, hidden: Optional[str] = None, ifRevision: Optional[str] = None):
     chat_id = _request_chat_id(request, chatId)
     base = _workspace_base_for_chat(chat_id, create=True)
     show_hidden = str(hidden or request.query_params.get("hidden") or "0").lower() in ("1", "true", "yes")
     root_path = _safe_abs(path or "", allow_empty=True, base=base)
     if not root_path.exists():
         root_path.mkdir(parents=True, exist_ok=True)
+    revision = _workspace_revision(root_path)
+    requested_revision = ifRevision or request.query_params.get("ifRevision") or request.headers.get("X-Workspace-Revision")
+    root_label = f"/workspace/{_chat_workspace_rel(chat_id)}" if chat_id else "/workspace"
+    if requested_revision and requested_revision == revision:
+        return {"ok": True, "unchanged": True, "revision": revision, "chatId": chat_id, "path": path or "", "root": root_label}
     counter = {"n": 0}
     tree = _node_for_path(root_path, _safe_rel(path or "", allow_empty=True), show_hidden, counter) or {
         "name": "workspace", "path": "", "type": "dir", "children": []
     }
     # BrowserAI's current Workspace.jsx expects {tree}; older adapters used {items}.
-    root_label = f"/workspace/{_chat_workspace_rel(chat_id)}" if chat_id else "/workspace"
-    return {"ok": True, "tree": tree, "items": tree.get("children", []), "chatId": chat_id, "path": path or "", "root": root_label}
+    return {"ok": True, "tree": tree, "items": tree.get("children", []), "chatId": chat_id, "path": path or "", "root": root_label, "revision": revision}
 
 
 @app.get("/api/workspace/metadata")
