@@ -27,9 +27,9 @@
 - `core/isolation.py`: **163 lines** (still active)
 - `chat_conversations` table: exists in schema
 - `docker.sock` mounted in `browserai` service (docker-compose.yml)
-- No WAL in SQLite
-- No `AUTH_SECRET` startup validation
-- Heavy polling at 0.6s
+- SQLite WAL/busy_timeout: implemented in Phase 1.1
+- `AUTH_SECRET` startup validation: implemented in Phase 1.1
+- Heavy polling at 0.6s: still active; Phase 2 target
 
 ### Current Strengths
 - Mature auth + vault
@@ -47,4 +47,4 @@
 2. Phase 1.1: WAL + AUTH_SECRET + safe_abs + shared client
 3. Phase 1.2: Fast chat loading endpoints
 
-**Status:** Phase 0 — IN PROGRESS
+**Status:** Phase 0 — COMPLETE (updated 2026-06-28)

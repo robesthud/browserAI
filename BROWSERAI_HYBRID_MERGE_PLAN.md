@@ -1,7 +1,7 @@
 # BrowserAI + OpenHands — Hybrid True Merge Plan
 
 **Version:** 2026-06-28 (Hybrid v1.0)  
-**Status:** Ready for execution  
+**Status:** Phase 0–1.2 completed/perfected; Phase 1.3 next
 **Goal:** One cohesive product. BrowserAI = best-in-class shell. OpenHands = reliable agent engine. Zero dual sources of truth.
 
 ---
@@ -110,23 +110,23 @@ Shared Volume: /workspace/chats/<chatId>  (both sides)
 
 **Goal:** Inventory + safe branch + validation baseline
 
-- [ ] Create feature branch: `feat/true-hybrid-merge`
-- [ ] Run inventory scripts:
+- [x] Create feature branch: `feat/true-hybrid-merge`
+- [x] Run inventory scripts:
   ```bash
   grep -roh "'/api[^']*'" ui/src --include="*.jsx" --include="*.js" | sort -u > /tmp/ui_calls.txt
   grep -oP "(?<=@app\.(get|post|put|patch|delete)\([\"'])/api[^\"']*" core/server.py | sort -u > /tmp/server_real.txt
   ```
-- [ ] Document current SSE contract in `docs/sse-contract.md`
-- [ ] Verify OpenHands WebSocket availability on prod:
+- [x] Document current SSE contract in `docs/sse-contract.md`
+- [x] Verify OpenHands WebSocket availability on prod:
   ```bash
   curl -s http://localhost:18000/openapi.json | python3 -c "import sys,json; d=json.load(sys.stdin); print([k for k in d.get('paths',{}) if 'ws' in k.lower()])"
   ```
-- [ ] Baseline metrics:
+- [x] Baseline metrics:
   - `curl -w "%{time_total}\n" -o /dev/null http://localhost:8080/api/health`
   - Measure chat list load time from UI
   - `docker stats` during agent run
-- [ ] Add `AUTH_SECRET` validation + WAL to prod `.env` (if missing)
-- [ ] Create rollback plan document
+- [x] Add `AUTH_SECRET` validation + WAL to prod `.env` (if missing)
+- [x] Create rollback plan document
 
 **Deliverable:** `docs/current-state-audit.md` + feature branch
 
@@ -137,20 +137,20 @@ Shared Volume: /workspace/chats/<chatId>  (both sides)
 **Goal:** Eliminate the most painful immediate issues. Make the system reliable.
 
 #### 1.1 Critical Fixes (Day 1)
-- [ ] **SQLite WAL** (`core/database.py`)
-- [ ] **AUTH_SECRET startup validation** (`core/server.py`)
-- [ ] **Improved `_safe_abs`** (symlink + strict parent check)
-- [ ] **SSRF protection** (`_assert_url_safe`)
-- [ ] **Shared httpx client** with proper pool limits
+- [x] **SQLite WAL** (`core/database.py`)
+- [x] **AUTH_SECRET startup validation** (`core/server.py`)
+- [x] **Improved `_safe_abs`** (symlink + strict parent check)
+- [x] **SSRF protection** (`_assert_url_safe`)
+- [x] **Shared httpx client** with proper pool limits
 
 #### 1.2 Fast Chat Loading (Day 2–3)
-- [ ] New endpoint: `GET /api/chats/list` (meta only)
-- [ ] New endpoint: `GET /api/chats/{chat_id}/messages` (lazy)
-- [ ] Refactor `useChats.js`:
+- [x] New endpoint: `GET /api/chats/list` (meta only)
+- [x] New endpoint: `GET /api/chats/{chat_id}/messages` (lazy)
+- [x] Refactor `useChats.js`:
   - `chatList` = only metadata
   - `messages[chatId]` loaded on demand
   - Keep localStorage only as display cache
-- [ ] Update `Sidebar` and `MessageList` to use new endpoints
+- [x] Update `Sidebar` and `MessageList` to use new endpoints
 
 #### 1.3 Agent Memory Fix (Day 3–4)
 - [ ] In `_stream_chat`: load last 15–20 events when reusing conversation

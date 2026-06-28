@@ -22,6 +22,7 @@ Goals for Step 2:
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import base64
 import fnmatch
 import json
@@ -29,6 +30,7 @@ import logging
 import mimetypes
 import os
 import shutil
+import socket
 import subprocess
 import tarfile
 import tempfile
@@ -149,6 +151,30 @@ EVENT_POLL_TIMEOUT_S = int(os.environ.get("BROWSERAI_EVENT_POLL_TIMEOUT_S", "900
 # === Hybrid Merge Plan: Shared httpx client (Phase 1.1) ===
 _oh_client: Optional["httpx.AsyncClient"] = None
 
+
+def _get_oh_client() -> "httpx.AsyncClient":
+    """Return the app-wide pooled OpenHands client.
+
+    Phase 1.1 completion: BrowserAI→OpenHands REST calls in this module use
+    this pooled client through `_oh_session()` instead of creating one-off
+    clients. The lazy path keeps tests/imports safe when FastAPI startup has not
+    initialized the client yet.
+    """
+    global _oh_client
+    if _oh_client is None or _oh_client.is_closed:
+        _oh_client = httpx.AsyncClient(
+            base_url=OPENHANDS_SERVER,
+            timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0),
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+        )
+    return _oh_client
+
+
+@asynccontextmanager
+async def _oh_session() -> AsyncIterator["httpx.AsyncClient"]:
+    """Context-manager shim for existing code paths; does not close client."""
+    yield _get_oh_client()
+
 # Step 10.1 — progressive output. OpenHands' event API delivers the assistant
 # message as one complete chunk (no token stream), so we re-chunk it server-side
 # into small deltas with light pacing for a typewriter feel. Tunable/disableable.
@@ -165,22 +191,58 @@ _BLOCKED_HOSTS = {
     "169.254.169.254",
     "metadata.google.internal",
 }
+_BLOCKED_PORTS = {0, 1, 7, 9, 11, 13, 15, 17, 19, 22, 23, 25, 53, 111, 135, 139, 445, 3306, 5432, 6379, 8000, 8080, 18000, 2375, 2376}
+
+
+def _is_private_or_local_address(value: str) -> bool:
+    addr = ipaddress.ip_address(value)
+    return bool(
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+    )
+
 
 def _assert_url_safe(url: str) -> None:
-    """Hybrid Merge Plan - SSRF protection."""
+    """Hybrid Merge Plan - SSRF protection.
+
+    Blocks local/metadata hosts, private IP literals, DNS names that resolve to
+    private/local IPs, credentials in URLs, and common internal service ports.
+    This is intentionally stricter than the UI needs: external provider/model
+    URLs and workspace downloads should be public HTTPS/HTTP destinations only.
+    """
     try:
-        parsed = urlparse(url)
+        parsed = urlparse(str(url or "").strip())
         if parsed.scheme not in ("http", "https"):
             raise HTTPException(400, "unsupported_scheme")
-        host = (parsed.hostname or "").lower()
-        if host in _BLOCKED_HOSTS:
+        if parsed.username or parsed.password:
+            raise HTTPException(400, "url_credentials_not_allowed")
+        host = (parsed.hostname or "").strip().lower().rstrip(".")
+        if not host:
+            raise HTTPException(400, "url_host_required")
+        if host in _BLOCKED_HOSTS or host.endswith(".local") or host.endswith(".internal"):
             raise HTTPException(400, "url_not_allowed")
+        if parsed.port in _BLOCKED_PORTS:
+            raise HTTPException(400, "url_port_not_allowed")
         try:
-            addr = ipaddress.ip_address(host)
-            if addr.is_private or addr.is_loopback or addr.is_link_local:
+            if _is_private_or_local_address(host):
                 raise HTTPException(400, "url_not_allowed")
+            return
         except ValueError:
-            pass  # hostname is fine
+            pass
+        # Resolve hostnames too, otherwise http://internal-name can bypass the
+        # IP-literal checks. Limit to first records to keep request latency sane.
+        try:
+            infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        except socket.gaierror:
+            raise HTTPException(400, "url_dns_failed")
+        for info in infos[:8]:
+            addr = info[4][0]
+            if _is_private_or_local_address(addr):
+                raise HTTPException(400, "url_not_allowed")
     except HTTPException:
         raise
     except Exception:
@@ -230,7 +292,7 @@ async def _startup_init() -> None:
 
     # Push OH settings on startup (they are lost on OH container restart)
     try:
-        async with httpx.AsyncClient() as c:
+        async with _oh_session() as c:
             active = get_active_key(include_secret=True)
             if active:
                 await provs.push_to_openhands(c, OPENHANDS_SERVER, active, get_params())
@@ -622,6 +684,8 @@ async def keys_validate(request: Request):
     user = current_user(request)
     if user and provider.get("apiKey", "").startswith("enc:"):
         provider = {**provider, "apiKey": vlt.resolve_secret(user["id"], provider["apiKey"])}
+    if provider.get("baseUrl"):
+        _assert_url_safe(provider.get("baseUrl") or "")
     return await provs.validate_key(provider)
 
 
@@ -642,6 +706,8 @@ async def list_models(request: Request, baseUrl: Optional[str] = None, keyId: Op
         active = get_active_key()
         if active:
             provider = active
+    if provider.get("baseUrl"):
+        _assert_url_safe(provider.get("baseUrl") or "")
     models = await provs.fetch_models(provider.get("baseUrl") or "", provider)
     return {"baseUrl": provider.get("baseUrl"), "models": models, "count": len(models)}
 
@@ -746,7 +812,7 @@ async def _sync_active_provider_to_openhands(request: Request) -> None:
         user = current_user(request)
         if user and active.get("apiKey", "").startswith("enc:"):
             active["apiKey"] = vlt.resolve_secret(user["id"], active["apiKey"])
-        async with httpx.AsyncClient() as c:
+        async with _oh_session() as c:
             await provs.push_to_openhands(c, OPENHANDS_SERVER, active, get_params())
     except Exception as e:
         log.warning("sync_active_provider_to_openhands failed: %s", e)
@@ -945,7 +1011,7 @@ async def _fetch_oh_conversations_for_cloud(limit: int = 100) -> List[Dict[str, 
     """
     chats: List[Dict[str, Any]] = []
     mapping_by_cid = _mapping_by_conversation_id()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _oh_session() as client:
         page_id: Optional[str] = None
         fetched = 0
         while fetched < limit:
@@ -1087,7 +1153,7 @@ async def chats_list(limit: int = 50):
         chats = []
         mapping_by_cid = _mapping_by_conversation_id()
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with _oh_session() as client:
             r = await client.get(
                 f"{OPENHANDS_SERVER}/api/conversations",
                 params={"limit": min(limit, 100)}
@@ -1136,7 +1202,7 @@ async def chat_messages(chat_id: str, limit: int = 100):
 
     cid = m["conversation_id"]
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with _oh_session() as client:
             r = await client.get(
                 f"{OPENHANDS_SERVER}/api/conversations/{cid}/events",
                 params={"limit": limit}
@@ -1190,7 +1256,7 @@ async def rename_chat(chat_id: str, request: Request):
     
     cid = m["conversation_id"]
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with _oh_session() as client:
             r = await client.patch(
                 f"{OPENHANDS_SERVER}/api/conversations/{cid}",
                 json={"title": title},
@@ -1594,7 +1660,7 @@ async def _stream_chat(
     ).encode("utf-8")
 
     # 2) Push settings + open/reuse conversation
-    async with httpx.AsyncClient() as client:
+    async with _oh_session() as client:
         try:
             await _push_oh_settings(client, provider)
             if chat_id:
@@ -1909,7 +1975,7 @@ async def stop_chat(request: Request):
     cid = data.get("conversationId") or data.get("chatId") or data.get("id")
     if not cid:
         return {"ok": False, "error": "no conversationId"}
-    async with httpx.AsyncClient() as client:
+    async with _oh_session() as client:
         try:
             await client.post(
                 f"{OPENHANDS_SERVER}/api/conversations/{cid}/stop", json={}, timeout=10.0
@@ -1955,7 +2021,7 @@ async def agent_answer(request: Request):
     text = answer.get("customResponse") or answer.get("answer") or answer.get("selectedOptionId") or "ok"
     cid = q.get("conversation_id")
     if cid:
-        async with httpx.AsyncClient() as client:
+        async with _oh_session() as client:
             try:
                 await client.post(
                     f"{OPENHANDS_SERVER}/api/conversations/{cid}/message",
@@ -1972,7 +2038,7 @@ async def agent_run_reset(chat_id: str):
     m = get_mapping(chat_id)
     cid = m["conversation_id"] if m else None
     if cid:
-        async with httpx.AsyncClient() as client:
+        async with _oh_session() as client:
             try:
                 await client.delete(f"{OPENHANDS_SERVER}/api/conversations/{cid}", timeout=15.0)
             except Exception:
@@ -1988,7 +2054,7 @@ async def agent_run_history(chat_id: str):
     if not m:
         return {"ok": True, "chatId": chat_id, "items": []}
     cid = m["conversation_id"]
-    async with httpx.AsyncClient() as client:
+    async with _oh_session() as client:
         try:
             r = await client.get(f"{OPENHANDS_SERVER}/api/conversations/{cid}/events?limit=100", timeout=20.0)
             body = r.json() if r.status_code == 200 else []
@@ -2022,7 +2088,7 @@ async def agent_control_plane_action(request: Request):
         run = get_run(chat_id)
         cid = run.get("conversation_id") if run else None
         if cid:
-            async with httpx.AsyncClient() as client:
+            async with _oh_session() as client:
                 try:
                     await client.post(f"{OPENHANDS_SERVER}/api/conversations/{cid}/stop", json={}, timeout=10.0)
                 except Exception as e:
@@ -2314,6 +2380,8 @@ async def _download_url_into(parent: Path, url: str, branch: str = "", strip_top
                 shutil.copytree(tmp, dest)
         return {"ok": True, "kind": "git", "path": str(dest.relative_to(parent)).replace("\\", "/") if dest != parent else ""}
 
+    _assert_url_safe(url)
+
     # GitHub blob URL: rewrite to raw URL.
     if host.endswith("github.com") and len(parts) >= 5 and parts[2] == "blob":
         raw_path = "/".join(parts[4:])
@@ -2322,6 +2390,7 @@ async def _download_url_into(parent: Path, url: str, branch: str = "", strip_top
     else:
         filename = Path(parsed.path).name or "download"
 
+    _assert_url_safe(url)
     async with httpx.AsyncClient(follow_redirects=True, timeout=120.0) as client:
         r = await client.get(url)
         if r.status_code >= 400:
@@ -2357,7 +2426,7 @@ async def workspace_chat_init(request: Request):
     cid = _bind_chat_to_oh(chat_id)
     if not cid and chat_id:
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with _oh_session() as client:
                 r = await client.post(
                     f"{OPENHANDS_SERVER}/api/conversations",
                     json={},
@@ -2370,7 +2439,7 @@ async def workspace_chat_init(request: Request):
                     upsert_mapping(chat_id, cid, None)
                     import asyncio
                     async def _bg_start():
-                        async with httpx.AsyncClient(timeout=30.0) as bg_client:
+                        async with _oh_session() as bg_client:
                             try:
                                 await bg_client.post(
                                     f"{OPENHANDS_SERVER}/api/conversations/{cid}/start",
@@ -2405,7 +2474,7 @@ async def workspace_chat_delete(request: Request):
     cid = _bind_chat_to_oh(chat_id)
     deleted_oh = False
     if cid:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with _oh_session() as client:
             try:
                 r = await client.delete(f"{OPENHANDS_SERVER}/api/conversations/{cid}")
                 deleted_oh = r.status_code < 400

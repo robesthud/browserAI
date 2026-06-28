@@ -37,3 +37,8 @@ setup_server.sh
 cloud_init*.sh
 undefined/
 undefined/
+
+# Python cache / bytecode
+__pycache__/
+*.py[cod]
+*$py.class

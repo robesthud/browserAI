@@ -234,7 +234,11 @@ export function useChats(settings) {
       if (cancelled) return
       if (data?.ok && Array.isArray(data.chats)) {
         setChats(data.chats)
-        // Keep as optimistic cache only
+        setActiveId((current) => {
+          if (current && data.chats.some((c) => c.id === current)) return current
+          return data.chats[0]?.id ?? null
+        })
+        // Keep as optimistic display cache only. Messages remain lazy.
         try { saveChats(data.chats) } catch {}
       }
     }).catch(() => {
@@ -257,6 +261,14 @@ export function useChats(settings) {
       const data = await backend.chatMessages(chatId, 120)
       if (data?.ok && Array.isArray(data.messages)) {
         setMessages(prev => ({ ...prev, [chatId]: data.messages }))
+        // Keep the selected chat object compatible with the rest of the app
+        // (MessageList/App read activeChat.messages), while preserving Phase 1.2:
+        // the initial sidebar payload stays metadata-only and messages load on demand.
+        setChats((prev) => prev.map((c) =>
+          c.id === chatId
+            ? { ...c, messages: data.messages, openhands: { ...(c.openhands || {}), conversationId: data.conversationId || c.openhands?.conversationId } }
+            : c,
+        ))
       }
     } catch (e) {
       console.warn('loadMessages failed', e)
@@ -272,12 +284,16 @@ export function useChats(settings) {
     return () => clearTimeout(saveTimeoutRef.current)
   }, [chats])
 
+  useEffect(() => {
+    if (activeId) loadMessages(activeId)
+  }, [activeId, loadMessages])
+
   const activeChat = chats.find((c) => c.id === activeId) || null
-  const activeMessages = (activeId && messages[activeId]) ? messages[activeId] : (activeChat?.messages || [])
 
   const newChat = useCallback(() => {
     const chat = createChat()
     setChats((prev) => [chat, ...prev])
+    setMessages((prev) => ({ ...prev, [chat.id]: chat.messages || [] }))
     setActiveId(chat.id)
     // Init workspace + create OH conversation so chat appears in cloud sync
     workspaceApi.initChatWorkspace(chat.id).then((res) => {
@@ -310,6 +326,11 @@ export function useChats(settings) {
         if (id === activeId) {
           setActiveId(next[0]?.id ?? null)
         }
+        return next
+      })
+      setMessages((prev) => {
+        const next = { ...prev }
+        delete next[id]
         return next
       })
     },
