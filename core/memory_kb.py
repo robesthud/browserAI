@@ -105,24 +105,34 @@ def delete_fact(user_id: str, key: str) -> bool:
         conn.close()
 
 
-def search_semantic(user_id: str, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+def search_semantic(user_id: str, query: str, limit: int = 10, chat_id: Optional[str] = None) -> List[Dict[str, Any]]:
     conn = get_conn()
     try:
+        # Prefer FTS for speed, fall back to TF-IDF dot product
         try:
-            rows = conn.execute(
-                "SELECT sm.* FROM semantic_memory_fts f JOIN semantic_memory sm ON sm.id = f.mem_id WHERE semantic_memory_fts MATCH ? AND sm.user_id = ? LIMIT ?",
-                (query, user_id, limit),
-            ).fetchall()
+            if chat_id:
+                rows = conn.execute(
+                    "SELECT sm.* FROM semantic_memory_fts f JOIN semantic_memory sm ON sm.id = f.mem_id WHERE semantic_memory_fts MATCH ? AND sm.user_id = ? AND sm.chat_id = ? LIMIT ?",
+                    (query, user_id, chat_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT sm.* FROM semantic_memory_fts f JOIN semantic_memory sm ON sm.id = f.mem_id WHERE semantic_memory_fts MATCH ? AND sm.user_id = ? LIMIT ?",
+                    (query, user_id, limit),
+                ).fetchall()
             if rows:
                 return [dict(r) for r in rows]
         except Exception:
             pass
         qtf = _tf(query)
-        rows = conn.execute("SELECT * FROM semantic_memory WHERE user_id = ?", (user_id,)).fetchall()
+        if chat_id:
+            rows = conn.execute("SELECT * FROM semantic_memory WHERE user_id = ? AND chat_id = ?", (user_id, chat_id)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM semantic_memory WHERE user_id = ?", (user_id,)).fetchall()
         scored = []
         for r in rows:
-            text = r['text'] or ''
-            score = _dot(qtf, _tf(text))
+            rtext = r['text'] or ''
+            score = _dot(qtf, _tf(rtext))
             if score > 0:
                 d = dict(r)
                 d['score'] = score

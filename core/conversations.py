@@ -25,6 +25,13 @@ import logging
 import time
 from typing import Any, Dict, Optional, Tuple
 
+
+def _safe_chat_id(chat_id: str) -> str:
+    """Sanitize chat_id for use in filesystem paths."""
+    raw = str(chat_id or "").strip()
+    safe = "".join(ch if (ch.isalnum() or ch in "_-.") else "_" for ch in raw)
+    return safe[:96] or "default"
+
 import httpx
 
 from core.database import get_conn
@@ -205,6 +212,17 @@ async def get_or_create_conversation(
             log.info("stale mapping for chat_id=%s cid=%s — recreating", chat_id, cid)
             drop_mapping(chat_id)
 
+    # Push per-chat workspace isolation: mount only this chat's directory as /workspace
+    # This ensures each conversation's runtime sees ONLY its own files.
+    safe_id = _safe_chat_id(chat_id) if chat_id else ""
+    if safe_id:
+        chat_host_path = f"/opt/browserai-data/workspace/chats/{safe_id}"
+        # Ensure the directory exists on the host
+        import os
+        os.makedirs(chat_host_path, exist_ok=True)
+        # Write a per-chat config.toml that overrides sandbox.volumes
+        _write_oh_sandbox_volumes( f"{chat_host_path}:/workspace:rw")
+
     # Create fresh conversation
     payload: Dict[str, Any] = {"initial_user_msg": initial_message or "hi"}
     if conversation_instructions:
@@ -225,3 +243,28 @@ async def get_or_create_conversation(
     if chat_id:
         upsert_mapping(chat_id, cid, user_id)
     return cid, True, -1
+
+
+
+
+def _write_oh_sandbox_volumes(volumes_spec: str) -> None:
+    """Write sandbox.volumes into the OpenHands config.toml so the next
+    runtime container mounts only the specified path as /workspace.
+    This provides per-chat filesystem isolation: each conversation's
+    runtime container sees ONLY its own /workspace/chats/{chatId}/ directory.
+    
+    IMPORTANT: The OH container must have this file mounted as config.toml
+    via docker-compose volumes. The file is written at:
+      /opt/browserai-data/oh-config.toml (host) -> /app/config.toml (container)
+    """
+    import logging
+    log = logging.getLogger("browserai.conversations")
+    try:
+        config_path = "/data/oh-config.toml"
+        # Escape any special chars in the path
+        safe_spec = volumes_spec.replace('\\', '\\\\').replace('"', '\\"')
+        with open(config_path, "w") as f:
+            f.write(f'[sandbox]\nvolumes = "{safe_spec}"\n')
+        log.info("oh-config.toml updated: sandbox.volumes = %s", volumes_spec)
+    except Exception as e:
+        log.warning("oh-config.toml write error: %s", e)

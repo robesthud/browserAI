@@ -2167,15 +2167,18 @@ async def workspace_chat_init(request: Request):
     base = _workspace_base_for_chat(chat_id, create=True)
     root_label = f"/workspace/{_chat_workspace_rel(chat_id)}" if chat_id else "/workspace"
 
-    # Ensure an OpenHands conversation exists for this chat immediately,
-    # so the chat appears in /api/cloud and is visible across devices/sessions.
     cid = _bind_chat_to_oh(chat_id)
     if not cid and chat_id:
+        from core.conversations import _write_oh_sandbox_volumes, _safe_chat_id
+        safe_id = _safe_chat_id(chat_id)
+        chat_host_path = f"/opt/browserai-data/workspace/chats/{safe_id}"
+        import os; os.makedirs(chat_host_path, exist_ok=True)
+        _write_oh_sandbox_volumes(f"{chat_host_path}:/workspace:rw")
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 r = await client.post(
                     f"{OPENHANDS_SERVER}/api/conversations",
-                    json={},  # no initial_user_msg — conversation is created empty
+                    json={},
                     timeout=30.0,
                 )
                 r.raise_for_status()
@@ -2183,14 +2186,11 @@ async def workspace_chat_init(request: Request):
                 cid = oh_body.get("conversation_id") or oh_body.get("id")
                 if cid:
                     upsert_mapping(chat_id, cid, None)
-                    # Start the runtime in background — don't block the init response.
-                    # The runtime will be ready by the time the user sends their first message.
                     async def _bg_start():
                         try:
                             await client.post(
                                 f"{OPENHANDS_SERVER}/api/conversations/{cid}/start",
-                                json={},
-                                timeout=600.0,
+                                json={}, timeout=600.0,
                             )
                         except Exception:
                             pass
@@ -2955,9 +2955,9 @@ async def memory_facts_delete(request: Request):
 
 
 @app.get("/api/memory/semantic")
-async def memory_semantic_get(request: Request, q: str = "", limit: int = 10):
+async def memory_semantic_get(request: Request, q: str = "", limit: int = 10, chatId: Optional[str] = None):
     user = _require_user(request)
-    return {"ok": True, "items": search_semantic(user["id"], q, limit=max(1, min(limit, 50)))}
+    return {"ok": True, "items": search_semantic(user["id"], q, limit=max(1, min(limit, 50)), chat_id=chatId)}
 
 
 @app.get("/api/memory/project")
