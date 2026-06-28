@@ -2254,6 +2254,42 @@ async def workspace_chat_delete(request: Request):
     return {"ok": True, "chatId": chat_id, "conversationId": cid, "deletedOpenHands": deleted_oh, "workspacePreserved": True}
 
 
+@app.post("/api/workspace/cleanup")
+async def workspace_cleanup(request: Request):
+    """Remove orphan workspace directories that have no DB mapping.
+    Only deletes dirs under /workspace/chats/ with no corresponding chat_conversations row.
+    """
+    import shutil as _shutil
+    chats_root = _WORKSPACE_ROOT / "chats"
+    if not chats_root.exists():
+        return {"ok": True, "removed": [], "kept": []}
+    # Get all mapped chat_ids from DB
+    conn = get_conn()
+    try:
+        rows = conn.execute("SELECT chat_id FROM chat_conversations").fetchall()
+        mapped = {r[0] for r in rows}
+    finally:
+        conn.close()
+    removed = []
+    kept = []
+    for d in sorted(chats_root.iterdir()):
+        if not d.is_dir():
+            continue
+        name = d.name
+        # Keep dirs that are mapped in DB or are the _sandbox
+        if name in mapped or name == "_sandbox":
+            kept.append(name)
+            continue
+        try:
+            _shutil.rmtree(d)
+            removed.append(name)
+            log.info("workspace cleanup: removed orphan dir %s", name)
+        except Exception as e:
+            log.warning("workspace cleanup: failed to remove %s: %s", name, e)
+            kept.append(name)
+    return {"ok": True, "removed": removed, "removedCount": len(removed), "keptCount": len(kept)}
+
+
 @app.get("/api/workspace")
 @app.get("/api/workspace/tree")
 async def workspace_tree(request: Request, chatId: Optional[str] = None, path: Optional[str] = None, hidden: Optional[str] = None):
