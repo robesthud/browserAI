@@ -127,10 +127,7 @@ export default function Sidebar({
                 const active = c.id === activeId
                 const preview = lastMessagePreview(c)
                 const time = formatChatTime(c.updatedAt || c.updated_at || c.createdAt)
-                const msgCount = Array.isArray(c.messages) ? c.messages.length : 0
-                const isOH = String(c.id || '').startsWith('oh_') || !!c.openhands
-                const isLocal = !isOH
-                return (
+                                return (
                   <li key={c.id} className="group relative">
                     <button
                       onClick={() => onSelect(c.id)}
@@ -155,19 +152,9 @@ export default function Sidebar({
                           {preview}
                         </div>
                       )}
-                      <div className="mt-1.5 flex items-center gap-1.5 text-[9px]">
-                        <span className={`rounded px-1.5 py-0.5 font-mono ${isOH ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-200 border border-amber-500/20'}`}>
-                          {isOH ? 'OH' : 'local'}
-                        </span>
-                        {msgCount > 0 && (
-                          <span className="text-cream-faint/60">{msgCount} msg</span>
-                        )}
-                        {c.openhands?.status && (
-                          <span className="text-cream-faint/50 truncate max-w-[80px]">{c.openhands.status}</span>
-                        )}
-                      </div>
+
                     </button>
-                    <div className="absolute right-1.5 top-2 flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                    <div className="absolute right-8 top-2 flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                       <button
                         onClick={(e) => {
                           e.stopPropagation()
