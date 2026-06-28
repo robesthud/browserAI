@@ -221,7 +221,6 @@ async def get_or_create_conversation(
         import os
         os.makedirs(chat_host_path, exist_ok=True)
         # Write a per-chat config.toml that overrides sandbox.volumes
-        _write_oh_sandbox_volumes( f"{chat_host_path}:/workspace:rw")
 
     # Create fresh conversation
     payload: Dict[str, Any] = {"initial_user_msg": initial_message or "hi"}
@@ -240,6 +239,17 @@ async def get_or_create_conversation(
         )
     except httpx.TimeoutException:
         log.warning("/start timeout for cid=%s (continuing to poll)", cid)
+
+    # Remount the runtime with per-chat workspace isolation
+    from core.isolation import remount_runtime_async
+    try:
+        ok = await remount_runtime_async(cid, chat_id or "")
+        if ok:
+            log.info("get_or_create_conversation: remounted runtime cid=%s chat_id=%s", cid, chat_id)
+        else:
+            log.warning("get_or_create_conversation: remount failed cid=%s chat_id=%s", cid, chat_id)
+    except Exception as e:
+        log.warning("get_or_create_conversation: remount error: %s", e)
     if chat_id:
         upsert_mapping(chat_id, cid, user_id)
     return cid, True, -1

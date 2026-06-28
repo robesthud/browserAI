@@ -25,6 +25,7 @@ services:
     volumes:
     - ${DATA_DIR:-./data}:/data
     - ${WORKSPACE_DIR:-./workspace}:/workspace
+    - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
     - openhands
     extra_hosts:

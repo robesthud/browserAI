@@ -2169,11 +2169,6 @@ async def workspace_chat_init(request: Request):
 
     cid = _bind_chat_to_oh(chat_id)
     if not cid and chat_id:
-        from core.conversations import _write_oh_sandbox_volumes, _safe_chat_id
-        safe_id = _safe_chat_id(chat_id)
-        chat_host_path = f"/opt/browserai-data/workspace/chats/{safe_id}"
-        import os; os.makedirs(chat_host_path, exist_ok=True)
-        _write_oh_sandbox_volumes(f"{chat_host_path}:/workspace:rw")
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 r = await client.post(
@@ -2194,6 +2189,16 @@ async def workspace_chat_init(request: Request):
                             )
                         except Exception:
                             pass
+                        # Remount the runtime with per-chat isolation
+                        from core.isolation import remount_runtime_async
+                        try:
+                            ok = await remount_runtime_async(cid, chat_id)
+                            if ok:
+                                log.info("workspace_chat_init: remounted runtime for chat_id=%s cid=%s", chat_id, cid)
+                            else:
+                                log.warning("workspace_chat_init: remount failed for chat_id=%s cid=%s", chat_id, cid)
+                        except Exception as e:
+                            log.warning("workspace_chat_init: remount error: %s", e)
                     import asyncio
                     asyncio.create_task(_bg_start())
         except Exception as e:
