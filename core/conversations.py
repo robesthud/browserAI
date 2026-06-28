@@ -124,6 +124,12 @@ async def conversation_alive(client: httpx.AsyncClient, oh_url: str, cid: str) -
         if r.status_code >= 500:
             return False
         body = r.json() or {}
+        if not isinstance(body, dict):
+            return False
+        # OpenHands can return HTTP 200 with JSON null for conversations that
+        # disappeared after container restart. Treat that as stale mapping.
+        if not (body.get("conversation_id") or body.get("id") or body.get("conversation_status")):
+            return False
         if body.get("conversation_status") in ("ERROR", "DELETED"):
             return False
         return True
@@ -244,14 +250,11 @@ async def get_or_create_conversation(
             f"{oh_url}/api/conversations/{cid}/start", json={}, timeout=600.0
         )
     except httpx.TimeoutException:
-        log.warning("/start timeout for cid=%s (continuing to remount)", cid)
+        log.warning("/start timeout for cid=%s (continuing to send message)", cid)
 
-    # Workspace mounting is configured in OpenHands config.toml; just send message.
-    await _send_initial_message(client, oh_url, cid, initial_message)
-
-    if chat_id:
-        upsert_mapping(chat_id, cid, user_id)
-
+    # Capture the event baseline BEFORE posting the user's message. Returning a
+    # post-send tail id can make BrowserAI skip the whole current turn and then
+    # hit the 3-minute idle watchdog with "no events".
     last_id = -1
     try:
         r = await client.get(
@@ -267,5 +270,11 @@ async def get_or_create_conversation(
                 last_id = max(int(e.get("id", -1)) for e in events)
     except Exception:
         pass
+
+    # Workspace mounting is configured in OpenHands config.toml; just send message.
+    await _send_initial_message(client, oh_url, cid, initial_message)
+
+    if chat_id:
+        upsert_mapping(chat_id, cid, user_id)
 
     return cid, True, last_id
