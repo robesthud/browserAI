@@ -33,9 +33,91 @@ export function streamAgent({ chatId = '', history, provider, extraSystem = '', 
   // swallow every next message (Composer ignores submits while
   // isStreaming). Track it and always emit one.
   let sawDone = false
-  const emit = (kind, data) => {
+
+  // Phase 1.4 — Streaming UX: coalesce high-frequency delta events to one
+  // browser paint. This keeps long assistant/thinking/tool streams smooth on
+  // mobile and avoids React re-render storms. Non-delta/control events flush the
+  // buffers first so ordering remains deterministic.
+  const scheduleFrame = (cb) => {
+    if (typeof requestAnimationFrame === 'function') return requestAnimationFrame(cb)
+    return setTimeout(cb, 16)
+  }
+  const cancelFrame = (id) => {
+    if (id == null) return
+    if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(id)
+    else clearTimeout(id)
+  }
+
+  let frameId = null
+  let assistantDeltaBuffer = ''
+  let assistantDeltaMeta = null
+  let thinkingDeltaBuffer = ''
+  let thinkingDeltaMeta = null
+  const toolProgressBuffers = new Map()
+
+  const rawEmit = (kind, data) => {
     if (kind === 'done') sawDone = true
     onEvent?.(kind, data)
+  }
+
+  const toolProgressKey = (data = {}) => `${data.step ?? ''}:${data.sub ?? ''}:${data.name || ''}`
+
+  const flushDelta = () => {
+    if (frameId != null) {
+      cancelFrame(frameId)
+      frameId = null
+    }
+    if (assistantDeltaBuffer) {
+      const meta = assistantDeltaMeta || {}
+      const chunk = assistantDeltaBuffer
+      assistantDeltaBuffer = ''
+      assistantDeltaMeta = null
+      rawEmit('assistant_delta', { ...meta, chunk })
+    }
+    if (thinkingDeltaBuffer) {
+      const meta = thinkingDeltaMeta || {}
+      const chunk = thinkingDeltaBuffer
+      thinkingDeltaBuffer = ''
+      thinkingDeltaMeta = null
+      rawEmit('thinking_delta', { ...meta, chunk })
+    }
+    if (toolProgressBuffers.size) {
+      const batch = Array.from(toolProgressBuffers.values())
+      toolProgressBuffers.clear()
+      for (const item of batch) rawEmit('tool_progress', item)
+    }
+  }
+
+  const scheduleDeltaFlush = () => {
+    if (frameId != null) return
+    frameId = scheduleFrame(() => {
+      frameId = null
+      flushDelta()
+    })
+  }
+
+  const emit = (kind, data) => {
+    if (kind === 'assistant_delta') {
+      assistantDeltaBuffer += String(data?.chunk || '')
+      assistantDeltaMeta = { ...(assistantDeltaMeta || {}), ...(data || {}) }
+      scheduleDeltaFlush()
+      return
+    }
+    if (kind === 'thinking_delta') {
+      thinkingDeltaBuffer += String(data?.chunk || '')
+      thinkingDeltaMeta = { ...(thinkingDeltaMeta || {}), ...(data || {}) }
+      scheduleDeltaFlush()
+      return
+    }
+    if (kind === 'tool_progress' && data && Object.prototype.hasOwnProperty.call(data, 'chunk')) {
+      const key = toolProgressKey(data)
+      const prev = toolProgressBuffers.get(key) || { ...data, chunk: '' }
+      toolProgressBuffers.set(key, { ...prev, ...data, chunk: String(prev.chunk || '') + String(data.chunk || '') })
+      scheduleDeltaFlush()
+      return
+    }
+    flushDelta()
+    rawEmit(kind, data)
   }
 
   ;(async () => {
@@ -115,5 +197,8 @@ export function streamAgent({ chatId = '', history, provider, extraSystem = '', 
     }
   })()
 
-  return () => { try { controller?.abort() } catch { /* already aborted */ } }
+  return () => {
+    try { flushDelta() } catch { /* ignore flush errors on abort */ }
+    try { controller?.abort() } catch { /* already aborted */ }
+  }
 }

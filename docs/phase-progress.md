@@ -47,6 +47,15 @@
 - [x] Strips BrowserAI runtime workspace suffixes and previous context wrappers to avoid recursive prompt growth
 - [x] Tunable via `BROWSERAI_CONTEXT_PREFIX_MESSAGES` and `BROWSERAI_CONTEXT_PREFIX_MAX_CHARS`
 
+
+## Phase 1.4 — Streaming UX ✅ (2026-06-28)
+
+- [x] Added `requestAnimationFrame` delta coalescing in `ui/src/lib/agentStream.js`
+- [x] Buffered `assistant_delta`, `thinking_delta`, and chunked `tool_progress` events per paint
+- [x] Non-delta/control events call `flushDelta()` first to preserve stream ordering
+- [x] Abort/stop path flushes pending deltas before cancelling the request
+- [x] Existing optimistic assistant state in `useChats.js` remains intact and receives smoother batched events
+
 ## Current State on Prod (reference)
 - Health: OK (~5ms)
 - AUTH_SECRET: present
@@ -54,14 +63,15 @@
 - OpenHands WS: not exposed in OpenAPI (will use REST + fallback)
 
 ## Next Immediate Steps
-1. Phase 1.4 — frontend streaming UX buffer via `requestAnimationFrame`
-2. Phase 2 — event/workspace reliability
-3. Then Phase 2.1 WebSocket/polling reliability
+1. Phase 2 — event/workspace reliability
+2. Phase 2.1 — WebSocket bridge or improved polling fallback
+3. Phase 2.2 — workspace synchronization/debounce
 
-## Current Status (after Phase 1.3)
+## Current Status (after Phase 1.4)
 - Fast sidebar load (<1s expected)
 - No more N+1 event fetches on app start
 - Messages loaded only when user opens/selects a chat
 - UI active chat is repaired if cached activeId no longer exists on server
 - Server-side SSRF/path/AUTH/WAL foundation complete for Phase 1.1
 - Reused conversations now receive compact previous-turn context before the new request
+- Streaming deltas are coalesced per animation frame for smoother UI and fewer React updates

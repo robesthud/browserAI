@@ -1,7 +1,7 @@
 # BrowserAI + OpenHands — Hybrid True Merge Plan
 
 **Version:** 2026-06-28 (Hybrid v1.0)  
-**Status:** Phase 0–1.3 completed; Phase 1.4 next
+**Status:** Phase 0–1.4 completed; Phase 2 next
 **Goal:** One cohesive product. BrowserAI = best-in-class shell. OpenHands = reliable agent engine. Zero dual sources of truth.
 
 ---
@@ -157,8 +157,8 @@ Shared Volume: /workspace/chats/<chatId>  (both sides)
 - [x] Build `context_prefix` with previous turns (Role: content)
 
 #### 1.4 Streaming UX (Day 4–5)
-- [ ] `deltaBuffer + requestAnimationFrame` in `agentStream.js`
-- [ ] Proper `flushDelta` + optimistic message state
+- [x] `deltaBuffer + requestAnimationFrame` in `agentStream.js`
+- [x] Proper `flushDelta` + optimistic message state
 
 **Validation:**
 - Chat list loads < 800ms
