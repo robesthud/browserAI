@@ -302,7 +302,7 @@ export function useChats(settings) {
     if (!original) return null
     const idx = (original.messages || []).findIndex((m) => m.id === messageId)
     if (idx === -1) return null
-    const keep = original.messages.slice(0, idx + 1).map((m) => ({ ...m, pending: false }))
+    const keep = (original.messages || []).slice(0, idx + 1).map((m) => ({ ...m, pending: false }))
     const branch = createChat()
     branch.title = `↳ ${original.title || 'Branch'}`
     branch.messages = keep
@@ -421,8 +421,8 @@ export function useChats(settings) {
       setChats((prev) =>
         prev.map((c) => {
           if (c.id !== chatId) return c
-          const isFirst = c.messages.length === 0
-          capturedHistory = [...c.messages, userMsg]
+          const isFirst = (c.messages || []).length === 0
+          capturedHistory = [...(c.messages || []), userMsg]
           memorySummary = c.summary || ''
           summarizedUntil = c.summarizedUntil || 0
           return {
@@ -431,7 +431,7 @@ export function useChats(settings) {
             updatedAt: Date.now(),
             summary: c.summary || '',
             summarizedUntil: c.summarizedUntil || 0,
-            messages: [...c.messages, userMsg, assistantMsg],
+            messages: [...(c.messages || []), userMsg, assistantMsg],
           }
         }),
       )
@@ -452,7 +452,7 @@ export function useChats(settings) {
             return {
               ...c,
               updatedAt: Date.now(),
-              messages: c.messages.map((m) =>
+              messages: (c.messages || []).map((m) =>
                 m.id === assistantMsg.id ? { ...m, ...patch } : m,
               ),
             }
@@ -597,14 +597,14 @@ export function useChats(settings) {
       setChats((prev) =>
         prev.map((c) => {
           if (c.id !== chatId) return c
-          const isFirst = c.messages.length === 0
-          capturedHistory = [...c.messages, userMsg]
+          const isFirst = (c.messages || []).length === 0
+          capturedHistory = [...(c.messages || []), userMsg]
           chatSummary = c.summary || ''
           return {
             ...c,
             title: isFirst ? deriveTitle(trimmed) : c.title,
             updatedAt: Date.now(),
-            messages: [...c.messages, userMsg, assistantMsg],
+            messages: [...(c.messages || []), userMsg, assistantMsg],
           }
         }),
       )
@@ -624,7 +624,7 @@ export function useChats(settings) {
               : {
                   ...c,
                   updatedAt: Date.now(),
-                  messages: c.messages.map((m) =>
+                  messages: (c.messages || []).map((m) =>
                     m.id === assistantMsg.id ? (typeof patch === 'function' ? patch(m) : { ...m, ...patch }) : m,
                   ),
                 },
@@ -1102,14 +1102,14 @@ export function useChats(settings) {
       setChats((prev) =>
         prev.map((c) => {
           if (c.id !== chatId) return c
-          const isFirst = c.messages.length === 0
-          capturedHistory = [...c.messages, userMsg]
+          const isFirst = (c.messages || []).length === 0
+          capturedHistory = [...(c.messages || []), userMsg]
           chatSummary = c.summary || ''
           return {
             ...c,
             title: isFirst ? deriveTitle(trimmed) : c.title,
             updatedAt: Date.now(),
-            messages: [...c.messages, userMsg, assistantMsg],
+            messages: [...(c.messages || []), userMsg, assistantMsg],
           }
         }),
       )
@@ -1147,7 +1147,7 @@ export function useChats(settings) {
         setChats((prev) => prev.map((c) => c.id !== chatId ? c : {
           ...c,
           updatedAt: Date.now(),
-          messages: c.messages.map((m) => m.id === assistantMsg.id
+          messages: (c.messages || []).map((m) => m.id === assistantMsg.id
             ? { ...m, job, content: 'Запущено в фоне. Можно закрыть вкладку — результат появится в этой карточке.' }
             : m),
         }))
@@ -1157,7 +1157,7 @@ export function useChats(settings) {
         setChats((prev) => prev.map((c) => c.id !== chatId ? c : {
           ...c,
           updatedAt: Date.now(),
-          messages: c.messages.map((m) => m.id === assistantMsg.id
+          messages: (c.messages || []).map((m) => m.id === assistantMsg.id
             ? { ...m, pending: false, error: e?.message || 'Не удалось запустить фонового агента' }
             : m),
         }))
@@ -1183,7 +1183,7 @@ export function useChats(settings) {
     }
     setChats((prev) => prev.map((c) => c.id !== chatId ? c : {
       ...c,
-      messages: c.messages.map((m) => {
+      messages: (c.messages || []).map((m) => {
         if (m.id !== messageId) return m
         return {
           ...m,
@@ -1210,7 +1210,7 @@ export function useChats(settings) {
     }
     setChats((prev) => prev.map((c) => c.id !== chatId ? c : {
       ...c,
-      messages: c.messages.map((m) => {
+      messages: (c.messages || []).map((m) => {
         if (m.id !== messageId) return m
         return {
           ...m,

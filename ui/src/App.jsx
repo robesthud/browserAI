@@ -34,7 +34,7 @@ function devtoolsEnabled() {
 function CloudSync({ settings, chats }) {
   const firstRun = useRef(true)
   const isLoggedIn = typeof localStorage !== 'undefined' && localStorage.getItem('browserai.auth.enabled') === '1'
-  const hasPending = chats.some((chat) => chat.messages.some((m) => m.pending === true))
+  const hasPending = (chats || []).some((chat) => (chat.messages || []).some((m) => m.pending === true))
 
   useEffect(() => {
     if (!isLoggedIn || firstRun.current || hasPending) {
