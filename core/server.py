@@ -29,6 +29,7 @@ import json
 import logging
 import mimetypes
 import os
+import re as _re
 import shutil
 import socket
 import subprocess
@@ -148,6 +149,8 @@ APP_URL = os.environ.get("APP_URL", "http://localhost")
 MAX_AGENT_ITERATIONS = int(os.environ.get("BROWSERAI_AGENT_MAX_ITERATIONS", "50"))
 EVENT_POLL_INTERVAL = float(os.environ.get("BROWSERAI_EVENT_POLL_INTERVAL", "0.6"))
 EVENT_POLL_TIMEOUT_S = int(os.environ.get("BROWSERAI_EVENT_POLL_TIMEOUT_S", "900"))
+CONTEXT_PREFIX_MESSAGES = int(os.environ.get("BROWSERAI_CONTEXT_PREFIX_MESSAGES", "18"))
+CONTEXT_PREFIX_MAX_CHARS = int(os.environ.get("BROWSERAI_CONTEXT_PREFIX_MAX_CHARS", "12000"))
 # === Hybrid Merge Plan: Shared httpx client (Phase 1.1) ===
 _oh_client: Optional["httpx.AsyncClient"] = None
 
@@ -1002,6 +1005,81 @@ def _oh_events_to_browserai_messages(events: List[Dict[str, Any]]) -> List[Dict[
     return out
 
 
+_WORKSPACE_REMINDER_RE = _re.compile(r"\n\n\[Use workspace: /workspace[^\]]+\]\s*$")
+
+
+def _clean_context_message_text(text: str) -> str:
+    """Remove BrowserAI runtime-only suffixes before replaying history.
+
+    If a previous Phase 1.3 turn already prepended a BrowserAI context block,
+    keep only the actual user request so context does not recursively grow.
+    """
+    cleaned = _WORKSPACE_REMINDER_RE.sub("", str(text or "")).strip()
+    marker = "[End BrowserAI context]"
+    if marker in cleaned:
+        cleaned = cleaned.split(marker, 1)[1].strip()
+    current = "Current user request:"
+    if cleaned.startswith(current):
+        cleaned = cleaned[len(current):].strip()
+    if len(cleaned) > 1600:
+        cleaned = cleaned[:1400].rstrip() + "\n…[truncated for context]…\n" + cleaned[-200:].lstrip()
+    return cleaned
+
+
+def _build_context_prefix_from_events(events: List[Dict[str, Any]], max_messages: int = CONTEXT_PREFIX_MESSAGES) -> str:
+    """Build a compact model-readable context prefix from prior OH events."""
+    messages = _oh_events_to_browserai_messages(events)[-max(1, max_messages):]
+    lines: List[str] = []
+    for m in messages:
+        content = _clean_context_message_text(m.get("content") or "")
+        if not content:
+            continue
+        role = "Assistant" if m.get("role") == "assistant" else "User"
+        lines.append(f"{role}: {content}")
+    if not lines:
+        return ""
+    text = "\n\n".join(lines)
+    if len(text) > CONTEXT_PREFIX_MAX_CHARS:
+        text = text[-CONTEXT_PREFIX_MAX_CHARS:]
+        text = text[text.find("\n") + 1:] if "\n" in text else text
+    return (
+        "[BrowserAI context from earlier turns — use this as memory; "
+        "do not repeat it back unless needed.]\n"
+        f"{text}\n"
+        "[End BrowserAI context]\n\n"
+    )
+
+
+async def _fetch_context_prefix_for_reused_conversation(
+    client: httpx.AsyncClient,
+    chat_id: str,
+    limit: int = 80,
+) -> Tuple[str, int]:
+    """Return (context_prefix, max_event_id) for an existing mapped chat."""
+    if not chat_id:
+        return "", -1
+    mapping = get_mapping(chat_id)
+    if not mapping:
+        return "", -1
+    cid = mapping.get("conversation_id")
+    if not cid:
+        return "", -1
+    try:
+        r = await client.get(
+            f"{OPENHANDS_SERVER}/api/conversations/{cid}/events",
+            params={"limit": limit},
+            timeout=15.0,
+        )
+        if r.status_code != 200:
+            return "", -1
+        body = r.json()
+        events = body if isinstance(body, list) else (body.get("events") or body.get("results") or [])
+        return _build_context_prefix_from_events(events), _last_oh_event_id(events)
+    except Exception as e:
+        log.debug("context prefix skipped for chat_id=%s: %s", chat_id, e)
+        return "", -1
+
+
 async def _fetch_oh_conversations_for_cloud(limit: int = 100) -> List[Dict[str, Any]]:
     """Read OpenHands' own conversation store and convert it to BrowserAI chats.
 
@@ -1310,8 +1388,6 @@ async def _create_and_start(
         client, OPENHANDS_SERVER, chat_id, user_id, prompt, extra_system
     )
 
-
-import re as _re
 
 _THINK_PAIR_RE = _re.compile(r"<think>(.*?)</think>", _re.DOTALL)
 _THINK_LEADING_RE = _re.compile(r"^(.*?)</think>\s*", _re.DOTALL)
@@ -1668,9 +1744,21 @@ async def _stream_chat(
             isolated_extra_system = (extra_system or "") + _chat_workspace_instruction(chat_id)
             isolated_prompt = prompt
             if chat_id:
+                # Phase 1.3 — Agent Memory Fix. For a warm/reused OpenHands
+                # conversation, prepend a compact tail of prior turns to the new
+                # user message. This avoids agent amnesia while keeping the UI
+                # event stream deduped via last_seen_event_id below.
+                context_prefix, context_last_event_id = await _fetch_context_prefix_for_reused_conversation(client, chat_id)
+                if context_prefix:
+                    isolated_prompt = f"{context_prefix}Current user request:\n{prompt}"
+                    if context_last_event_id >= 0:
+                        try:
+                            update_last_event(chat_id, context_last_event_id)
+                        except Exception:
+                            pass
                 # Repeated lightweight reminder helps reused OpenHands conversations
                 # keep file/terminal work inside the per-chat directory.
-                isolated_prompt = f"{prompt}\n\n[Use workspace: /workspace/{_chat_workspace_rel(chat_id)}]"
+                isolated_prompt = f"{isolated_prompt}\n\n[Use workspace: /workspace/{_chat_workspace_rel(chat_id)}]"
             cid, was_created, last_seen_event_id = await get_or_create_conversation(
                 client,
                 OPENHANDS_SERVER,

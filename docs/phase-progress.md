@@ -38,6 +38,15 @@
   * Keeps localStorage only as display cache
 - [x] Server remains source of truth (OpenHands)
 
+
+## Phase 1.3 — Agent Memory Fix ✅ (2026-06-28)
+
+- [x] `_stream_chat` fetches recent OpenHands events for mapped/reused chats before sending the next message
+- [x] Builds compact `context_prefix` from the last BrowserAI user/assistant turns
+- [x] Prepends context to the current user request without re-rendering old events in the UI
+- [x] Strips BrowserAI runtime workspace suffixes and previous context wrappers to avoid recursive prompt growth
+- [x] Tunable via `BROWSERAI_CONTEXT_PREFIX_MESSAGES` and `BROWSERAI_CONTEXT_PREFIX_MAX_CHARS`
+
 ## Current State on Prod (reference)
 - Health: OK (~5ms)
 - AUTH_SECRET: present
@@ -45,13 +54,14 @@
 - OpenHands WS: not exposed in OpenAPI (will use REST + fallback)
 
 ## Next Immediate Steps
-1. Phase 1.3 — agent memory/context prefix for reused conversations
-2. Phase 1.4 — frontend streaming UX buffer via `requestAnimationFrame`
-3. Phase 2 — event/workspace reliability
+1. Phase 1.4 — frontend streaming UX buffer via `requestAnimationFrame`
+2. Phase 2 — event/workspace reliability
+3. Then Phase 2.1 WebSocket/polling reliability
 
-## Current Status (after Phase 1.2 perfecting pass)
+## Current Status (after Phase 1.3)
 - Fast sidebar load (<1s expected)
 - No more N+1 event fetches on app start
 - Messages loaded only when user opens/selects a chat
 - UI active chat is repaired if cached activeId no longer exists on server
 - Server-side SSRF/path/AUTH/WAL foundation complete for Phase 1.1
+- Reused conversations now receive compact previous-turn context before the new request

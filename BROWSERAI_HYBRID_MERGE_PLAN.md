@@ -1,7 +1,7 @@
 # BrowserAI + OpenHands — Hybrid True Merge Plan
 
 **Version:** 2026-06-28 (Hybrid v1.0)  
-**Status:** Phase 0–1.2 completed/perfected; Phase 1.3 next
+**Status:** Phase 0–1.3 completed; Phase 1.4 next
 **Goal:** One cohesive product. BrowserAI = best-in-class shell. OpenHands = reliable agent engine. Zero dual sources of truth.
 
 ---
@@ -153,8 +153,8 @@ Shared Volume: /workspace/chats/<chatId>  (both sides)
 - [x] Update `Sidebar` and `MessageList` to use new endpoints
 
 #### 1.3 Agent Memory Fix (Day 3–4)
-- [ ] In `_stream_chat`: load last 15–20 events when reusing conversation
-- [ ] Build `context_prefix` with previous turns (Role: content)
+- [x] In `_stream_chat`: load last 15–20 events when reusing conversation
+- [x] Build `context_prefix` with previous turns (Role: content)
 
 #### 1.4 Streaming UX (Day 4–5)
 - [ ] `deltaBuffer + requestAnimationFrame` in `agentStream.js`
