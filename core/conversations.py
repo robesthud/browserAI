@@ -226,16 +226,15 @@ async def get_or_create_conversation(
             drop_mapping(chat_id)
 
     # ── Create fresh conversation ──────────────────────────────────────
+    # Phase 2.3 removed the runtime-remount gap. Send the first user message as
+    # OpenHands' native `initial_user_msg` so it is queued into the agent loop
+    # after the runtime is actually ready. Posting `/message` while the runtime
+    # is still loading can be recorded as a user event but never processed.
     payload: Dict[str, Any] = {}
     if conversation_instructions:
         payload["conversation_instructions"] = conversation_instructions
-
-    r = await client.post(f"{oh_url}/api/conversations", json=payload, timeout=30.0)
-    r.raise_for_status()
-    body = r.json()
-    cid = body.get("conversation_id") or body.get("id")
-    if not cid:
-        raise RuntimeError(f"OpenHands returned no conversation_id: {body}")
+    if initial_message:
+        payload["initial_user_msg"] = initial_message
 
     safe_id = _safe_chat_id(chat_id) if chat_id else ""
     if safe_id:
@@ -245,36 +244,16 @@ async def get_or_create_conversation(
         )
         os.makedirs(chat_host_path, exist_ok=True)
 
-    try:
-        await client.post(
-            f"{oh_url}/api/conversations/{cid}/start", json={}, timeout=600.0
-        )
-    except httpx.TimeoutException:
-        log.warning("/start timeout for cid=%s (continuing to send message)", cid)
-
-    # Capture the event baseline BEFORE posting the user's message. Returning a
-    # post-send tail id can make BrowserAI skip the whole current turn and then
-    # hit the 3-minute idle watchdog with "no events".
-    last_id = -1
-    try:
-        r = await client.get(
-            f"{oh_url}/api/conversations/{cid}/events?reverse=true&limit=1",
-            timeout=10.0,
-        )
-        if r.status_code == 200:
-            ev_body = r.json()
-            events = ev_body if isinstance(ev_body, list) else (
-                ev_body.get("events") or ev_body.get("results") or []
-            )
-            if events:
-                last_id = max(int(e.get("id", -1)) for e in events)
-    except Exception:
-        pass
-
-    # Workspace mounting is configured in OpenHands config.toml; just send message.
-    await _send_initial_message(client, oh_url, cid, initial_message)
+    r = await client.post(f"{oh_url}/api/conversations", json=payload, timeout=600.0)
+    r.raise_for_status()
+    body = r.json()
+    cid = body.get("conversation_id") or body.get("id")
+    if not cid:
+        raise RuntimeError(f"OpenHands returned no conversation_id: {body}")
 
     if chat_id:
         upsert_mapping(chat_id, cid, user_id)
 
-    return cid, True, last_id
+    # New conversation events all belong to this first turn; stream from the
+    # beginning and let BrowserAI drop the echoed user message in _translate_event.
+    return cid, True, -1
