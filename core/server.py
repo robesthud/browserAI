@@ -146,6 +146,9 @@ APP_URL = os.environ.get("APP_URL", "http://localhost")
 MAX_AGENT_ITERATIONS = int(os.environ.get("BROWSERAI_AGENT_MAX_ITERATIONS", "50"))
 EVENT_POLL_INTERVAL = float(os.environ.get("BROWSERAI_EVENT_POLL_INTERVAL", "0.6"))
 EVENT_POLL_TIMEOUT_S = int(os.environ.get("BROWSERAI_EVENT_POLL_TIMEOUT_S", "900"))
+# === Hybrid Merge Plan: Shared httpx client (Phase 1.1) ===
+_oh_client: Optional["httpx.AsyncClient"] = None
+
 # Step 10.1 — progressive output. OpenHands' event API delivers the assistant
 # message as one complete chunk (no token stream), so we re-chunk it server-side
 # into small deltas with light pacing for a typewriter feel. Tunable/disableable.
@@ -154,11 +157,51 @@ STREAM_CHUNK_CHARS = int(os.environ.get("BROWSERAI_STREAM_CHUNK_CHARS", "24"))
 STREAM_CHUNK_DELAY = float(os.environ.get("BROWSERAI_STREAM_CHUNK_DELAY", "0.02"))
 STREAM_RECHUNK_MIN = int(os.environ.get("BROWSERAI_STREAM_RECHUNK_MIN", "48"))
 
+import ipaddress
+
+_BLOCKED_HOSTS = {
+    "localhost", "127.0.0.1", "0.0.0.0", "::1",
+    "openhands", "browserai",
+    "169.254.169.254",
+    "metadata.google.internal",
+}
+
+def _assert_url_safe(url: str) -> None:
+    """Hybrid Merge Plan - SSRF protection."""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise HTTPException(400, "unsupported_scheme")
+        host = (parsed.hostname or "").lower()
+        if host in _BLOCKED_HOSTS:
+            raise HTTPException(400, "url_not_allowed")
+        try:
+            addr = ipaddress.ip_address(host)
+            if addr.is_private or addr.is_loopback or addr.is_link_local:
+                raise HTTPException(400, "url_not_allowed")
+        except ValueError:
+            pass  # hostname is fine
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(400, "url_invalid")
+
+
+
 app = FastAPI(title="BrowserAI-OpenHands Core Monolith", version="0.3.0")
 
 
 @app.on_event("startup")
 async def _startup_init() -> None:
+    # === Hybrid Merge Plan: Phase 1.1 - Critical startup validations ===
+    if not os.environ.get("AUTH_SECRET"):
+        raise RuntimeError(
+            "AUTH_SECRET env var is required for production. "
+            "Generate with: openssl rand -base64 48"
+        )
+    if len(os.environ.get("AUTH_SECRET", "")) < 32:
+        raise RuntimeError("AUTH_SECRET must be at least 32 characters")
+
     try:
         init_db()
         init_auth_schema()
@@ -167,6 +210,15 @@ async def _startup_init() -> None:
         log.info("all schemas ready (db, auth, conversations, agent_state, vault)")
     except Exception as e:
         log.error("schema init failed: %s", e)
+
+    # === Hybrid Merge Plan: Initialize shared OH client (Phase 1.1) ===
+    global _oh_client
+    _oh_client = httpx.AsyncClient(
+        base_url=OPENHANDS_SERVER,
+        timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0),
+        limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+    )
+    log.info("shared OpenHands httpx client initialized")
 
     # Ensure the sandbox directory exists for per-chat workspace isolation
     try:
@@ -188,6 +240,12 @@ async def _startup_init() -> None:
     except Exception as e:
         log.warning("OH settings push on startup failed: %s", e)
 
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    global _oh_client
+    if _oh_client:
+        await _oh_client.aclose()
+        log.info("shared OpenHands client closed")
 
 
 # CORS: must NOT be wildcard when allow_credentials is true, otherwise cookies
@@ -2005,11 +2063,29 @@ def _safe_rel(raw: Optional[str], allow_empty: bool = True) -> str:
 
 
 def _safe_abs(raw: Optional[str], allow_empty: bool = True, base: Optional[Path] = None) -> Path:
+    """Hybrid Merge Plan — hardened path resolution with symlink protection."""
     rel = _safe_rel(raw, allow_empty=allow_empty)
     root = (base or _WORKSPACE_ROOT).resolve()
     target = (root / rel).resolve()
+
+    # Classic parent check
     if target != root and root not in target.parents:
         raise HTTPException(status_code=400, detail="invalid_path")
+
+    # Symlink / escape protection (Hybrid plan)
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid_path_symlink")
+
+    # Additional: resolve symlinks and re-verify
+    try:
+        real_target = target.resolve(strict=False)
+        if real_target != root and root not in real_target.parents:
+            raise HTTPException(status_code=400, detail="invalid_path_symlink")
+    except Exception:
+        pass
+
     return target
 
 
