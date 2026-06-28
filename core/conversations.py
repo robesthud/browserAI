@@ -1,11 +1,8 @@
 """
 Per-chat OpenHands conversation reuse.
 
-Workspace isolation:
-  Every call to get_or_create_conversation (new or reused) verifies the
-  runtime mount is correct. If the mount is wrong (e.g. after OH restart
-  recreated the runtime with _sandbox), we remount before sending the
-  message. This guarantees the agent ALWAYS works in its per-chat directory.
+New conversations: create WITHOUT initial_user_msg → /start → remount → POST /message.
+Reused conversations: just POST /message (mount already correct from init).
 """
 
 from __future__ import annotations
@@ -14,17 +11,19 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 
 from core.database import get_conn
-from core.utils import safe_chat_id, CHAT_WORKSPACE_ROOT
-
-# Backward-compatible alias
-_safe_chat_id = safe_chat_id
 
 log = logging.getLogger("browserai.conversations")
+
+
+def _safe_chat_id(chat_id: str) -> str:
+    raw = str(chat_id or "").strip()
+    safe = "".join(ch if (ch.isalnum() or ch in "_-.") else "_" for ch in raw)
+    return safe[:96] or "default"
 
 
 def init_conversations_schema() -> None:
@@ -63,17 +62,6 @@ def get_mapping(chat_id: str) -> Optional[Dict[str, Any]]:
             "SELECT * FROM chat_conversations WHERE chat_id = ?", (chat_id,)
         ).fetchone()
         return dict(row) if row else None
-    finally:
-        conn.close()
-
-
-def get_all_mappings() -> List[Dict[str, Any]]:
-    """Return all chat→conversation mappings. Used by startup cleanup."""
-    init_conversations_schema()
-    conn = get_conn()
-    try:
-        rows = conn.execute("SELECT * FROM chat_conversations").fetchall()
-        return [dict(r) for r in rows]
     finally:
         conn.close()
 
@@ -129,7 +117,6 @@ def drop_mapping(chat_id: str) -> None:
 
 
 async def conversation_alive(client: httpx.AsyncClient, oh_url: str, cid: str) -> bool:
-    """Cheap probe: GET /conversations/{cid}. 404 → gone."""
     try:
         r = await client.get(f"{oh_url}/api/conversations/{cid}", timeout=5.0)
         if r.status_code == 404:
@@ -145,62 +132,46 @@ async def conversation_alive(client: httpx.AsyncClient, oh_url: str, cid: str) -
         return False
 
 
-async def _ensure_mount_and_send(
+async def _remount_and_send(
     client: httpx.AsyncClient,
     oh_url: str,
     cid: str,
     chat_id: str,
-    message: str,
-    is_new_conversation: bool = False,
+    initial_message: str,
 ) -> None:
-    """Ensure the runtime has the correct per-chat mount, then send a message.
+    """Remount runtime with per-chat mount, then send initial message.
+    Only called for NEW conversations — reused ones already have correct mount."""
+    from core.isolation import remount_runtime_async
 
-    Called for BOTH new and reused conversations to guarantee the agent
-    NEVER works in the wrong workspace.
-    """
-    from core.isolation import verify_runtime_mount, remount_runtime_async
-
-    mount_ok = False
     try:
-        mount_ok = verify_runtime_mount(cid, chat_id)
+        ok = await remount_runtime_async(cid, chat_id)
+        if ok:
+            log.info("_remount_and_send: remounted cid=%s chat_id=%s", cid, chat_id)
+        else:
+            log.warning("_remount_and_send: remount failed cid=%s chat_id=%s", cid, chat_id)
     except Exception as e:
-        log.warning("_ensure_mount_and_send: verify failed: %s", e)
+        log.warning("_remount_and_send: remount error: %s", e)
 
-    if not mount_ok:
-        log.info("_ensure_mount_and_send: remounting cid=%s chat_id=%s", cid, chat_id)
-        try:
-            ok = await remount_runtime_async(cid, chat_id)
-            if ok:
-                log.info("_ensure_mount_and_send: remounted cid=%s chat_id=%s", cid, chat_id)
-            else:
-                log.warning("_ensure_mount_and_send: remount failed cid=%s chat_id=%s", cid, chat_id)
-        except Exception as e:
-            log.warning("_ensure_mount_and_send: remount error: %s", e)
-        await asyncio.sleep(1)
-    else:
-        log.debug("_ensure_mount_and_send: mount already correct cid=%s", cid)
+    # Give OH a moment to reconnect after remount
+    await asyncio.sleep(1)
 
-    if not message:
+    if not initial_message:
         return
     for attempt in range(3):
         try:
             r = await client.post(
                 f"{oh_url}/api/conversations/{cid}/message",
-                json={"message": message},
+                json={"message": initial_message},
                 timeout=15.0,
             )
             if r.status_code < 400:
-                log.info("_ensure_mount_and_send: message sent to cid=%s", cid)
+                log.info("_remount_and_send: message sent to cid=%s", cid)
                 return
-            log.warning(
-                "_ensure_mount_and_send: POST /message returned %s (attempt %d)",
-                r.status_code, attempt + 1,
-            )
+            log.warning("_remount_and_send: POST /message returned %s (attempt %d)",
+                        r.status_code, attempt + 1)
         except Exception as e:
-            log.warning(
-                "_ensure_mount_and_send: POST /message error (attempt %d): %s",
-                attempt + 1, e,
-            )
+            log.warning("_remount_and_send: POST /message error (attempt %d): %s",
+                        attempt + 1, e)
         await asyncio.sleep(2)
 
 
@@ -212,16 +183,8 @@ async def get_or_create_conversation(
     initial_message: str,
     conversation_instructions: str = "",
 ) -> Tuple[str, bool, int]:
-    """
-    Returns (conversation_id, was_created, last_event_id_at_send_time).
+    """Returns (conversation_id, was_created, last_event_id)."""
 
-    `was_created=True` → caller should NOT also POST /message.
-    `was_created=False` → caller MUST NOT also POST /message (already sent).
-
-    Workspace isolation:
-    EVERY call verifies the runtime mount. If wrong (e.g. after OH restart),
-    we remount BEFORE sending the message.
-    """
     mapping = get_mapping(chat_id) if chat_id else None
     if mapping:
         cid = mapping["conversation_id"]
@@ -243,8 +206,17 @@ async def get_or_create_conversation(
             except Exception:
                 pass
 
-            await _ensure_mount_and_send(client, oh_url, cid, chat_id, initial_message)
-            return cid, False, last_id
+            # Reused conversation — mount already set from init
+            r = await client.post(
+                f"{oh_url}/api/conversations/{cid}/message",
+                json={"message": initial_message},
+                timeout=15.0,
+            )
+            if r.status_code >= 400:
+                log.warning("POST /message failed (%s) for cid=%s; rotating", r.status_code, cid)
+                drop_mapping(chat_id)
+            else:
+                return cid, False, last_id
         else:
             log.info("stale mapping for chat_id=%s cid=%s — recreating", chat_id, cid)
             drop_mapping(chat_id)
@@ -261,13 +233,14 @@ async def get_or_create_conversation(
     if not cid:
         raise RuntimeError(f"OpenHands returned no conversation_id: {body}")
 
-    # Ensure per-chat workspace directory exists on host
-    safe_id = safe_chat_id(chat_id) if chat_id else ""
+    safe_id = _safe_chat_id(chat_id) if chat_id else ""
     if safe_id:
-        chat_host_path = os.path.join(CHAT_WORKSPACE_ROOT, safe_id)
+        chat_host_path = os.path.join(
+            os.environ.get("DATA_DIR", "/opt/browserai-data"),
+            "workspace", "chats", safe_id,
+        )
         os.makedirs(chat_host_path, exist_ok=True)
 
-    # /start creates the runtime container (agent is idle — no message queued)
     try:
         await client.post(
             f"{oh_url}/api/conversations/{cid}/start", json={}, timeout=600.0
@@ -275,16 +248,12 @@ async def get_or_create_conversation(
     except httpx.TimeoutException:
         log.warning("/start timeout for cid=%s (continuing to remount)", cid)
 
-    # Verify mount and send the initial message
-    await _ensure_mount_and_send(
-        client, oh_url, cid, chat_id or "", initial_message,
-        is_new_conversation=True,
-    )
+    # Remount with per-chat mount, then send message
+    await _remount_and_send(client, oh_url, cid, chat_id or "", initial_message)
 
     if chat_id:
         upsert_mapping(chat_id, cid, user_id)
 
-    # Get current max event id so caller can poll from the right point
     last_id = -1
     try:
         r = await client.get(
