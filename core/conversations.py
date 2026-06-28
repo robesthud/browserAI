@@ -1,48 +1,30 @@
 """
 Per-chat OpenHands conversation reuse.
 
-OpenHands cold-starts a new sandbox container (~60-90s, ~1.4 GiB RAM) for
-every new conversation. To make the chat feel responsive after the first
-turn, we keep one OpenHands conversation alive per BrowserAI chat_id and
-just POST /message into it for subsequent turns.
-
-Lifecycle policy:
-  * First send for a chat_id with no mapping  → POST /conversations + /start.
-  * Subsequent sends                          → POST /conversations/{cid}/message.
-  * If the mapped conversation is gone (deleted/expired/error)
-                                              → drop mapping, create fresh.
-  * On user "new chat" → backend gets a brand-new chat_id, so a fresh
-    conversation is born naturally.
-
 Workspace isolation:
   Every call to get_or_create_conversation (new or reused) verifies the
   runtime mount is correct. If the mount is wrong (e.g. after OH restart
   recreated the runtime with _sandbox), we remount before sending the
   message. This guarantees the agent ALWAYS works in its per-chat directory.
-
-We also tag conversations with the BrowserAI user_id so /api/cloud and
-admin tools can audit / clean up later.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
 from core.database import get_conn
+from core.utils import safe_chat_id, CHAT_WORKSPACE_ROOT
+
+# Backward-compatible alias
+_safe_chat_id = safe_chat_id
 
 log = logging.getLogger("browserai.conversations")
-
-
-def _safe_chat_id(chat_id: str) -> str:
-    """Sanitize chat_id for use in filesystem paths."""
-    raw = str(chat_id or "").strip()
-    safe = "".join(ch if (ch.isalnum() or ch in "_-.") else "_" for ch in raw)
-    return safe[:96] or "default"
 
 
 def init_conversations_schema() -> None:
@@ -81,6 +63,17 @@ def get_mapping(chat_id: str) -> Optional[Dict[str, Any]]:
             "SELECT * FROM chat_conversations WHERE chat_id = ?", (chat_id,)
         ).fetchone()
         return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_all_mappings() -> List[Dict[str, Any]]:
+    """Return all chat→conversation mappings. Used by startup cleanup."""
+    init_conversations_schema()
+    conn = get_conn()
+    try:
+        rows = conn.execute("SELECT * FROM chat_conversations").fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 
@@ -162,16 +155,11 @@ async def _ensure_mount_and_send(
 ) -> None:
     """Ensure the runtime has the correct per-chat mount, then send a message.
 
-    This is called for BOTH new and reused conversations to guarantee:
-    - New conversations: remount after /start, then send initial message
-    - Reused conversations: verify mount is correct (may be wrong after
-      OH restart), remount if needed, then send the message
-
-    The agent NEVER works in the wrong workspace.
+    Called for BOTH new and reused conversations to guarantee the agent
+    NEVER works in the wrong workspace.
     """
     from core.isolation import verify_runtime_mount, remount_runtime_async
 
-    # Check if mount is correct; remount if needed
     mount_ok = False
     try:
         mount_ok = verify_runtime_mount(cid, chat_id)
@@ -188,12 +176,10 @@ async def _ensure_mount_and_send(
                 log.warning("_ensure_mount_and_send: remount failed cid=%s chat_id=%s", cid, chat_id)
         except Exception as e:
             log.warning("_ensure_mount_and_send: remount error: %s", e)
-        # Give OH time to reconnect to the remounted container
         await asyncio.sleep(1)
     else:
         log.debug("_ensure_mount_and_send: mount already correct cid=%s", cid)
 
-    # Send the message
     if not message:
         return
     for attempt in range(3):
@@ -229,26 +215,17 @@ async def get_or_create_conversation(
     """
     Returns (conversation_id, was_created, last_event_id_at_send_time).
 
-    `was_created=True` means we just opened a fresh OpenHands conversation
-    and the initial_message was sent after remount; the caller should NOT
-    also POST /message.
-
-    `was_created=False` means we reused an existing conversation; the
-    caller MUST NOT also POST /message (we already sent it via
-    _ensure_mount_and_send). The returned `last_event_id_at_send_time` is
-    the highest event id observed BEFORE the new message — so polling can
-    fetch only the response.
+    `was_created=True` → caller should NOT also POST /message.
+    `was_created=False` → caller MUST NOT also POST /message (already sent).
 
     Workspace isolation:
-    EVERY call (new or reused) verifies the runtime mount is correct.
-    If the mount is wrong (e.g. after OH restart), we remount BEFORE
-    sending the message. The agent ALWAYS works in its per-chat directory.
+    EVERY call verifies the runtime mount. If wrong (e.g. after OH restart),
+    we remount BEFORE sending the message.
     """
     mapping = get_mapping(chat_id) if chat_id else None
     if mapping:
         cid = mapping["conversation_id"]
         if await conversation_alive(client, oh_url, cid):
-            # Capture current max event id BEFORE posting the new message
             last_id = mapping.get("last_event_id", -1) or -1
             try:
                 r = await client.get(
@@ -266,7 +243,6 @@ async def get_or_create_conversation(
             except Exception:
                 pass
 
-            # Send the message with mount verification (handles OH restart case)
             await _ensure_mount_and_send(client, oh_url, cid, chat_id, initial_message)
             return cid, False, last_id
         else:
@@ -274,8 +250,6 @@ async def get_or_create_conversation(
             drop_mapping(chat_id)
 
     # ── Create fresh conversation ──────────────────────────────────────
-    # IMPORTANT: Create WITHOUT initial_user_msg so that the agent doesn't
-    # start working until we've remounted the runtime with per-chat isolation.
     payload: Dict[str, Any] = {}
     if conversation_instructions:
         payload["conversation_instructions"] = conversation_instructions
@@ -288,13 +262,9 @@ async def get_or_create_conversation(
         raise RuntimeError(f"OpenHands returned no conversation_id: {body}")
 
     # Ensure per-chat workspace directory exists on host
-    safe_id = _safe_chat_id(chat_id) if chat_id else ""
+    safe_id = safe_chat_id(chat_id) if chat_id else ""
     if safe_id:
-        import os
-        chat_host_path = os.path.join(
-            os.environ.get("DATA_DIR", "/opt/browserai-data"),
-            "workspace", "chats", safe_id,
-        )
+        chat_host_path = os.path.join(CHAT_WORKSPACE_ROOT, safe_id)
         os.makedirs(chat_host_path, exist_ok=True)
 
     # /start creates the runtime container (agent is idle — no message queued)

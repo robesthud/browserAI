@@ -76,6 +76,7 @@ from core.auth import (
 )
 from core.conversations import (
     drop_mapping,
+    get_all_mappings,
     get_mapping,
     get_or_create_conversation,
     init_conversations_schema,
@@ -187,6 +188,15 @@ async def _startup_init() -> None:
                 log.info("no active key found - skipping OH settings push on startup")
     except Exception as e:
         log.warning("OH settings push on startup failed: %s", e)
+
+    # Startup maintenance: clean orphan OH conversations, remove dead
+    # runtime containers, verify all existing runtime mounts
+    try:
+        from core.isolation import startup_cleanup
+        cleanup_result = await startup_cleanup(OPENHANDS_SERVER)
+        log.info("startup cleanup: %s", cleanup_result)
+    except Exception as e:
+        log.warning("startup cleanup failed: %s", e)
 
 # CORS: must NOT be wildcard when allow_credentials is true, otherwise cookies
 # are silently dropped by browsers.
@@ -316,10 +326,8 @@ def _sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _safe_chat_id_for_path(chat_id: Optional[str]) -> str:
-    raw = str(chat_id or "").strip()
-    safe = "".join(ch if (ch.isalnum() or ch in "_-.") else "_" for ch in raw)
-    return safe[:96] or "default"
+# Deduplicated: use shared function from core.utils
+from core.utils import safe_chat_id as _safe_chat_id_for_path
 
 
 def _chat_workspace_rel(chat_id: Optional[str]) -> str:
@@ -372,6 +380,13 @@ async def get_health():
         "sandbox": True,
         "browser": True,
     }
+
+
+@app.get("/api/isolation/stats")
+async def isolation_stats():
+    """Isolation monitoring: remount counters, orphan cleanup stats."""
+    from core.isolation import get_isolation_stats
+    return {"ok": True, "isolation": get_isolation_stats()}
 
 
 @app.get("/api/health/deep")
@@ -2252,12 +2267,19 @@ async def workspace_chat_delete(request: Request):
     cid = _bind_chat_to_oh(chat_id)
     deleted_oh = False
     if cid:
+        # Delete the OH conversation
         async with httpx.AsyncClient(timeout=15.0) as client:
             try:
                 r = await client.delete(f"{OPENHANDS_SERVER}/api/conversations/{cid}")
                 deleted_oh = r.status_code < 400
             except Exception as e:
                 log.warning("workspace chat delete: OpenHands delete failed cid=%s: %s", cid, e)
+        # Remove the runtime container to free resources (~1.4 GB RAM each)
+        try:
+            from core.isolation import remove_runtime_container
+            remove_runtime_container(cid)
+        except Exception:
+            pass
         try:
             drop_mapping(chat_id)
         except Exception:
