@@ -15,7 +15,6 @@ import haptics from './haptics.js'
 import { workspaceApi } from './workspace.js'
 import { sanitizeAssistantDelta, sanitizeAssistantFinal } from './sanitizeAgentText.js'
 import { createJob, createAgentJob, detectLongJobType, cancelJob } from './jobs.js'
-import { backend } from './backend.js'
 
 const SUMMARY_TRIGGER_MESSAGES = 14
 const SUMMARY_KEEP_RECENT = 8
@@ -206,10 +205,10 @@ export function useChats(settings) {
       summarizedUntil: chat.summarizedUntil || 0,
     }))
 
-  // Phase 1.2: Start empty. Source of truth = server (/api/chats/list)
-  const [chats, setChats] = useState([])
-  const [messages, setMessages] = useState({}) // chatId -> messages[]
-  const [loadingChats, setLoadingChats] = useState(true)
+  const [chats, setChats] = useState(() => {
+    const initial = normalizedChats()
+    return initial
+  })
   const [activeId, setActiveId] = useState(() => {
     // Читаем localStorage только один раз — напрямую из того же вызова
     const initial = loadChats()
@@ -224,76 +223,22 @@ export function useChats(settings) {
   const [activeJobs, setActiveJobs] = useState([])
   const abortRef = useRef(null)
   const saveTimeoutRef = useRef(null)
+  // Phase 1: Lazy loading — track which chats have messages loaded from server
+  const loadedChatIds = useRef(new Set())
+  const [messagesLoading, setMessagesLoading] = useState(false)
 
-  // Phase 1.2 — Fast load from server (only metadata)
+  // Персистентность с дебаунсом — не пишем localStorage на каждый токен стриминга
   useEffect(() => {
-    let cancelled = false
-    setLoadingChats(true)
-
-    backend.chatsList(60).then(data => {
-      if (cancelled) return
-      if (data?.ok && Array.isArray(data.chats)) {
-        setChats(data.chats)
-        setActiveId((current) => {
-          if (current && data.chats.some((c) => c.id === current)) return current
-          return data.chats[0]?.id ?? null
-        })
-        // Keep as optimistic display cache only. Messages remain lazy.
-        try { saveChats(data.chats) } catch {}
-      }
-    }).catch(() => {
-      // Fallback to local cache if server unavailable
-      try {
-        const cached = loadChats()
-        if (cached.length) setChats(cached)
-      } catch {}
-    }).finally(() => {
-      if (!cancelled) setLoadingChats(false)
-    })
-
-    return () => { cancelled = true }
-  }, [])
-
-  // Lazy load messages when a chat is selected
-  const loadMessages = useCallback(async (chatId) => {
-    if (!chatId || messages[chatId]) return // already loaded
-    try {
-      const data = await backend.chatMessages(chatId, 120)
-      if (data?.ok && Array.isArray(data.messages)) {
-        setMessages(prev => ({ ...prev, [chatId]: data.messages }))
-        // Keep the selected chat object compatible with the rest of the app
-        // (MessageList/App read activeChat.messages), while preserving Phase 1.2:
-        // the initial sidebar payload stays metadata-only and messages load on demand.
-        setChats((prev) => prev.map((c) =>
-          c.id === chatId
-            ? { ...c, messages: data.messages, openhands: { ...(c.openhands || {}), conversationId: data.conversationId || c.openhands?.conversationId } }
-            : c,
-        ))
-      }
-    } catch (e) {
-      console.warn('loadMessages failed', e)
-    }
-  }, [messages])
-
-  // Persist only as display cache (not source of truth)
-  useEffect(() => {
-    if (chats.length > 0) {
-      clearTimeout(saveTimeoutRef.current)
-      saveTimeoutRef.current = setTimeout(() => saveChats(chats), 1200)
-    }
+    clearTimeout(saveTimeoutRef.current)
+    saveTimeoutRef.current = setTimeout(() => saveChats(chats), 800)
     return () => clearTimeout(saveTimeoutRef.current)
   }, [chats])
-
-  useEffect(() => {
-    if (activeId) loadMessages(activeId)
-  }, [activeId, loadMessages])
 
   const activeChat = chats.find((c) => c.id === activeId) || null
 
   const newChat = useCallback(() => {
     const chat = createChat()
     setChats((prev) => [chat, ...prev])
-    setMessages((prev) => ({ ...prev, [chat.id]: chat.messages || [] }))
     setActiveId(chat.id)
     // Init workspace + create OH conversation so chat appears in cloud sync
     workspaceApi.initChatWorkspace(chat.id).then((res) => {
@@ -314,9 +259,24 @@ export function useChats(settings) {
     setActiveId(id)
     if (id) {
       workspaceApi.initChatWorkspace(id).catch(() => {})
-      loadMessages(id) // Phase 1.2 lazy load
+      // Phase 1: Lazy load messages from server if not already loaded
+      if (!loadedChatIds.current.has(id)) {
+        setMessagesLoading(true)
+        fetch(`/api/chats/${encodeURIComponent(id)}/messages?limit=100`, { credentials: 'include' })
+          .then((r) => r.ok ? r.json() : null)
+          .then((data) => {
+            if (data?.messages?.length) {
+              setChats((prev) => prev.map((c) =>
+                c.id === id ? { ...c, messages: data.messages, _loadedFromServer: true } : c
+              ))
+            }
+            loadedChatIds.current.add(id)
+          })
+          .catch(() => {})
+          .finally(() => setMessagesLoading(false))
+      }
     }
-  }, [loadMessages])
+  }, [])
 
   const deleteChat = useCallback(
     (id) => {
@@ -326,11 +286,6 @@ export function useChats(settings) {
         if (id === activeId) {
           setActiveId(next[0]?.id ?? null)
         }
-        return next
-      })
-      setMessages((prev) => {
-        const next = { ...prev }
-        delete next[id]
         return next
       })
     },
@@ -485,7 +440,8 @@ export function useChats(settings) {
       // Do not send an empty provider history: at minimum include the current user turn.
       const history = capturedHistory.length > 0 ? capturedHistory : [userMsg]
 
-      const controller = new AbortController()
+      abortRef.current?.abort()
+    const controller = new AbortController()
       abortRef.current = controller
       setIsStreaming(true)
 
@@ -655,7 +611,8 @@ export function useChats(settings) {
 
       const history = capturedHistory.length > 0 ? capturedHistory : [userMsg]
 
-      const controller = new AbortController()
+      abortRef.current?.abort()
+    const controller = new AbortController()
       abortRef.current = controller
       setIsStreaming(true)
 
@@ -1272,6 +1229,7 @@ export function useChats(settings) {
     workspaceRevision,
     activeId,
     isStreaming,
+    messagesLoading,
     jobBusy: activeJobs.length > 0,
     markJobDone,
     newChat,

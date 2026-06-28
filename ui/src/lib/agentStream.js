@@ -34,90 +34,40 @@ export function streamAgent({ chatId = '', history, provider, extraSystem = '', 
   // isStreaming). Track it and always emit one.
   let sawDone = false
 
-  // Phase 1.4 — Streaming UX: coalesce high-frequency delta events to one
-  // browser paint. This keeps long assistant/thinking/tool streams smooth on
-  // mobile and avoids React re-render storms. Non-delta/control events flush the
-  // buffers first so ordering remains deterministic.
-  const scheduleFrame = (cb) => {
-    if (typeof requestAnimationFrame === 'function') return requestAnimationFrame(cb)
-    return setTimeout(cb, 16)
-  }
-  const cancelFrame = (id) => {
-    if (id == null) return
-    if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(id)
-    else clearTimeout(id)
-  }
-
-  let frameId = null
-  let assistantDeltaBuffer = ''
-  let assistantDeltaMeta = null
-  let thinkingDeltaBuffer = ''
-  let thinkingDeltaMeta = null
-  const toolProgressBuffers = new Map()
-
-  const rawEmit = (kind, data) => {
-    if (kind === 'done') sawDone = true
-    onEvent?.(kind, data)
-  }
-
-  const toolProgressKey = (data = {}) => `${data.step ?? ''}:${data.sub ?? ''}:${data.name || ''}`
-
-  const flushDelta = () => {
-    if (frameId != null) {
-      cancelFrame(frameId)
-      frameId = null
-    }
-    if (assistantDeltaBuffer) {
-      const meta = assistantDeltaMeta || {}
-      const chunk = assistantDeltaBuffer
-      assistantDeltaBuffer = ''
-      assistantDeltaMeta = null
-      rawEmit('assistant_delta', { ...meta, chunk })
-    }
-    if (thinkingDeltaBuffer) {
-      const meta = thinkingDeltaMeta || {}
-      const chunk = thinkingDeltaBuffer
-      thinkingDeltaBuffer = ''
-      thinkingDeltaMeta = null
-      rawEmit('thinking_delta', { ...meta, chunk })
-    }
-    if (toolProgressBuffers.size) {
-      const batch = Array.from(toolProgressBuffers.values())
-      toolProgressBuffers.clear()
-      for (const item of batch) rawEmit('tool_progress', item)
+  // Phase 1: rAF-based event batching for smoother UI rendering.
+  // Instead of emitting every SSE event immediately (which can cause
+  // 60+ React state updates per second on fast streams), we batch events
+  // and flush them on the next animation frame.
+  const pendingEvents = []
+  let rafScheduled = false
+  const flushEvents = () => {
+    rafScheduled = false
+    if (!pendingEvents.length) return
+    const batch = pendingEvents.splice(0)
+    for (const { kind, data } of batch) {
+      if (kind === 'done') sawDone = true
+      onEvent?.(kind, data)
     }
   }
-
-  const scheduleDeltaFlush = () => {
-    if (frameId != null) return
-    frameId = scheduleFrame(() => {
-      frameId = null
-      flushDelta()
-    })
+  const scheduleFlush = () => {
+    if (rafScheduled) return
+    rafScheduled = (typeof requestAnimationFrame !== 'undefined')
+      ? requestAnimationFrame(flushEvents)
+      : setTimeout(flushEvents, 16)
   }
-
   const emit = (kind, data) => {
-    if (kind === 'assistant_delta') {
-      assistantDeltaBuffer += String(data?.chunk || '')
-      assistantDeltaMeta = { ...(assistantDeltaMeta || {}), ...(data || {}) }
-      scheduleDeltaFlush()
+    // Critical events flush immediately for instant feedback
+    if (kind === 'done' || kind === 'error' || kind === 'assistant') {
+      if (rafScheduled) {
+        (typeof cancelAnimationFrame !== 'undefined' ? cancelAnimationFrame : clearTimeout)(rafScheduled)
+        rafScheduled = false
+      }
+      pendingEvents.push({ kind, data })
+      flushEvents()
       return
     }
-    if (kind === 'thinking_delta') {
-      thinkingDeltaBuffer += String(data?.chunk || '')
-      thinkingDeltaMeta = { ...(thinkingDeltaMeta || {}), ...(data || {}) }
-      scheduleDeltaFlush()
-      return
-    }
-    if (kind === 'tool_progress' && data && Object.prototype.hasOwnProperty.call(data, 'chunk')) {
-      const key = toolProgressKey(data)
-      const prev = toolProgressBuffers.get(key) || { ...data, chunk: '' }
-      toolProgressBuffers.set(key, { ...prev, ...data, chunk: String(prev.chunk || '') + String(data.chunk || '') })
-      scheduleDeltaFlush()
-      return
-    }
-    flushDelta()
-    rawEmit(kind, data)
+    pendingEvents.push({ kind, data })
+    scheduleFlush()
   }
 
   ;(async () => {
@@ -197,8 +147,5 @@ export function streamAgent({ chatId = '', history, provider, extraSystem = '', 
     }
   })()
 
-  return () => {
-    try { flushDelta() } catch { /* ignore flush errors on abort */ }
-    try { controller?.abort() } catch { /* already aborted */ }
-  }
+  return () => { try { controller?.abort() } catch { /* already aborted */ } }
 }
