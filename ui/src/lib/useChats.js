@@ -15,6 +15,7 @@ import haptics from './haptics.js'
 import { workspaceApi } from './workspace.js'
 import { sanitizeAssistantDelta, sanitizeAssistantFinal } from './sanitizeAgentText.js'
 import { createJob, createAgentJob, detectLongJobType, cancelJob } from './jobs.js'
+import { backend } from './backend.js'
 
 const SUMMARY_TRIGGER_MESSAGES = 14
 const SUMMARY_KEEP_RECENT = 8
