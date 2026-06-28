@@ -205,10 +205,10 @@ export function useChats(settings) {
       summarizedUntil: chat.summarizedUntil || 0,
     }))
 
-  const [chats, setChats] = useState(() => {
-    const initial = normalizedChats()
-    return initial
-  })
+  // Phase 1.2: Start empty. Source of truth = server (/api/chats/list)
+  const [chats, setChats] = useState([])
+  const [messages, setMessages] = useState({}) // chatId -> messages[]
+  const [loadingChats, setLoadingChats] = useState(true)
   const [activeId, setActiveId] = useState(() => {
     // Читаем localStorage только один раз — напрямую из того же вызова
     const initial = loadChats()
@@ -224,14 +224,55 @@ export function useChats(settings) {
   const abortRef = useRef(null)
   const saveTimeoutRef = useRef(null)
 
-  // Персистентность с дебаунсом — не пишем localStorage на каждый токен стриминга
+  // Phase 1.2 — Fast load from server (only metadata)
   useEffect(() => {
-    clearTimeout(saveTimeoutRef.current)
-    saveTimeoutRef.current = setTimeout(() => saveChats(chats), 800)
+    let cancelled = false
+    setLoadingChats(true)
+
+    backend.chatsList(60).then(data => {
+      if (cancelled) return
+      if (data?.ok && Array.isArray(data.chats)) {
+        setChats(data.chats)
+        // Keep as optimistic cache only
+        try { saveChats(data.chats) } catch {}
+      }
+    }).catch(() => {
+      // Fallback to local cache if server unavailable
+      try {
+        const cached = loadChats()
+        if (cached.length) setChats(cached)
+      } catch {}
+    }).finally(() => {
+      if (!cancelled) setLoadingChats(false)
+    })
+
+    return () => { cancelled = true }
+  }, [])
+
+  // Lazy load messages when a chat is selected
+  const loadMessages = useCallback(async (chatId) => {
+    if (!chatId || messages[chatId]) return // already loaded
+    try {
+      const data = await backend.chatMessages(chatId, 120)
+      if (data?.ok && Array.isArray(data.messages)) {
+        setMessages(prev => ({ ...prev, [chatId]: data.messages }))
+      }
+    } catch (e) {
+      console.warn('loadMessages failed', e)
+    }
+  }, [messages])
+
+  // Persist only as display cache (not source of truth)
+  useEffect(() => {
+    if (chats.length > 0) {
+      clearTimeout(saveTimeoutRef.current)
+      saveTimeoutRef.current = setTimeout(() => saveChats(chats), 1200)
+    }
     return () => clearTimeout(saveTimeoutRef.current)
   }, [chats])
 
   const activeChat = chats.find((c) => c.id === activeId) || null
+  const activeMessages = (activeId && messages[activeId]) ? messages[activeId] : (activeChat?.messages || [])
 
   const newChat = useCallback(() => {
     const chat = createChat()
@@ -254,8 +295,11 @@ export function useChats(settings) {
 
   const selectChat = useCallback((id) => {
     setActiveId(id)
-    if (id) workspaceApi.initChatWorkspace(id).catch(() => {})
-  }, [])
+    if (id) {
+      workspaceApi.initChatWorkspace(id).catch(() => {})
+      loadMessages(id) // Phase 1.2 lazy load
+    }
+  }, [loadMessages])
 
   const deleteChat = useCallback(
     (id) => {

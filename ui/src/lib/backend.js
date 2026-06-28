@@ -119,4 +119,8 @@ export const backend = {
   vaultBackup: () => req('/vault/backup'),
   vaultRestore: (backup) =>
     req('/vault/restore', { method: 'POST', body: JSON.stringify(backup) }),
+  // Phase 1.2 — Fast chat loading (Hybrid Merge Plan)
+  chatsList: (limit = 50) => req(`/chats/list?limit=${limit}`),
+  chatMessages: (chatId, limit = 100) => req(`/chats/${encodeURIComponent(chatId)}/messages?limit=${limit}`),
+
 }

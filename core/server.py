@@ -1073,6 +1073,95 @@ async def cloud_put(request: Request):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Phase 1.2 — Fast Chat Loading (Hybrid Merge Plan)
+# One source of truth: OpenHands. BrowserAI only provides fast metadata + lazy messages.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/chats/list")
+async def chats_list(limit: int = 50):
+    """Fast list of chats — only metadata, no messages.
+    This replaces the heavy /api/cloud for sidebar rendering.
+    """
+    try:
+        # Reuse existing fetch but skip event loading for speed
+        chats = []
+        mapping_by_cid = _mapping_by_conversation_id()
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(
+                f"{OPENHANDS_SERVER}/api/conversations",
+                params={"limit": min(limit, 100)}
+            )
+            if r.status_code >= 400:
+                return {"ok": True, "chats": [], "source": "openhands_error"}
+
+            items = r.json() if isinstance(r.json(), list) else (r.json().get("results") or [])
+
+            for conv in items:
+                cid = conv.get("conversation_id") or conv.get("id")
+                if not cid:
+                    continue
+
+                chat_id = mapping_by_cid.get(str(cid)) or f"oh_{cid}"
+                created = _parse_oh_ts(conv.get("created_at"))
+                updated = _parse_oh_ts(
+                    conv.get("last_updated_at") or conv.get("updated_at"), created
+                )
+
+                chats.append({
+                    "id": chat_id,
+                    "conversationId": str(cid),
+                    "title": (conv.get("title") or "").strip() or f"Chat {str(cid)[:8]}",
+                    "createdAt": created,
+                    "updatedAt": updated,
+                    "status": conv.get("status"),
+                })
+
+        chats.sort(key=lambda c: c.get("updatedAt", 0), reverse=True)
+        return {"ok": True, "chats": chats, "source": "openhands", "count": len(chats)}
+
+    except Exception as e:
+        log.warning("chats_list failed: %s", e)
+        return {"ok": True, "chats": [], "source": "error", "error": str(e)}
+
+
+@app.get("/api/chats/{chat_id}/messages")
+async def chat_messages(chat_id: str, limit: int = 100):
+    """Lazy load messages for a specific chat.
+    Only called when user opens a chat.
+    """
+    m = get_mapping(chat_id)
+    if not m:
+        return {"ok": True, "chatId": chat_id, "messages": [], "hasMore": False}
+
+    cid = m["conversation_id"]
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.get(
+                f"{OPENHANDS_SERVER}/api/conversations/{cid}/events",
+                params={"limit": limit}
+            )
+            if r.status_code != 200:
+                return {"ok": True, "chatId": chat_id, "messages": [], "hasMore": False}
+
+            body = r.json()
+            events = body if isinstance(body, list) else (body.get("events") or body.get("results") or [])
+            messages = _oh_events_to_browserai_messages(events)
+
+            return {
+                "ok": True,
+                "chatId": chat_id,
+                "conversationId": cid,
+                "messages": messages,
+                "hasMore": len(messages) >= limit,
+            }
+    except Exception as e:
+        log.warning("chat_messages failed for %s: %s", chat_id, e)
+        return {"ok": False, "chatId": chat_id, "messages": [], "error": str(e)}
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Chats — rename / delete (OpenHands-backed)
 # ─────────────────────────────────────────────────────────────────────────────
 
