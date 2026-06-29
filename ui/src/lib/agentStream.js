@@ -108,25 +108,36 @@ export function streamAgent({ chatId = '', history, provider, extraSystem = '', 
       }
       const decoder = new TextDecoder()
       let buffer = ''
+      const processBlock = (block) => {
+        if (!block.trim()) return
+        let evt = 'message'
+        let dataLines = []
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event:')) evt = line.slice(6).trim()
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
+        }
+        const raw = dataLines.join('\n')
+        let parsed = raw
+        try { parsed = JSON.parse(raw) } catch { /* keep string */ }
+        emit(evt, parsed)
+      }
+
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
         buffer += decoder.decode(value, { stream: true })
         const events = buffer.split('\n\n')
         buffer = events.pop() || ''
-        for (const block of events) {
-          if (!block.trim()) continue
-          let evt = 'message'
-          let dataLines = []
-          for (const line of block.split('\n')) {
-            if (line.startsWith('event:')) evt = line.slice(6).trim()
-            else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
-          }
-          const raw = dataLines.join('\n')
-          let parsed = raw
-          try { parsed = JSON.parse(raw) } catch { /* keep string */ }
-          emit(evt, parsed)
-        }
+        for (const block of events) processBlock(block)
+      }
+
+      // Some proxies / runtimes close the stream right after writing the final
+      // SSE frame without an extra delimiter. Flush the trailing buffer so the
+      // terminal `done` event is not lost, otherwise the UI keeps spinning even
+      // though the assistant text is already visible.
+      if (buffer.trim()) {
+        processBlock(buffer)
+        buffer = ''
       }
       // Stream ended without an explicit 'done' (connection cut mid-run,
       // server restarted, LB idle-timeout). Surface it instead of hanging.
