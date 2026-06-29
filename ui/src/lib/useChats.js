@@ -1100,6 +1100,8 @@ export function useChats(settings) {
                     // evidence block (changed files / tests / blockers).
                     finalStatus: data.finalStatus || m.finalStatus || null,
                   }))
+                  try { if (abortRef.current === controller) abortRef.current = null } catch {}
+                  setIsStreaming(false)
                   resolve()
                   break
               }
