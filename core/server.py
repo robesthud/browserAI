@@ -1695,10 +1695,10 @@ async def _prepare_openhands_turn(
 
 
 def _is_turn_complete_event(e: Dict[str, Any]) -> bool:
+    state = ((e.get("extras") or {}).get("agent_state") or "").lower()
     return (
         e.get("observation") == "agent_state_changed"
-        and (e.get("extras") or {}).get("agent_state")
-        in ("awaiting_user_input", "finished", "stopped", "error")
+        and state in ("finished", "stopped", "error")
     )
 
 
@@ -1778,6 +1778,7 @@ async def _poll_openhands_events(
     last_event_ts = time.time()
     done = False
     timeout_s = timeout_s or EVENT_POLL_TIMEOUT_S
+    log.info("agent.poll.start cid=%s chat_id=%s start_after=%s seen=%s timeout=%s", cid, chat_id, start_after_id, len(seen_ids), timeout_s)
 
     while not done and (time.time() - t0) < timeout_s:
         try:
@@ -1793,12 +1794,14 @@ async def _poll_openhands_events(
             body = r.json()
             events = body if isinstance(body, list) else (body.get("events") or body.get("results") or [])
             new_events = [e for e in events if e.get("id") not in seen_ids]
+            log.info("agent.poll.tick cid=%s total=%s new=%s", cid, len(events), len(new_events))
             for e in new_events:
                 seen_ids.add(e.get("id"))
                 last_event_ts = time.time()
                 eid = int(e.get("id", -1))
                 if eid >= next_start_id:
                     next_start_id = eid + 1
+                log.info("agent.poll.event cid=%s event_id=%s action=%s obs=%s", cid, e.get("id"), e.get("action"), e.get("observation"))
                 if _is_turn_complete_event(e):
                     done = True
                 for translated in _translate_event(e, step + 1):
@@ -1829,12 +1832,15 @@ async def _poll_openhands_events(
         except Exception:
             pass
         if (full_answer_ref["text"] or step > 0) and (time.time() - last_event_ts) > 8:
+            log.info("agent.poll.idle-finish cid=%s step=%s answer_chars=%s", cid, step, len(full_answer_ref.get("text", "")))
             done = True
             break
         if (time.time() - last_event_ts) > 180:
+            log.warning("agent.poll.timeout cid=%s step=%s seen=%s", cid, step, len(seen_ids))
             yield _sse("error", {"message": "Агент не отвечает (нет событий 3 минуты). Попробуйте ещё раз."}).encode("utf-8"), step, False, seen_ids
             break
         await asyncio.sleep(EVENT_POLL_INTERVAL)
+    log.info("agent.poll.end cid=%s done=%s step=%s seen=%s answer_chars=%s", cid, done, step, len(seen_ids), len(full_answer_ref.get("text", "")))
     yield b"", step, done, seen_ids
 
 
@@ -1859,6 +1865,7 @@ async def _stream_chat_ws(
     done = False
     t0 = time.time()
     last_event_ts = time.time()
+    log.info("agent.ws.start cid=%s chat_id=%s last_seen=%s was_created=%s", cid, chat_id, last_seen_event_id, was_created)
     async for e in stream_openhands_events_ws(OPENHANDS_SERVER, cid, last_seen_event_id):
         eid_raw = e.get("id")
         if eid_raw in seen_ids:
@@ -1867,6 +1874,7 @@ async def _stream_chat_ws(
         last_event_ts = time.time()
         if _is_turn_complete_event(e):
             done = True
+        log.info("agent.ws.event cid=%s event_id=%s action=%s obs=%s", cid, e.get("id"), e.get("action"), e.get("observation"))
         for translated in _translate_event(e, step + 1):
             async for chunk, step in _emit_translated_event(
                 translated,
@@ -1885,6 +1893,7 @@ async def _stream_chat_ws(
         if (time.time() - last_event_ts) > 180:
             yield _sse("error", {"message": "Агент не отвечает (нет событий 3 минуты). Попробуйте ещё раз."}).encode("utf-8"), step, False, seen_ids
             break
+    log.info("agent.ws.end cid=%s done=%s step=%s seen=%s answer_chars=%s", cid, done, step, len(seen_ids), len(full_answer_ref.get("text", "")))
     yield b"", step, done, seen_ids
 
 
@@ -1927,10 +1936,12 @@ async def _stream_chat(
     yield _sse("agent_state", {"phase": "plan", "step": 1, "maxSteps": MAX_AGENT_ITERATIONS, "engine": "openhands"}).encode("utf-8")
 
     client = get_http_client()
+    log.info("agent.stream.start chat_id=%s user_id=%s model=%s prompt_chars=%s", chat_id, user_id, model, len(prompt or ""))
     try:
         cid, was_created, last_seen_event_id = await _prepare_openhands_turn(
             client, chat_id, model, prompt, extra_system, provider, user_id
         )
+        log.info("agent.stream.prepared chat_id=%s cid=%s was_created=%s last_seen=%s", chat_id, cid, was_created, last_seen_event_id)
     except HTTPException as e:
         if chat_id:
             upsert_run(chat_id, None, user_id, "error", last_prompt=prompt, last_error=str(e.detail))
@@ -1957,6 +1968,7 @@ async def _stream_chat(
     if use_ws:
         try:
             transport_used = "ws"
+            log.info("agent.stream.transport cid=%s transport=ws", cid)
             yield _sse("agent_state", {"step": 0, "phase": "stream-ws", "raw": "websocket", "conversationId": cid}).encode("utf-8")
             ws_seen_ids = set(initial_seen_ids)
             async for chunk, step, done, seen_ids in _stream_chat_ws(
@@ -1978,6 +1990,7 @@ async def _stream_chat(
         except OpenHandsWsUnavailable as e:
             transport_used = "poll"
             log.info("OpenHands WS unavailable; falling back to polling: %s", e)
+            log.info("agent.stream.transport cid=%s transport=poll reason=ws-fallback", cid)
             yield _sse("agent_state", {"step": 0, "phase": "stream-poll", "raw": "ws-fallback", "reason": str(e), "conversationId": cid}).encode("utf-8")
             async for chunk, step, done, seen_ids in _poll_openhands_events(
                 client,
@@ -1993,6 +2006,7 @@ async def _stream_chat(
                 if chunk:
                     yield chunk
     else:
+        log.info("agent.stream.transport cid=%s transport=poll reason=config", cid)
         yield _sse("agent_state", {"step": 0, "phase": "stream-poll", "raw": "polling", "conversationId": cid}).encode("utf-8")
         async for chunk, step, done, seen_ids in _poll_openhands_events(
             client,
@@ -2008,7 +2022,13 @@ async def _stream_chat(
             if chunk:
                 yield chunk
 
+    log.info("agent.stream.after-events cid=%s done=%s step=%s answer_chars=%s transport=%s", cid, done, step, len(full_answer_ref.get("text", "")), transport_used)
     full_answer = full_answer_ref["text"]
+    if done and step <= 0 and not full_answer.strip():
+        log.warning("agent.stream.empty-turn chat_id=%s cid=%s transport=%s", chat_id, cid, transport_used)
+        yield _sse("error", {"message": "OpenHands завершил ход без текста ответа. Попробуйте ещё раз."}).encode("utf-8")
+        yield _sse("done", {"reason": "empty-turn", "steps": step, "conversationId": cid, "reused": not was_created, "transport": transport_used}).encode("utf-8")
+        return
     if full_answer:
         _, clean = _split_think(full_answer)
         if clean:
@@ -2038,6 +2058,7 @@ async def _stream_chat(
         except Exception:
             pass
 
+    log.info("agent.stream.done chat_id=%s cid=%s done=%s step=%s transport=%s", chat_id, cid, done, step, transport_used)
     yield _sse("done", {
             "reason": "complete" if done else "timeout",
             "steps": step,
@@ -2084,6 +2105,7 @@ async def agent_chat(request: Request):
     provider = _resolve_provider(body, user=user)
     model = provider.get("model") or body.get("model") or DEFAULT_MODEL
     prompt = _history_to_prompt(history) or body.get("prompt") or "hi"
+    log.info("agent.chat.request chat_id=%s user_id=%s history=%s prompt_chars=%s", chat_id, user_id, len(history), len(prompt or ""))
 
     # Step 7.1 — auto-extract durable facts from the user's message (best-effort)
     if user_id and prompt:
