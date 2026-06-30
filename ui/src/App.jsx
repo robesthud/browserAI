@@ -179,7 +179,7 @@ function BrowserApp({ user, reloadAuth }) {
       authType: key.authType || 'bearer', authHeader: key.authHeader || '',
       extraHeaders: key.extraHeaders || {}, temperature: settings.temperature,
     } : null
-    setFlash({ kind: 'info', text: 'Фоновый агент запущен. Результат появится в карточке job.' })
+    setFlash({ kind: 'info', text: 'Фоновый агент: запрос отправлен (бэкенд-эндпоинт stub — результат может быть пустым).' })
     return sendBackgroundAgentMessage(text, attachments, override)
   }, [aiWorking, settings, selectedModel, activeKey, sendBackgroundAgentMessage])
 

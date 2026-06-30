@@ -602,10 +602,11 @@ const Composer = forwardRef(function Composer({
                     onClick={() => submit({ background: true })}
                     disabled={isSubmitting || (!text.trim() && attachments.length === 0)}
                     className="hidden items-center gap-1.5 rounded-full border border-amber-300/30 bg-amber-400/10 px-3 py-2 text-[12px] text-amber-100 transition-colors hover:bg-amber-400/20 disabled:opacity-40 md:flex"
-                    title="Devtools: запустить агентскую задачу в фоне"
+                    title="Devtools: запустить агентскую задачу в фоне (stub — бэкенд не реализован)"
                   >
                     <span>↗</span>
                     <span>В фоне</span>
+                    <span className="text-[9px] opacity-70">🚧</span>
                   </button>
                 )}
                 {isDev && !isStreaming && onSendBackground && (
@@ -614,8 +615,8 @@ const Composer = forwardRef(function Composer({
                     onClick={() => submit({ background: true })}
                     disabled={isSubmitting || (!text.trim() && attachments.length === 0)}
                     className="grid h-8 w-8 place-items-center rounded-full border border-amber-300/30 bg-amber-400/10 text-amber-100 transition-colors hover:bg-amber-400/20 disabled:opacity-40 md:hidden"
-                    title="Devtools: запустить в фоне"
-                  >↗</button>
+                    title="Devtools: запустить в фоне (stub)"
+                  >↗🚧</button>
                 )}
                 {isStreaming ? (
                   <button
