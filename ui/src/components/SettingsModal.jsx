@@ -1170,7 +1170,8 @@ export default function SettingsModal({
               plumbing in Settings. */}
           {isDevTools && <AgentSettingsSection />}
 
-          {/* ---- Администрирование (только для владельца/dev) ---- */}
+          {/* ---- Администрирование (только для devtools-режима) ---- */}
+          {isDevTools && (
           <section className="space-y-3 border-t border-white/5 pt-4">
             <h3 className="text-[13px] font-medium text-cream">
               🛠️ Администрирование
@@ -1200,19 +1201,35 @@ export default function SettingsModal({
                 <span className="text-[18px] mb-1">🤖</span>
                 <span className="text-[11px] text-cream-soft">Agent Status</span>
               </a>
-              <button
+            </div>
+          </section>
+          )}
+
+          {/* ---- Dev Mode toggle (always visible for opt-in) ---- */}
+          <section className="space-y-3 border-t border-white/5 pt-4">
+            <button
                 onClick={() => {
                    localStorage.setItem('browserai.devtools', localStorage.getItem('browserai.devtools') === '1' ? '0' : '1');
                    window.location.reload();
                 }}
-                className="flex flex-col items-center justify-center rounded-xl border border-white/10 bg-graphite-900/40 p-3 text-center transition-colors hover:bg-graphite-750 hover:text-cream"
+                className={`flex w-full items-center gap-3 rounded-xl border p-3 text-center transition-colors ${
+                  isDevTools
+                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-200 hover:bg-amber-500/15'
+                    : 'border-white/10 bg-graphite-900/40 text-cream-soft hover:bg-graphite-750 hover:text-cream'
+                }`}
               >
-                <span className="text-[18px] mb-1">🧪</span>
-                <span className="text-[11px] text-cream-soft">
-                  {isDevTools ? 'Disable Dev Mode' : 'Enable Dev Mode'}
-                </span>
+                <span className="text-[18px]">🧪</span>
+                <div className="text-left">
+                  <span className="block text-[12px] font-medium">
+                    {isDevTools ? 'Dev Mode: включён' : 'Включить Dev Mode'}
+                  </span>
+                  <span className="block text-[10px] text-cream-faint">
+                    {isDevTools
+                      ? 'Операторские панели, диагностика и автодеплой доступны. Нажмите для отключения.'
+                      : 'Раскрывает Operator Console, админ-панели и инструменты диагностики. Для разработчиков и операторов.'}
+                  </span>
+                </div>
               </button>
-            </div>
           </section>
 
           {/* ---- Шифрование (только при доступном сервере) ---- */}

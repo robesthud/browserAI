@@ -1,170 +1,81 @@
-# BrowserAI
+# BrowserAI — Документация
 
-BrowserAI — русскоязычный web-чат с AI и агентным режимом. Оболочка для OpenHands.
+## Быстрый старт
 
-Фронтенд: React + Vite + Tailwind  
-Бэкенд: **Python 3.12 + FastAPI + Uvicorn + SQLite**  
-Агент-движок: **OpenHands Agent Server** (`ghcr.io/all-hands-ai/openhands:main`)
-
-Production-развёртывание: VPS Timeweb, Docker Compose, GitHub Actions.
+1. Открой браузер → `http://<your-server-ip>:8080`
+2. Зарегистрируйся (первый пользователь = owner)
+3. Настройки → добавь API ключ (DeepSeek/Gemini/OpenAI/OpenRouter)
+4. Напиши задачу в чат — агент выполнит её автоматически
 
 ---
 
-## Что умеет
+## Чат и Агент
 
-- Обычный чат с OpenAI-compatible провайдерами (OpenAI, Anthropic, Gemini, DeepSeek, z.ai / GLM, BigModel и др.)
-- Агентный режим через OpenHands: файлы workspace, bash, web-поиск, проверка кода, git
-- SSE-стриминг ответа, reasoning/thinking, tool-карточки, финальный `done`
-- Workspace: FileTree, редактор, upload/download, поиск, preview, zip-скачивание
-  - изоляция: `/workspace/chats/<chatId>` — один чат = один под-workspace
-- Пользователи и сессии: email/password, HttpOnly cookie, SQLite
-- Vault: шифрование API-ключей per-user (cryptography/Fernet)
-- Cloud Sync: настройки + чаты, импорт истории из OpenHands
-- Key rotation: проверка нового ключа перед заменой
-- DeepSeek managed session: `/api/admin/deepseek/*`
-- Health: `/api/health`, `/api/health/deep`
+**Основной экран** — просто опиши задачу, агент сделает сам:
+- Читает файлы workspace
+- Запускает команды в sandbox (bash, git, npm, docker)
+- Проверяет результат и сообщает о проблемах
 
-## Структура проекта
+**Кнопки**:
+- 📁 — прикрепить файл / скриншот
+- ▶ / ⏹ — запустить / остановить агента
+- «Фон» — запустить агента в фоне, продолжить другие задачи
 
-```
-core/                FastAPI монолит
-  server.py          ~3000 строк, все /api/* роуты, OpenHands bridge, SSE
-  auth.py            сессии, регистрация, login
-  database.py        SQLite, keys/params
-  conversations.py   маппинг BrowserAI chatId ↔ OpenHands conversation_id
-  providers.py       LLM каталог, validate_key, push_to_openhands
-  agent_state.py     runs / questions / answers
-  memory_kb.py       факты, project memory, KB RAG
-  web_image.py       web_search, generate_image
-  vault.py           шифрование ключей
-  admin_data.py      jobs / cost / operator / incidents
-  obslog.py          JSON logs + trace_id
+---
 
-ui/                  React UI
-  src/App.jsx
-  src/components/    MessageList, Composer, Sidebar, FileTree, OpenHandsWorkspace, SettingsModal …
-  src/lib/           api.js, agentStream.js, settings.js …
+## Dev Mode и Operator Console
 
-docker-compose.yml   browserai + openhands
-Dockerfile           2-stage: Node build UI → Python runtime
-tests/               pytest
-```
+По умолчанию BrowserAI показывает только чат с агентным режимом — чистый, минимальный интерфейс.
 
-## Быстрый запуск локально
+**Dev Mode** (опционально) — раскрывает инструменты для разработчиков и операторов:
+- Включение: Настройки → «Включить Dev Mode»
+- Sidebar: кнопка 🧪 Dev Lab (диагностика, провайдер-чеки, event replay)
+- Sidebar: кнопка 🎯 Operator (миссии, инциденты, деплои)
 
-Backend:
-```bash
-pip install fastapi uvicorn httpx websockets pydantic aiosqlite bcrypt itsdangerous python-multipart cryptography
-uvicorn core.server:app --reload --port 8080
-```
+> **Внимание:** Operator Console — в активной разработке (WIP). Большинство
+> эндпоинтов — заглушки, панели отрисовываются с WIP-маркерами 🚧.
 
-Frontend:
-```bash
-cd ui
-npm ci
-npm run dev
-# http://localhost:5173
-```
+### Operator Console (`/operator`, только Dev Mode)
 
-Production-like Docker:
-```bash
-cp .env.example .env
-# отредактируй SESSION_SECRET, AUTH_SECRET, APP_URL, DATA_DIR, WORKSPACE_DIR
-docker compose up -d --build
-# http://localhost:8080
-```
+Вкладки:
+- **Миссии** — запущенные и завершённые operator missions + dependency graph *(WIP)*
+- **Проекты** — репозитории, команды, политики *(WIP)*
+- **Инциденты** — производственные инциденты + авто-восстановление *(WIP)*
+- **Деплои** — deploy sessions с rollback *(stub)*
+- **Runbooks** — процедуры и уроки агента *(stub)*
+- **Автоматизация** — GitHub webhooks, Automation Center *(stub)*
+- **Политики** — редактор политик безопасности *(partial)*
+- **Обзор** — дашборд, уведомления, inbox *(partial)*
 
-## Переменные окружения
+---
 
-Минимум:
-```env
-APP_URL=http://186.246.14.141
-SESSION_SECRET=long-random-string
-AUTH_SECRET=another-long-random-string
-BROWSERAI_DB=/data/browserai.db
-WORKSPACE_ROOT=/workspace
-OPENHANDS_AGENT_SERVER=http://openhands:18000
-```
+## Безопасность
 
-Опционально:
-- `BROWSERAI_DEFAULT_MODEL=glm-4.5-flash`
-- `OPENHANDS_LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4`
-- `BIGMODEL_API_KEY=...`
-- `REGISTRATION_SECRET=...`
-- `BROWSERAI_STREAM_RECHUNK=1`
-- `BROWSERAI_STREAM_CHUNK_CHARS=24`
-- `BROWSERAI_AGENT_MAX_ITERATIONS=50`
-- `BROWSERAI_EVENT_POLL_INTERVAL=0.6`
+- Пароли: bcrypt (cost 12)
+- Сессии: подписанные HttpOnly cookie (itsdangerous)
+- API-ключи: Vault с шифрованием (PBKDF2 + AES-GCM)
+- SSRF защита: внутренние IP заблокированы
+- SQL: whitelist валидация имён таблиц
+- Markdown: DOMPurify с allowlist тегов
+- AUTH_SECRET: обязательный в production (NODE_ENV=production)
 
-Полный список см. `.env.example`.
+---
 
-## API
+## Устранение проблем
 
-Основной endpoint: `POST /api/agent/chat` — SSE
+**Агент говорит "невозможно в sandbox"** — это галлюцинация. Напиши:
+> "Стоп. Выполни прямо сейчас: `curl -s https://api.github.com/zen`. После покажи вывод."
 
-Ключевые файлы:
-- `core/server.py` — FastAPI, OpenHands bridge, SSE-трансляция, workspace API
-- `core/providers.py` — каталог моделей, `validate_key`, `push_to_openhands`
-- `core/conversations.py` — `get_or_create_conversation`
-- `ui/src/lib/agentStream.js` — клиент SSE
+**Нет streaming (пачками выдаёт)** — Проверь настройки провайдера.
 
-Инструменты агента выполняются в OpenHands runtime, BrowserAI транслирует события:
-`agent_state`, `thinking_delta`, `tool_start`, `tool_result`, `assistant_delta`, `done`
+**Диск заполнен** — `du -sh /opt/browserai-data/*`
 
-Workspace API:
-- `GET /api/workspace/tree?chatId=...`
-- `GET /api/workspace/file?path=...`
-- `PUT /api/workspace/file`
-- `POST /api/workspace/upload`
-- `POST /api/workspace/upload-url` — git clone / zip / tar auto-extract
-- `GET /api/workspace/download`
+---
 
-Auth / keys:
-- `POST /api/auth/register`, `/api/auth/login`, `/api/auth/logout`
-- `GET /api/keys`, `POST /api/keys`, `POST /api/keys/rotate`
-- `GET /api/vault/status`, `POST /api/vault/unlock`
+## См. также
 
-## Проверки
-
-```bash
-pytest -q
-python -m py_compile core/server.py
-```
-
-UI:
-```bash
-cd ui
-npm test
-npm run build
-```
-
-## Деплой на Timeweb
-
-`.github/workflows/deploy-timeweb.yml`
-
-Secrets:
-- `TIMEWEB_SSH_KEY`
-- `TIMEWEB_HOST` — `186.246.14.141`
-- `TIMEWEB_USER=root`
-- `TIMEWEB_APP_DIR=/opt/browserai`
-
-Ручной деплой:
-```bash
-cd /opt/browserai
-git fetch origin main
-git reset --hard origin/main
-docker compose up -d --build --force-recreate browserai
-docker image prune -f
-curl -fsS http://localhost:8080/api/health
-```
-
-Автодеплой: push в `main` → GitHub Actions → SSH → `docker compose up -d --build` → healthcheck.
-
-Данные на сервере:
-- `/opt/browserai` — git checkout
-- `/opt/browserai-data` — `browserai.db`, backups, workspace
-- `/opt/browserai-data/workspace/chats/<chatId>` — изолированные workspace'ы
-
-## Лицензия
-
-MIT
+- [Release checklists](release/release-checklist.md)
+- [Rollback plan](release/rollback-checklist.md)
+- [Backup policy](release/backup-policy.md)
+- [SSE contract](sse-contract.md)
+- [Provider support matrix](providers/support-matrix.md)

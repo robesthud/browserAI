@@ -1060,7 +1060,7 @@ export function useChats(settings) {
                   break
                 case 'error':
                   flushAllStreamBuffers()
-                  patchAssistant((m) => ({ ...m, error: data.message || 'agent error', providerError: data.providerError || null, pending: false }))
+                  patchAssistant((m) => ({ ...m, error: data.message || 'agent error', errorCode: data.code || '', providerError: data.providerError || null, pending: false }))
                   haptics.error()
                   break
                 case 'usage':

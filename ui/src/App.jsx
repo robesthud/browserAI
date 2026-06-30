@@ -300,6 +300,17 @@ function BrowserApp({ user, reloadAuth }) {
 
 export default function App() {
   const pathname = typeof window !== 'undefined' ? window.location.pathname : '/'
+  const isDev = devtoolsEnabled()
+  // ── Admin / Operator routes are devtools-only ──
+  // Regular chat users should never see these panels: most endpoints are
+  // stubs (see issue #1) and the UX is confusing for non-technical users.
+  // Direct URL access without devtools → redirect to chat.
+  if (!isDev) {
+    if (pathname.startsWith('/admin/') || pathname === '/operator' || pathname.startsWith('/operator/')) {
+      window.location.replace('/')
+      return null
+    }
+  }
   if (pathname === '/admin/deepseek') return <AuthGate>{() => <DeepSeekAdmin />}</AuthGate>
   if (pathname === '/admin/ops') return <AuthGate>{() => <OpsAdmin />}</AuthGate>
   if (pathname === '/admin/agent') return <AuthGate>{() => <AgentAdmin />}</AuthGate>

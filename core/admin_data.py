@@ -20,6 +20,53 @@ from typing import Any, Dict, List, Optional
 from core.database import get_conn
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SQL identifiers whitelist — table names and ORDER BY clauses that are
+# allowed in f-string SQL fragments.  This prevents SQL injection even if
+# a future refactor accidentally passes user-controlled input as `table`
+# or `order`.  Adding a new table requires an explicit entry here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+ALLOWED_TABLES = frozenset({
+    "jobs",
+    "llm_spend",
+    "notifications",
+    "operator_missions",
+    "operator_mission_events",
+    "operator_projects",
+    "incidents",
+})
+
+ALLOWED_ORDER_CLAUSES = frozenset({
+    "created_at DESC",
+    "created_at ASC",
+    "updated_at DESC",
+    "updated_at ASC",
+    "id DESC",
+    "id ASC",
+})
+
+
+def _validate_table(name: str) -> str:
+    """Raise ValueError if *name* is not in the whitelist."""
+    if name not in ALLOWED_TABLES:
+        raise ValueError(
+            f"Table name '{name}' is not in ALLOWED_TABLES. "
+            f"Allowed: {sorted(ALLOWED_TABLES)}"
+        )
+    return name
+
+
+def _validate_order(clause: str) -> str:
+    """Raise ValueError if *clause* is not in the whitelist."""
+    if clause not in ALLOWED_ORDER_CLAUSES:
+        raise ValueError(
+            f"ORDER BY clause '{clause}' is not in ALLOWED_ORDER_CLAUSES. "
+            f"Allowed: {sorted(ALLOWED_ORDER_CLAUSES)}"
+        )
+    return clause
+
+
 def _now() -> int:
     return int(time.time() * 1000)
 
@@ -267,6 +314,8 @@ def _notif_public(d: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _scoped_rows(table: str, user_id: str, is_owner: bool, limit: int, order: str = "created_at DESC") -> List[Dict[str, Any]]:
+    _validate_table(table)
+    _validate_order(order)
     conn = get_conn()
     try:
         if not _table_exists(conn, table):
@@ -365,6 +414,7 @@ def operator_status(user_id: str, is_owner: bool) -> Dict[str, Any]:
     conn = get_conn()
     try:
         def cnt(table: str, where: str = "", args: Optional[List[Any]] = None) -> int:
+            _validate_table(table)
             if not _table_exists(conn, table):
                 return 0
             scope = "" if is_owner else (" WHERE user_id = ?" if not where else " AND user_id = ?")

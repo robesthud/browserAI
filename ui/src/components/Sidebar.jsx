@@ -11,6 +11,8 @@ import JobsTray from './JobsTray.jsx'
 import AgentTasksTray from './AgentTasksTray.jsx'
 import PushToggle from './PushToggle.jsx'
 import NotificationBadge from './NotificationBadge.jsx'
+import WipBanner from './WipBanner.jsx'
+import { useStubStatus } from '../lib/useStubStatus.js'
 
 function formatChatTime(ts) {
   if (!ts) return ''
@@ -23,6 +25,23 @@ function formatChatTime(ts) {
   if (diffDays === 1) return 'вчера'
   if (diffDays < 7) return `${diffDays}д`
   return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })
+}
+
+/** Small warning badge for Dev Lab components that depend on stub endpoints. */
+function DevtoolsStubWarning() {
+  const { isStub } = useStubStatus()
+  const stubItems = [
+    { path: '/api/push/vapid', label: 'Push' },
+    { path: '/api/agent/tasks', label: 'Agent Tasks' },
+    { path: '/api/operator/mcp/catalog', label: 'MCP' },
+  ]
+  const stubLabels = stubItems.filter(i => isStub(i.path)).map(i => i.label)
+  if (!stubLabels.length) return null
+  return (
+    <div className="mx-2.5 mb-1 rounded border border-amber-500/20 bg-amber-500/8 px-2 py-1.5 text-[10px] text-amber-300/80">
+      🚧 WIP: {stubLabels.join(', ')}
+    </div>
+  )
 }
 
 function lastMessagePreview(chat) {
@@ -230,10 +249,21 @@ export default function Sidebar({
                 onClick={() => { window.location.href = '/admin/agent' }}
                 className="flex w-full items-center gap-3 rounded-lg border border-white/5 bg-graphite-750/30 px-2.5 py-2 text-left text-[13px]
                            text-cream-soft transition-all hover:bg-graphite-750 hover:text-cream hover:border-white/15"
-                title="Dev Lab: operator panels, diagnostics, deploys, automation"
+                title="Dev Lab: agent diagnostics, provider checks, event replay"
               >
                 <span className="text-lg leading-none">🧪</span>
                 <span className="font-medium">Dev Lab</span>
+              </button>
+
+              <button
+                onClick={() => { window.location.href = '/operator' }}
+                className="flex w-full items-center gap-3 rounded-lg border border-violet-500/20 bg-violet-500/5 px-2.5 py-2 text-left text-[13px]
+                           text-violet-200 transition-all hover:bg-violet-500/10 hover:text-violet-100 hover:border-violet-500/30"
+                title="Operator Console: missions, incidents, deploys, automation"
+              >
+                <span className="text-lg leading-none">🎯</span>
+                <span className="font-medium">Operator</span>
+                <span className="text-[9px] text-amber-300/80 ml-auto">🚧 WIP</span>
               </button>
             </>
           )}
@@ -255,6 +285,7 @@ export default function Sidebar({
           <>
             {/* Live background jobs and technical trays live in Dev Lab/devtools,
                 not in the clean Agent Mode surface. */}
+            <DevtoolsStubWarning />
             <NotificationBadge />
             <AgentTasksTray chatId={activeId || ''} onResume={onResumeAgentTask} onFlash={onFlash} />
             <JobsTray onOpenChat={onOpenJobChat || onSelect} />

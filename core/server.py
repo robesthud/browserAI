@@ -193,9 +193,16 @@ app = FastAPI(title="BrowserAI-OpenHands Core Monolith", version="0.3.0")
 async def _startup_init() -> None:
     # Phase 1: AUTH_SECRET must be set in production
     _auth_secret = os.environ.get("AUTH_SECRET") or os.environ.get("SESSION_SECRET")
+    _is_production = os.environ.get("NODE_ENV", "").lower() == "production"
     if not _auth_secret:
+        if _is_production:
+            log.error("⛔ FATAL: AUTH_SECRET is not set and NODE_ENV=production. Refusing to start.")
+            raise SystemExit("AUTH_SECRET must be set in production. Set AUTH_SECRET or SESSION_SECRET env var.")
         log.warning("⚠️  AUTH_SECRET not set — auth will crash on first request!")
-    elif _auth_secret in ("replace-with-another-long-random-string", "dev-secret", ""):
+    elif _auth_secret in ("replace-with-another-long-random-string", "dev-secret", "replace-with-a-long-random-string", ""):
+        if _is_production:
+            log.error("⛔ FATAL: AUTH_SECRET is still the default value in production. Refusing to start.")
+            raise SystemExit("AUTH_SECRET must not be the default value in production. Generate with: openssl rand -base64 48")
         log.warning("⚠️  AUTH_SECRET is still the default value — set a real secret!")
 
     try:
@@ -906,7 +913,7 @@ def _oh_events_to_browserai_messages(events: List[Dict[str, Any]]) -> List[Dict[
         # agent `finish` as a normal assistant message: many file/edit tasks end
         # with action=finish + args.final_thought rather than action=message.
         if source == "agent" and action == "finish":
-            text = str((args.get("final_thought") if isinstance(args, dict) else "") or text or "Готово.").strip()
+            text = str((args.get("final_thought") if isinstance(args, dict) else "") or text or "Done.").strip()
         elif source == "agent" and action != "message":
             continue
         if source == "user" and action != "message":
@@ -1837,7 +1844,7 @@ async def _poll_openhands_events(
             break
         if (time.time() - last_event_ts) > 180:
             log.warning("agent.poll.timeout cid=%s step=%s seen=%s", cid, step, len(seen_ids))
-            yield _sse("error", {"message": "Агент не отвечает (нет событий 3 минуты). Попробуйте ещё раз."}).encode("utf-8"), step, False, seen_ids
+            yield _sse("error", {"code": "agent_timeout", "message": "Agent timed out (no events for 3 min)."}).encode("utf-8"), step, False, seen_ids
             break
         await asyncio.sleep(EVENT_POLL_INTERVAL)
     log.info("agent.poll.end cid=%s done=%s step=%s seen=%s answer_chars=%s", cid, done, step, len(seen_ids), len(full_answer_ref.get("text", "")))
@@ -1891,7 +1898,7 @@ async def _stream_chat_ws(
         if (time.time() - t0) > EVENT_POLL_TIMEOUT_S:
             break
         if (time.time() - last_event_ts) > 180:
-            yield _sse("error", {"message": "Агент не отвечает (нет событий 3 минуты). Попробуйте ещё раз."}).encode("utf-8"), step, False, seen_ids
+            yield _sse("error", {"code": "agent_timeout", "message": "Agent timed out (no events for 3 min)."}).encode("utf-8"), step, False, seen_ids
             break
     log.info("agent.ws.end cid=%s done=%s step=%s seen=%s answer_chars=%s", cid, done, step, len(seen_ids), len(full_answer_ref.get("text", "")))
     yield b"", step, done, seen_ids
@@ -1966,6 +1973,13 @@ async def _stream_chat(
     use_ws = OPENHANDS_STREAM_TRANSPORT in ("auto", "ws", "websocket", "socketio")
     transport_used = "poll"
     if use_ws:
+        # Track the last seen_ids from WS so the polling fallback can
+        # resume exactly where the WS stream stopped, avoiding duplicate
+        # events.  The `seen_ids` variable inside the loop is only bound
+        # after at least one yield from _stream_chat_ws; if WS fails
+        # before yielding anything we fall back to initial_seen_ids.
+        ws_fallback_seen_ids = set(initial_seen_ids)
+        ws_fallback_last_event_id = last_seen_event_id
         try:
             transport_used = "ws"
             log.info("agent.stream.transport cid=%s transport=ws", cid)
@@ -1983,6 +1997,11 @@ async def _stream_chat(
                 ask_user_sent_ref=ask_user_sent_ref,
                 seen_ids=ws_seen_ids,
             ):
+                # Snapshot the latest dedup state for potential WS→poll fallback.
+                ws_fallback_seen_ids = set(seen_ids)
+                numeric_ids = [int(x) for x in seen_ids if isinstance(x, int) or str(x).lstrip("-").isdigit()]
+                if numeric_ids:
+                    ws_fallback_last_event_id = max(numeric_ids)
                 if chunk:
                     yield chunk
                 if done:
@@ -1990,15 +2009,16 @@ async def _stream_chat(
         except OpenHandsWsUnavailable as e:
             transport_used = "poll"
             log.info("OpenHands WS unavailable; falling back to polling: %s", e)
-            log.info("agent.stream.transport cid=%s transport=poll reason=ws-fallback", cid)
+            log.info("agent.stream.transport cid=%s transport=poll reason=ws-fallback seen=%s last_eid=%s",
+                     cid, len(ws_fallback_seen_ids), ws_fallback_last_event_id)
             yield _sse("agent_state", {"step": 0, "phase": "stream-poll", "raw": "ws-fallback", "reason": str(e), "conversationId": cid}).encode("utf-8")
             async for chunk, step, done, seen_ids in _poll_openhands_events(
                 client,
                 cid,
                 chat_id=chat_id,
                 user_id=user_id,
-                start_after_id=last_seen_event_id,
-                initial_seen_ids=seen_ids or initial_seen_ids,
+                start_after_id=ws_fallback_last_event_id,
+                initial_seen_ids=ws_fallback_seen_ids,
                 step=step,
                 full_answer_ref=full_answer_ref,
                 ask_user_sent_ref=ask_user_sent_ref,
@@ -2026,7 +2046,7 @@ async def _stream_chat(
     full_answer = full_answer_ref["text"]
     if done and step <= 0 and not full_answer.strip():
         log.warning("agent.stream.empty-turn chat_id=%s cid=%s transport=%s", chat_id, cid, transport_used)
-        yield _sse("error", {"message": "OpenHands завершил ход без текста ответа. Попробуйте ещё раз."}).encode("utf-8")
+        yield _sse("error", {"code": "empty_turn", "message": "OpenHands completed turn with no text output."}).encode("utf-8")
         yield _sse("done", {"reason": "empty-turn", "steps": step, "conversationId": cid, "reused": not was_created, "transport": transport_used}).encode("utf-8")
         return
     if full_answer:
@@ -2041,7 +2061,7 @@ async def _stream_chat(
                     ask_user_sent_ref["sent"] = True
             yield _sse("assistant", {"step": step, "text": clean}).encode("utf-8")
     elif step > 0 and done:
-        yield _sse("assistant", {"step": step, "text": "✅ Готово."}).encode("utf-8")
+        yield _sse("assistant", {"step": step, "text": "Done."}).encode("utf-8")
 
     if chat_id and seen_ids:
         try:
@@ -2081,7 +2101,7 @@ async def _locked_stream_chat(
     if chat_id:
         lock = _stream_lock_for(chat_id)
         if lock.locked():
-            yield _sse("error", {"message": "Этот чат уже выполняет агентскую задачу. Дождитесь завершения или нажмите Stop."}).encode("utf-8")
+            yield _sse("error", {"code": "busy", "message": "This chat is already running an agent task. Wait for completion or press Stop."}).encode("utf-8")
             yield _sse("done", {"reason": "busy", "chatId": chat_id}).encode("utf-8")
             return
         await lock.acquire()
@@ -3692,6 +3712,9 @@ _REAL_NOW = {
     "/api/webhooks/github", "/api/webhooks/github/config", "/api/webhooks/github/secret",
 }
 
+# Compute which paths are still pure stubs (no real handler).
+_ACTIVE_STUBS = sorted(p for p in _STUB_ROUTES if p not in _REAL_NOW)
+
 for _path in _STUB_ROUTES:
     if _path in _REAL_NOW:
         continue
@@ -3706,6 +3729,44 @@ for _path in _STUB_ROUTES:
         name=_op_name,
         include_in_schema=False,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stub status endpoint — allows the UI to discover which features are backed
+# by real logic vs. placeholder stubs, so it can show honest "WIP" badges
+# instead of rendering fully-functional-looking panels over empty data.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Some "real" handlers return hardcoded empty data (no DB table, no logic).
+# They are technically not stubs but functionally equivalent — the UI
+# component has nothing useful to show.  We list them here so the frontend
+# can treat them as "semi-stub" (real route, empty behaviour).
+_SEMI_STUBS = {
+    "/api/agent/workflows": "hardcoded empty items",
+    "/api/agent/recipes": "static demo list, not persisted",
+    "/api/operator/missions": "empty until manually created",
+    "/api/operator/projects": "empty until manually created",
+    "/api/operator/status": "minimal status, no real ops data",
+    "/api/incidents": "empty until manually created",
+}
+
+
+@app.get("/api/stub-status")
+async def stub_status(request: Request):
+    """Return the set of stub and semi-stub routes so the UI can show honest
+    'in development' indicators instead of silently empty panels."""
+    user = current_user(request)
+    is_owner = _is_owner(user) if user else False
+    return {
+        "ok": True,
+        "stubs": _ACTIVE_STUBS,
+        "semiStubs": list(_SEMI_STUBS.keys()),
+        "semiStubReasons": _SEMI_STUBS,
+        "realCount": len(_REAL_NOW),
+        "stubCount": len(_ACTIVE_STUBS),
+        "semiStubCount": len(_SEMI_STUBS),
+        "ownerOnly": not is_owner,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

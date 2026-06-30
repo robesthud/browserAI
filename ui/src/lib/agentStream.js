@@ -19,7 +19,7 @@
  */
 export function streamAgent({ chatId = '', history, provider, extraSystem = '', onEvent, signal }) {
   if (!provider || !provider.baseUrl || !provider.model) {
-    onEvent?.('error', { message: 'Не выбран активный API-ключ или модель. Открой Настройки и выбери провайдера.' })
+    onEvent?.('error', { code: 'no_provider', message: 'No active API key or model selected. Open Settings and choose a provider.' })
     onEvent?.('done', { reason: 'no-provider' })
     return () => {}
   }
@@ -142,7 +142,7 @@ export function streamAgent({ chatId = '', history, provider, extraSystem = '', 
       // Stream ended without an explicit 'done' (connection cut mid-run,
       // server restarted, LB idle-timeout). Surface it instead of hanging.
       if (!sawDone) {
-        emit('error', { message: 'Поток оборвался до завершения ответа (сервер перезапущен или потеряна связь). Попробуйте ещё раз.' })
+        emit('error', { code: 'stream_cut', message: 'Stream ended before completion (server restarted or connection lost). Please retry.' })
         emit('done', { reason: 'stream-cut' })
       }
     } catch (e) {

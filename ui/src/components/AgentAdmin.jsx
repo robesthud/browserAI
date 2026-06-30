@@ -17,6 +17,8 @@ import OperatorProjectsPanel from './OperatorProjectsPanel.jsx'
 import OperatorRunbooks from './OperatorRunbooks.jsx'
 import DeploySessionsPanel from './DeploySessionsPanel.jsx'
 import GitHubAutomationPanel from './GitHubAutomationPanel.jsx'
+import WipGuard from './WipGuard.jsx'
+import { useStubStatus } from '../lib/useStubStatus.js'
 
 function JsonBlock({ data }) {
   if (!data) return null
@@ -39,6 +41,7 @@ function StatusPill({ ok, children }) {
 }
 
 export default function AgentAdmin() {
+  const { isStub, isWip } = useStubStatus()
   const [selfTest, setSelfTest] = useState(null)
   const [selfTestLoading, setSelfTestLoading] = useState(false)
   const [health, setHealth] = useState(null)
@@ -124,12 +127,18 @@ export default function AgentAdmin() {
   }
 
   const tabs = [
-    { id: 'overview', label: 'Overview', icon: '📊' },
-    { id: 'operator', label: 'Operator', icon: '🛠️' },
-    { id: 'projects', label: 'Projects', icon: '🗂️' },
-    { id: 'deploys', label: 'Deploys', icon: '🚀' },
-    { id: 'automation', label: 'Automation', icon: '⚙️' },
-    { id: 'diagnostics', label: 'Diagnostics', icon: '🧪' },
+    { id: 'overview', label: 'Overview', icon: '📊',
+      endpoints: ['/api/agent/control-plane', '/api/notifications', '/api/agent/questions', '/api/incidents'] },
+    { id: 'operator', label: 'Operator', icon: '🛠️',
+      endpoints: ['/api/operator/failure/classify', '/api/operator/recoveries', '/api/operator/missions'] },
+    { id: 'projects', label: 'Projects', icon: '🗂️',
+      endpoints: ['/api/operator/projects', '/api/operator/runbooks'] },
+    { id: 'deploys', label: 'Deploys', icon: '🚀',
+      endpoints: ['/api/operator/deploy-sessions'] },
+    { id: 'automation', label: 'Automation', icon: '⚙️',
+      endpoints: ['/api/operator/github-automation/events', '/api/cron', '/api/agent/workflows'] },
+    { id: 'diagnostics', label: 'Diagnostics', icon: '🧪',
+      endpoints: [] },
   ]
   const switchTab = (id) => {
     setActiveTab(id)
@@ -156,50 +165,89 @@ export default function AgentAdmin() {
           </div>
         </div>
         <nav className="mx-auto mt-3 flex max-w-6xl gap-1 overflow-x-auto pb-1">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => switchTab(t.id)}
-              className={`shrink-0 rounded-lg border px-3 py-1.5 text-[12px] transition ${activeTab === t.id ? 'border-violet-400/40 bg-violet-500/20 text-violet-100' : 'border-white/10 text-cream-faint hover:bg-white/5 hover:text-cream-soft'}`}
-            >
-              <span className="mr-1">{t.icon}</span>{t.label}
-            </button>
-          ))}
+          {tabs.map((t) => {
+            const endpoints = t.endpoints || []
+            const anyWip = endpoints.some(p => isWip(p))
+            const allStub = endpoints.length > 0 && endpoints.every(p => isStub(p))
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => switchTab(t.id)}
+                className={`shrink-0 rounded-lg border px-3 py-1.5 text-[12px] transition ${
+                  activeTab === t.id
+                    ? allStub
+                      ? 'border-amber-500/40 bg-amber-500/15 text-amber-100'
+                      : anyWip
+                        ? 'border-sky-500/40 bg-sky-500/15 text-sky-100'
+                        : 'border-violet-400/40 bg-violet-500/20 text-violet-100'
+                    : 'border-white/10 text-cream-faint hover:bg-white/5 hover:text-cream-soft'
+                }`}
+              >
+                <span className="mr-1">{t.icon}</span>{t.label}
+                {allStub && <span className="ml-1 text-[9px]">🚧</span>}
+                {anyWip && !allStub && <span className="ml-1 text-[9px]">⚗️</span>}
+              </button>
+            )
+          })}
         </nav>
       </header>
 
       <main className="mx-auto max-w-6xl space-y-4 px-4 py-5">
         {activeTab === 'overview' && (
           <>
-            <AgentControlPlanePanel />
-            <NotificationCenter />
-            <AgentInbox />
+            <WipGuard paths={['/api/agent/control-plane']} isWip={isWip} isStub={isStub}>
+              <AgentControlPlanePanel />
+            </WipGuard>
+            <WipGuard paths={['/api/notifications']} isWip={isWip} isStub={isStub}>
+              <NotificationCenter />
+            </WipGuard>
+            <WipGuard paths={['/api/agent/questions', '/api/incidents', '/api/agent/workflows']} isWip={isWip} isStub={isStub}>
+              <AgentInbox />
+            </WipGuard>
           </>
         )}
 
         {activeTab === 'operator' && (
           <>
-            <FailureAdvisorPanel />
-            <AutoRecoveryPanel />
-            <OperatorConsole />
-            <OperatorMissionDetail />
+            <WipGuard paths={['/api/operator/failure/classify', '/api/operator/recoveries']} isWip={isWip} isStub={isStub}>
+              <FailureAdvisorPanel />
+            </WipGuard>
+            <WipGuard paths={['/api/operator/recoveries']} isWip={isWip} isStub={isStub}>
+              <AutoRecoveryPanel />
+            </WipGuard>
+            <WipGuard paths={['/api/operator/missions']} isWip={isWip} isStub={isStub}>
+              <OperatorConsole />
+              <OperatorMissionDetail />
+            </WipGuard>
           </>
         )}
 
         {activeTab === 'projects' && (
           <>
-            <OperatorProjectsPanel />
-            <OperatorRunbooks />
+            <WipGuard paths={['/api/operator/projects']} isWip={isWip} isStub={isStub}>
+              <OperatorProjectsPanel />
+            </WipGuard>
+            <WipGuard paths={['/api/operator/runbooks']} isWip={isWip} isStub={isStub}>
+              <OperatorRunbooks />
+            </WipGuard>
           </>
         )}
 
-        {activeTab === 'deploys' && <DeploySessionsPanel />}
+        {activeTab === 'deploys' && (
+          <WipGuard paths={['/api/operator/deploy-sessions']} isWip={isWip} isStub={isStub}>
+            <DeploySessionsPanel />
+          </WipGuard>
+        )}
 
         {activeTab === 'automation' && (
           <>
-            <GitHubAutomationPanel />
-            <AutomationCenter />
+            <WipGuard paths={['/api/operator/github-automation/events', '/api/cron']} isWip={isWip} isStub={isStub}>
+              <GitHubAutomationPanel />
+            </WipGuard>
+            <WipGuard paths={['/api/cron', '/api/agent/workflows']} isWip={isWip} isStub={isStub}>
+              <AutomationCenter />
+            </WipGuard>
           </>
         )}
 

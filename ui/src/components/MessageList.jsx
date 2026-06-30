@@ -108,8 +108,14 @@ function CopyButton({ text }) {
   )
 }
 
-function friendlyAssistantError(message = '', providerError = null) {
+function friendlyAssistantError(message = '', providerError = null, errorCode = '') {
   if (providerError?.hint) return providerError.hint
+  // Error codes from the backend — i18n happens here, backend stays language-neutral.
+  if (errorCode === 'empty_turn') return 'Агент завершил ход без текста ответа. Попробуйте ещё раз.'
+  if (errorCode === 'agent_timeout') return 'Агент не отвечает (нет событий 3 минуты). Попробуйте ещё раз.'
+  if (errorCode === 'busy') return 'Этот чат уже выполняет агентскую задачу. Дождитесь завершения или нажмите Stop.'
+  if (errorCode === 'stream_cut') return 'Поток оборвался до завершения ответа. Попробуйте ещё раз.'
+  if (errorCode === 'no_provider') return 'Не выбран активный API-ключ или модель. Открой Настройки и выбери провайдера.'
   const raw = String(message || '')
   const lower = raw.toLowerCase()
   if (/401|403|unauthorized|forbidden|invalid api key|invalid token/.test(lower)) return 'Проблема авторизации: проверь ключ или токен провайдера.'
@@ -121,7 +127,13 @@ function friendlyAssistantError(message = '', providerError = null) {
   return raw ? raw.slice(0, 240) : 'Агент столкнулся с ошибкой.'
 }
 
-function errorKind(message = '', providerError = null) {
+function errorKind(message = '', providerError = null, errorCode = '') {
+  if (errorCode === 'auth' || errorCode === 'no_provider') return 'auth'
+  if (errorCode === 'quota') return 'quota'
+  if (errorCode === 'agent_timeout' || errorCode === 'timeout') return 'timeout'
+  if (errorCode === 'busy') return 'busy'
+  if (errorCode === 'empty_turn') return 'generic'
+  if (errorCode === 'stream_cut') return 'network'
   const raw = `${message || ''} ${providerError?.message || ''} ${providerError?.hint || ''}`.toLowerCase()
   if (/401|403|unauthorized|forbidden|invalid api key|invalid token/.test(raw)) return 'auth'
   if (/429|rate limit|quota|лимит|квота/.test(raw)) return 'quota'
@@ -304,8 +316,8 @@ function Message({ m, chatId, aiWorking, onEdit, onRegenerate, onResumeRun, onOp
           </div>
         ) : m.error && !hasAgentActivity ? (
           <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[13px] text-red-300 text-left">
-            <div>⚠ {friendlyAssistantError(m.error, m.providerError)}</div>
-            <ErrorActions kind={errorKind(m.error, m.providerError)} onRetry={onRegenerate ? () => onRegenerate(m) : null} onOpenSettings={onOpenSettings} />
+            <div>⚠ {friendlyAssistantError(m.error, m.providerError, m.errorCode)}</div>
+            <ErrorActions kind={errorKind(m.error, m.providerError, m.errorCode)} onRetry={onRegenerate ? () => onRegenerate(m) : null} onOpenSettings={onOpenSettings} />
             {isDev && (m.providerError || m.error) && (
               <details className="mt-2 text-[11px] text-red-200/80">
                 <summary className="cursor-pointer">debug details</summary>
@@ -499,9 +511,8 @@ function Message({ m, chatId, aiWorking, onEdit, onRegenerate, onResumeRun, onOp
 
             {m.error && hasAgentActivity ? (
               <div className="mt-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[13px] text-red-300">
-                <div>⚠ {friendlyAssistantError(m.error, m.providerError)}</div>
-                <ErrorActions kind={errorKind(m.error, m.providerError)} onRetry={onRegenerate ? () => onRegenerate(m) : null} onOpenSettings={onOpenSettings} />
-                {isDev && (m.providerError || m.error) && (
+                <div>⚠ {friendlyAssistantError(m.error, m.providerError, m.errorCode)}</div>
+                <ErrorActions kind={errorKind(m.error, m.providerError, m.errorCode)} onRetry={onRegenerate ? () => onRegenerate(m) : null} onOpenSettings={onOpenSettings} />                {isDev && (m.providerError || m.error) && (
                   <details className="mt-2 text-[11px] text-red-200/80">
                     <summary className="cursor-pointer">debug details</summary>
                     <pre className="thin-scroll mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 font-mono">
