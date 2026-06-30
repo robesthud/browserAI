@@ -186,8 +186,17 @@ async def get_or_create_conversation(
     user_id: Optional[str],
     initial_message: str,
     conversation_instructions: str = "",
+    turn_id: str = "",
 ) -> Tuple[str, bool, int]:
-    """Returns (conversation_id, was_created, last_event_id)."""
+    """Returns (conversation_id, was_created, last_event_id).
+
+    If turn_id is provided and matches the last_turn_id stored in
+    agent_runs (and the run is still in 'running' status), the user
+    message is NOT re-sent to OpenHands — the previous delivery is
+    assumed to still be in flight.  This prevents duplicate user
+    messages on client-side retries after connection drops.
+    """
+    from core.agent_state import get_run
 
     mapping = get_mapping(chat_id) if chat_id else None
     if mapping:
@@ -209,6 +218,18 @@ async def get_or_create_conversation(
                         update_last_event(chat_id, last_id)
             except Exception:
                 pass
+
+            # Idempotency guard: if the same turn_id was already accepted
+            # and the run is still in-flight, skip re-sending the message.
+            # This prevents duplicate prompts on client retries after
+            # connection drops (common on flaky mobile networks).
+            if turn_id and chat_id:
+                run = get_run(chat_id)
+                if (run
+                    and run.get("last_turn_id") == turn_id
+                    and run.get("status") in ("running", "paused")):
+                    log.info("duplicate turn_id=%s for chat_id=%s — skipping re-send", turn_id, chat_id)
+                    return cid, False, last_id
 
             # Reused conversation — mount already set from init
             r = await client.post(

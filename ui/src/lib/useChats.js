@@ -867,6 +867,7 @@ export function useChats(settings) {
             chatId,
             history: llmHistory,
             extraSystem: extraSystemParts.join('\n\n'),
+            turnId: uid(),
             provider: {
               keyId:        active.keyId || '',
               useStoredSecret: Boolean(active.useStoredSecret),

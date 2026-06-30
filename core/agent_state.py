@@ -39,6 +39,7 @@ def init_agent_state_schema() -> None:
                 last_prompt      TEXT NOT NULL DEFAULT '',
                 last_error       TEXT NOT NULL DEFAULT '',
                 last_event_id    INTEGER NOT NULL DEFAULT -1,
+                last_turn_id     TEXT NOT NULL DEFAULT '',
                 updated_at       INTEGER NOT NULL,
                 created_at       INTEGER NOT NULL
             );
@@ -50,7 +51,7 @@ def init_agent_state_schema() -> None:
         conn.close()
 
 
-def upsert_run(chat_id: str, conversation_id: Optional[str], user_id: Optional[str], status: str, last_prompt: str = '', last_error: str = '', last_event_id: Optional[int] = None) -> None:
+def upsert_run(chat_id: str, conversation_id: Optional[str], user_id: Optional[str], status: str, last_prompt: str = '', last_error: str = '', last_event_id: Optional[int] = None, last_turn_id: str = '') -> None:
     init_agent_state_schema()
     now = _now()
     conn = get_conn()
@@ -58,10 +59,11 @@ def upsert_run(chat_id: str, conversation_id: Optional[str], user_id: Optional[s
         current = conn.execute("SELECT * FROM agent_runs WHERE chat_id = ?", (chat_id,)).fetchone()
         created_at = current['created_at'] if current else now
         lev = last_event_id if last_event_id is not None else (current['last_event_id'] if current else -1)
+        ltid = last_turn_id or (current['last_turn_id'] if current else '')
         conn.execute(
             """
-            INSERT INTO agent_runs (chat_id, conversation_id, user_id, status, last_prompt, last_error, last_event_id, updated_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO agent_runs (chat_id, conversation_id, user_id, status, last_prompt, last_error, last_event_id, last_turn_id, updated_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(chat_id) DO UPDATE SET
               conversation_id=excluded.conversation_id,
               user_id=excluded.user_id,
@@ -69,9 +71,10 @@ def upsert_run(chat_id: str, conversation_id: Optional[str], user_id: Optional[s
               last_prompt=excluded.last_prompt,
               last_error=excluded.last_error,
               last_event_id=excluded.last_event_id,
+              last_turn_id=excluded.last_turn_id,
               updated_at=excluded.updated_at
             """,
-            (chat_id, conversation_id or '', user_id or '', status, last_prompt or '', last_error or '', lev, now, created_at),
+            (chat_id, conversation_id or '', user_id or '', status, last_prompt or '', last_error or '', lev, ltid, now, created_at),
         )
         conn.commit()
     finally:

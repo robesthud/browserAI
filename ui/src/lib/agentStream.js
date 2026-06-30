@@ -17,7 +17,7 @@
  *   })
  *   // call stop() to abort
  */
-export function streamAgent({ chatId = '', history, provider, extraSystem = '', onEvent, signal }) {
+export function streamAgent({ chatId = '', history, provider, extraSystem = '', onEvent, signal, turnId = '' }) {
   if (!provider || !provider.baseUrl || !provider.model) {
     onEvent?.('error', { code: 'no_provider', message: 'No active API key or model selected. Open Settings and choose a provider.' })
     onEvent?.('done', { reason: 'no-provider' })
@@ -25,6 +25,10 @@ export function streamAgent({ chatId = '', history, provider, extraSystem = '', 
   }
   const controller = signal ? null : new AbortController()
   const actualSignal = signal || controller.signal
+  // Generate a unique turn ID for idempotency: if the SSE connection
+  // drops and the client retries, the same turnId tells the server
+  // "this is the same request, don't re-send the message to OpenHands."
+  const effectiveTurnId = turnId || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`)
 
   // CRITICAL: the caller's promise resolves only when a 'done' event
   // arrives. If the connection drops mid-stream (server redeploy, flaky
@@ -91,6 +95,7 @@ export function streamAgent({ chatId = '', history, provider, extraSystem = '', 
           extraHeaders: provider.extraHeaders || {},
           model:        provider.model,
           temperature:  Number(provider.temperature ?? 0.3),
+          turnId:       effectiveTurnId,
         }),
         signal: actualSignal,
       })

@@ -1623,6 +1623,7 @@ async def _prepare_openhands_turn(
     extra_system: str,
     provider: Dict[str, Any],
     user_id: Optional[str] = None,
+    turn_id: str = "",
 ) -> Tuple[str, bool, int]:
     """Push settings, create/reuse OpenHands conversation and send prompt.
 
@@ -1696,10 +1697,11 @@ async def _prepare_openhands_turn(
         user_id,
         isolated_prompt,
         isolated_extra_system,
+        turn_id=turn_id,
     )
 
     if chat_id:
-        upsert_run(chat_id, cid, user_id, "running", last_prompt=prompt, last_event_id=last_seen_event_id)
+        upsert_run(chat_id, cid, user_id, "running", last_prompt=prompt, last_event_id=last_seen_event_id, last_turn_id=turn_id)
     try:
         from core.obslog import bind_conversation as _bind_conv
         _bind_conv(cid)
@@ -1925,6 +1927,7 @@ async def _stream_chat(
     extra_system: str,
     provider: Dict[str, Any],
     user_id: Optional[str] = None,
+    turn_id: str = "",
 ) -> AsyncIterator[bytes]:
     step = 0
     full_answer_ref = {"text": ""}
@@ -1960,7 +1963,7 @@ async def _stream_chat(
     log.info("agent.stream.start chat_id=%s user_id=%s model=%s prompt_chars=%s", chat_id, user_id, model, len(prompt or ""))
     try:
         cid, was_created, last_seen_event_id = await _prepare_openhands_turn(
-            client, chat_id, model, prompt, extra_system, provider, user_id
+            client, chat_id, model, prompt, extra_system, provider, user_id, turn_id=turn_id
         )
         log.info("agent.stream.prepared chat_id=%s cid=%s was_created=%s last_seen=%s", chat_id, cid, was_created, last_seen_event_id)
     except HTTPException as e:
@@ -2109,6 +2112,7 @@ async def _locked_stream_chat(
     extra_system: str,
     provider: Dict[str, Any],
     user_id: Optional[str] = None,
+    turn_id: str = "",
 ) -> AsyncIterator[bytes]:
     """Phase 2.1: prevent concurrent streams for the same BrowserAI chat."""
     lock: Optional[asyncio.Lock] = None
@@ -2120,7 +2124,7 @@ async def _locked_stream_chat(
             return
         await lock.acquire()
     try:
-        async for chunk in _stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id):
+        async for chunk in _stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id, turn_id=turn_id):
             yield chunk
     finally:
         if lock and lock.locked():
@@ -2139,6 +2143,7 @@ async def agent_chat(request: Request):
     provider = _resolve_provider(body, user=user)
     model = provider.get("model") or body.get("model") or DEFAULT_MODEL
     prompt = _history_to_prompt(history) or body.get("prompt") or "hi"
+    turn_id = body.get("turnId") or body.get("turn_id") or ""
     log.info("agent.chat.request chat_id=%s user_id=%s history=%s prompt_chars=%s", chat_id, user_id, len(history), len(prompt or ""))
 
     # Step 7.1 — auto-extract durable facts from the user's message (best-effort)
@@ -2157,7 +2162,7 @@ async def agent_chat(request: Request):
         return StreamingResponse(_err_stream(), media_type="text/event-stream")
 
     return StreamingResponse(
-        _locked_stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id),
+        _locked_stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id, turn_id=turn_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
