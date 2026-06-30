@@ -2166,21 +2166,36 @@ async def regular_chat(request: Request):
 @app.post("/api/chat/stop")
 @app.post("/api/agent/chat/stop")
 async def stop_chat(request: Request):
+    """Stop the agent's current turn via the OpenHands conversation stop API.
+
+    Resolves chatId -> conversation_id server-side via get_mapping(), never
+    trusts a client-supplied id as the OpenHands cid.  Checks the response
+    status code before reporting success.
+    """
     data = await request.json()
-    cid = data.get("conversationId") or data.get("chatId") or data.get("id")
-    if not cid:
-        return {"ok": False, "error": "no conversationId"}
+    chat_id = data.get("chatId") or data.get("chat_id")
+    if not chat_id:
+        return {"ok": False, "error": "no chatId"}
+    m = get_mapping(chat_id)
+    if not m:
+        # No mapping exists — either the run already finished or was reset.
+        # Not an error per se, but nothing to stop.
+        set_run_status(chat_id, "stopped")
+        return {"ok": True, "chatId": chat_id, "conversationId": None, "stopped": False, "reason": "no_active_conversation"}
+    cid = m["conversation_id"]
     async with httpx.AsyncClient() as client:
         try:
-            await client.post(
-                f"{OPENHANDS_SERVER}/api/conversations/{cid}/stop", json={}, timeout=10.0
+            r = await client.post(
+                f"{OPENHANDS_SERVER}/api/conversations/{cid}/stop",
+                json={}, timeout=10.0,
             )
-            chat_id = data.get("chatId")
-            if chat_id:
-                set_run_status(chat_id, "stopped")
-            return {"ok": True}
+            if r.status_code >= 400:
+                log.warning("stop_chat: OpenHands returned %s for cid=%s", r.status_code, cid)
+                return {"ok": False, "error": f"OpenHands returned {r.status_code}", "conversationId": cid}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+    set_run_status(chat_id, "stopped")
+    return {"ok": True, "chatId": chat_id, "conversationId": cid, "stopped": True}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2236,18 +2251,27 @@ async def agent_run_stop(chat_id: str):
     in-progress action but keeps the conversation alive so the next user
     message continues in the same context.  Contrast with /reset which
     DELETEs the conversation entirely.
+
+    Resolves chatId -> conversation_id server-side via get_mapping().
+    Checks the OpenHands response status before reporting success.
     """
     m = get_mapping(chat_id)
     cid = m["conversation_id"] if m else None
-    if cid:
-        async with httpx.AsyncClient() as client:
-            try:
-                await client.post(
-                    f"{OPENHANDS_SERVER}/api/conversations/{cid}/stop",
-                    json={}, timeout=10.0,
-                )
-            except Exception as e:
-                log.warning("agent_run_stop: failed to stop cid=%s: %s", cid, e)
+    if not cid:
+        set_run_status(chat_id, "stopped")
+        return {"ok": True, "chatId": chat_id, "conversationId": None, "stopped": False, "reason": "no_active_conversation"}
+    async with httpx.AsyncClient() as client:
+        try:
+            r = await client.post(
+                f"{OPENHANDS_SERVER}/api/conversations/{cid}/stop",
+                json={}, timeout=10.0,
+            )
+            if r.status_code >= 400:
+                log.warning("agent_run_stop: OpenHands returned %s for cid=%s", r.status_code, cid)
+                return {"ok": False, "error": f"OpenHands returned {r.status_code}", "chatId": chat_id, "conversationId": cid}
+        except Exception as e:
+            log.warning("agent_run_stop: failed to stop cid=%s: %s", cid, e)
+            return {"ok": False, "error": str(e), "chatId": chat_id, "conversationId": cid}
     set_run_status(chat_id, "stopped")
     return {"ok": True, "chatId": chat_id, "conversationId": cid, "stopped": True}
 
