@@ -285,7 +285,12 @@ export function useChats(settings) {
     return () => { cancelled = true }
   }, [])
 
+  // Ref to always have the latest activeChat in callbacks without
+  // causing re-creation on every render (activeChat is derived from
+  // chats.find() → new object every render).
   const activeChat = chats.find((c) => c.id === activeId) || null
+  const activeChatRef = useRef(null)
+  activeChatRef.current = activeChat
 
   const newChat = useCallback(() => {
     const chat = createChat()
@@ -426,10 +431,31 @@ export function useChats(settings) {
       abortRef.current = null
     }
     
-    // #43 FIX: Explicitly notify server to reset the agent run
+    // Stop the agent's current run in OpenHands WITHOUT destroying the
+    // conversation.  Previously this called /runs/{id}/reset which issued
+    // DELETE /conversations/{cid} + drop_mapping() — destroying the entire
+    // conversation and losing all agent context.  The correct endpoint is
+    // /api/agent/chat/stop which calls POST /conversations/{cid}/stop,
+    // aborting only the current turn while keeping the conversation alive
+    // so the next message continues in the same context.
+    const chat = activeChatRef.current
     if (activeId) {
-      fetch(`/api/agent/runs/${encodeURIComponent(activeId)}/reset`, { method: 'POST', credentials: 'include' })
-        .catch(e => console.warn('Failed to reset server agent run:', e))
+      // Find the conversation_id from the current chat's agentContext
+      const agentCtx = (chat?.messages || []).slice().reverse().find(m => m?.agentContext)?.agentContext
+      const cid = agentCtx?.conversationId || chat?.conversationId
+      if (cid) {
+        fetch('/api/agent/chat/stop', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversationId: cid, chatId: activeId }),
+        }).catch(e => console.warn('Failed to stop agent run:', e))
+      }
+      // Mark run as stopped in local agent state
+      fetch(`/api/agent/runs/${encodeURIComponent(activeId)}/stop`, {
+        method: 'POST',
+        credentials: 'include',
+      }).catch(() => {})  // best-effort
     }
 
     setActiveJobs((prev) => {

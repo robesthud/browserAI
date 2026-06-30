@@ -2228,8 +2228,39 @@ async def agent_answer(request: Request):
     return {"ok": True, "question": saved}
 
 
+@app.post("/api/agent/runs/{chat_id}/stop")
+async def agent_run_stop(chat_id: str):
+    """Stop the agent's current turn WITHOUT destroying the conversation.
+
+    Sends POST /conversations/{cid}/stop to OpenHands, which aborts the
+    in-progress action but keeps the conversation alive so the next user
+    message continues in the same context.  Contrast with /reset which
+    DELETEs the conversation entirely.
+    """
+    m = get_mapping(chat_id)
+    cid = m["conversation_id"] if m else None
+    if cid:
+        async with httpx.AsyncClient() as client:
+            try:
+                await client.post(
+                    f"{OPENHANDS_SERVER}/api/conversations/{cid}/stop",
+                    json={}, timeout=10.0,
+                )
+            except Exception as e:
+                log.warning("agent_run_stop: failed to stop cid=%s: %s", cid, e)
+    set_run_status(chat_id, "stopped")
+    return {"ok": True, "chatId": chat_id, "conversationId": cid, "stopped": True}
+
+
 @app.post("/api/agent/runs/{chat_id}/reset")
 async def agent_run_reset(chat_id: str):
+    """Destroy the OpenHands conversation and drop the mapping.
+
+    WARNING: this deletes the entire conversation, losing all agent context.
+    The next message in this chat will create a brand-new conversation with
+    no memory of prior work.  This should only be called from an explicit
+    "Discard session" UI action, NOT from the Stop button.
+    """
     m = get_mapping(chat_id)
     cid = m["conversation_id"] if m else None
     if cid:
