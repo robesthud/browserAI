@@ -1624,7 +1624,12 @@ async def _prepare_openhands_turn(
     provider: Dict[str, Any],
     user_id: Optional[str] = None,
 ) -> Tuple[str, bool, int]:
-    """Push settings, create/reuse OpenHands conversation and send prompt."""
+    """Push settings, create/reuse OpenHands conversation and send prompt.
+
+    Context prefix (warm-start summary) is fetched BEFORE the new prompt
+    is sent, so (a) it appears before the question in the transcript and
+    (b) the just-sent prompt is not duplicated in the context summary.
+    """
     await _push_oh_settings(client, provider)
     if chat_id:
         _ensure_chat_workspace(chat_id)
@@ -1632,6 +1637,57 @@ async def _prepare_openhands_turn(
     isolated_prompt = prompt
     if chat_id:
         isolated_prompt = f"{prompt}\n\n[Use workspace: /workspace/{_chat_workspace_rel(chat_id)}]"
+
+    # Phase 1.3 memory context for warm reuse.
+    # Fetch BEFORE get_or_create_conversation() so that:
+    #   (a) the just-sent prompt is NOT yet in the event list → no duplication
+    #   (b) context can be folded into conversation_instructions to appear
+    #       BEFORE the new question in the LLM's transcript
+    context_prefix = ""
+    mapping = get_mapping(chat_id) if chat_id else None
+    if mapping and mapping.get("last_event_id", -1) >= 0:
+        pre_cid = mapping["conversation_id"]
+        if await conversation_alive(client, OPENHANDS_SERVER, pre_cid):
+            try:
+                ctx_r = await client.get(
+                    f"{OPENHANDS_SERVER}/api/conversations/{pre_cid}/events?limit=80",
+                    timeout=15.0,
+                )
+                if ctx_r.status_code == 200:
+                    ctx_body = ctx_r.json()
+                    ctx_events = ctx_body if isinstance(ctx_body, list) else (ctx_body.get("events") or [])
+                    recent_turns = []
+                    for ce in ctx_events[-50:]:
+                        ce_action = ce.get("action", "")
+                        ce_obs = ce.get("observation", "")
+                        ce_args = ce.get("args") or {}
+                        ce_extras = ce.get("extras") or {}
+                        if ce_action == "message":
+                            msg = ce_args.get("content") or ce_args.get("text") or ""
+                            if msg:
+                                recent_turns.append(f"User: {msg[:700]}")
+                        elif ce_obs == "assistant":
+                            msg = ce_extras.get("content") or ce_args.get("content") or ce_extras.get("message") or ""
+                            if msg:
+                                _, clean_msg = _split_think(msg)
+                                clean_msg = (clean_msg or msg).strip()
+                                if clean_msg:
+                                    recent_turns.append(f"Assistant: {clean_msg[:700]}")
+                    recent_turns = recent_turns[-20:]
+                    if recent_turns:
+                        context_prefix = (
+                            "[Previous turns in this conversation; use as continuity context, "
+                            "do not repeat verbatim]\n" + "\n".join(recent_turns)
+                        )
+                        log.debug("loaded warm context prefix for chat_id=%s turns=%d chars=%d", chat_id, len(recent_turns), len(context_prefix))
+            except Exception as e:
+                log.debug("context prefix fetch failed (non-critical): %s", e)
+
+    # Fold context_prefix into conversation_instructions so it appears
+    # BEFORE the user's new question in the LLM transcript, rather than
+    # sending it as a separate /message after the prompt.
+    if context_prefix:
+        isolated_extra_system = context_prefix + "\n\n" + isolated_extra_system
 
     cid, was_created, last_seen_event_id = await get_or_create_conversation(
         client,
@@ -1641,55 +1697,6 @@ async def _prepare_openhands_turn(
         isolated_prompt,
         isolated_extra_system,
     )
-
-    # Phase 1.3 memory context for warm reuse.
-    # BrowserAI is responsible for reminding the reused OpenHands conversation
-    # of the last few user/assistant turns. Without this, warm chats can become
-    # amnesic after long tool-heavy runs because the latest OH state may be too
-    # sparse for the model to infer intent from the new prompt alone.
-    context_prefix = ""
-    if not was_created and last_seen_event_id >= 0:
-        try:
-            ctx_r = await client.get(
-                f"{OPENHANDS_SERVER}/api/conversations/{cid}/events?limit=80",
-                timeout=15.0,
-            )
-            if ctx_r.status_code == 200:
-                ctx_body = ctx_r.json()
-                ctx_events = ctx_body if isinstance(ctx_body, list) else (ctx_body.get("events") or [])
-                recent_turns = []
-                for ce in ctx_events[-50:]:
-                    ce_action = ce.get("action", "")
-                    ce_obs = ce.get("observation", "")
-                    ce_args = ce.get("args") or {}
-                    ce_extras = ce.get("extras") or {}
-                    if ce_action == "message":
-                        msg = ce_args.get("content") or ce_args.get("text") or ""
-                        if msg:
-                            recent_turns.append(f"User: {msg[:700]}")
-                    elif ce_obs == "assistant":
-                        msg = ce_extras.get("content") or ce_args.get("content") or ce_extras.get("message") or ""
-                        if msg:
-                            _, clean_msg = _split_think(msg)
-                            clean_msg = (clean_msg or msg).strip()
-                            if clean_msg:
-                                recent_turns.append(f"Assistant: {clean_msg[:700]}")
-                recent_turns = recent_turns[-20:]
-                if recent_turns:
-                    context_prefix = (
-                        "[Previous turns in this conversation; use as continuity context, "
-                        "do not repeat verbatim]\n" + "\n".join(recent_turns)
-                    )
-                    log.debug("loaded warm context prefix for chat_id=%s turns=%d chars=%d", chat_id, len(recent_turns), len(context_prefix))
-        except Exception as e:
-            log.debug("context prefix fetch failed (non-critical): %s", e)
-
-    if context_prefix:
-        await client.post(
-            f"{OPENHANDS_SERVER}/api/conversations/{cid}/message",
-            json={"message": context_prefix},
-            timeout=20.0,
-        )
 
     if chat_id:
         upsert_run(chat_id, cid, user_id, "running", last_prompt=prompt, last_event_id=last_seen_event_id)
