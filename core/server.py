@@ -1836,6 +1836,12 @@ async def _poll_openhands_events(
 
         if done:
             break
+        # Check live conversation status before considering idle-finish.
+        # Previously a bare 8-second quiet window was treated as turn
+        # completion, which prematurely ended long-running tool calls
+        # (builds, test suites, downloads routinely have >8s gaps).
+        # Now we only declare done if the conversation status confirms it,
+        # or if we already have a turn-complete event.
         try:
             rs = await client.get(f"{OPENHANDS_SERVER}/api/conversations/{cid}", timeout=10.0)
             if rs.status_code == 200:
@@ -1843,12 +1849,13 @@ async def _poll_openhands_events(
                 if status in ("STOPPED", "FINISHED", "COMPLETED", "ERROR"):
                     done = True
                     break
+                # If the conversation is still RUNNING/PAUSED/AWAITING_USER_INPUT,
+                # do NOT declare done just because events are quiet — the agent
+                # may be executing a long tool call with no intermediate events.
         except Exception:
             pass
-        if (full_answer_ref["text"] or step > 0) and (time.time() - last_event_ts) > 8:
-            log.info("agent.poll.idle-finish cid=%s step=%s answer_chars=%s", cid, step, len(full_answer_ref.get("text", "")))
-            done = True
-            break
+        # 180-second absolute watchdog: if no events for 3 minutes, the
+        # agent is genuinely stuck or the conversation was lost.
         if (time.time() - last_event_ts) > 180:
             log.warning("agent.poll.timeout cid=%s step=%s seen=%s", cid, step, len(seen_ids))
             yield _sse("error", {"code": "agent_timeout", "message": "Agent timed out (no events for 3 min)."}).encode("utf-8"), step, False, seen_ids
