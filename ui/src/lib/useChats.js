@@ -255,7 +255,11 @@ export function useChats(settings) {
   // Ids of long-running background jobs (gemini video/image, document gen).
   // The UI treats an active job like streaming: progress, locked input, Stop.
   const [activeJobs, setActiveJobs] = useState([])
-  const abortRef = useRef(null)
+  // Per-chat AbortController map — each chat gets its own controller so
+  // sending a message in chat B does NOT abort an in-flight stream in
+  // chat A.  Previously a single abortRef was shared across all chats,
+  // causing silent data loss when switching chats mid-stream.
+  const abortControllers = useRef(new Map())
   const saveTimeoutRef = useRef(null)
   // Phase 1: Lazy loading — track which chats have messages loaded from server
   const loadedChatIds = useRef(new Set())
@@ -426,10 +430,12 @@ export function useChats(settings) {
   }, [])
 
   const stop = useCallback(() => {
-    if (abortRef.current) {
-      abortRef.current.abort()
-      abortRef.current = null
+    // Abort ALL in-flight streams (user clicked global Stop).
+    // For per-chat stop, see the /api/agent/chat/stop call below.
+    for (const [cid, controller] of abortControllers.current) {
+      try { controller.abort() } catch {}
     }
+    abortControllers.current.clear()
     
     // Stop the agent's current run in OpenHands WITHOUT destroying the
     // conversation.  Previously this called /runs/{id}/reset which issued
@@ -517,9 +523,11 @@ export function useChats(settings) {
       // Do not send an empty provider history: at minimum include the current user turn.
       const history = capturedHistory.length > 0 ? capturedHistory : [userMsg]
 
-      abortRef.current?.abort()
+      // Only abort previous stream for THIS chat, not others.
+      const _prevCtrl = abortControllers.current.get(chatId)
+      if (_prevCtrl) { try { _prevCtrl.abort() } catch {} }
     const controller = new AbortController()
-      abortRef.current = controller
+      abortControllers.current.set(chatId, controller)
       setIsStreaming(true)
 
       const patchAssistant = (patch) => {
@@ -638,8 +646,8 @@ export function useChats(settings) {
       } finally {
         if (tokenFlushTimer) clearTimeout(tokenFlushTimer)
         tokenFlushTimer = null
-        if (abortRef.current === controller) {
-          abortRef.current = null
+        if (abortControllers.current.get(chatId) === controller) {
+          abortControllers.current.delete(chatId)
         }
         setIsStreaming(false)
       }
@@ -688,9 +696,11 @@ export function useChats(settings) {
 
       const history = capturedHistory.length > 0 ? capturedHistory : [userMsg]
 
-      abortRef.current?.abort()
+      // Only abort previous stream for THIS chat, not others.
+      const _prevCtrl = abortControllers.current.get(chatId)
+      if (_prevCtrl) { try { _prevCtrl.abort() } catch {} }
     const controller = new AbortController()
-      abortRef.current = controller
+      abortControllers.current.set(chatId, controller)
       setIsStreaming(true)
 
       const patchAssistant = (patch) => {
@@ -809,7 +819,7 @@ export function useChats(settings) {
         // the try/finally below — if we leave without resetting the flag,
         // the spinner spins forever and Composer silently ignores every
         // following message (the exact "второй запрос виснет" bug).
-        if (abortRef.current === controller) abortRef.current = null
+        if (abortControllers.current.get(chatId) === controller) abortControllers.current.delete(chatId)
         setIsStreaming(false)
         patchAssistant({ pending: false, error: 'Приложение обновилось на сервере — страница будет перезагружена…' })
         if (err.message?.includes('dynamically imported module') || err.name === 'TypeError') {
@@ -1126,7 +1136,7 @@ export function useChats(settings) {
                     // evidence block (changed files / tests / blockers).
                     finalStatus: data.finalStatus || m.finalStatus || null,
                   }))
-                  try { if (abortRef.current === controller) abortRef.current = null } catch {}
+                  try { if (abortControllers.current.get(chatId) === controller) abortControllers.current.delete(chatId) } catch {}
                   setIsStreaming(false)
                   resolve()
                   break
