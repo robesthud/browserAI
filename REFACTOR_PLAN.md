@@ -47,7 +47,7 @@
 | 3.1 | `ASK_USER:{...}` marker уходит в `assistant_delta` | `server.py:1387` | ✅ исправлено (`_strip_ask_user_marker` + подавление delta после маркера) |
 | 3.2 | `/api/agent/answer` релеил `"ok"` вместо выбора юзера | `server.py:2234` | ✅ исправлено (`_format_answer_text` парсит `{selected, custom}`, маппит id→label) |
 | 3.3 | `ask_user` эмитится mid-stream без координации со стримом | `server.py:1743` | ✅ исправлено (турн закрывается на `awaiting_user_input`/после ask_user; `/answer` идемпотентен) |
-| 5.2 | `selectChat` не abort'ит активный стрим | `useChats.js` | ❌ открыт |
+| 5.2 | глобальный `isStreaming` протекал между чатами при переключении | `useChats.js` | ✅ исправлено (per-chat `streamingChatIds` + `streamingState.js`; `isStreaming` выводится для активного чата) |
 | 6.2 | Workspace isolation — решается через tenancy (см. блокер) | `isolation.py` | ⏸ зависит |
 
 > Приоритет по дороговизне: **2.2 → 1.2 → 3.3 → 3.1/3.2 → 5.2**.

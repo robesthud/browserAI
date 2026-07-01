@@ -15,6 +15,7 @@ import haptics from './haptics.js'
 import { workspaceApi } from './workspace.js'
 import { sanitizeAssistantDelta, sanitizeAssistantFinal } from './sanitizeAgentText.js'
 import { createJob, createAgentJob, detectLongJobType, cancelJob } from './jobs.js'
+import { toggleStreaming, isActiveStreaming } from './streamingState.js'
 
 const SUMMARY_TRIGGER_MESSAGES = 14
 const SUMMARY_KEEP_RECENT = 8
@@ -252,6 +253,16 @@ export function useChats(settings) {
   const [workspaceRevision, setWorkspaceRevision] = useState(0)
 
   const [isStreaming, setIsStreaming] = useState(false)
+  // Bug 5.2: streaming is tracked PER CHAT, not as one global boolean. A stream
+  // in chat A must not make chat B's composer look busy after you switch to B,
+  // and A finishing must not clear B's indicator. `streamingChatIds` holds the
+  // set of chats with an in-flight stream; the exported `isStreaming` is then
+  // derived as "is the CURRENTLY ACTIVE chat streaming".
+  const [streamingChatIds, setStreamingChatIds] = useState(() => new Set())
+  const markStreaming = useCallback((chatId, on) => {
+    if (!chatId) { setIsStreaming(on); return }
+    setStreamingChatIds((prev) => toggleStreaming(prev, chatId, on))
+  }, [])
   // Ids of long-running background jobs (gemini video/image, document gen).
   // The UI treats an active job like streaming: progress, locked input, Stop.
   const [activeJobs, setActiveJobs] = useState([])
@@ -293,6 +304,10 @@ export function useChats(settings) {
   // causing re-creation on every render (activeChat is derived from
   // chats.find() → new object every render).
   const activeChat = chats.find((c) => c.id === activeId) || null
+  // Bug 5.2: the composer/Stop button should reflect whether the CURRENTLY
+  // ACTIVE chat is streaming — not whether ANY chat is. Derive it from the
+  // per-chat set, falling back to the global flag for chatless streams.
+  const activeIsStreaming = isActiveStreaming(streamingChatIds, activeId, isStreaming)
   const activeChatRef = useRef(null)
   activeChatRef.current = activeChat
 
@@ -468,6 +483,9 @@ export function useChats(settings) {
       prev.forEach((id) => { void cancelJob(id).catch(() => {}) })
       return []
     })
+    // stop() aborts every in-flight stream above, so clear all per-chat
+    // streaming state as well as the global fallback flag.
+    setStreamingChatIds(new Set())
     setIsStreaming(false)
   }, [activeId])
 
@@ -528,7 +546,7 @@ export function useChats(settings) {
       if (_prevCtrl) { try { _prevCtrl.abort() } catch {} }
     const controller = new AbortController()
       abortControllers.current.set(chatId, controller)
-      setIsStreaming(true)
+      markStreaming(chatId, true)
 
       const patchAssistant = (patch) => {
         setChats((prev) =>
@@ -649,7 +667,7 @@ export function useChats(settings) {
         if (abortControllers.current.get(chatId) === controller) {
           abortControllers.current.delete(chatId)
         }
-        setIsStreaming(false)
+        markStreaming(chatId, false)
       }
     },
     [activeId, newChat, settings],
@@ -701,7 +719,7 @@ export function useChats(settings) {
       if (_prevCtrl) { try { _prevCtrl.abort() } catch {} }
     const controller = new AbortController()
       abortControllers.current.set(chatId, controller)
-      setIsStreaming(true)
+      markStreaming(chatId, true)
 
       const patchAssistant = (patch) => {
         setChats((prev) =>
@@ -820,7 +838,7 @@ export function useChats(settings) {
         // the spinner spins forever and Composer silently ignores every
         // following message (the exact "второй запрос виснет" bug).
         if (abortControllers.current.get(chatId) === controller) abortControllers.current.delete(chatId)
-        setIsStreaming(false)
+        markStreaming(chatId, false)
         patchAssistant({ pending: false, error: 'Приложение обновилось на сервере — страница будет перезагружена…' })
         if (err.message?.includes('dynamically imported module') || err.name === 'TypeError') {
           // Stale bundle after a redeploy: the old index.html references a
@@ -1138,7 +1156,7 @@ export function useChats(settings) {
                     finalStatus: data.finalStatus || m.finalStatus || null,
                   }))
                   try { if (abortControllers.current.get(chatId) === controller) abortControllers.current.delete(chatId) } catch {}
-                  setIsStreaming(false)
+                  markStreaming(chatId, false)
                   resolve()
                   break
               }
@@ -1159,7 +1177,7 @@ export function useChats(settings) {
         }
       } finally {
         cancelAllStreamBuffers()
-        setIsStreaming(false)
+        markStreaming(chatId, false)
       }
     },
     [activeId, newChat, settings],
@@ -1318,7 +1336,9 @@ export function useChats(settings) {
     activeChat,
     workspaceRevision,
     activeId,
-    isStreaming,
+    isStreaming: activeIsStreaming,
+    // Set of chat ids currently streaming (for per-chat sidebar indicators).
+    streamingChatIds,
     messagesLoading,
     jobBusy: activeJobs.length > 0,
     markJobDone,
