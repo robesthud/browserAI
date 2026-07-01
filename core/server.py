@@ -403,12 +403,15 @@ def _chat_workspace_instruction(chat_id: Optional[str]) -> str:
         return ""
     rel = _chat_workspace_rel(chat_id)
     abs_path = f"/workspace/{rel}"
+    # Single-tenant: per-chat folders are kept purely to keep separate projects
+    # from clobbering each other's files — NOT for multi-user isolation. So we
+    # just point the agent at this chat's working directory without the old
+    # "don't peek into other chats" multi-tenant warnings.
     return (
-        "\n\n[BrowserAI workspace isolation]\n"
-        f"This BrowserAI chat_id is {chat_id}. Treat {abs_path} as the ONLY project workspace for this chat. "
-        f"Before creating, editing, reading, testing or serving files, run/use `mkdir -p {abs_path}` and work inside `{abs_path}`. "
-        "Do not create or modify project files directly in /workspace or in another /workspace/chats/* directory unless the user explicitly asks to inspect another chat. "
-        f"For shell commands prefer: `cd {abs_path} && <command>`.\n"
+        "\n\n[BrowserAI workspace]\n"
+        f"Use {abs_path} as the working directory for this chat. "
+        f"Run `mkdir -p {abs_path}` if needed and prefer `cd {abs_path} && <command>` "
+        "so each chat's project files stay organized in their own folder.\n"
     )
 
 
@@ -2084,9 +2087,16 @@ async def _stream_chat(
         try:
             numeric_ids = [int(x) for x in seen_ids if isinstance(x, int) or str(x).lstrip("-").isdigit()]
             max_seen = max(numeric_ids) if numeric_ids else last_seen_event_id
-            update_last_event(chat_id, max_seen)
+            # Bug 2.2 fix: only advance the persisted event cursor when the turn
+            # actually completed (done=True). On a timeout/broken stream the
+            # agent may still emit events > max_seen that the client never saw;
+            # if we moved the cursor to max_seen here, those events would be
+            # skipped forever on the next turn. Leaving the cursor at its prior
+            # value lets the unseen tail replay. Run status is still recorded.
+            cursor = max_seen if done else last_seen_event_id
+            update_last_event(chat_id, cursor)
             set_run_status(chat_id, "done" if done else "timeout")
-            upsert_run(chat_id, cid, user_id, "done" if done else "timeout", last_prompt=prompt, last_event_id=max_seen)
+            upsert_run(chat_id, cid, user_id, "done" if done else "timeout", last_prompt=prompt, last_event_id=cursor)
         except Exception as e:
             log.warning("update_last_event failed: %s", e)
     elif chat_id:
@@ -2116,18 +2126,27 @@ async def _locked_stream_chat(
 ) -> AsyncIterator[bytes]:
     """Phase 2.1: prevent concurrent streams for the same BrowserAI chat."""
     lock: Optional[asyncio.Lock] = None
+    acquired = False
     if chat_id:
         lock = _stream_lock_for(chat_id)
-        if lock.locked():
+        # Bug 1.2 fix: acquire atomically with a short timeout instead of the
+        # old check-then-acquire (TOCTOU). Previously `if lock.locked(): return`
+        # followed by an unbounded `await lock.acquire()` meant that if another
+        # request grabbed the lock in between, this coroutine blocked forever.
+        # A bounded wait_for both closes the race and guarantees we never hang.
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=0.25)
+            acquired = True
+        except asyncio.TimeoutError:
             yield _sse("error", {"code": "busy", "message": "This chat is already running an agent task. Wait for completion or press Stop."}).encode("utf-8")
             yield _sse("done", {"reason": "busy", "chatId": chat_id}).encode("utf-8")
             return
-        await lock.acquire()
     try:
         async for chunk in _stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id, turn_id=turn_id):
             yield chunk
     finally:
-        if lock and lock.locked():
+        # Only release if WE acquired it (never release another turn's lock).
+        if acquired and lock is not None:
             lock.release()
 
 

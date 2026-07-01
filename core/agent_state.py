@@ -11,6 +11,11 @@ def _now() -> int:
     return int(time.time() * 1000)
 
 
+# Schema self-healing lives in core.migrations now (shared across subsystems).
+# _migrate_missing_columns is kept as a thin alias for backward compatibility.
+from core.migrations import ensure_columns as _migrate_missing_columns  # noqa: E402
+
+
 def init_agent_state_schema() -> None:
     conn = get_conn()
     try:
@@ -46,6 +51,8 @@ def init_agent_state_schema() -> None:
             CREATE INDEX IF NOT EXISTS agent_runs_user_idx ON agent_runs(user_id, updated_at DESC);
             """
         )
+        # Self-healing migration: add any columns missing from older DBs.
+        _migrate_missing_columns(conn)
         conn.commit()
     finally:
         conn.close()

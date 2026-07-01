@@ -43,6 +43,12 @@ def init_conversations_schema() -> None:
             CREATE INDEX IF NOT EXISTS chat_conv_cid  ON chat_conversations(conversation_id);
             """
         )
+        # Self-healing migration for chat_conversations. See core/migrations.py.
+        try:
+            from core.migrations import ensure_columns
+            ensure_columns(conn, "chat_conversations")
+        except Exception:
+            pass
         conn.commit()
     finally:
         conn.close()

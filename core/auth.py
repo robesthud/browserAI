@@ -107,6 +107,15 @@ def init_auth_schema() -> None:
             );
             """
         )
+        # Self-healing migration: add any columns missing from older DBs
+        # (users / sessions / cloud_state). See core/migrations.py.
+        try:
+            from core.migrations import ensure_columns
+            ensure_columns(conn, "users")
+            ensure_columns(conn, "sessions")
+            ensure_columns(conn, "cloud_state")
+        except Exception:
+            pass
         conn.commit()
     finally:
         conn.close()
