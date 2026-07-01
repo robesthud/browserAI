@@ -46,7 +46,7 @@
 | 2.2 | `update_last_event(max_seen)` двигался даже при `done=False` → потеря событий. Фикс: `cursor = max_seen if done else last_seen_event_id` | `server.py:2096` | ✅ сделано |
 | 3.1 | `ASK_USER:{...}` marker уходит в `assistant_delta` | `server.py:1387` | ❌ открыт |
 | 3.2 | `/api/agent/answer` релеит ответ (проверить формат) | `server.py:2234` | ❌ открыт |
-| 3.3 | `ask_user` эмитится mid-stream без координации со стримом | `server.py:1743` | ❌ открыт |
+| 3.3 | `ask_user` эмитится mid-stream без координации со стримом | `server.py:1743` | ✅ исправлено (турн закрывается на `awaiting_user_input`/после ask_user; `/answer` идемпотентен) |
 | 5.2 | `selectChat` не abort'ит активный стрим | `useChats.js` | ❌ открыт |
 | 6.2 | Workspace isolation — решается через tenancy (см. блокер) | `isolation.py` | ⏸ зависит |
 

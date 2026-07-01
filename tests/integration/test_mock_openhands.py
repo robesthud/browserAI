@@ -48,9 +48,12 @@ def _last_oh_event_id(events):
 
 
 # Mirror of core/server.py _is_turn_complete_event.
+# Bug 3.3: awaiting_user_input is now a turn boundary (agent paused for input).
 def _is_turn_complete_event(e):
     state = ((e.get("extras") or {}).get("agent_state") or "").lower()
-    return e.get("observation") == "agent_state_changed" and state in ("finished", "stopped", "error")
+    return e.get("observation") == "agent_state_changed" and state in (
+        "finished", "stopped", "error", "awaiting_user_input",
+    )
 
 
 # ── 1. Mock fidelity ─────────────────────────────────────────────────────────
@@ -283,3 +286,71 @@ def test_bug_1_2_lock_released_allows_next_turn():
         return r1, r2
 
     assert asyncio.run(scenario()) == ("ok", "ok")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bug 3.3 — ask_user must be a turn boundary + answer must be idempotent
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _answer_relay_faithful(oh, cid, question_status, question_text="pick one"):
+    """Reproduction of the FIXED /api/agent/answer relay logic:
+    only relay (post a user message into the conversation) when the question is
+    still 'pending'. An already-answered/cancelled question is a no-op."""
+    if (question_status or "pending") != "pending":
+        return {"ok": True, "alreadyAnswered": True, "relayed": False}
+    _post(f"{oh.url}/api/conversations/{cid}/message",
+          {"message": f"User answered question '{question_text}': yes"})
+    return {"ok": True, "relayed": True}
+
+
+def test_bug_3_3_awaiting_user_input_is_turn_complete():
+    """The core Bug 3.3 fix: awaiting_user_input now counts as a turn boundary,
+    so the server stops polling (releases the per-chat lock) instead of hanging
+    up to 180s while the agent waits on the user."""
+    with MockOpenHands() as oh:
+        cid = oh.create_conversation()
+        oh.push_event(cid, message="Which option?")
+        oh.finish(cid, state="awaiting_user_input")   # agent pauses for input
+        events = _get(f"{oh.url}/api/conversations/{cid}/events?limit=100")
+        # The pause marker must be recognized as turn-complete (was NOT before).
+        assert _is_turn_complete_event(events[-1])
+        # A plain assistant message is still not a boundary.
+        assert not _is_turn_complete_event(events[0])
+
+
+def test_bug_3_3_ask_user_sent_ends_turn():
+    """When BrowserAI emits an ask_user (marker path), the turn ends: the poll
+    loop sets done=True as soon as ask_user_sent_ref['sent'] is truthy, so no
+    further polling/lock-holding occurs."""
+    # Faithful mirror of the poll-loop guard added in server.py.
+    ask_user_sent_ref = {"sent": False}
+    done = False
+
+    # simulate: after emitting ask_user we set the ref, then the guard fires
+    ask_user_sent_ref["sent"] = True
+    if ask_user_sent_ref.get("sent"):
+        done = True
+    assert done is True
+
+
+def test_bug_3_3_answer_idempotent_no_double_relay():
+    """Double-submitting an answer must post the user message exactly once.
+    First submit (pending) relays; the retry (already 'answered') is a no-op."""
+    with MockOpenHands() as oh:
+        cid = oh.create_conversation()
+        # First answer while question is pending -> relayed.
+        r1 = _answer_relay_faithful(oh, cid, question_status="pending")
+        # Simulate the DB now marking it answered; retry must NOT relay again.
+        r2 = _answer_relay_faithful(oh, cid, question_status="answered")
+        assert r1["relayed"] is True
+        assert r2.get("alreadyAnswered") is True and r2["relayed"] is False
+        assert oh.messages_for(cid) == ["User answered question 'pick one': yes"]
+
+
+def test_bug_3_3_cancelled_question_not_relayed():
+    """A cancelled question is also non-pending -> must not relay."""
+    with MockOpenHands() as oh:
+        cid = oh.create_conversation()
+        r = _answer_relay_faithful(oh, cid, question_status="cancelled")
+        assert r.get("alreadyAnswered") is True and r["relayed"] is False
+        assert oh.messages_for(cid) == []

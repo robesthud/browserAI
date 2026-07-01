@@ -1717,7 +1717,7 @@ def _is_turn_complete_event(e: Dict[str, Any]) -> bool:
     state = ((e.get("extras") or {}).get("agent_state") or "").lower()
     return (
         e.get("observation") == "agent_state_changed"
-        and state in ("finished", "stopped", "error")
+        and state in ("finished", "stopped", "error", "awaiting_user_input")
     )
 
 
@@ -1834,6 +1834,13 @@ async def _poll_openhands_events(
                         ask_user_sent_ref=ask_user_sent_ref,
                     ):
                         yield chunk, step, done, seen_ids
+                # Bug 3.3: an emitted ask_user IS a turn boundary. Once the
+                # agent has posed a question it is waiting on the user, so end
+                # this turn cleanly (release the per-chat lock, close the SSE
+                # stream) instead of polling for up to 180s. The user's answer
+                # relayed via /api/agent/answer starts the next turn.
+                if ask_user_sent_ref.get("sent"):
+                    done = True
         except httpx.TimeoutException:
             pass
         except Exception as e:
@@ -2259,6 +2266,14 @@ async def agent_answer(request: Request):
     q = get_question(qid)
     if not q:
         raise HTTPException(status_code=404, detail="question_not_found")
+    # Bug 3.3: idempotency guard. An already-answered (or cancelled) question
+    # must NOT be relayed again — a double-submit (mobile retry, double-tap)
+    # would otherwise post a second user message into the conversation and
+    # race the turn that the first answer already started. Return the saved
+    # state without touching OpenHands.
+    if (q.get("status") or "pending") != "pending":
+        log.info("agent_answer: question %s already %s — skipping relay", qid, q.get("status"))
+        return {"ok": True, "question": q, "alreadyAnswered": True}
     answer = {
         "answer": body.get("answer"),
         "selectedOptionId": body.get("selectedOptionId"),
