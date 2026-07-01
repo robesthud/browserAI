@@ -48,7 +48,8 @@
 | 3.2 | `/api/agent/answer` релеил `"ok"` вместо выбора юзера | `server.py:2234` | ✅ исправлено (`_format_answer_text` парсит `{selected, custom}`, маппит id→label) |
 | 3.3 | `ask_user` эмитится mid-stream без координации со стримом | `server.py:1743` | ✅ исправлено (турн закрывается на `awaiting_user_input`/после ask_user; `/answer` идемпотентен) |
 | 5.2 | глобальный `isStreaming` протекал между чатами при переключении | `useChats.js` | ✅ исправлено (per-chat `streamingChatIds` + `streamingState.js`; `isStreaming` выводится для активного чата) |
-| 6.2 | Workspace isolation — решается через tenancy (см. блокер) | `isolation.py` | ⏸ зависит |
+| 4.2 | оба stop-эндпоинта POST'ят `/stop` в OH даже для завершённого turn'а | `server.py:2289,2418` | ✅ исправлено (guard: skip при статусе done/stopped/timeout/error → `already_finished`) |
+| 6.2 | Workspace isolation — решается через tenancy (single-tenant принят) | `isolation.py` | ✅ решено (см. tenancy) |
 
 > Приоритет по дороговизне: **2.2 → 1.2 → 3.3 → 3.1/3.2 → 5.2**.
 
@@ -63,7 +64,7 @@ In-process HTTP-мок на `http.server` (без aiohttp-зависимости
 - 3× fidelity (мок отвечает по контракту OH: id монотонны, finish-маркер);
 - **Bug 2.2** — курсор уходит при `done=False` → `xfail(strict)` (загорится
   XPASS при фиксе server.py:2087);
-- **Bug 4.2** — stop завершённого turn'а → `xfail(strict)`;
+- **Bug 4.2** — stop завершённого turn'а → ✅ исправлено (guard в обоих stop-эндпоинтах);
 - idempotency — дубль `turn_id` шлёт prompt ровно один раз.
 
 > `xfail(strict)` = регрессионная «ловушка»: когда баг чинится, тест становится

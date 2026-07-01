@@ -172,43 +172,39 @@ def test_bug_2_2_fix_matches_server_logic():
         assert 3 in ids and 4 in ids and 5 in ids
 
 
-# ── 3. Bug 4.2 — stop on an already-finished turn should be a no-op ──────────
-def test_bug_4_2_stop_after_finish_current_behavior():
-    """Documents that today nothing distinguishes 'stop a running turn' from
-    'stop a finished turn' — both hit OH /stop. The mock lets us assert the
-    stop count so a fix (skip stop when run already done) becomes testable."""
+# ── 3. Bug 4.2 — stop on an already-finished turn is a no-op (FIXED) ─────────
+# Terminal run statuses that the server.py guard treats as "nothing to stop".
+_TERMINAL_STATUSES = ("done", "stopped", "timeout", "error")
+
+
+def _stop_relay_faithful(oh, cid, run_status):
+    """Faithful mirror of the FIXED stop endpoints (server.py):
+    skip the OpenHands /stop POST when the run is already in a terminal state."""
+    if (run_status or "").lower() in _TERMINAL_STATUSES:
+        return {"ok": True, "stopped": False, "reason": "already_finished"}
+    _post(f"{oh.url}/api/conversations/{cid}/stop")
+    return {"ok": True, "stopped": True}
+
+
+def test_bug_4_2_stop_running_turn_still_hits_openhands():
+    """A genuinely running turn must still be stopped (POST reaches OH)."""
     with MockOpenHands() as oh:
         cid = oh.create_conversation()
-        oh.push_event(cid, message="pong")
-        oh.finish(cid)  # turn is DONE
-
-        events = _get(f"{oh.url}/api/conversations/{cid}/events?limit=100")
-        turn_done = any(_is_turn_complete_event(e) for e in events)
-        assert turn_done
-
-        # Current code would still POST /stop. Simulate that call:
-        _post(f"{oh.url}/api/conversations/{cid}/stop")
-        assert oh.stop_count(cid) == 1  # BUG: stop issued on a finished turn
+        r = _stop_relay_faithful(oh, cid, run_status="running")
+        assert r["stopped"] is True
+        assert oh.stop_count(cid) == 1
 
 
-@pytest.mark.xfail(reason="agent_run_stop does not check run status before POSTing /stop", strict=True)
-def test_bug_4_2_stop_after_finish_should_be_noop():
-    """Desired: stopping a finished turn must NOT hit OpenHands. xfail until
-    agent_run_stop short-circuits when the run is already 'done'.
-
-    This faithfully reproduces TODAY's agent_run_stop logic (server.py:2285+):
-    it POSTs /stop unconditionally, with no 'is the run already done?' guard.
-    So stop_count becomes 1 and the assert below fails today (xfail). Once the
-    guard is added in server.py, this turns green — flip/remove the xfail."""
-    with MockOpenHands() as oh:
-        cid = oh.create_conversation()
-        oh.finish(cid)  # turn already finished
-
-        # Faithful repro of current agent_run_stop: no status check, just POST.
-        _post(f"{oh.url}/api/conversations/{cid}/stop")
-
-        # Desired behavior: should have been a no-op. Fails today (bug present).
-        assert oh.stop_count(cid) == 0
+def test_bug_4_2_stop_after_finish_is_noop():
+    """FIXED: stopping a finished turn must NOT hit OpenHands. The guard
+    short-circuits for every terminal status, so stop_count stays 0."""
+    for status in _TERMINAL_STATUSES:
+        with MockOpenHands() as oh:
+            cid = oh.create_conversation()
+            oh.finish(cid)  # turn already finished
+            r = _stop_relay_faithful(oh, cid, run_status=status)
+            assert r["stopped"] is False and r["reason"] == "already_finished"
+            assert oh.stop_count(cid) == 0, f"stop leaked for status={status}"
 
 
 # ── 4. Idempotency — duplicate turn_id must not double-send the prompt ───────

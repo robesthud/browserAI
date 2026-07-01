@@ -2286,6 +2286,12 @@ async def stop_chat(request: Request):
         set_run_status(chat_id, "stopped")
         return {"ok": True, "chatId": chat_id, "conversationId": None, "stopped": False, "reason": "no_active_conversation"}
     cid = m["conversation_id"]
+    # Bug 4.2: don't POST /stop for a turn that already finished. If the run is
+    # in a terminal state (done/stopped/timeout/error) the agent isn't running,
+    # so a stop is a no-op that only races the next turn / wastes a round-trip.
+    _run = get_run(chat_id)
+    if _run and (_run.get("status") or "").lower() in ("done", "stopped", "timeout", "error"):
+        return {"ok": True, "chatId": chat_id, "conversationId": cid, "stopped": False, "reason": "already_finished"}
     async with httpx.AsyncClient() as client:
         try:
             r = await client.post(
@@ -2409,6 +2415,10 @@ async def agent_run_stop(chat_id: str):
     if not cid:
         set_run_status(chat_id, "stopped")
         return {"ok": True, "chatId": chat_id, "conversationId": None, "stopped": False, "reason": "no_active_conversation"}
+    # Bug 4.2: skip the OpenHands /stop round-trip if the run already finished.
+    _run = get_run(chat_id)
+    if _run and (_run.get("status") or "").lower() in ("done", "stopped", "timeout", "error"):
+        return {"ok": True, "chatId": chat_id, "conversationId": cid, "stopped": False, "reason": "already_finished"}
     async with httpx.AsyncClient() as client:
         try:
             r = await client.post(
