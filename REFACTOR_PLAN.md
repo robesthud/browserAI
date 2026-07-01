@@ -44,8 +44,8 @@
 | — | Idempotency guard через `turn_id` | `conversations.py:222` | ✅ сделано |
 | 1.2 | `_locked_stream_chat` TOCTOU + нет таймаута на `acquire`. Фикс: `wait_for(lock.acquire(), 0.25)` + `acquired`-флаг | `server.py:2138` | ✅ сделано |
 | 2.2 | `update_last_event(max_seen)` двигался даже при `done=False` → потеря событий. Фикс: `cursor = max_seen if done else last_seen_event_id` | `server.py:2096` | ✅ сделано |
-| 3.1 | `ASK_USER:{...}` marker уходит в `assistant_delta` | `server.py:1387` | ❌ открыт |
-| 3.2 | `/api/agent/answer` релеит ответ (проверить формат) | `server.py:2234` | ❌ открыт |
+| 3.1 | `ASK_USER:{...}` marker уходит в `assistant_delta` | `server.py:1387` | ✅ исправлено (`_strip_ask_user_marker` + подавление delta после маркера) |
+| 3.2 | `/api/agent/answer` релеил `"ok"` вместо выбора юзера | `server.py:2234` | ✅ исправлено (`_format_answer_text` парсит `{selected, custom}`, маппит id→label) |
 | 3.3 | `ask_user` эмитится mid-stream без координации со стримом | `server.py:1743` | ✅ исправлено (турн закрывается на `awaiting_user_input`/после ask_user; `/answer` идемпотентен) |
 | 5.2 | `selectChat` не abort'ит активный стрим | `useChats.js` | ❌ открыт |
 | 6.2 | Workspace isolation — решается через tenancy (см. блокер) | `isolation.py` | ⏸ зависит |

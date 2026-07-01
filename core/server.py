@@ -1401,6 +1401,54 @@ def _extract_ask_user_payload(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _strip_ask_user_marker(text: str) -> str:
+    """Remove an ASK_USER:{...} marker (and its trailing JSON) from text.
+
+    Bug 3.1: the raw ``ASK_USER:{"question":...}`` marker must never reach the
+    user as assistant text — it is machine syntax the UI renders as a card.
+    We drop the marker starting at ``ASK_USER:`` through the balanced JSON
+    object that follows, then tidy surrounding whitespace.
+    """
+    if not text:
+        return text
+    m = _re.search(r"ASK_USER\s*:\s*", text, _re.DOTALL)
+    if not m:
+        return text
+    start = m.start()
+    # Find the balanced JSON object that follows the marker prefix.
+    brace_start = text.find("{", m.end() - 1)
+    if brace_start == -1:
+        return text[:start].rstrip()
+    depth = 0
+    end = None
+    in_str = False
+    esc = False
+    for i in range(brace_start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if end is None:
+        # Unbalanced — drop from the marker onward.
+        return text[:start].rstrip()
+    cleaned = (text[:start] + text[end:]).strip()
+    return cleaned
+
+
 def _translate_event(evt: Dict[str, Any], step: int) -> List[Dict[str, Any]]:
     """
     Map an OpenHands v0.59 event dict into one or more SSE events that the
@@ -1761,6 +1809,12 @@ async def _emit_translated_event(
                     },
                 ).encode("utf-8"), step
                 ask_user_sent_ref["sent"] = True
+    # Bug 3.1: once the running buffer contains an ASK_USER marker, stop
+    # streaming assistant_delta chunks — the raw marker JSON would otherwise
+    # leak into the UI character by character. The cleaned final `assistant`
+    # event (emitted after the turn) carries any legitimate prose.
+    if ev_name == "assistant_delta" and _re.search(r"ASK_USER\s*:", full_answer_ref.get("text", "")):
+        return
     if (
         ev_name == "assistant_delta"
         and STREAM_RECHUNK
@@ -2086,7 +2140,11 @@ async def _stream_chat(
                     create_question(qid, chat_id, cid, user_id, ask_payload.get("question") or "", ask_payload.get("options") or [])
                     yield _sse("ask_user", {"question_id": qid, "question": ask_payload.get("question"), "options": ask_payload.get("options") or []}).encode("utf-8")
                     ask_user_sent_ref["sent"] = True
-            yield _sse("assistant", {"step": step, "text": clean}).encode("utf-8")
+            # Bug 3.1: never surface the raw ASK_USER:{...} marker as assistant
+            # text — it is machine syntax already rendered as an interactive card.
+            clean = _strip_ask_user_marker(clean)
+            if clean:
+                yield _sse("assistant", {"step": step, "text": clean}).encode("utf-8")
     elif step > 0 and done:
         yield _sse("assistant", {"step": step, "text": "Done."}).encode("utf-8")
 
@@ -2256,6 +2314,38 @@ async def agent_questions(request: Request, chatId: Optional[str] = None):
     return {"ok": True, "items": items}
 
 
+def _format_answer_text(answer: Any, options: List[Dict[str, Any]]) -> str:
+    """Turn the UI's answer payload into readable text for the agent (Bug 3.2).
+
+    The frontend sends ``{"selected": [optionId, ...], "custom": "free text"}``
+    (see AgentAskUser.jsx). We map selected ids to their labels and append any
+    custom text. Falls back gracefully for older/alternate shapes.
+    """
+    label_by_id = {}
+    for opt in options or []:
+        if isinstance(opt, dict) and opt.get("id") is not None:
+            label_by_id[str(opt["id"])] = opt.get("label") or str(opt["id"])
+
+    parts: List[str] = []
+    if isinstance(answer, dict):
+        for sid in answer.get("selected") or []:
+            parts.append(label_by_id.get(str(sid), str(sid)))
+        custom = (answer.get("custom") or "").strip()
+        if custom:
+            parts.append(custom)
+        # legacy/alternate fields, just in case
+        if not parts:
+            for k in ("customResponse", "answer", "selectedOptionId"):
+                v = answer.get(k)
+                if v:
+                    parts.append(str(v))
+                    break
+    elif isinstance(answer, str) and answer.strip():
+        parts.append(answer.strip())
+
+    return ", ".join(p for p in parts if p) or "ok"
+
+
 @app.post("/api/agent/answer")
 async def agent_answer(request: Request):
     user = current_user(request)
@@ -2281,7 +2371,13 @@ async def agent_answer(request: Request):
         "answeredBy": user["id"] if user else None,
     }
     saved = answer_question(qid, answer)
-    text = answer.get("customResponse") or answer.get("answer") or answer.get("selectedOptionId") or "ok"
+    # Bug 3.2: build the relayed text from the ACTUAL payload the UI sends,
+    # which is `answer: { selected: [ids...], custom: "..." }`. The previous
+    # code only looked at customResponse/answer/selectedOptionId (none of which
+    # the frontend sends), so the relay collapsed to a useless "ok" and the
+    # agent never learned what the user picked. Map selected option ids back to
+    # their human labels so the agent gets readable text.
+    text = _format_answer_text(body.get("answer"), q.get("options") or [])
     cid = q.get("conversation_id")
     if cid:
         async with httpx.AsyncClient() as client:
