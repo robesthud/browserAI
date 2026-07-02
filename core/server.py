@@ -3242,6 +3242,54 @@ def _assert_archive_member_safe(out: Path, name: str) -> Path:
     return member_path
 
 
+def _install_cloned_repo_sync(tmp: Path, parent: Path, dest_name: str, strip_top_level: bool) -> Dict[str, Any]:
+    shutil.rmtree(tmp / ".git", ignore_errors=True)
+    if strip_top_level:
+        _copy_tree_contents(tmp, parent)
+        dest = parent
+    else:
+        dest = parent / dest_name
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(tmp, dest)
+    return {"ok": True, "kind": "git", "path": str(dest.relative_to(parent)).replace("\\", "/") if dest != parent else ""}
+
+
+async def _ainstall_cloned_repo(tmp: Path, parent: Path, dest_name: str, strip_top_level: bool) -> Dict[str, Any]:
+    return await asyncio.to_thread(_install_cloned_repo_sync, tmp, parent, dest_name, strip_top_level)
+
+
+def _store_download_payload_sync(parent: Path, filename: str, data: bytes) -> Dict[str, Any]:
+    parent.mkdir(parents=True, exist_ok=True)
+    dest = parent / filename
+    dest.write_bytes(data)
+
+    lower = filename.lower()
+    if lower.endswith(".zip"):
+        out = parent / Path(filename).stem
+        out.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(dest) as z:
+            for member in z.infolist():
+                _assert_archive_member_safe(out, member.filename)
+                z.extract(member, out)
+        return {"ok": True, "kind": "zip", "path": str(out.relative_to(parent)).replace("\\", "/")}
+    if lower.endswith((".tar", ".tar.gz", ".tgz")):
+        out = parent / Path(filename).name.split(".tar")[0]
+        out.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(dest) as t:
+            for member in t.getmembers():
+                _assert_archive_member_safe(out, member.name)
+                if getattr(member, "issym", lambda: False)() or getattr(member, "islnk", lambda: False)() or getattr(member, "isdev", lambda: False)():
+                    raise HTTPException(status_code=400, detail="archive_contains_unsafe_member")
+                t.extract(member, out)
+        return {"ok": True, "kind": "tar", "path": str(out.relative_to(parent)).replace("\\", "/")}
+    return {"ok": True, "kind": "file", "path": str(dest.relative_to(parent)).replace("\\", "/"), "size": len(data)}
+
+
+async def _astore_download_payload(parent: Path, filename: str, data: bytes) -> Dict[str, Any]:
+    return await asyncio.to_thread(_store_download_payload_sync, parent, filename, data)
+
+
 async def _download_url_into(parent: Path, url: str, branch: str = "", strip_top_level: bool = False) -> Dict[str, Any]:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -3269,16 +3317,7 @@ async def _download_url_into(parent: Path, url: str, branch: str = "", strip_top
             returncode, stdout, stderr = await _run_subprocess(cmd, timeout=180)
             if returncode != 0:
                 raise HTTPException(status_code=502, detail=(stderr or stdout)[-800:])
-            shutil.rmtree(tmp / ".git", ignore_errors=True)
-            if strip_top_level:
-                _copy_tree_contents(tmp, parent)
-                dest = parent
-            else:
-                dest = parent / parts[1].removesuffix(".git")
-                if dest.exists():
-                    shutil.rmtree(dest)
-                shutil.copytree(tmp, dest)
-        return {"ok": True, "kind": "git", "path": str(dest.relative_to(parent)).replace("\\", "/") if dest != parent else ""}
+            return await _ainstall_cloned_repo(tmp, parent, parts[1].removesuffix(".git"), strip_top_level)
 
     # GitHub blob URL: rewrite to raw URL.
     if _is_github_host(host) and len(parts) >= 5 and parts[2] == "blob":
@@ -3293,30 +3332,7 @@ async def _download_url_into(parent: Path, url: str, branch: str = "", strip_top
         if r.status_code >= 400:
             raise HTTPException(status_code=502, detail=f"download_failed: HTTP {r.status_code}")
         data = r.content
-    dest = parent / filename
-    dest.write_bytes(data)
-
-    # Auto-extract common archives into parent/archive-name.
-    lower = filename.lower()
-    if lower.endswith(".zip"):
-        out = parent / Path(filename).stem
-        out.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(dest) as z:
-            for member in z.infolist():
-                _assert_archive_member_safe(out, member.filename)
-                z.extract(member, out)
-        return {"ok": True, "kind": "zip", "path": str(out.relative_to(parent)).replace("\\", "/")}
-    if lower.endswith((".tar", ".tar.gz", ".tgz")):
-        out = parent / Path(filename).name.split(".tar")[0]
-        out.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(dest) as t:
-            for member in t.getmembers():
-                _assert_archive_member_safe(out, member.name)
-                if getattr(member, "issym", lambda: False)() or getattr(member, "islnk", lambda: False)() or getattr(member, "isdev", lambda: False)():
-                    raise HTTPException(status_code=400, detail="archive_contains_unsafe_member")
-                t.extract(member, out)
-        return {"ok": True, "kind": "tar", "path": str(out.relative_to(parent)).replace("\\", "/")}
-    return {"ok": True, "kind": "file", "path": str(dest.relative_to(parent)).replace("\\", "/"), "size": len(data)}
+    return await _astore_download_payload(parent, filename, data)
 
 
 @app.post("/api/workspace/chat/init")
