@@ -3600,20 +3600,11 @@ async def workspace_diff(request: Request, path: str = "", limit: int = 500, run
     return {"ok": True, "diffs": [{"path": path or ".", "diff": text[:200_000]}] if text else []}
 
 
-@app.get("/api/workspace/download")
-async def workspace_download(chatId: Optional[str] = None, path: Optional[str] = None, inline: Optional[str] = None):
-    base = _workspace_base_for_chat(chatId, create=True)
-    target = _safe_abs(path or "", allow_empty=True, base=base)
-    if not target.exists():
-        raise HTTPException(status_code=404, detail="not_found")
+def _workspace_download_payload(target: Path) -> Tuple[bytes, str, str]:
+    """Read a workspace file or build a directory zip in a worker thread."""
     if target.is_file():
         media = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-        disposition = "inline" if str(inline or "").lower() in ("1", "true", "yes") else "attachment"
-        return Response(
-            content=target.read_bytes(),
-            media_type=media,
-            headers={"Content-Disposition": f'{disposition}; filename="{target.name}"'},
-        )
+        return target.read_bytes(), media, target.name
     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
         tmp_path = Path(tmp.name)
     try:
@@ -3621,17 +3612,30 @@ async def workspace_download(chatId: Optional[str] = None, path: Optional[str] =
             for item in target.rglob("*"):
                 if item.is_file():
                     z.write(item, item.relative_to(target))
-        content = tmp_path.read_bytes()
+        return tmp_path.read_bytes(), "application/zip", f"{target.name or 'workspace'}.zip"
     finally:
         try:
             tmp_path.unlink()
         except Exception:
             pass
-    name = target.name or "workspace"
+
+
+async def _aworkspace_download_payload(target: Path) -> Tuple[bytes, str, str]:
+    return await asyncio.to_thread(_workspace_download_payload, target)
+
+
+@app.get("/api/workspace/download")
+async def workspace_download(chatId: Optional[str] = None, path: Optional[str] = None, inline: Optional[str] = None):
+    base = _workspace_base_for_chat(chatId, create=True)
+    target = _safe_abs(path or "", allow_empty=True, base=base)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="not_found")
+    content, media, filename = await _aworkspace_download_payload(target)
+    disposition = "inline" if str(inline or "").lower() in ("1", "true", "yes") else "attachment"
     return Response(
         content=content,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{name}.zip"'},
+        media_type=media,
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
     )
 
 
@@ -3764,6 +3768,37 @@ def _mcp_save(data: Dict[str, Any]) -> Dict[str, Any]:
     with open(_MCP_CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     return payload
+
+
+async def _amcp_load() -> Dict[str, Any]:
+    return await asyncio.to_thread(_mcp_load)
+
+
+async def _amcp_save(data: Dict[str, Any]) -> Dict[str, Any]:
+    return await asyncio.to_thread(_mcp_save, data)
+
+
+def _mcp_upsert_sync(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = _mcp_load()
+    servers = cfg.setdefault("servers", {})
+    servers[name] = {**(servers.get(name) or {}), **body, "name": name, "updatedAt": int(time.time() * 1000)}
+    _mcp_save(cfg)
+    return {"ok": True, "server": servers[name], "servers": servers}
+
+
+async def _amcp_upsert(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    return await asyncio.to_thread(_mcp_upsert_sync, name, body)
+
+
+def _mcp_delete_sync(name: str) -> Dict[str, Any]:
+    cfg = _mcp_load()
+    removed = (cfg.get("servers") or {}).pop(name, None)
+    _mcp_save(cfg)
+    return {"ok": True, "removed": bool(removed), "servers": cfg.get("servers") or {}}
+
+
+async def _amcp_delete(name: str) -> Dict[str, Any]:
+    return await asyncio.to_thread(_mcp_delete_sync, name)
 
 
 def _checkpoints_list_sync(chat_id: str) -> Dict[str, Any]:
@@ -3930,12 +3965,12 @@ async def admin_deepseek_token():
 
 @app.get("/api/mcp/config")
 async def mcp_config_get():
-    return _mcp_load()
+    return await _amcp_load()
 
 
 @app.get("/api/mcp/status")
 async def mcp_status_get():
-    cfg = _mcp_load().get("servers") or {}
+    cfg = (await _amcp_load()).get("servers") or {}
     servers = []
     for name, meta in cfg.items():
         servers.append({"name": name, **(meta or {}), "status": "configured" if (meta or {}).get("enabled", True) else "disabled"})
@@ -3946,11 +3981,7 @@ async def mcp_status_get():
 @app.post("/api/mcp/server/{name}")
 async def mcp_server_upsert(name: str, request: Request):
     body = await request.json()
-    cfg = _mcp_load()
-    servers = cfg.setdefault("servers", {})
-    servers[name] = {**(servers.get(name) or {}), **body, "name": name, "updatedAt": int(time.time() * 1000)}
-    _mcp_save(cfg)
-    return {"ok": True, "server": servers[name], "servers": servers}
+    return await _amcp_upsert(name, body)
 
 
 @app.patch("/api/mcp/server/{name}")
@@ -3960,10 +3991,7 @@ async def mcp_server_patch(name: str, request: Request):
 
 @app.delete("/api/mcp/server/{name}")
 async def mcp_server_delete(name: str):
-    cfg = _mcp_load()
-    removed = (cfg.get("servers") or {}).pop(name, None)
-    _mcp_save(cfg)
-    return {"ok": True, "removed": bool(removed), "servers": cfg.get("servers") or {}}
+    return await _amcp_delete(name)
 
 
 @app.post("/api/mcp/restart")
