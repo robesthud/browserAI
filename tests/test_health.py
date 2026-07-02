@@ -10,8 +10,8 @@ def test_shallow_health_ok(client):
     assert data["engine"] == "openhands"
 
 
-def test_deep_health_shape(client):
-    r = client.get("/api/health/deep")
+def test_deep_health_shape(auth_client):
+    r = auth_client.get("/api/health/deep")
     # OpenHands is unreachable in tests, so we expect 503 + degraded, but the
     # structured payload and individual checks must still be present.
     assert r.status_code in (200, 503)
@@ -23,8 +23,8 @@ def test_deep_health_shape(client):
     assert db_check["ok"] is True  # temp sqlite is always reachable
 
 
-def test_agent_health(client):
-    r = client.get("/api/agent/health")
+def test_agent_health(auth_client):
+    r = auth_client.get("/api/agent/health")
     assert r.status_code == 200
     assert r.json()["ok"] is True
 

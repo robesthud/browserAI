@@ -18,6 +18,7 @@ os.environ["BROWSERAI_DB"] = _TMP_DB
 os.environ["BROWSERAI_DATA_DIR"] = tempfile.gettempdir()
 os.environ.setdefault("OPENHANDS_AGENT_SERVER", "http://127.0.0.1:9")  # unreachable on purpose
 os.environ.setdefault("APP_URL", "http://localhost")
+os.environ.setdefault("AUTH_SECRET", "pytest-auth-secret")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -57,4 +58,18 @@ def _fresh_db():
 def client():
     from fastapi.testclient import TestClient
     from core import server
-    return TestClient(server.app)
+    with TestClient(server.app) as c:
+        yield c
+
+
+@pytest.fixture()
+def auth_client(client):
+    email = "pytest-user@example.com"
+    password = "pytest-password-123"
+    # The first registration becomes owner. If previous tests already created
+    # it in this session, fall back to login.
+    r = client.post("/api/auth/register", json={"email": email, "password": password})
+    if r.status_code in (409, 403):
+        r = client.post("/api/auth/login", json={"email": email, "password": password})
+    assert r.status_code == 200, r.text
+    return client

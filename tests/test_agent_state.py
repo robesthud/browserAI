@@ -29,26 +29,26 @@ def test_question_lifecycle():
     assert saved is not None
 
 
-def test_recipes_endpoint(client):
-    r = client.get("/api/agent/recipes")
+def test_recipes_endpoint(auth_client):
+    r = auth_client.get("/api/agent/recipes")
     assert r.status_code == 200
     items = r.json()["items"]
     assert any(i["id"] == "repo_audit" for i in items)
 
 
-def test_workflows_endpoint(client):
-    r = client.get("/api/agent/workflows")
+def test_workflows_endpoint(auth_client):
+    r = auth_client.get("/api/agent/workflows")
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
 
-def test_control_plane_get(client):
-    r = client.get("/api/agent/control-plane")
+def test_control_plane_get(auth_client):
+    r = auth_client.get("/api/agent/control-plane")
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True and "runs" in body
 
 
-def test_answer_requires_question_id(client):
-    r = client.post("/api/agent/answer", json={})
+def test_answer_requires_question_id(auth_client):
+    r = auth_client.post("/api/agent/answer", json={})
     assert r.status_code == 400
