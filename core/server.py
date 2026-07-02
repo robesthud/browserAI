@@ -270,6 +270,18 @@ async def _startup_init() -> None:
         init_conversations_schema()
         init_agent_state_schema()
         init_memory_schema()
+        try:
+            from core.migrations import run_startup_migrations
+            conn = get_conn()
+            try:
+                applied = run_startup_migrations(conn)
+                conn.commit()
+                if applied:
+                    log.info("schema migrations applied at startup: %s", applied)
+            finally:
+                conn.close()
+        except Exception as mig_exc:
+            log.error("schema migrations failed: %s", mig_exc)
         log.info("all schemas ready (db, auth, conversations, agent_state, memory, vault)")
     except Exception as e:
         log.error("schema init failed: %s", e)
@@ -536,17 +548,19 @@ async def get_health():
     }
 
 
-def _schema_drift() -> List[str]:
-    from core.migrations import missing_columns
+def _schema_status() -> Dict[str, Any]:
+    from core.migrations import migration_status, missing_columns
     conn = get_conn()
     try:
-        return missing_columns(conn)
+        status = migration_status(conn)
+        status["drift"] = missing_columns(conn)
+        return status
     finally:
         conn.close()
 
 
-async def _aschema_drift() -> List[str]:
-    return await asyncio.to_thread(_schema_drift)
+async def _aschema_status() -> Dict[str, Any]:
+    return await asyncio.to_thread(_schema_status)
 
 
 @app.get("/api/health/deep")
@@ -559,7 +573,9 @@ async def get_health_deep():
     # failed (disk full, perms, bad DDL), EXPECTED columns will be missing and
     # routes touching them will 500. Report it here instead of failing silently.
     try:
-        gaps = await _aschema_drift()
+        schema = await _aschema_status()
+        gaps = list(schema.get("drift") or [])
+        result["schema"] = schema
         result["schemaDrift"] = gaps
         if gaps:
             result["ok"] = False

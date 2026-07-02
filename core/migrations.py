@@ -28,7 +28,8 @@ Usage:
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
+import time
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 log = logging.getLogger("browserai.migrations")
 
@@ -104,6 +105,134 @@ def register_table(table: str, columns: Dict[str, str]) -> None:
     """Register/extend expected columns for a table (idempotent)."""
     EXPECTED.setdefault(table, {}).update(columns)
 
+
+# Monotonic migration ledger. These are deliberately small, additive and
+# idempotent: every step may be run against an already-upgraded DB without
+# changing data. The ledger gives production a durable record of *which* schema
+# steps have completed, instead of relying only on scattered CREATE IF NOT EXISTS
+# calls and PRAGMA drift checks.
+Migration = Tuple[int, str, Callable[[object], None]]
+
+
+def _create_schema_migrations(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            id         INTEGER PRIMARY KEY,
+            name       TEXT NOT NULL UNIQUE,
+            applied_at INTEGER NOT NULL
+        )
+        """
+    )
+
+
+def _migration_core_columns(conn) -> None:
+    ensure_columns(conn)
+
+
+def _migration_operational_indexes(conn) -> None:
+    # These operational tables historically lived in core/server.py and were
+    # created lazily by endpoint helpers. Create their minimal current shape
+    # here before adding indexes so startup migrations work on fresh DBs too.
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS app_kv (
+          key TEXT PRIMARY KEY,
+          value_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+          endpoint TEXT PRIMARY KEY,
+          user_id TEXT,
+          data_json TEXT NOT NULL DEFAULT '{}',
+          created_at INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS checkpoints (
+          id TEXT PRIMARY KEY,
+          chat_id TEXT NOT NULL,
+          step INTEGER NOT NULL,
+          label TEXT NOT NULL DEFAULT '',
+          files_json TEXT NOT NULL DEFAULT '[]',
+          created_at INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS agent_tool_ledger (
+          id TEXT PRIMARY KEY,
+          chat_id TEXT,
+          conversation_id TEXT,
+          user_id TEXT,
+          event TEXT NOT NULL DEFAULT '',
+          tool_name TEXT,
+          step INTEGER,
+          data_json TEXT NOT NULL DEFAULT '{}',
+          created_at INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS keys_active_idx ON keys(is_active, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS checkpoints_chat_step_idx ON checkpoints(chat_id, step DESC, created_at DESC);
+        CREATE INDEX IF NOT EXISTS agent_tool_ledger_chat_idx ON agent_tool_ledger(chat_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS agent_tool_ledger_conversation_idx ON agent_tool_ledger(conversation_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS push_subscriptions_user_idx ON push_subscriptions(user_id, updated_at DESC);
+        """
+    )
+
+
+MIGRATIONS: Sequence[Migration] = (
+    (1, "core_expected_columns", _migration_core_columns),
+    (2, "operational_indexes", _migration_operational_indexes),
+)
+
+
+def applied_migrations(conn) -> List[Dict[str, object]]:
+    """Return applied migration records ordered by id."""
+    _create_schema_migrations(conn)
+    rows = conn.execute(
+        "SELECT id, name, applied_at FROM schema_migrations ORDER BY id"
+    ).fetchall()
+    return [{"id": int(r[0]), "name": str(r[1]), "applied_at": int(r[2])} for r in rows]
+
+
+def migration_status(conn) -> Dict[str, object]:
+    """Compact status for health checks / diagnostics."""
+    rows = applied_migrations(conn)
+    latest = rows[-1] if rows else None
+    expected_ids = [mid for mid, _name, _fn in MIGRATIONS]
+    applied_ids = {int(r["id"]) for r in rows}
+    pending = [mid for mid in expected_ids if mid not in applied_ids]
+    return {
+        "applied": len(rows),
+        "latest": latest,
+        "pending": pending,
+        "expected": len(MIGRATIONS),
+    }
+
+
+def run_startup_migrations(conn) -> List[int]:
+    """Apply pending startup migrations and record them in schema_migrations.
+
+    Only successful migrations are inserted into the ledger. A failed migration
+    is logged and re-raised so startup/deep-health can surface it instead of
+    pretending the schema is current.
+    """
+    _create_schema_migrations(conn)
+    applied_ids = {
+        int(r[0]) for r in conn.execute("SELECT id FROM schema_migrations").fetchall()
+    }
+    newly_applied: List[int] = []
+    for mid, name, fn in MIGRATIONS:
+        if mid in applied_ids:
+            continue
+        try:
+            fn(conn)
+            conn.execute(
+                "INSERT INTO schema_migrations (id, name, applied_at) VALUES (?, ?, ?)",
+                (mid, name, int(time.time() * 1000)),
+            )
+            newly_applied.append(mid)
+            log.info("schema migration applied: %s %s", mid, name)
+        except Exception:
+            log.exception("schema migration failed: %s %s", mid, name)
+            raise
+    return newly_applied
 
 def ensure_columns(conn, table: Optional[str] = None) -> int:
     """Add any expected columns missing from the live DB.
