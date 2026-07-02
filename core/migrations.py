@@ -27,7 +27,10 @@ Usage:
 """
 from __future__ import annotations
 
-from typing import Dict, Optional
+import logging
+from typing import Dict, List, Optional
+
+log = logging.getLogger("browserai.migrations")
 
 
 # Registry: table -> {column_name: full SQL column definition}.
@@ -129,7 +132,35 @@ def ensure_columns(conn, table: Optional[str] = None) -> int:
                 try:
                     conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {ddl}")
                     added += 1
-                except Exception:
-                    # Best-effort: never crash startup over a migration.
-                    pass
+                    log.info("migration: added column %s.%s", tbl, name)
+                except Exception as e:
+                    # Best-effort: never crash startup over a migration — but a
+                    # silently-swallowed failure is exactly how the original
+                    # agent_runs outage stayed invisible (Sonnet review #10).
+                    # Log loudly so a real failure (disk full, perms, bad DDL)
+                    # is discoverable instead of surfacing later as a 500.
+                    log.error("migration FAILED for %s.%s (%s): %s", tbl, name, ddl, e)
     return added
+
+
+def missing_columns(conn) -> List[str]:
+    """Return "table.column" for every EXPECTED column absent from the live DB.
+
+    Used as a post-migration health assertion: after ensure_columns() runs, this
+    should be empty. A non-empty result means a migration failed (see #10) and
+    routes touching those columns will 500 — surface it via /api/health.
+    """
+    gaps: List[str] = []
+    for tbl, columns in EXPECTED.items():
+        try:
+            existing = {
+                row[1] for row in conn.execute(f"PRAGMA table_info({tbl})").fetchall()
+            }
+        except Exception:
+            continue
+        if not existing:
+            continue  # table not created yet; not a drift
+        for name in columns:
+            if name not in existing:
+                gaps.append(f"{tbl}.{name}")
+    return gaps

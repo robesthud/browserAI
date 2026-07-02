@@ -441,6 +441,22 @@ async def get_health_deep():
     Returns 200 with status=ready, or 503 with status=degraded so a
     load-balancer / uptime check can act on it."""
     result = await _deep_health(OPENHANDS_SERVER)
+    # Sonnet review #10: surface schema drift. If a self-healing migration
+    # failed (disk full, perms, bad DDL), EXPECTED columns will be missing and
+    # routes touching them will 500. Report it here instead of failing silently.
+    try:
+        from core.migrations import missing_columns
+        conn = get_conn()
+        try:
+            gaps = missing_columns(conn)
+        finally:
+            conn.close()
+        result["schemaDrift"] = gaps
+        if gaps:
+            result["ok"] = False
+            result["status"] = "degraded"
+    except Exception as e:
+        result["schemaDrift"] = f"check_failed: {e}"
     return JSONResponse(result, status_code=200 if result.get("ok") else 503)
 
 

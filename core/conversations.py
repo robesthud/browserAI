@@ -209,21 +209,12 @@ async def get_or_create_conversation(
         cid = mapping["conversation_id"]
         if await conversation_alive(client, oh_url, cid):
             last_id = mapping.get("last_event_id", -1) or -1
-            try:
-                r = await client.get(
-                    f"{oh_url}/api/conversations/{cid}/events?reverse=true&limit=1",
-                    timeout=10.0,
-                )
-                if r.status_code == 200:
-                    body = r.json()
-                    events = body if isinstance(body, list) else (
-                        body.get("events") or body.get("results") or []
-                    )
-                    if events:
-                        last_id = max(int(e.get("id", -1)) for e in events)
-                        update_last_event(chat_id, last_id)
-            except Exception:
-                pass
+            # NOTE (seam-hardening, Sonnet review #1): we intentionally do NOT
+            # peek OpenHands' latest event id and write it back here. Doing so
+            # advanced chat_conversations.last_event_id past the unseen tail of a
+            # previously-broken stream — silently reopening the Bug 2.2 event-loss
+            # class right next to the done-gated fix in _stream_chat. This path is
+            # now READ-ONLY for the cursor; _stream_chat is the single writer.
 
             # Idempotency guard: if the same turn_id was already accepted
             # and the run is still in-flight, skip re-sending the message.

@@ -243,18 +243,14 @@ def upsert_key(k: Dict[str, Any]) -> List[Dict[str, Any]]:
                 old_models = json.loads(existing_row["available_models"] or "[]")
             except Exception:
                 old_models = []
-            if old_models:
-                merged = list(incoming_models)
-                seen = set(merged)
-                for m in old_models:
-                    if m not in seen:
-                        merged.append(m); seen.add(m)
-                # Only replace if new list is strictly bigger or strictly different;
-                # never let it shrink below the existing size.
-                if len(incoming_models) < len(old_models):
-                    incoming_models = merged
-                else:
-                    incoming_models = merged
+            # Sonnet review #7: the previous merge ALWAYS grew the list (both
+            # branches of the old if/else assigned the merged list), so a user
+            # who intentionally pruned a model saw it silently reappear. Correct
+            # rule: only fall back to the stored list when the incoming one is
+            # EMPTY (the accidental-omission case the merge was meant to guard).
+            # A non-empty incoming list is the user's explicit intent — trust it.
+            if not incoming_models and old_models:
+                incoming_models = old_models
 
         name             = k.get("name", "")
         base_url         = k.get("baseUrl", "")
