@@ -192,3 +192,10 @@ def test_poll_events_stops_before_io_when_client_disconnected():
             await gen.__anext__()
 
     asyncio.run(run())
+
+
+def test_stream_rechunk_delay_disabled_by_default():
+    # Audit hardening: do not artificially slow already-complete OpenHands
+    # assistant messages unless an operator opts in via env.
+    import core.server as server
+    assert server.STREAM_CHUNK_DELAY == 0

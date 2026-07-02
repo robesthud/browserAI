@@ -192,10 +192,12 @@ EVENT_POLL_TIMEOUT_S = int(os.environ.get("BROWSERAI_EVENT_POLL_TIMEOUT_S", "900
 OPENHANDS_STREAM_TRANSPORT = os.environ.get("BROWSERAI_OPENHANDS_STREAM_TRANSPORT", "auto").lower()
 # Step 10.1 — progressive output. OpenHands' event API delivers the assistant
 # message as one complete chunk (no token stream), so we re-chunk it server-side
-# into small deltas with light pacing for a typewriter feel. Tunable/disableable.
+# into small deltas. Keep artificial pacing disabled by default to avoid
+# stretching large completed responses and holding SSE connections open; set
+# BROWSERAI_STREAM_CHUNK_DELAY>0 explicitly to restore typewriter pacing.
 STREAM_RECHUNK = os.environ.get("BROWSERAI_STREAM_RECHUNK", "1") not in ("0", "false", "False")
 STREAM_CHUNK_CHARS = int(os.environ.get("BROWSERAI_STREAM_CHUNK_CHARS", "24"))
-STREAM_CHUNK_DELAY = float(os.environ.get("BROWSERAI_STREAM_CHUNK_DELAY", "0.02"))
+STREAM_CHUNK_DELAY = float(os.environ.get("BROWSERAI_STREAM_CHUNK_DELAY", "0"))
 STREAM_RECHUNK_MIN = int(os.environ.get("BROWSERAI_STREAM_RECHUNK_MIN", "48"))
 
 # Phase 2.1 — per-chat stream lock. OpenHands conversations are stateful; two
