@@ -38,7 +38,6 @@ HOST_WORKSPACE_ROOT = os.environ.get(
     "BROWSERAI_HOST_WORKSPACE_ROOT"
     ) or os.environ.get("WORKSPACE_DIR") or os.path.join(os.environ.get("DATA_DIR", "/opt/browserai-data"), "workspace")
 SANDBOX_DIR = CONTAINER_WORKSPACE_ROOT / "_sandbox"
-USE_LEGACY_ISOLATION = os.environ.get("BROWSERAI_USE_ISOLATION", "0").lower() in {"1", "true", "yes", "on"}
 
 
 def _toml_quote(value: str) -> str:
@@ -80,19 +79,4 @@ def ensure_openhands_config() -> str:
     return str(CONFIG_PATH)
 
 
-async def remount_runtime_async(conversation_id: str, chat_id: str) -> bool:
-    """Deprecated compatibility shim.
 
-    The old implementation used docker inspect/stop/rm/create from inside the
-    BrowserAI container. Phase 2.3 intentionally disables that path. Callers may
-    keep awaiting this function during transition; it only ensures config exists.
-    """
-    ensure_openhands_config()
-    if USE_LEGACY_ISOLATION:
-        log.warning(
-            "BROWSERAI_USE_ISOLATION=1 requested for cid=%s chat_id=%s, but "
-            "legacy Docker remount is removed. Using config.toml isolation instead.",
-            conversation_id,
-            chat_id,
-        )
-    return True

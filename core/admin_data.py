@@ -208,30 +208,6 @@ def _empty_cost() -> Dict[str, Any]:
     return {"calls": 0, "promptTokens": 0, "completionTokens": 0, "costUsd": 0.0}
 
 
-def record_spend(
-    user_id: str,
-    chat_id: str,
-    model: str,
-    prompt_tokens: int,
-    completion_tokens: int,
-    cost_usd: float = 0.0,
-) -> None:
-    """Append a spend row (called from the chat path when llm_metrics seen)."""
-    conn = get_conn()
-    try:
-        if not _table_exists(conn, "llm_spend"):
-            return
-        conn.execute(
-            "INSERT INTO llm_spend (user_id, chat_id, ts, model, prompt_tokens, completion_tokens, cost_usd) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (user_id or "", chat_id or "", _now(), model or "", int(prompt_tokens or 0),
-             int(completion_tokens or 0), float(cost_usd or 0.0)),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Notifications
 # ─────────────────────────────────────────────────────────────────────────────

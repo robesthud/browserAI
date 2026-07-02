@@ -346,11 +346,6 @@ def _resolve_provider(body: Dict[str, Any], user: Optional[Dict[str, Any]] = Non
     return out
 
 
-def _qualify_model(base_url: str, model: str) -> str:
-    # Thin wrapper kept for backwards-compat with any external imports.
-    return provs.qualify_model(base_url, model)
-
-
 def _history_to_prompt(history: List[Dict[str, Any]]) -> str:
     """Find the latest user turn to drive OpenHands. We do NOT replay history
     into OpenHands every call — instead the UI maintains its own chat thread
@@ -1334,18 +1329,6 @@ async def _push_oh_settings(
 
 # Note: conversation create/start/reuse is delegated to core.conversations.
 # Kept as a thin alias only for legacy callers/tests.
-async def _create_and_start(
-    client: httpx.AsyncClient,
-    prompt: str,
-    extra_system: str = "",
-    chat_id: str = "",
-    user_id: Optional[str] = None,
-) -> Tuple[str, bool, int]:
-    return await get_or_create_conversation(
-        client, OPENHANDS_SERVER, chat_id, user_id, prompt, extra_system
-    )
-
-
 import re as _re
 
 _THINK_PAIR_RE = _re.compile(r"<think>(.*?)</think>", _re.DOTALL)
@@ -2942,21 +2925,6 @@ def _is_private_url(hostname: str) -> bool:
     return hostname.lower() in blocked_hosts
 
 
-def _assert_url_safe(url: str) -> str:
-    """Validate a URL for outbound fetches. Raises HTTPException on SSRF risk."""
-    if not url:
-        raise HTTPException(status_code=400, detail="url_required")
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise HTTPException(status_code=400, detail="unsupported_url")
-    host = parsed.hostname or ""
-    if not host:
-        raise HTTPException(status_code=400, detail="invalid_url")
-    if _is_private_url(host):
-        raise HTTPException(status_code=400, detail="internal_url_blocked")
-    return url
-
-
 async def _download_url_into(parent: Path, url: str, branch: str = "", strip_top_level: bool = False) -> Dict[str, Any]:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -3165,10 +3133,6 @@ def _workspace_snapshot(root: Path) -> Tuple[str, Dict[str, str]]:
     except Exception:
         return "0:0:0:error", files
     return f"{count}:{total}:{newest}", files
-
-
-def _workspace_revision(root: Path) -> str:
-    return _workspace_snapshot(root)[0]
 
 
 @app.get("/api/workspace")
