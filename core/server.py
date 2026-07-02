@@ -534,6 +534,19 @@ async def get_health():
     }
 
 
+def _schema_drift() -> List[str]:
+    from core.migrations import missing_columns
+    conn = get_conn()
+    try:
+        return missing_columns(conn)
+    finally:
+        conn.close()
+
+
+async def _aschema_drift() -> List[str]:
+    return await asyncio.to_thread(_schema_drift)
+
+
 @app.get("/api/health/deep")
 async def get_health_deep():
     """Step 10.5 — deep readiness probe (db, OpenHands, active key, disk>5GB).
@@ -544,12 +557,7 @@ async def get_health_deep():
     # failed (disk full, perms, bad DDL), EXPECTED columns will be missing and
     # routes touching them will 500. Report it here instead of failing silently.
     try:
-        from core.migrations import missing_columns
-        conn = get_conn()
-        try:
-            gaps = missing_columns(conn)
-        finally:
-            conn.close()
+        gaps = await _aschema_drift()
         result["schemaDrift"] = gaps
         if gaps:
             result["ok"] = False
@@ -1010,6 +1018,24 @@ def _mapping_by_conversation_id() -> Dict[str, str]:
         conn.close()
 
 
+async def _amapping_by_conversation_id() -> Dict[str, str]:
+    return await asyncio.to_thread(_mapping_by_conversation_id)
+
+
+def _mapped_chat_ids() -> set:
+    init_conversations_schema()
+    conn = get_conn()
+    try:
+        rows = conn.execute("SELECT chat_id FROM chat_conversations").fetchall()
+        return {r[0] for r in rows}
+    finally:
+        conn.close()
+
+
+async def _amapped_chat_ids() -> set:
+    return await asyncio.to_thread(_mapped_chat_ids)
+
+
 def _last_oh_event_id(events: List[Dict[str, Any]]) -> int:
     vals = []
     for e in events or []:
@@ -1075,7 +1101,7 @@ async def _fetch_oh_conversations_for_cloud(limit: int = 100) -> List[Dict[str, 
     list. We merge the OH list into /api/cloud so login/reload shows both.
     """
     chats: List[Dict[str, Any]] = []
-    mapping_by_cid = _mapping_by_conversation_id()
+    mapping_by_cid = await _amapping_by_conversation_id()
     async with httpx.AsyncClient(timeout=20.0) as client:
         page_id: Optional[str] = None
         fetched = 0
@@ -3311,13 +3337,8 @@ async def workspace_cleanup(request: Request):
     chats_root = _WORKSPACE_ROOT / "chats"
     if not chats_root.exists():
         return {"ok": True, "removed": [], "kept": []}
-    # Get all mapped chat_ids from DB
-    conn = get_conn()
-    try:
-        rows = conn.execute("SELECT chat_id FROM chat_conversations").fetchall()
-        mapped = {r[0] for r in rows}
-    finally:
-        conn.close()
+    # Get all mapped chat_ids from DB without blocking the event loop.
+    mapped = await _amapped_chat_ids()
     removed = []
     kept = []
     for d in sorted(chats_root.iterdir()):
@@ -3665,6 +3686,10 @@ def _init_ops_schema() -> None:
         conn.close()
 
 
+async def _ainit_ops_schema() -> None:
+    return await asyncio.to_thread(_init_ops_schema)
+
+
 def _kv_get(key: str, default: Any = None) -> Any:
     _init_ops_schema()
     conn = get_conn()
@@ -3739,16 +3764,7 @@ def _mcp_save(data: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
-@app.on_event("startup")
-async def _startup_ops_schema() -> None:
-    try:
-        _init_ops_schema()
-    except Exception as e:
-        log.warning("ops schema init failed: %s", e)
-
-
-@app.get("/api/checkpoints/{chat_id}")
-async def checkpoints_list(chat_id: str):
+def _checkpoints_list_sync(chat_id: str) -> Dict[str, Any]:
     _init_ops_schema()
     conn = get_conn()
     try:
@@ -3767,7 +3783,6 @@ async def checkpoints_list(chat_id: str):
                     "ts": r["created_at"],
                 })
         else:
-            # Legacy Node-era schema: one row per file snapshot
             rows = conn.execute(
                 "SELECT step, label, ts, file_path FROM checkpoints WHERE chat_id=? ORDER BY step DESC, ts DESC LIMIT 500",
                 (chat_id,),
@@ -3783,9 +3798,11 @@ async def checkpoints_list(chat_id: str):
         conn.close()
 
 
-@app.post("/api/checkpoints")
-async def checkpoints_create(request: Request):
-    body = await request.json()
+async def _acheckpoints_list(chat_id: str) -> Dict[str, Any]:
+    return await asyncio.to_thread(_checkpoints_list_sync, chat_id)
+
+
+def _checkpoints_create_sync(body: Dict[str, Any]) -> Dict[str, Any]:
     chat_id = body.get("chatId") or body.get("chat_id")
     if not chat_id:
         raise HTTPException(status_code=400, detail="chatId required")
@@ -3805,8 +3822,6 @@ async def checkpoints_create(request: Request):
                 (cid, chat_id, step, label, json.dumps(files, ensure_ascii=False), now),
             )
         else:
-            # Legacy schema: one row per file. If no files supplied, store a
-            # metadata marker path so the checkpoint still appears in UI.
             for fp in (files or ["(manual checkpoint)"]):
                 conn.execute(
                     "INSERT INTO checkpoints (chat_id,step,ts,label,file_path,revision_id) VALUES (?,?,?,?,?,?)",
@@ -3816,6 +3831,70 @@ async def checkpoints_create(request: Request):
         return {"ok": True, "checkpoint": {"id": cid, "chatId": chat_id, "step": step, "label": label, "files": files, "fileCount": len(files), "ts": now}}
     finally:
         conn.close()
+
+
+async def _acheckpoints_create(body: Dict[str, Any]) -> Dict[str, Any]:
+    return await asyncio.to_thread(_checkpoints_create_sync, body)
+
+
+def _push_subscribe_sync(user_id: Optional[str], body: Dict[str, Any]) -> Dict[str, Any]:
+    endpoint = body.get("endpoint") or (body.get("subscription") or {}).get("endpoint")
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="endpoint required")
+    _init_ops_schema()
+    now = int(time.time() * 1000)
+    conn = get_conn()
+    try:
+        conn.execute(
+            "INSERT INTO push_subscriptions (endpoint,user_id,data_json,created_at,updated_at) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id, data_json=excluded.data_json, updated_at=excluded.updated_at",
+            (endpoint, user_id, json.dumps(body, ensure_ascii=False), now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "subscribed": True}
+
+
+async def _apush_subscribe(user_id: Optional[str], body: Dict[str, Any]) -> Dict[str, Any]:
+    return await asyncio.to_thread(_push_subscribe_sync, user_id, body)
+
+
+def _push_unsubscribe_sync(body: Dict[str, Any]) -> Dict[str, Any]:
+    endpoint = body.get("endpoint") or (body.get("subscription") or {}).get("endpoint")
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="endpoint required")
+    _init_ops_schema()
+    conn = get_conn()
+    try:
+        cur = conn.execute("DELETE FROM push_subscriptions WHERE endpoint=?", (endpoint,))
+        conn.commit()
+        return {"ok": True, "removed": cur.rowcount}
+    finally:
+        conn.close()
+
+
+async def _apush_unsubscribe(body: Dict[str, Any]) -> Dict[str, Any]:
+    return await asyncio.to_thread(_push_unsubscribe_sync, body)
+
+
+@app.on_event("startup")
+async def _startup_ops_schema() -> None:
+    try:
+        await _ainit_ops_schema()
+    except Exception as e:
+        log.warning("ops schema init failed: %s", e)
+
+
+@app.get("/api/checkpoints/{chat_id}")
+async def checkpoints_list(chat_id: str):
+    return await _acheckpoints_list(chat_id)
+
+
+@app.post("/api/checkpoints")
+async def checkpoints_create(request: Request):
+    body = await request.json()
+    return await _acheckpoints_create(body)
 
 
 @app.post("/api/checkpoints/{chat_id}/restore")
@@ -3910,39 +3989,15 @@ async def push_vapid():
 
 @app.post("/api/push/subscribe")
 async def push_subscribe(request: Request):
-    _init_ops_schema()
     user = current_user(request)
     body = await request.json()
-    endpoint = body.get("endpoint") or (body.get("subscription") or {}).get("endpoint")
-    if not endpoint:
-        raise HTTPException(status_code=400, detail="endpoint required")
-    now = int(time.time() * 1000)
-    conn = get_conn()
-    try:
-        conn.execute(
-            "INSERT INTO push_subscriptions (endpoint,user_id,data_json,created_at,updated_at) VALUES (?,?,?,?,?) "
-            "ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id, data_json=excluded.data_json, updated_at=excluded.updated_at",
-            (endpoint, (user or {}).get("id"), json.dumps(body, ensure_ascii=False), now, now),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return {"ok": True, "subscribed": True}
+    return await _apush_subscribe((user or {}).get("id"), body)
 
 
 @app.post("/api/push/unsubscribe")
 async def push_unsubscribe(request: Request):
     body = await request.json()
-    endpoint = body.get("endpoint") or (body.get("subscription") or {}).get("endpoint")
-    if not endpoint:
-        raise HTTPException(status_code=400, detail="endpoint required")
-    conn = get_conn()
-    try:
-        cur = conn.execute("DELETE FROM push_subscriptions WHERE endpoint=?", (endpoint,))
-        conn.commit()
-        return {"ok": True, "removed": cur.rowcount}
-    finally:
-        conn.close()
+    return await _apush_unsubscribe(body)
 
 
 @app.post("/api/push/test")
