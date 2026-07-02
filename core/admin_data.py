@@ -13,7 +13,9 @@ multi-user setups.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import shutil
 import time
 from typing import Any, Dict, List, Optional
 
@@ -419,8 +421,24 @@ def operator_status(user_id: str, is_owner: bool) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _sqlite_ping_sync() -> None:
+    conn = get_conn()
+    try:
+        conn.execute("SELECT 1").fetchone()
+    finally:
+        conn.close()
+
+
+async def _sqlite_ping() -> None:
+    await asyncio.to_thread(_sqlite_ping_sync)
+
+
+def _disk_free_gb(path: str = "/") -> float:
+    total, used, free = shutil.disk_usage(path)
+    return free / (1024 ** 3)
+
+
 async def gateway_status(openhands_url: str) -> Dict[str, Any]:
-    import shutil
     import httpx as _httpx
 
     services: List[Dict[str, Any]] = []
@@ -439,23 +457,20 @@ async def gateway_status(openhands_url: str) -> Dict[str, Any]:
         oh["detail"] = str(e)[:80]
     services.append(oh)
 
-    # db reachability
+    # db reachability (sqlite is sync; keep it off the event loop)
     db = {"name": "database", "status": "down", "detail": "sqlite"}
     try:
-        conn = get_conn()
-        conn.execute("SELECT 1").fetchone()
-        conn.close()
+        await _sqlite_ping()
         db["status"] = "up"
     except Exception as e:
         db["detail"] = str(e)[:80]
     services.append(db)
 
-    # disk
+    # disk stat can block on some filesystems; run it in the worker pool too.
     disk_ok = True
     disk_detail = ""
     try:
-        total, used, free = shutil.disk_usage("/")
-        free_gb = free / (1024 ** 3)
+        free_gb = await asyncio.to_thread(_disk_free_gb, "/")
         disk_ok = free_gb > 2.0
         disk_detail = f"{free_gb:.1f} GB free"
     except Exception as e:
@@ -474,18 +489,15 @@ async def deep_health(openhands_url: str) -> Dict[str, Any]:
     The shallow /api/health stays as the UI online/offline signal; this is for
     ops dashboards and load-balancer readiness.
     """
-    import shutil
     import httpx as _httpx
     from core.database import get_active_key
 
     checks: List[Dict[str, Any]] = []
 
-    # 1) database
+    # 1) database (sqlite is sync; keep it off the event loop)
     db = {"name": "database", "ok": False, "detail": "sqlite"}
     try:
-        conn = get_conn()
-        conn.execute("SELECT 1").fetchone()
-        conn.close()
+        await _sqlite_ping()
         db["ok"] = True
     except Exception as e:
         db["detail"] = str(e)[:120]
@@ -502,10 +514,10 @@ async def deep_health(openhands_url: str) -> Dict[str, Any]:
         oh["detail"] = str(e)[:120]
     checks.append(oh)
 
-    # 3) active LLM key configured
+    # 3) active LLM key configured (sqlite-backed)
     key = {"name": "llm_key", "ok": False, "detail": "no active key"}
     try:
-        ak = get_active_key(include_secret=True)
+        ak = await asyncio.to_thread(get_active_key, include_secret=True)
         if ak and (ak.get("apiKey") or ak.get("secret")):
             key["ok"] = True
             key["detail"] = f"provider={ak.get('provider') or ak.get('type') or 'unknown'}"
@@ -518,8 +530,7 @@ async def deep_health(openhands_url: str) -> Dict[str, Any]:
     # 4) free disk > 5 GB
     disk = {"name": "disk", "ok": False, "detail": ""}
     try:
-        total, used, free = shutil.disk_usage("/")
-        free_gb = free / (1024 ** 3)
+        free_gb = await asyncio.to_thread(_disk_free_gb, "/")
         disk["ok"] = free_gb > 5.0
         disk["detail"] = f"{free_gb:.1f} GB free"
     except Exception as e:

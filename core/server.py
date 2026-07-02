@@ -3296,7 +3296,7 @@ async def _download_url_into(parent: Path, url: str, branch: str = "", strip_top
         raise HTTPException(status_code=400, detail="unsupported_url")
     if _is_private_url(parsed.hostname or ""):
         raise HTTPException(status_code=400, detail="internal_url_blocked")
-    parent.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(parent.mkdir, parents=True, exist_ok=True)
 
     # GitHub repository URL: clone it. This is the path used by the UI's
     # "Import GitHub" button.

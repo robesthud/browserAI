@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 import time
@@ -11,6 +12,12 @@ import httpx
 
 def _now() -> int:
     return int(time.time() * 1000)
+
+
+def _save_generated_image(path: str, data: bytes) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'wb') as f:
+        f.write(data)
 
 
 async def web_search(query: str, limit: int = 8) -> List[Dict[str, Any]]:
@@ -103,7 +110,7 @@ async def generate_image(
     prompt = (prompt or '').strip()
     if not prompt:
         raise ValueError('prompt required')
-    os.makedirs(workspace_dir, exist_ok=True)
+    await asyncio.to_thread(os.makedirs, workspace_dir, exist_ok=True)
 
     base_url = (provider or {}).get('baseUrl') or ''
     api_key = (provider or {}).get('apiKey') or ''
@@ -142,8 +149,7 @@ async def generate_image(
             saved_path = ''
             if b64:
                 saved_path = os.path.join(workspace_dir, f'generated-{file_id}.png')
-                with open(saved_path, 'wb') as f:
-                    f.write(base64.b64decode(b64))
+                await asyncio.to_thread(_save_generated_image, saved_path, base64.b64decode(b64))
             elif img_url:
                 # download to workspace
                 try:
@@ -151,8 +157,7 @@ async def generate_image(
                         ir = await dl.get(img_url)
                         if ir.status_code < 400:
                             saved_path = os.path.join(workspace_dir, f'generated-{file_id}.png')
-                            with open(saved_path, 'wb') as f:
-                                f.write(ir.content)
+                            await asyncio.to_thread(_save_generated_image, saved_path, ir.content)
                 except Exception:
                     saved_path = ''
 
