@@ -2412,25 +2412,42 @@ async def agent_answer(request: Request):
     cid = q.get("conversation_id")
     chat_id = q.get("chat_id")
     if cid:
-        async with httpx.AsyncClient() as client:
+        # Sonnet #2: serialize the answer relay through the SAME per-chat lock
+        # that _locked_stream_chat uses. Previously this POSTed to the OpenHands
+        # conversation with no lock, so an answer could interleave with a
+        # concurrent turn for the same chat_id (two unsynchronized user messages
+        # into one conversation). Bounded acquire so we never hang the request.
+        lock = _stream_lock_for(chat_id) if chat_id else None
+        acquired = False
+        if lock is not None:
             try:
-                await client.post(
-                    f"{OPENHANDS_SERVER}/api/conversations/{cid}/message",
-                    json={"message": f"User answered question '{q.get('question')}': {text}"},
-                    timeout=15.0,
-                )
-                # Bug #3: the agent has resumed working on this conversation, so
-                # mark the run "running" again. It was set to "awaiting_input"
-                # when the question paused the turn; without this the Stop
-                # button would stay a no-op (already_finished) while the agent
-                # is actively running post-answer.
-                if chat_id:
-                    try:
-                        set_run_status(chat_id, "running")
-                    except Exception:
-                        pass
-            except Exception as e:
-                log.warning("agent answer relay failed: %s", e)
+                await asyncio.wait_for(lock.acquire(), timeout=5.0)
+                acquired = True
+            except asyncio.TimeoutError:
+                log.warning("agent_answer: lock busy for chat_id=%s; relaying without lock", chat_id)
+        try:
+            async with httpx.AsyncClient() as client:
+                try:
+                    await client.post(
+                        f"{OPENHANDS_SERVER}/api/conversations/{cid}/message",
+                        json={"message": f"User answered question '{q.get('question')}': {text}"},
+                        timeout=15.0,
+                    )
+                    # Bug #3: the agent has resumed working on this conversation,
+                    # so mark the run "running" again. It was "awaiting_input"
+                    # while the question paused the turn; without this the Stop
+                    # button would stay a no-op (already_finished) while the agent
+                    # is actively running post-answer.
+                    if chat_id:
+                        try:
+                            set_run_status(chat_id, "running")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    log.warning("agent answer relay failed: %s", e)
+        finally:
+            if acquired and lock is not None:
+                lock.release()
     return {"ok": True, "question": saved, "resumed": bool(cid)}
 
 

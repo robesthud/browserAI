@@ -122,26 +122,45 @@ def drop_mapping(chat_id: str) -> None:
         conn.close()
 
 
-async def conversation_alive(client: httpx.AsyncClient, oh_url: str, cid: str) -> bool:
+async def conversation_status(client: httpx.AsyncClient, oh_url: str, cid: str) -> str:
+    """Probe an OpenHands conversation and classify the result (Sonnet #8).
+
+    Returns one of:
+      "alive"   — conversation exists and is usable.
+      "gone"    — confirmed absent (404, JSON null, ERROR/DELETED status). Safe
+                  to drop the local mapping and start fresh.
+      "unknown" — transport error / 5xx / timeout. The conversation MIGHT still
+                  exist (OpenHands restart, brief overload); the caller must NOT
+                  drop the mapping — that would permanently discard history on a
+                  transient blip. Retry/backoff instead.
+    """
     try:
         r = await client.get(f"{oh_url}/api/conversations/{cid}", timeout=5.0)
         if r.status_code == 404:
-            return False
+            return "gone"
         if r.status_code >= 500:
-            return False
+            return "unknown"  # transient: OH overloaded/restarting
         body = r.json() or {}
         if not isinstance(body, dict):
-            return False
+            return "gone"
         # OpenHands can return HTTP 200 with JSON null for conversations that
-        # disappeared after container restart. Treat that as stale mapping.
+        # disappeared after container restart. Treat that as confirmed gone.
         if not (body.get("conversation_id") or body.get("id") or body.get("conversation_status")):
-            return False
+            return "gone"
         if body.get("conversation_status") in ("ERROR", "DELETED"):
-            return False
-        return True
+            return "gone"
+        return "alive"
     except Exception as e:
-        log.warning("conversation_alive probe failed for %s: %s", cid, e)
-        return False
+        # Transport error (connection reset, timeout, DNS). NOT proof the
+        # conversation is gone — could be an OpenHands restart mid-request.
+        log.warning("conversation_status probe transient error for %s: %s", cid, e)
+        return "unknown"
+
+
+async def conversation_alive(client: httpx.AsyncClient, oh_url: str, cid: str) -> bool:
+    """Back-compat boolean wrapper. Treats "unknown" (transient) as alive so a
+    blip never triggers mapping deletion via this path."""
+    return (await conversation_status(client, oh_url, cid)) != "gone"
 
 
 async def _send_initial_message(
@@ -207,7 +226,17 @@ async def get_or_create_conversation(
     mapping = get_mapping(chat_id) if chat_id else None
     if mapping:
         cid = mapping["conversation_id"]
-        if await conversation_alive(client, oh_url, cid):
+        status = await conversation_status(client, oh_url, cid)
+        if status == "unknown":
+            # Sonnet #8: transient OpenHands error (5xx / restart / timeout). Do
+            # NOT drop the mapping — that would permanently discard conversation
+            # history on a blip. Keep the mapping and signal a retryable error so
+            # the client reconnects to the SAME conversation.
+            raise RuntimeError(
+                f"OpenHands temporarily unavailable for conversation {cid}; "
+                "keeping mapping, retry shortly"
+            )
+        if status == "alive":
             last_id = mapping.get("last_event_id", -1) or -1
             # NOTE (seam-hardening, Sonnet review #1): we intentionally do NOT
             # peek OpenHands' latest event id and write it back here. Doing so
@@ -224,7 +253,7 @@ async def get_or_create_conversation(
                 run = get_run(chat_id)
                 if (run
                     and run.get("last_turn_id") == turn_id
-                    and run.get("status") in ("running", "paused")):
+                    and run.get("status") in ("running", "paused", "awaiting_input")):
                     log.info("duplicate turn_id=%s for chat_id=%s — skipping re-send", turn_id, chat_id)
                     return cid, False, last_id
 

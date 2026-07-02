@@ -33,6 +33,14 @@ recommended action order.
 
 ### DONE (deployed)
 - **#1, #7, #10** — Tier-1, deployed (commit e98d409).
+- **#8 ✅** — `conversation_status()` tri-state (alive/gone/unknown). Transient
+  5xx/timeout/exception → "unknown": mapping is NOT dropped (raise retryable
+  error) so an OpenHands restart no longer discards conversation history. Only
+  confirmed-gone (404/null/DELETED) drops. `conversation_alive` kept as a
+  back-compat wrapper (unknown→alive). Tests: test_conversation_status.py (8).
+- **#2 ✅** — `agent_answer` now relays through `_stream_lock_for(chat_id)`
+  (bounded 5s acquire), so an answer can't interleave with a concurrent turn's
+  message into the same conversation.
 - **#3 ✅ backend** — run status is now `awaiting_input` when a turn pauses for a
   question (not `done`), and `agent_answer` sets it back to `running` after
   relaying. This un-breaks Stop on a resumed turn (the already_finished guard no
