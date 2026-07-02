@@ -171,6 +171,36 @@ async def conversation_alive(client: httpx.AsyncClient, oh_url: str, cid: str) -
     return (await conversation_status(client, oh_url, cid)) != "gone"
 
 
+async def conversation_has_agent_activity(client: httpx.AsyncClient, oh_url: str, cid: str) -> bool:
+    """True if the conversation has actually run the agent at least once.
+
+    A conversation pre-created by /api/workspace/chat/init is 'alive' and
+    'started' but EMPTY — it has only environment/loading + awaiting_user_input
+    events, no agent turn. Posting /message to such a shell records the user
+    message but never wakes the agent (OpenHands only runs the agent loop from
+    an initial_user_msg at creation, or from a message while actively running).
+    So we must detect the empty shell and recreate it fresh instead of POSTing
+    into the dead conversation (root cause of 'agent finished with no text').
+    """
+    try:
+        r = await client.get(f"{oh_url}/api/conversations/{cid}/events?limit=100", timeout=10.0)
+        if r.status_code != 200:
+            return False
+        body = r.json()
+        evs = body if isinstance(body, list) else (body.get("events") or body.get("results") or [])
+        for e in evs:
+            # An agent-sourced event (message/action) OR any assistant/tool
+            # observation means the loop actually ran here before.
+            if e.get("source") == "agent":
+                return True
+            if e.get("observation") in ("assistant", "run", "read", "write", "browse", "recall"):
+                return True
+        return False
+    except Exception:
+        # On probe failure, assume it HAS activity (safer: don't wipe history).
+        return True
+
+
 async def _send_initial_message(
     client: httpx.AsyncClient,
     oh_url: str,
@@ -244,7 +274,16 @@ async def get_or_create_conversation(
                 f"OpenHands temporarily unavailable for conversation {cid}; "
                 "keeping mapping, retry shortly"
             )
-        if status == "alive":
+        if status == "alive" and not await conversation_has_agent_activity(client, oh_url, cid):
+            # Root-cause fix ("agent finished with no text"): the mapping points
+            # at an EMPTY conversation that /api/workspace/chat/init pre-created
+            # and started but never ran the agent in. Posting /message here is a
+            # no-op that just flips it to awaiting_user_input. Drop this shell and
+            # fall through to fresh-create with initial_user_msg, which actually
+            # triggers the agent loop.
+            log.info("empty pre-created conversation for chat_id=%s cid=%s — recreating with initial_user_msg", chat_id, cid)
+            drop_mapping(chat_id)
+        elif status == "alive":
             last_id = mapping.get("last_event_id", -1) or -1
             # NOTE (seam-hardening, Sonnet review #1): we intentionally do NOT
             # peek OpenHands' latest event id and write it back here. Doing so
