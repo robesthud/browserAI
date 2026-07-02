@@ -32,7 +32,7 @@ function humanReason(reason = '') {
 }
 
 export default function AgentEvidenceBlock({ finalStatus, collapsed = true, summary = null }) {
-  const fs = finalStatus || {}
+  const fs = useMemo(() => finalStatus || {}, [finalStatus])
   const status = useMemo(() => classifyEvidenceStatus(fs), [fs])
   const [open, setOpen] = useState(!collapsed ? status.tone === 'unknown' : false)
   const ss = useMemo(() => summarizeEvidence(fs, summary), [fs, summary])

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 /**
  * Cline-style session checkpoints.
@@ -17,7 +17,7 @@ export default function CheckpointsTray({ chatId, open, onClose }) {
   const [busy, setBusy] = useState(null) // step currently being restored
   const [toast, setToast] = useState(null)
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     if (!chatId) return
     setLoading(true)
     try {
@@ -27,8 +27,8 @@ export default function CheckpointsTray({ chatId, open, onClose }) {
       setItems(j.checkpoints || [])
     } catch { setItems([]) }
     finally { setLoading(false) }
-  }
-  useEffect(() => { if (open) refresh() }, [open, chatId])
+  }, [chatId])
+  useEffect(() => { if (open) refresh() }, [open, refresh])
 
   const restore = async (step) => {
     if (!chatId) return

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { SLASH_COMMANDS } from '../lib/slashCommands.js'
 
 /**
@@ -50,41 +50,44 @@ export default function SlashAutocomplete({ text, caret, chatId, onAccept, onClo
       } catch { /* ignore */ }
     })()
     return () => { alive = false }
-  }, [mode, chatId])
+  }, [mode, chatId, files.length])
 
   // Reset active row when filter changes.
   useEffect(() => { setActive(0) }, [fragment, mode])
 
   // Compute current list.
-  let rows = []
-  if (mode === 'slash') {
-    const f = fragment.toLowerCase()
-    rows = SLASH_COMMANDS.filter((c) => c.name.slice(1).startsWith(f)).slice(0, 8)
-      .map((c) => ({ label: c.name, hint: c.hint, replacement: c.name + (c.name === '/model' ? ' ' : '') }))
-  } else if (mode === 'mention') {
-    const f = fragment.toLowerCase()
-    rows = files
-      .filter((p) => p.toLowerCase().includes(f))
-      .sort((a, b) => {
-        // Prefer paths where the segment is at the start of basename.
-        const aBase = a.split('/').pop().toLowerCase()
-        const bBase = b.split('/').pop().toLowerCase()
-        const aStart = aBase.startsWith(f) ? 0 : 1
-        const bStart = bBase.startsWith(f) ? 0 : 1
-        if (aStart !== bStart) return aStart - bStart
-        return a.length - b.length
-      })
-      .slice(0, 8)
-      .map((p) => ({ label: p, hint: '', replacement: '@' + (p.includes(' ') ? `"${p}"` : p) + ' ' }))
-  }
+  const rows = useMemo(() => {
+    if (mode === 'slash') {
+      const f = fragment.toLowerCase()
+      return SLASH_COMMANDS.filter((c) => c.name.slice(1).startsWith(f)).slice(0, 8)
+        .map((c) => ({ label: c.name, hint: c.hint, replacement: c.name + (c.name === '/model' ? ' ' : '') }))
+    }
+    if (mode === 'mention') {
+      const f = fragment.toLowerCase()
+      return files
+        .filter((p) => p.toLowerCase().includes(f))
+        .sort((a, b) => {
+          // Prefer paths where the segment is at the start of basename.
+          const aBase = a.split('/').pop().toLowerCase()
+          const bBase = b.split('/').pop().toLowerCase()
+          const aStart = aBase.startsWith(f) ? 0 : 1
+          const bStart = bBase.startsWith(f) ? 0 : 1
+          if (aStart !== bStart) return aStart - bStart
+          return a.length - b.length
+        })
+        .slice(0, 8)
+        .map((p) => ({ label: p, hint: '', replacement: '@' + (p.includes(' ') ? `"${p}"` : p) + ' ' }))
+    }
+    return []
+  }, [mode, fragment, files])
 
-  const accept = (row) => {
+  const accept = useCallback((row) => {
     if (!row) return
     const startToken = mode === 'slash' ? slashMatch.index + (slashMatch[1] === '\n' ? 1 : 0)
                                         : mentionMatch.index + (mentionMatch[0].startsWith(' ') ? 1 : 0)
     const newText = text.slice(0, startToken) + row.replacement + text.slice(caret)
     onAccept?.(newText, startToken + row.replacement.length)
-  }
+  }, [mode, slashMatch, mentionMatch, text, caret, onAccept])
 
   // Keyboard handler attached on the parent's textarea via a window listener.
   useEffect(() => {
@@ -100,7 +103,7 @@ export default function SlashAutocomplete({ text, caret, chatId, onAccept, onClo
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [mode, rows, active])
+  }, [mode, rows, active, accept, onClose])
 
   if (!mode || rows.length === 0) return null
 

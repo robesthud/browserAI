@@ -23,11 +23,13 @@ export default defineConfig([
       // and are not runtime correctness checks. Keep the canonical Hooks rules
       // from the plugin, but do not emit CI warnings for these migration hints.
       'react-hooks/set-state-in-effect': 'off',
-      'react-hooks/exhaustive-deps': 'off',
+      'react-hooks/exhaustive-deps': 'error',
       'react-hooks/immutability': 'off',
       'react-hooks/purity': 'off',
       'react-hooks/preserve-manual-memoization': 'off',
       'react-hooks/refs': 'off',
+      'react-refresh/only-export-components': 'off',
+      'no-empty': ['error', { allowEmptyCatch: true }],
     },
   },
   // Бэкенд (Node.js)

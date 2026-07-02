@@ -11,8 +11,7 @@
  *   detail: optional WipBanner detail
  *   hideIfAllStub: if true AND all paths are pure stubs, render nothing
  *                  (useful for entirely non-functional panels in non-devtools)
- *   devtoolsOnly: if true, only render children when devtools is enabled
- */
+ * */
 
 import WipBanner from './WipBanner.jsx'
 
@@ -24,14 +23,11 @@ export default function WipGuard({
   title,
   detail,
   hideIfAllStub = false,
-  devtoolsOnly = false,
 }) {
   if (!paths.length) return children
 
   const anyWip = paths.some(p => isWip(p))
   const allStub = paths.length > 0 && paths.every(p => isStub(p))
-  const anySemiButNotFull = paths.some(p => isWip(p) && !isStub(p))
-
   // If all paths are pure stubs and hideIfAllStub is set, render nothing
   if (allStub && hideIfAllStub) {
     return (

@@ -76,7 +76,7 @@ function BrowserApp({ user, reloadAuth }) {
   const [collapsed, setCollapsed] = useState(() => typeof window !== 'undefined' ? window.innerWidth < 768 : false)
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [workspaceAiBusy, setWorkspaceAiBusy] = useState(false)
+  const [workspaceAiBusy] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [checkpointsOpen, setCheckpointsOpen] = useState(false)
   const [flash, setFlash] = useState(null)

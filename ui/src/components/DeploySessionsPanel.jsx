@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import OperatorReportModal from './OperatorReportModal.jsx'
 
 async function api(path, options = {}) {
@@ -26,20 +26,22 @@ export default function DeploySessionsPanel() {
   const [busy, setBusy] = useState(false)
   const [reportTarget, setReportTarget] = useState(null)
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     try {
       const data = await api('/api/operator/deploy-sessions?limit=10')
       setSessions(data.sessions || [])
       setError('')
     } catch (e) { setError(e.message || String(e)) }
-  }
+  }, [])
+
+  const hasActiveSession = useMemo(() => sessions.some((s) => ['queued', 'running'].includes(s.status)), [sessions])
   useEffect(() => {
     let dead = false
     const tick = async () => { if (!dead) await refresh() }
     tick()
-    const id = setInterval(tick, sessions.some((s) => ['queued', 'running'].includes(s.status)) ? 2500 : 8000)
+    const id = setInterval(tick, hasActiveSession ? 2500 : 8000)
     return () => { dead = true; clearInterval(id) }
-  }, [sessions.length])
+  }, [refresh, hasActiveSession])
 
   const startDeploy = async () => {
     const ok = window.confirm('Start safe deploy session? This will run deploy_safe and health/log checks.')

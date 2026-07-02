@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import FileTree from './FileTree.jsx'
 import { serializeUploadFiles, workspaceApi } from '../lib/workspace.js'
 import { useWorkspace } from '../lib/useWorkspace.js'
@@ -86,8 +86,8 @@ export default function OpenHandsWorkspace({
   }, [chatId, isOpen])
 
   const {
-    tree, setTree, loadingFiles, filesError, setFilesError,
-    revision: treeRevision, fileRevisions, refreshFilesNow, refreshFiles, setSelectedFileRef,
+    tree, loadingFiles, filesError, setFilesError,
+    revision: treeRevision, refreshFilesNow, refreshFiles, setSelectedFileRef,
   } = useWorkspace({ chatId, isOpen, aiWorking, workspaceRevision, activeTab, refreshTerminal })
 
   useEffect(() => { setSelectedFileRef(selectedFile) }, [selectedFile, setSelectedFileRef])
@@ -126,7 +126,7 @@ export default function OpenHandsWorkspace({
     }
   }
 
-  const saveFile = async () => {
+  const saveFile = useCallback(async () => {
     if (!selectedFile?.path) return
     setSaveError('')
     try {
@@ -137,7 +137,7 @@ export default function OpenHandsWorkspace({
     } catch (e) {
       setSaveError(e.message || 'save failed')
     }
-  }
+  }, [selectedFile?.path, chatId, fileContent, refreshFiles])
 
   // Ctrl+S
   useEffect(() => {
@@ -148,7 +148,7 @@ export default function OpenHandsWorkspace({
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
-  }, [selectedFile, dirty, fileContent])
+  }, [selectedFile, dirty, saveFile])
 
   const uploadFiles = async (fileList, parentPath = '') => {
     if (!fileList?.length) return
@@ -257,7 +257,7 @@ export default function OpenHandsWorkspace({
     window.open(`/api/workspace/download${p}`, '_blank')
   }
 
-  const nodes = tree?.children || []
+  const nodes = useMemo(() => tree?.children || [], [tree?.children])
   const fileCount = useMemo(() => {
     let n = 0
     const walk = (arr) => { for (const x of arr || []) { if (x.type === 'file') n++; if (x.children) walk(x.children) } }

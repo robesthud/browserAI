@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import OperatorMissionTimeline from './OperatorMissionTimeline.jsx'
 import OperatorReportModal from './OperatorReportModal.jsx'
 
@@ -50,7 +50,7 @@ export default function OperatorMissionDetail() {
   const activeId = selectedId || missions[0]?.id || ''
   const activeStatus = selected?.superWorkflow?.status || selected?.codeTask?.status || selected?.workflow?.status || selected?.job?.status || selected?.status || ''
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     try {
       const list = await api('/api/operator/missions?limit=30')
       const ms = list.missions || []
@@ -62,14 +62,14 @@ export default function OperatorMissionDetail() {
       }
       setError('')
     } catch (e) { setError(e.message || String(e)) }
-  }
+  }, [selectedId])
   useEffect(() => {
     let dead = false
     const tick = async () => { if (!dead) await refresh() }
     tick()
     const id = setInterval(tick, ['queued', 'running', 'waiting_code', 'reviewing', 'finalizing', 'waiting_ci', 'auto_fixing', 'merging', 'deploying'].includes(activeStatus) ? 2500 : 8000)
     return () => { dead = true; clearInterval(id) }
-  }, [selectedId, activeStatus])
+  }, [refresh, activeStatus])
 
   const codeTask = selected?.codeTask || selected?.superWorkflow?.codeTask
   const deploySession = selected?.superWorkflow?.deploySession

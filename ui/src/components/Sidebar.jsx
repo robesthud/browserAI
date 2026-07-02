@@ -11,7 +11,6 @@ import JobsTray from './JobsTray.jsx'
 import AgentTasksTray from './AgentTasksTray.jsx'
 import PushToggle from './PushToggle.jsx'
 import NotificationBadge from './NotificationBadge.jsx'
-import WipBanner from './WipBanner.jsx'
 import { useStubStatus } from '../lib/useStubStatus.js'
 
 function formatChatTime(ts) {

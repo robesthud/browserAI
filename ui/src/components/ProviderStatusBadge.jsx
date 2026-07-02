@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 /**
  * ProviderStatusBadge — Sprint C
@@ -8,7 +8,7 @@ import { useEffect, useState } from 'react'
 
 export default function ProviderStatusBadge({ activeKey, agentContext, isBusy }) {
   // BUG-2 fix: track previous agentContext to detect model switch (= fallback)
-  const [prevModel, setPrevModel] = useState(null)
+  const prevModelRef = useRef(null)
   const [isFallback, setIsFallback] = useState(false)
 
   // Model from live agentContext SSE or from settings
@@ -19,16 +19,16 @@ export default function ProviderStatusBadge({ activeKey, agentContext, isBusy })
 
   useEffect(() => {
     if (!model) return
-    if (prevModel && prevModel !== model) {
+    if (prevModelRef.current && prevModelRef.current !== model) {
       // Model changed mid-session → this is a fallback switch
       setIsFallback(true)
     }
-    setPrevModel(model)
-  }, [model])  
+    prevModelRef.current = model
+  }, [model])
 
   // Reset fallback indicator when a new chat/session starts (agentContext becomes null)
   useEffect(() => {
-    if (!agentContext) { setIsFallback(false); setPrevModel(null) }
+    if (!agentContext) { setIsFallback(false); prevModelRef.current = null }
   }, [agentContext])
 
   if (!shortModel) return null

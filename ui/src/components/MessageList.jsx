@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from 'react'
-import { IconFile, IconCopy, IconEdit, IconRefresh, IconCheck } from '../icons.jsx'
+import { IconFile, IconCopy, IconEdit, IconRefresh } from '../icons.jsx'
 import { formatSize } from '../lib/files.js'
 import Markdown from '../lib/markdown.jsx'
 import AgentToolBlock from './AgentToolBlock.jsx'
@@ -12,7 +12,6 @@ import JobCard from './JobCard.jsx'
 import SubAgentsPanel from './SubAgentsPanel.jsx'  // Sprint 4C
 import AgentEvidenceBlock from './AgentEvidenceBlock.jsx'  // Approach 7 — Trust UX
 import RunResumeCard from './RunResumeCard.jsx'  // Approach 7 — Stream resilience
-import ResultFilesBlock from './ResultFilesBlock.jsx'
 // import usePullToRefresh from '../lib/usePullToRefresh.js'
 import useSwipeActions from '../lib/useSwipeActions.js'
 

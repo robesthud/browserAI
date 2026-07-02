@@ -13,7 +13,6 @@ import NotificationCenter from './NotificationCenter.jsx'
 import AgentControlPlanePanel from './AgentControlPlanePanel.jsx'
 import PolicyEditorPanel from './PolicyEditorPanel.jsx'
 import MissionDependencyGraph from './MissionDependencyGraph.jsx'
-import WipBanner from './WipBanner.jsx'
 import WipGuard from './WipGuard.jsx'
 import { useStubStatus } from '../lib/useStubStatus.js'
 

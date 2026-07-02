@@ -447,7 +447,7 @@ export function useChats(settings) {
   const stop = useCallback(() => {
     // Abort ALL in-flight streams (user clicked global Stop).
     // For per-chat stop, see the /api/agent/chat/stop call below.
-    for (const [cid, controller] of abortControllers.current) {
+    for (const controller of abortControllers.current.values()) {
       try { controller.abort() } catch {}
     }
     abortControllers.current.clear()
@@ -670,7 +670,7 @@ export function useChats(settings) {
         markStreaming(chatId, false)
       }
     },
-    [activeId, newChat, settings],
+    [activeId, newChat, settings, markStreaming],
   )
 
   // ── Agent mode: streams /api/agent/chat and updates the assistant
@@ -1180,7 +1180,7 @@ export function useChats(settings) {
         markStreaming(chatId, false)
       }
     },
-    [activeId, newChat, settings],
+    [activeId, newChat, settings, markStreaming],
   )
 
 
@@ -1367,7 +1367,7 @@ export function useChats(settings) {
       if (abortControllers.current.get(chatId)) abortControllers.current.delete(chatId)
       markStreaming(chatId, false)
     }
-  }, [])
+  }, [markStreaming])
 
 
   const cancelAgentQuestion = useCallback(async (chatId, messageId, questionId, reason = 'cancelled by user') => {
