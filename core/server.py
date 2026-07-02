@@ -24,6 +24,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import fnmatch
+import hashlib
+import hmac
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -39,6 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+import socket
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -249,6 +253,14 @@ async def _startup_init() -> None:
 
 
 
+@app.on_event("shutdown")
+async def _shutdown_cleanup() -> None:
+    global _shared_http_client
+    if _shared_http_client is not None and not _shared_http_client.is_closed:
+        await _shared_http_client.aclose()
+
+
+
 # CORS: must NOT be wildcard when allow_credentials is true, otherwise cookies
 # are silently dropped by browsers.
 _cors_origins = [APP_URL.rstrip("/")]
@@ -261,6 +273,44 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# P0 security hotfix: require an authenticated session for all sensitive API
+# routes. Only health, auth lifecycle, static UI, public push key and GitHub
+# webhook receiver are public. The webhook has its own HMAC guard below.
+_AUTH_PUBLIC_EXACT = {
+    "/api/health",
+    "/api/auth/me",
+    "/api/auth/register",
+    "/api/auth/login",
+    "/api/auth/forgot-password",
+    "/api/auth/reset-password",
+    "/api/auth/sms-send",
+    "/api/auth/sms-verify",
+    "/api/push/vapid",
+    "/api/webhooks/github",
+}
+_AUTH_PUBLIC_PREFIXES = (
+    "/assets/",
+    "/favicon",
+)
+
+
+def _is_public_api_route(path: str) -> bool:
+    if path in _AUTH_PUBLIC_EXACT:
+        return True
+    if path.startswith(_AUTH_PUBLIC_PREFIXES):
+        return True
+    return False
+
+
+@app.middleware("http")
+async def _api_auth_guard(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/") and not _is_public_api_route(path):
+        if not current_user(request):
+            return JSONResponse({"detail": "auth_required"}, status_code=401)
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -329,11 +379,12 @@ def _resolve_provider(body: Dict[str, Any], user: Optional[Dict[str, Any]] = Non
     if user and out.get("apiKey", "").startswith("enc:"):
         out["apiKey"] = vlt.resolve_secret(user["id"], out["apiKey"])
 
-    # Last-resort default
-    if not (out.get("apiKey") or out.get("baseUrl")):
+    # Last-resort default: only authenticated users may consume operator keys.
+    # Anonymous fallback was a billing-abuse vector (P0/P1 audit finding).
+    if not (out.get("apiKey") or out.get("baseUrl")) and user:
         active = get_active_key(include_secret=True) or {}
         if active:
-            if user and active.get("apiKey", "").startswith("enc:"):
+            if active.get("apiKey", "").startswith("enc:"):
                 active["apiKey"] = vlt.resolve_secret(user["id"], active["apiKey"])
             out.update({
                 "keyId": active.get("id"),
@@ -2241,10 +2292,49 @@ async def _locked_stream_chat(
     try:
         async for chunk in _stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id, turn_id=turn_id):
             yield chunk
+    except asyncio.CancelledError:
+        if chat_id:
+            try:
+                set_run_status(chat_id, "stopped")
+            except Exception:
+                pass
+        raise
     finally:
         # Only release if WE acquired it (never release another turn's lock).
         if acquired and lock is not None:
             lock.release()
+            try:
+                waiters = getattr(lock, "_waiters", None)
+                if not lock.locked() and not waiters and chat_id:
+                    _chat_stream_locks.pop(str(chat_id or "").strip() or "__default__", None)
+            except Exception:
+                pass
+
+
+async def _client_aware_locked_stream(
+    request: Request,
+    chat_id: str,
+    model: str,
+    prompt: str,
+    extra_system: str,
+    provider: Dict[str, Any],
+    user_id: Optional[str] = None,
+    turn_id: str = "",
+) -> AsyncIterator[bytes]:
+    try:
+        async for chunk in _locked_stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id, turn_id=turn_id):
+            if await request.is_disconnected():
+                raise asyncio.CancelledError()
+            yield chunk
+    except asyncio.CancelledError:
+        log.info("client disconnected from stream chat_id=%s", chat_id)
+        if chat_id:
+            try:
+                set_run_status(chat_id, "stopped")
+            except Exception:
+                pass
+        raise
+
 
 
 @app.post("/api/agent/chat")
@@ -2278,7 +2368,7 @@ async def agent_chat(request: Request):
         return StreamingResponse(_err_stream(), media_type="text/event-stream")
 
     return StreamingResponse(
-        _locked_stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id, turn_id=turn_id),
+        _client_aware_locked_stream(request, chat_id, model, prompt, extra_system, provider, user_id=user_id, turn_id=turn_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
@@ -2904,26 +2994,81 @@ def _copy_tree_contents(src: Path, dst: Path) -> None:
 
 
 def _is_private_url(hostname: str) -> bool:
-    """Block requests to private/loopback/link-local IPs and cloud metadata."""
-    import socket, ipaddress
-    try:
-        results = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-        for _fam, _type, _proto, _canonname, sockaddr in results:
-            ip = ipaddress.ip_address(sockaddr[0])
-            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-                return True
-            # Cloud metadata endpoints
-            if str(ip) in ("169.254.169.254", "fd00:ec2::254"):
-                return True
-    except socket.gaierror:
-        pass
+    """Fail-closed block for private/loopback/link-local/reserved hosts."""
+    host = (hostname or "").strip().strip("[]").lower()
+    if not host:
+        return True
     blocked_hosts = {
+        "localhost",
         "metadata.google.internal",
-        "169.254.169.254",
         "metadata.aws.internal",
-        "169.254.169.253",  # GCP
+        "169.254.169.254",
+        "169.254.169.253",
+        "fd00:ec2::254",
     }
-    return hostname.lower() in blocked_hosts
+    if host in blocked_hosts:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast
+    except ValueError:
+        pass
+    try:
+        results = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror:
+        return True
+    except Exception:
+        return True
+    if not results:
+        return True
+    for _fam, _type, _proto, _canonname, sockaddr in results:
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except Exception:
+            return True
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return True
+        if str(ip) in ("169.254.169.254", "169.254.169.253", "fd00:ec2::254"):
+            return True
+    return False
+
+
+def _is_url_private_or_invalid(url: str) -> bool:
+    parsed = urlparse(url or "")
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return True
+    return _is_private_url(parsed.hostname)
+
+
+def _is_github_host(host: str) -> bool:
+    h = (host or "").lower().strip().strip("[]")
+    if ":" in h and not h.count(":") > 1:
+        h = h.rsplit(":", 1)[0]
+    return h == "github.com" or h.endswith(".github.com")
+
+
+async def _run_subprocess(cmd: List[str], timeout: int = 180) -> Tuple[int, str, str]:
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise
+    return proc.returncode, stdout_b.decode(errors="replace"), stderr_b.decode(errors="replace")
+
+
+def _assert_archive_member_safe(out: Path, name: str) -> Path:
+    member_path = (out / name).resolve()
+    try:
+        member_path.relative_to(out.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="archive_contains_path_traversal")
+    return member_path
 
 
 async def _download_url_into(parent: Path, url: str, branch: str = "", strip_top_level: bool = False) -> Dict[str, Any]:
@@ -2938,7 +3083,7 @@ async def _download_url_into(parent: Path, url: str, branch: str = "", strip_top
     # "Import GitHub" button.
     host = parsed.netloc.lower()
     parts = [p for p in parsed.path.strip("/").split("/") if p]
-    is_github_repo = host.endswith("github.com") and len(parts) >= 2 and (len(parts) == 2 or parts[2] in ("tree", "blob"))
+    is_github_repo = _is_github_host(host) and len(parts) >= 2 and (len(parts) == 2 or parts[2] in ("tree", "blob"))
     if is_github_repo and (len(parts) == 2 or parts[2] == "tree"):
         repo = f"https://github.com/{parts[0]}/{parts[1].removesuffix('.git')}.git"
         ref = branch or (parts[3] if len(parts) >= 4 and parts[2] == "tree" else "")
@@ -2950,9 +3095,9 @@ async def _download_url_into(parent: Path, url: str, branch: str = "", strip_top
             if ref:
                 cmd += ["--branch", ref]
             cmd += [repo, str(tmp)]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-            if proc.returncode != 0:
-                raise HTTPException(status_code=502, detail=(proc.stderr or proc.stdout)[-800:])
+            returncode, stdout, stderr = await _run_subprocess(cmd, timeout=180)
+            if returncode != 0:
+                raise HTTPException(status_code=502, detail=(stderr or stdout)[-800:])
             shutil.rmtree(tmp / ".git", ignore_errors=True)
             if strip_top_level:
                 _copy_tree_contents(tmp, parent)
@@ -2965,7 +3110,7 @@ async def _download_url_into(parent: Path, url: str, branch: str = "", strip_top
         return {"ok": True, "kind": "git", "path": str(dest.relative_to(parent)).replace("\\", "/") if dest != parent else ""}
 
     # GitHub blob URL: rewrite to raw URL.
-    if host.endswith("github.com") and len(parts) >= 5 and parts[2] == "blob":
+    if _is_github_host(host) and len(parts) >= 5 and parts[2] == "blob":
         raw_path = "/".join(parts[4:])
         url = f"https://raw.githubusercontent.com/{parts[0]}/{parts[1]}/{parts[3]}/{raw_path}"
         filename = parts[-1]
@@ -2987,9 +3132,7 @@ async def _download_url_into(parent: Path, url: str, branch: str = "", strip_top
         out.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(dest) as z:
             for member in z.infolist():
-                member_path = (out / member.filename).resolve()
-                if not str(member_path).startswith(str(out.resolve())):
-                    raise HTTPException(status_code=400, detail="archive_contains_path_traversal")
+                _assert_archive_member_safe(out, member.filename)
                 z.extract(member, out)
         return {"ok": True, "kind": "zip", "path": str(out.relative_to(parent)).replace("\\", "/")}
     if lower.endswith((".tar", ".tar.gz", ".tgz")):
@@ -2997,9 +3140,9 @@ async def _download_url_into(parent: Path, url: str, branch: str = "", strip_top
         out.mkdir(parents=True, exist_ok=True)
         with tarfile.open(dest) as t:
             for member in t.getmembers():
-                member_path = (out / member.name).resolve()
-                if not str(member_path).startswith(str(out.resolve())):
-                    raise HTTPException(status_code=400, detail="archive_contains_path_traversal")
+                _assert_archive_member_safe(out, member.name)
+                if getattr(member, "issym", lambda: False)() or getattr(member, "islnk", lambda: False)() or getattr(member, "isdev", lambda: False)():
+                    raise HTTPException(status_code=400, detail="archive_contains_unsafe_member")
                 t.extract(member, out)
         return {"ok": True, "kind": "tar", "path": str(out.relative_to(parent)).replace("\\", "/")}
     return {"ok": True, "kind": "file", "path": str(dest.relative_to(parent)).replace("\\", "/"), "size": len(data)}
@@ -3331,13 +3474,11 @@ async def workspace_diff(request: Request, path: str = "", limit: int = 500, run
     # If the chat workspace is a git repo, return a lightweight diff list;
     # otherwise an empty list keeps the BrowserAI diff modal usable.
     try:
-        proc = subprocess.run(
+        returncode, stdout, _stderr = await _run_subprocess(
             ["git", "-C", str(base), "diff", "--", _safe_rel(path, allow_empty=True)],
-            capture_output=True,
-            text=True,
             timeout=20,
         )
-        text = proc.stdout if proc.returncode == 0 else ""
+        text = stdout if returncode == 0 else ""
     except Exception:
         text = ""
     return {"ok": True, "diffs": [{"path": path or ".", "diff": text[:200_000]}] if text else []}
@@ -3724,7 +3865,7 @@ async def github_webhook_secret_set(request: Request):
     body = await request.json()
     secret = body.get("secret") or ""
     cfg = _kv_get("github_webhook", {}) or {}
-    cfg["secret"] = "***" if secret else ""
+    cfg["secret"] = secret if secret else ""
     cfg["hasSecret"] = bool(secret)
     _kv_set("github_webhook", cfg)
     return {"ok": True, "hasSecret": bool(secret)}
@@ -3734,8 +3875,19 @@ async def github_webhook_secret_set(request: Request):
 async def github_webhook_receive(request: Request):
     event = request.headers.get("X-GitHub-Event") or "unknown"
     delivery = request.headers.get("X-GitHub-Delivery") or ""
+    raw = await request.body()
+    cfg = _kv_get("github_webhook", {}) or {}
+    secret = os.environ.get("GITHUB_WEBHOOK_SECRET") or cfg.get("secret") or ""
+    # If a webhook secret is configured, require GitHub's HMAC signature.
+    if secret and secret != "***":
+        sig = request.headers.get("X-Hub-Signature-256") or ""
+        expected = "sha256=" + hmac.new(str(secret).encode(), raw, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            raise HTTPException(status_code=401, detail="invalid_signature")
+    elif os.environ.get("BROWSERAI_REQUIRE_GITHUB_WEBHOOK_SECRET", "1") not in ("0", "false", "False"):
+        raise HTTPException(status_code=401, detail="webhook_secret_required")
     try:
-        payload = await request.json()
+        payload = json.loads(raw.decode("utf-8") or "{}")
     except Exception:
         payload = {}
     _kv_set("github_webhook_last", {"event": event, "delivery": delivery, "ts": int(time.time() * 1000), "repository": (payload.get("repository") or {}).get("full_name")})

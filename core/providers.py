@@ -12,6 +12,9 @@ import asyncio
 import logging
 import os
 import time
+import ipaddress
+import socket
+from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -20,6 +23,36 @@ log = logging.getLogger("browserai.providers")
 
 _MODELS_CACHE: Dict[str, Dict[str, Any]] = {}
 _MODELS_TTL = int(os.environ.get("BROWSERAI_MODELS_TTL", "3600"))
+
+
+def _is_private_base_url(base_url: str) -> bool:
+    parsed = urlparse(base_url or "")
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return True
+    host = parsed.hostname.strip("[]").lower()
+    if host in {"localhost", "metadata.google.internal", "metadata.aws.internal"}:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except Exception:
+        return True
+    if not infos:
+        return True
+    for _fam, _type, _proto, _canon, sockaddr in infos:
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except Exception:
+            return True
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return True
+        if str(ip) in ("169.254.169.254", "169.254.169.253", "fd00:ec2::254"):
+            return True
+    return False
 
 
 # Hardcoded fallbacks for providers that don't expose /models or whose
@@ -98,6 +131,9 @@ async def fetch_models(base_url: str, provider: Dict[str, Any]) -> List[str]:
     bu = (base_url or "").rstrip("/")
     if not bu:
         return []
+    if _is_private_base_url(bu):
+        log.warning("blocked private/invalid provider model URL: %s", bu)
+        return []
     cache = _MODELS_CACHE.get(bu)
     if cache and (time.time() - cache["ts"]) < _MODELS_TTL:
         return cache["models"]
@@ -158,6 +194,8 @@ async def validate_key(provider: Dict[str, Any], timeout: float = 8.0) -> Dict[s
     api_key = provider.get("apiKey") or ""
     if not base_url:
         return {"ok": False, "error": "no_base_url"}
+    if _is_private_base_url(base_url):
+        return {"ok": False, "error": "private_ip_forbidden"}
     if not api_key or api_key == "__managed__":
         # Managed keys are validated on the actual /chat path; report inconclusive.
         return {"ok": True, "managed": True}
