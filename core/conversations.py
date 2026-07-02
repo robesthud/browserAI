@@ -8,6 +8,7 @@ POST /message. Workspace mounting is handled by OpenHands config.toml
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -259,9 +260,9 @@ async def get_or_create_conversation(
     assumed to still be in flight.  This prevents duplicate user
     messages on client-side retries after connection drops.
     """
-    from core.agent_state import get_run
+    from core.agent_state import aget_run
 
-    mapping = get_mapping(chat_id) if chat_id else None
+    mapping = await aget_mapping(chat_id) if chat_id else None
     if mapping:
         cid = mapping["conversation_id"]
         status = await conversation_status(client, oh_url, cid)
@@ -282,7 +283,7 @@ async def get_or_create_conversation(
             # fall through to fresh-create with initial_user_msg, which actually
             # triggers the agent loop.
             log.info("empty pre-created conversation for chat_id=%s cid=%s — recreating with initial_user_msg", chat_id, cid)
-            drop_mapping(chat_id)
+            await adrop_mapping(chat_id)
         elif status == "alive":
             last_id = mapping.get("last_event_id", -1) or -1
             # NOTE (seam-hardening, Sonnet review #1): we intentionally do NOT
@@ -297,7 +298,7 @@ async def get_or_create_conversation(
             # This prevents duplicate prompts on client retries after
             # connection drops (common on flaky mobile networks).
             if turn_id and chat_id:
-                run = get_run(chat_id)
+                run = await aget_run(chat_id)
                 if (run
                     and run.get("last_turn_id") == turn_id
                     and run.get("status") in ("running", "paused", "awaiting_input")):
@@ -312,12 +313,12 @@ async def get_or_create_conversation(
             )
             if r.status_code >= 400:
                 log.warning("POST /message failed (%s) for cid=%s; rotating", r.status_code, cid)
-                drop_mapping(chat_id)
+                await adrop_mapping(chat_id)
             else:
                 return cid, False, last_id
         else:
             log.info("stale mapping for chat_id=%s cid=%s — recreating", chat_id, cid)
-            drop_mapping(chat_id)
+            await adrop_mapping(chat_id)
 
     # ── Create fresh conversation ──────────────────────────────────────
     # Phase 2.3 removed the runtime-remount gap. Send the first user message as
@@ -346,8 +347,29 @@ async def get_or_create_conversation(
         raise RuntimeError(f"OpenHands returned no conversation_id: {body}")
 
     if chat_id:
-        upsert_mapping(chat_id, cid, user_id)
+        await aupsert_mapping(chat_id, cid, user_id)
 
     # New conversation events all belong to this first turn; stream from the
     # beginning and let BrowserAI drop the echoed user message in _translate_event.
     return cid, True, -1
+
+
+
+# ── Async wrappers ──────────────────────────────────────────────────────────
+# Transitional sqlite3 mitigation: run blocking local DB work in a thread from
+# async OpenHands/chat paths.
+
+async def aget_mapping(chat_id: str) -> Optional[Dict[str, Any]]:
+    return await asyncio.to_thread(get_mapping, chat_id)
+
+
+async def aupsert_mapping(chat_id: str, conversation_id: str, user_id: Optional[str]) -> None:
+    return await asyncio.to_thread(upsert_mapping, chat_id, conversation_id, user_id)
+
+
+async def aupdate_last_event(chat_id: str, last_event_id: int) -> None:
+    return await asyncio.to_thread(update_last_event, chat_id, last_event_id)
+
+
+async def adrop_mapping(chat_id: str) -> None:
+    return await asyncio.to_thread(drop_mapping, chat_id)

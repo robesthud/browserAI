@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any, Dict, List, Optional
@@ -209,3 +210,40 @@ def answer_question(question_id: str, answer: Dict[str, Any]) -> Optional[Dict[s
     finally:
         conn.close()
     return get_question(question_id)
+
+
+
+# ── Async wrappers ──────────────────────────────────────────────────────────
+# Run sync sqlite3 operations outside the asyncio event loop. This is a safe
+# stepping stone before a full aiosqlite migration.
+
+async def aupsert_run(chat_id: str, conversation_id: Optional[str], user_id: Optional[str], status: str, last_prompt: str = '', last_error: str = '', last_event_id: Optional[int] = None, last_turn_id: str = '') -> None:
+    return await asyncio.to_thread(upsert_run, chat_id, conversation_id, user_id, status, last_prompt, last_error, last_event_id, last_turn_id)
+
+
+async def aset_run_status(chat_id: str, status: str, last_error: str = '') -> None:
+    return await asyncio.to_thread(set_run_status, chat_id, status, last_error)
+
+
+async def alist_runs(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(list_runs, user_id)
+
+
+async def aget_run(chat_id: str) -> Optional[Dict[str, Any]]:
+    return await asyncio.to_thread(get_run, chat_id)
+
+
+async def acreate_question(question_id: str, chat_id: str, conversation_id: Optional[str], user_id: Optional[str], question: str, options: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return await asyncio.to_thread(create_question, question_id, chat_id, conversation_id, user_id, question, options)
+
+
+async def aget_question(question_id: str) -> Optional[Dict[str, Any]]:
+    return await asyncio.to_thread(get_question, question_id)
+
+
+async def alist_questions(chat_id: Optional[str] = None, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(list_questions, chat_id, user_id)
+
+
+async def aanswer_question(question_id: str, answer: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    return await asyncio.to_thread(answer_question, question_id, answer)

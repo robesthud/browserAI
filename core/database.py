@@ -13,6 +13,7 @@ or the caller did not opt into useStoredSecret.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -380,3 +381,46 @@ def set_params(p: Dict[str, Any]) -> Dict[str, Any]:
     finally:
         conn.close()
     return get_params()
+
+
+
+# ── Async wrappers ──────────────────────────────────────────────────────────
+# Transitional mitigation for FastAPI async handlers: keep the proven sqlite3
+# implementation, but run blocking DB work in a worker thread so the event loop
+# is not stalled under slow disk / lock contention. Full aiosqlite migration can
+# build on this public async API later.
+
+async def alist_keys(include_secrets: bool = False) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(list_keys, include_secrets)
+
+
+async def aget_key(key_id: str, include_secret: bool = True) -> Optional[Dict[str, Any]]:
+    return await asyncio.to_thread(get_key, key_id, include_secret)
+
+
+async def aget_active_key(include_secret: bool = True) -> Optional[Dict[str, Any]]:
+    return await asyncio.to_thread(get_active_key, include_secret)
+
+
+async def aupsert_key(k: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(upsert_key, k)
+
+
+async def adelete_key(k_id: str) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(delete_key, k_id)
+
+
+async def aset_active_key(k_id: str) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(set_active_key, k_id)
+
+
+async def aimport_keys(keys: List[Dict[str, Any]], active_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(import_keys, keys, active_id)
+
+
+async def aget_params() -> Dict[str, Any]:
+    return await asyncio.to_thread(get_params)
+
+
+async def aset_params(p: Dict[str, Any]) -> Dict[str, Any]:
+    return await asyncio.to_thread(set_params, p)

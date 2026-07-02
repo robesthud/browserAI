@@ -54,6 +54,15 @@ from fastapi.staticfiles import StaticFiles
 from core.bridge.ws_client import OpenHandsWsUnavailable, stream_openhands_events_ws
 
 from core.database import (
+    adelete_key,
+    aget_active_key,
+    aget_key,
+    aget_params,
+    aimport_keys,
+    alist_keys,
+    aset_active_key,
+    aset_params,
+    aupsert_key,
     delete_key,
     get_active_key,
     get_conn,
@@ -96,6 +105,10 @@ from core.auth import (
     _verify_password,
 )
 from core.conversations import (
+    adrop_mapping,
+    aget_mapping,
+    aupdate_last_event,
+    aupsert_mapping,
     conversation_alive,
     drop_mapping,
     get_mapping,
@@ -105,6 +118,13 @@ from core.conversations import (
     upsert_mapping,
 )
 from core.agent_state import (
+    aanswer_question,
+    acreate_question,
+    aget_run,
+    alist_questions,
+    alist_runs,
+    aset_run_status,
+    aupsert_run,
     answer_question,
     create_question,
     get_question,
@@ -242,9 +262,9 @@ async def _startup_init() -> None:
     # Push OH settings on startup (they are lost on OH container restart)
     try:
         async with httpx.AsyncClient() as c:
-            active = get_active_key(include_secret=True)
+            active = await aget_active_key(include_secret=True)
             if active:
-                await provs.push_to_openhands(c, OPENHANDS_SERVER, active, get_params())
+                await provs.push_to_openhands(c, OPENHANDS_SERVER, active, await aget_params())
                 log.info("OH settings pushed on startup")
             else:
                 log.info("no active key found - skipping OH settings push on startup")
@@ -341,7 +361,7 @@ async def _trace_requests(request: Request, call_next):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _resolve_provider(body: Dict[str, Any], user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def _resolve_provider(body: Dict[str, Any], user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Reconstruct provider config from UI body. The UI flattens fields directly
     onto the request body of /api/agent/chat:
@@ -368,7 +388,7 @@ def _resolve_provider(body: Dict[str, Any], user: Optional[Dict[str, Any]] = Non
 
     # If caller wants stored secret, fetch it from DB with full row (secret incl.)
     if out.get("useStoredSecret") and out.get("keyId"):
-        stored = get_key(out["keyId"], include_secret=True)
+        stored = await aget_key(out["keyId"], include_secret=True)
         if stored:
             for k in ("baseUrl", "authType", "authHeader", "extraHeaders", "model"):
                 if not out.get(k):
@@ -382,7 +402,7 @@ def _resolve_provider(body: Dict[str, Any], user: Optional[Dict[str, Any]] = Non
     # Last-resort default: only authenticated users may consume operator keys.
     # Anonymous fallback was a billing-abuse vector (P0/P1 audit finding).
     if not (out.get("apiKey") or out.get("baseUrl")) and user:
-        active = get_active_key(include_secret=True) or {}
+        active = await aget_active_key(include_secret=True) or {}
         if active:
             if active.get("apiKey", "").startswith("enc:"):
                 active["apiKey"] = vlt.resolve_secret(user["id"], active["apiKey"])
@@ -514,14 +534,14 @@ async def get_health_deep():
     return JSONResponse(result, status_code=200 if result.get("ok") else 503)
 
 
-def _settings_payload(request: Request) -> Dict[str, Any]:
+async def _settings_payload(request: Request) -> Dict[str, Any]:
     user = current_user(request)
-    keys = list_keys(include_secrets=False)
+    keys, params = await asyncio.gather(alist_keys(include_secrets=False), aget_params())
     active = next((k for k in keys if k.get("isActive")), keys[0] if keys else None)
     return {
         "keys": keys,
         "activeKeyId": active["id"] if active else None,
-        "params": get_params(),
+        "params": params,
         "vault": vlt.status(user["id"]) if user else {"enabled": False, "locked": False, "available": vlt.is_available()},
     }
 
@@ -529,13 +549,13 @@ def _settings_payload(request: Request) -> Dict[str, Any]:
 @app.get("/api/settings")
 async def get_settings(request: Request):
     _require_user(request)
-    return _settings_payload(request)
+    return await _settings_payload(request)
 
 
 @app.get("/api/keys")
 async def get_keys(request: Request):
     _require_user(request)
-    keys = list_keys(include_secrets=False)
+    keys = await alist_keys(include_secrets=False)
     active = next((k for k in keys if k.get("isActive")), keys[0] if keys else None)
     return {"keys": keys, "activeKeyId": active["id"] if active else None}
 
@@ -553,7 +573,7 @@ async def post_key(request: Request):
             enc = vlt.encrypt(user["id"], data["apiKey"])
             if enc:
                 data["apiKey"] = enc
-    keys = upsert_key(data)
+    keys = await aupsert_key(data)
     active = next((k for k in keys if k.get("isActive")), keys[0] if keys else None)
     return {"keys": [_k for _k in keys], "activeKeyId": active["id"] if active else None}
 
@@ -564,7 +584,7 @@ async def keys_import(request: Request):
     body = await request.json()
     incoming = body.get("keys") or []
     active_id = body.get("activeKeyId")
-    keys = import_keys(incoming, active_id)
+    keys = await aimport_keys(incoming, active_id)
     active = next((k for k in keys if k.get("isActive")), keys[0] if keys else None)
     return {"keys": keys, "activeKeyId": active["id"] if active else None, "imported": len(incoming)}
 
@@ -572,7 +592,7 @@ async def keys_import(request: Request):
 @app.post("/api/keys/{key_id}/activate")
 async def activate_key(key_id: str, request: Request):
     _require_user(request)
-    keys = set_active_key(key_id)
+    keys = await aset_active_key(key_id)
     # Push new provider into OpenHands settings so next chat uses it
     asyncio.create_task(_sync_active_provider_to_openhands(request))
     return {"keys": keys, "activeKeyId": key_id}
@@ -598,7 +618,7 @@ async def rotate_key(request: Request):
         raise HTTPException(status_code=400, detail="apiKey (new secret) required")
 
     key_id = body.get("keyId")
-    stored = get_key(key_id, include_secret=True) if key_id else get_active_key(include_secret=True)
+    stored = await aget_key(key_id, include_secret=True) if key_id else await aget_active_key(include_secret=True)
     if not stored:
         raise HTTPException(status_code=404, detail="key not found")
     key_id = stored["id"]
@@ -642,13 +662,13 @@ async def rotate_key(request: Request):
         "model": provider["model"],
         "isActive": True,
     }
-    keys = upsert_key(record)
-    set_active_key(key_id)
+    keys = await aupsert_key(record)
+    await aset_active_key(key_id)
 
     # 3) Push to OpenHands so the next chat uses the new secret immediately.
     asyncio.create_task(_sync_active_provider_to_openhands(request))
 
-    safe_keys = list_keys(include_secrets=False)
+    safe_keys = await alist_keys(include_secrets=False)
     return {
         "ok": True,
         "stage": "rotated",
@@ -661,20 +681,20 @@ async def rotate_key(request: Request):
 
 @app.delete("/api/keys/{key_id}")
 async def remove_key(key_id: str):
-    keys = delete_key(key_id)
+    keys = await adelete_key(key_id)
     active = next((k for k in keys if k.get("isActive")), keys[0] if keys else None)
     return {"keys": keys, "activeKeyId": active["id"] if active else None}
 
 
 @app.get("/api/params")
 async def params_get():
-    return get_params()
+    return await aget_params()
 
 
 @app.put("/api/params")
 async def put_params(request: Request):
     body = await request.json()
-    p = set_params(body or {})
+    p = await aset_params(body or {})
     asyncio.create_task(_sync_active_provider_to_openhands(request))
     return {"ok": True, "params": p}
 
@@ -687,7 +707,7 @@ async def keys_validate(request: Request):
     body = await request.json()
     # Caller may send full provider dict OR {keyId} to validate stored one
     if body.get("keyId") and not body.get("apiKey"):
-        stored = get_key(body["keyId"], include_secret=True)
+        stored = await aget_key(body["keyId"], include_secret=True)
         if not stored:
             raise HTTPException(status_code=404, detail="key not found")
         provider = stored
@@ -707,14 +727,14 @@ async def keys_validate(request: Request):
 async def list_models(request: Request, baseUrl: Optional[str] = None, keyId: Optional[str] = None):
     provider: Dict[str, Any] = {"baseUrl": baseUrl or ""}
     if keyId:
-        stored = get_key(keyId, include_secret=True)
+        stored = await aget_key(keyId, include_secret=True)
         if stored:
             provider = stored
     user = current_user(request)
     if user and provider.get("apiKey", "").startswith("enc:"):
         provider["apiKey"] = vlt.resolve_secret(user["id"], provider["apiKey"])
     if not provider.get("baseUrl") and not baseUrl:
-        active = get_active_key()
+        active = await aget_active_key()
         if active:
             provider = active
     models = await provs.fetch_models(provider.get("baseUrl") or "", provider)
@@ -815,14 +835,14 @@ async def vault_restore(request: Request):
 async def _sync_active_provider_to_openhands(request: Request) -> None:
     """Fire-and-forget push of currently-active key + params to OH."""
     try:
-        active = get_active_key(include_secret=True)
+        active = await aget_active_key(include_secret=True)
         if not active:
             return
         user = current_user(request)
         if user and active.get("apiKey", "").startswith("enc:"):
             active["apiKey"] = vlt.resolve_secret(user["id"], active["apiKey"])
         async with httpx.AsyncClient() as c:
-            await provs.push_to_openhands(c, OPENHANDS_SERVER, active, get_params())
+            await provs.push_to_openhands(c, OPENHANDS_SERVER, active, await aget_params())
     except Exception as e:
         log.warning("sync_active_provider_to_openhands failed: %s", e)
 
@@ -1058,9 +1078,9 @@ async def _fetch_oh_conversations_for_cloud(limit: int = 100) -> List[Dict[str, 
                 # Keep the mapping, so selecting this imported chat and sending
                 # a new message continues the SAME OpenHands conversation.
                 try:
-                    upsert_mapping(chat_id, str(cid), None)
+                    await aupsert_mapping(chat_id, str(cid), None)
                     if events:
-                        update_last_event(chat_id, _last_oh_event_id(events))
+                        await aupdate_last_event(chat_id, _last_oh_event_id(events))
                 except Exception:
                     pass
                 chats.append({
@@ -1167,7 +1187,7 @@ async def rename_chat(chat_id: str, request: Request):
         title = title[:200]
     
     # Find OpenHands conversation_id for this BrowserAI chat_id
-    m = get_mapping(chat_id)
+    m = await aget_mapping(chat_id)
     if not m:
         # No OH conversation yet (chat never sent) — nothing to rename in OH,
         # return ok so UI can keep local title. Next /api/cloud will still
@@ -1267,7 +1287,7 @@ async def chat_messages(chat_id: str, request: Request, limit: int = 100):
     if not user:
         raise HTTPException(status_code=401, detail="auth_required")
 
-    m = get_mapping(chat_id)
+    m = await aget_mapping(chat_id)
     if not m:
         return {"messages": [], "chatId": chat_id, "conversationId": None}
 
@@ -1374,7 +1394,7 @@ async def _push_oh_settings(
 ) -> None:
     """Push the chosen LLM + global params into OpenHands. Thin wrapper
     over providers.push_to_openhands; kept for legacy import sites."""
-    ok = await provs.push_to_openhands(client, OPENHANDS_SERVER, provider, get_params())
+    ok = await provs.push_to_openhands(client, OPENHANDS_SERVER, provider, await aget_params())
     if not ok:
         log.warning("OpenHands settings push failed; agent may use stale config")
 
@@ -1754,7 +1774,7 @@ async def _prepare_openhands_turn(
     #   (b) context can be folded into conversation_instructions to appear
     #       BEFORE the new question in the LLM's transcript
     context_prefix = ""
-    mapping = get_mapping(chat_id) if chat_id else None
+    mapping = await aget_mapping(chat_id) if chat_id else None
     if mapping and mapping.get("last_event_id", -1) >= 0:
         pre_cid = mapping["conversation_id"]
         if await conversation_alive(client, OPENHANDS_SERVER, pre_cid):
@@ -1810,7 +1830,7 @@ async def _prepare_openhands_turn(
     )
 
     if chat_id:
-        upsert_run(chat_id, cid, user_id, "running", last_prompt=prompt, last_event_id=last_seen_event_id, last_turn_id=turn_id)
+        await aupsert_run(chat_id, cid, user_id, "running", last_prompt=prompt, last_event_id=last_seen_event_id, last_turn_id=turn_id)
     try:
         from core.obslog import bind_conversation as _bind_conv
         _bind_conv(cid)
@@ -1844,7 +1864,7 @@ async def _emit_translated_event(
         ev_data["step"] = step
     if ev_name in ("tool_start", "tool_result") and chat_id:
         try:
-            _ledger_tool_event(chat_id, cid, user_id, ev_name, ev_data)
+            await _aledger_tool_event(chat_id, cid, user_id, ev_name, ev_data)
         except Exception as e:
             log.debug("tool ledger skipped: %s", e)
     if ev_name == "assistant_delta":
@@ -1853,7 +1873,7 @@ async def _emit_translated_event(
             ask_payload = _extract_ask_user_payload(full_answer_ref["text"])
             if ask_payload:
                 qid = f"q_{uuid.uuid4().hex[:12]}"
-                create_question(
+                await acreate_question(
                     qid, chat_id, cid, user_id,
                     ask_payload.get("question") or "",
                     ask_payload.get("options") or [],
@@ -1924,7 +1944,7 @@ async def _poll_openhands_events(
             if r.status_code == 404:
                 yield _sse("error", {"message": "OpenHands conversation lost"}).encode("utf-8"), step, True, seen_ids
                 if chat_id:
-                    drop_mapping(chat_id)
+                    await adrop_mapping(chat_id)
                 return
             if r.status_code >= 400:
                 await _raise_if_disconnected()
@@ -2108,13 +2128,13 @@ async def _stream_chat(
         log.info("agent.stream.prepared chat_id=%s cid=%s was_created=%s last_seen=%s", chat_id, cid, was_created, last_seen_event_id)
     except HTTPException as e:
         if chat_id:
-            upsert_run(chat_id, None, user_id, "error", last_prompt=prompt, last_error=str(e.detail))
+            await aupsert_run(chat_id, None, user_id, "error", last_prompt=prompt, last_error=str(e.detail))
         yield _sse("error", {"message": str(e.detail)}).encode("utf-8")
         yield _sse("done", {"reason": "engine-error", "steps": step}).encode("utf-8")
         return
     except Exception as e:
         if chat_id:
-            upsert_run(chat_id, None, user_id, "error", last_prompt=prompt, last_error=str(e))
+            await aupsert_run(chat_id, None, user_id, "error", last_prompt=prompt, last_error=str(e))
         yield _sse("error", {"message": f"OpenHands bridge: {e}"}).encode("utf-8")
         yield _sse("done", {"reason": "engine-error", "steps": step}).encode("utf-8")
         return
@@ -2216,7 +2236,7 @@ async def _stream_chat(
                 ask_payload = _extract_ask_user_payload(clean)
                 if ask_payload:
                     qid = f"q_{uuid.uuid4().hex[:12]}"
-                    create_question(qid, chat_id, cid, user_id, ask_payload.get("question") or "", ask_payload.get("options") or [])
+                    await acreate_question(qid, chat_id, cid, user_id, ask_payload.get("question") or "", ask_payload.get("options") or [])
                     yield _sse("ask_user", {"question_id": qid, "question": ask_payload.get("question"), "options": ask_payload.get("options") or []}).encode("utf-8")
                     ask_user_sent_ref["sent"] = True
             # Bug 3.1: never surface the raw ASK_USER:{...} marker as assistant
@@ -2238,7 +2258,7 @@ async def _stream_chat(
             # skipped forever on the next turn. Leaving the cursor at its prior
             # value lets the unseen tail replay. Run status is still recorded.
             cursor = max_seen if done else last_seen_event_id
-            update_last_event(chat_id, cursor)
+            await aupdate_last_event(chat_id, cursor)
             # Bug #3 (Sonnet review): distinguish "paused for a question" from
             # "genuinely finished". If this turn ended only because the agent
             # asked the user something (ask_user_sent), the conversation is NOT
@@ -2247,14 +2267,14 @@ async def _stream_chat(
             # fact that work continues. Use "awaiting_input" so Stop/resume can
             # tell the difference.
             final_status = "awaiting_input" if ask_user_sent_ref.get("sent") else ("done" if done else "timeout")
-            set_run_status(chat_id, final_status)
-            upsert_run(chat_id, cid, user_id, final_status, last_prompt=prompt, last_event_id=cursor)
+            await aset_run_status(chat_id, final_status)
+            await aupsert_run(chat_id, cid, user_id, final_status, last_prompt=prompt, last_event_id=cursor)
         except Exception as e:
             log.warning("update_last_event failed: %s", e)
     elif chat_id:
         try:
             final_status = "awaiting_input" if ask_user_sent_ref.get("sent") else ("done" if done else "timeout")
-            set_run_status(chat_id, final_status)
+            await aset_run_status(chat_id, final_status)
         except Exception:
             pass
 
@@ -2301,7 +2321,7 @@ async def _locked_stream_chat(
             # than shouting "busy".
             if turn_id and chat_id:
                 try:
-                    run = get_run(chat_id)
+                    run = await aget_run(chat_id)
                     if run and run.get("last_turn_id") == turn_id and (run.get("status") or "").lower() in ("running", "awaiting_input", "paused"):
                         log.info("duplicate turn_id=%s hit busy lock for chat_id=%s — treating as no-op", turn_id, chat_id)
                         yield _sse("done", {"reason": "duplicate-turn", "chatId": chat_id}).encode("utf-8")
@@ -2317,7 +2337,7 @@ async def _locked_stream_chat(
     except asyncio.CancelledError:
         if chat_id:
             try:
-                set_run_status(chat_id, "stopped")
+                await aset_run_status(chat_id, "stopped")
             except Exception:
                 pass
         raise
@@ -2355,7 +2375,7 @@ async def _client_aware_locked_stream(
         log.info("client disconnected from stream chat_id=%s", chat_id)
         if chat_id:
             try:
-                set_run_status(chat_id, "stopped")
+                await aset_run_status(chat_id, "stopped")
             except Exception:
                 pass
         raise
@@ -2371,7 +2391,7 @@ async def agent_chat(request: Request):
     chat_id = body.get("chatId") or ""
     user = current_user(request)
     user_id = user["id"] if user else None
-    provider = _resolve_provider(body, user=user)
+    provider = await _resolve_provider(body, user=user)
     model = provider.get("model") or body.get("model") or DEFAULT_MODEL
     prompt = _history_to_prompt(history) or body.get("prompt") or "hi"
     turn_id = body.get("turnId") or body.get("turn_id") or ""
@@ -2426,17 +2446,17 @@ async def stop_chat(request: Request):
     chat_id = data.get("chatId") or data.get("chat_id")
     if not chat_id:
         return {"ok": False, "error": "no chatId"}
-    m = get_mapping(chat_id)
+    m = await aget_mapping(chat_id)
     if not m:
         # No mapping exists — either the run already finished or was reset.
         # Not an error per se, but nothing to stop.
-        set_run_status(chat_id, "stopped")
+        await aset_run_status(chat_id, "stopped")
         return {"ok": True, "chatId": chat_id, "conversationId": None, "stopped": False, "reason": "no_active_conversation"}
     cid = m["conversation_id"]
     # Bug 4.2: don't POST /stop for a turn that already finished. If the run is
     # in a terminal state (done/stopped/timeout/error) the agent isn't running,
     # so a stop is a no-op that only races the next turn / wastes a round-trip.
-    _run = get_run(chat_id)
+    _run = await aget_run(chat_id)
     if _run and (_run.get("status") or "").lower() in ("done", "stopped", "timeout", "error"):
         return {"ok": True, "chatId": chat_id, "conversationId": cid, "stopped": False, "reason": "already_finished"}
     async with httpx.AsyncClient() as client:
@@ -2450,7 +2470,7 @@ async def stop_chat(request: Request):
                 return {"ok": False, "error": f"OpenHands returned {r.status_code}", "conversationId": cid}
         except Exception as e:
             return {"ok": False, "error": str(e)}
-    set_run_status(chat_id, "stopped")
+    await aset_run_status(chat_id, "stopped")
     return {"ok": True, "chatId": chat_id, "conversationId": cid, "stopped": True}
 
 
@@ -2463,7 +2483,7 @@ async def stop_chat(request: Request):
 @app.get("/api/agent/questions")
 async def agent_questions(request: Request, chatId: Optional[str] = None):
     user = current_user(request)
-    items = list_questions(chat_id=chatId, user_id=(user["id"] if user and not chatId else None))
+    items = await alist_questions(chat_id=chatId, user_id=(user["id"] if user and not chatId else None))
     return {"ok": True, "items": items}
 
 
@@ -2523,7 +2543,7 @@ async def agent_answer(request: Request):
         "customResponse": body.get("customResponse"),
         "answeredBy": user["id"] if user else None,
     }
-    saved = answer_question(qid, answer)
+    saved = await aanswer_question(qid, answer)
     # Bug 3.2: build the relayed text from the ACTUAL payload the UI sends,
     # which is `answer: { selected: [ids...], custom: "..." }`. The previous
     # code only looked at customResponse/answer/selectedOptionId (none of which
@@ -2562,7 +2582,7 @@ async def agent_answer(request: Request):
                     # is actively running post-answer.
                     if chat_id:
                         try:
-                            set_run_status(chat_id, "running")
+                            await aset_run_status(chat_id, "running")
                         except Exception:
                             pass
                 except Exception as e:
@@ -2601,7 +2621,7 @@ async def _resume_stream(
         ],
     }).encode("utf-8")
 
-    mapping = get_mapping(chat_id) if chat_id else None
+    mapping = await aget_mapping(chat_id) if chat_id else None
     cid = mapping["conversation_id"] if mapping else None
     if not cid:
         yield _sse("error", {"code": "no_conversation", "message": "No conversation to resume."}).encode("utf-8")
@@ -2633,7 +2653,7 @@ async def _resume_stream(
         except asyncio.CancelledError:
             if chat_id:
                 try:
-                    set_run_status(chat_id, "stopped")
+                    await aset_run_status(chat_id, "stopped")
                 except Exception:
                     pass
             raise
@@ -2651,9 +2671,9 @@ async def _resume_stream(
         try:
             numeric_ids = [int(x) for x in final_seen_ids if str(x).lstrip("-").isdigit()]
             cursor = max(numeric_ids) if (done and numeric_ids) else last_seen_event_id
-            update_last_event(chat_id, cursor)
+            await aupdate_last_event(chat_id, cursor)
             final_status = "awaiting_input" if ask_user_sent_ref.get("sent") else ("done" if done else "timeout")
-            set_run_status(chat_id, final_status)
+            await aset_run_status(chat_id, final_status)
         except Exception as e:
             log.debug("resume cursor update skipped: %s", e)
     yield _sse("done", {"reason": "complete" if done else "timeout", "steps": step, "conversationId": cid, "resumed": True}).encode("utf-8")
@@ -2696,13 +2716,13 @@ async def agent_run_stop(chat_id: str):
     Resolves chatId -> conversation_id server-side via get_mapping().
     Checks the OpenHands response status before reporting success.
     """
-    m = get_mapping(chat_id)
+    m = await aget_mapping(chat_id)
     cid = m["conversation_id"] if m else None
     if not cid:
-        set_run_status(chat_id, "stopped")
+        await aset_run_status(chat_id, "stopped")
         return {"ok": True, "chatId": chat_id, "conversationId": None, "stopped": False, "reason": "no_active_conversation"}
     # Bug 4.2: skip the OpenHands /stop round-trip if the run already finished.
-    _run = get_run(chat_id)
+    _run = await aget_run(chat_id)
     if _run and (_run.get("status") or "").lower() in ("done", "stopped", "timeout", "error"):
         return {"ok": True, "chatId": chat_id, "conversationId": cid, "stopped": False, "reason": "already_finished"}
     async with httpx.AsyncClient() as client:
@@ -2717,7 +2737,7 @@ async def agent_run_stop(chat_id: str):
         except Exception as e:
             log.warning("agent_run_stop: failed to stop cid=%s: %s", cid, e)
             return {"ok": False, "error": str(e), "chatId": chat_id, "conversationId": cid}
-    set_run_status(chat_id, "stopped")
+    await aset_run_status(chat_id, "stopped")
     return {"ok": True, "chatId": chat_id, "conversationId": cid, "stopped": True}
 
 
@@ -2730,7 +2750,7 @@ async def agent_run_reset(chat_id: str):
     no memory of prior work.  This should only be called from an explicit
     "Discard session" UI action, NOT from the Stop button.
     """
-    m = get_mapping(chat_id)
+    m = await aget_mapping(chat_id)
     cid = m["conversation_id"] if m else None
     if cid:
         async with httpx.AsyncClient() as client:
@@ -2738,14 +2758,14 @@ async def agent_run_reset(chat_id: str):
                 await client.delete(f"{OPENHANDS_SERVER}/api/conversations/{cid}", timeout=15.0)
             except Exception:
                 pass
-    drop_mapping(chat_id)
-    set_run_status(chat_id, "reset")
+    await adrop_mapping(chat_id)
+    await aset_run_status(chat_id, "reset")
     return {"ok": True, "chatId": chat_id, "conversationId": cid, "reset": True}
 
 
 @app.get("/api/agent/runs/{chat_id}/history")
 async def agent_run_history(chat_id: str):
-    m = get_mapping(chat_id)
+    m = await aget_mapping(chat_id)
     if not m:
         return {"ok": True, "chatId": chat_id, "items": []}
     cid = m["conversation_id"]
@@ -2770,7 +2790,7 @@ async def agent_run_history(chat_id: str):
 @app.get("/api/agent/control-plane")
 async def agent_control_plane(request: Request):
     user = current_user(request)
-    runs = list_runs(user["id"] if user else None)
+    runs = await alist_runs(user["id"] if user else None)
     return {"ok": True, "runs": runs, "count": len(runs)}
 
 
@@ -2780,7 +2800,7 @@ async def agent_control_plane_action(request: Request):
     action = body.get("action")
     chat_id = body.get("chatId")
     if action == "abort" and chat_id:
-        run = get_run(chat_id)
+        run = await aget_run(chat_id)
         cid = run.get("conversation_id") if run else None
         if cid:
             async with httpx.AsyncClient() as client:
@@ -2788,13 +2808,13 @@ async def agent_control_plane_action(request: Request):
                     await client.post(f"{OPENHANDS_SERVER}/api/conversations/{cid}/stop", json={}, timeout=10.0)
                 except Exception as e:
                     return {"ok": False, "error": str(e)}
-        set_run_status(chat_id, "aborted")
+        await aset_run_status(chat_id, "aborted")
         return {"ok": True, "action": action, "chatId": chat_id}
     if action == "pause" and chat_id:
-        set_run_status(chat_id, "paused")
+        await aset_run_status(chat_id, "paused")
         return {"ok": True, "action": action, "chatId": chat_id}
     if action == "resume" and chat_id:
-        set_run_status(chat_id, "running")
+        await aset_run_status(chat_id, "running")
         return {"ok": True, "action": action, "chatId": chat_id}
     return {"ok": False, "error": "unsupported_action"}
 
@@ -2812,7 +2832,7 @@ async def agent_recipes():
 async def agent_self_test(request: Request):
     body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
     user = current_user(request)
-    provider = _resolve_provider(body, user=user)
+    provider = await _resolve_provider(body, user=user)
     model = provider.get("model") or DEFAULT_MODEL
     prompt = body.get("prompt") or "Ответь ровно словом pong"
     return StreamingResponse(
@@ -3240,7 +3260,7 @@ async def workspace_chat_delete(request: Request):
             except Exception as e:
                 log.warning("workspace chat delete: OpenHands delete failed cid=%s: %s", cid, e)
         try:
-            drop_mapping(chat_id)
+            await adrop_mapping(chat_id)
         except Exception:
             pass
     return {"ok": True, "chatId": chat_id, "conversationId": cid, "deletedOpenHands": deleted_oh, "workspacePreserved": True}
@@ -3652,6 +3672,18 @@ def _ledger_tool_event(chat_id: str, conversation_id: Optional[str], user_id: Op
         conn.close()
 
 
+async def _akv_get(key: str, default: Any = None) -> Any:
+    return await asyncio.to_thread(_kv_get, key, default)
+
+
+async def _akv_set(key: str, value: Any) -> Any:
+    return await asyncio.to_thread(_kv_set, key, value)
+
+
+async def _aledger_tool_event(chat_id: str, conversation_id: Optional[str], user_id: Optional[str], event: str, data: Dict[str, Any]) -> None:
+    return await asyncio.to_thread(_ledger_tool_event, chat_id, conversation_id, user_id, event, data)
+
+
 def _mcp_load() -> Dict[str, Any]:
     try:
         if os.path.exists(_MCP_CONFIG_PATH):
@@ -3825,13 +3857,13 @@ async def mcp_restart():
 @app.get("/api/approval/policy")
 async def approval_policy_get():
     default = {"read":"auto", "write":"ask", "net":"ask", "bash":"ask", "git":"ask", "mcp":"ask", "deploy":"ask"}
-    return {"ok": True, "policy": _kv_get("approval_policy", default)}
+    return {"ok": True, "policy": await _akv_get("approval_policy", default)}
 
 
 @app.post("/api/approval/policy")
 async def approval_policy_set(request: Request):
     body = await request.json()
-    return {"ok": True, "policy": _kv_set("approval_policy", body.get("policy") or body)}
+    return {"ok": True, "policy": await _akv_set("approval_policy", body.get("policy") or body)}
 
 
 @app.get("/api/push/vapid")
@@ -3884,16 +3916,16 @@ async def push_test():
 
 @app.get("/api/webhooks/github/config")
 async def github_webhook_config():
-    cfg = _kv_get("github_webhook", {}) or {}
+    cfg = await _akv_get("github_webhook", {}) or {}
     return {"ok": True, "configured": bool(cfg.get("secret") or os.environ.get("GITHUB_WEBHOOK_SECRET")), "events": cfg.get("events") or ["push", "pull_request"], "hasSecret": bool(cfg.get("secret") or os.environ.get("GITHUB_WEBHOOK_SECRET"))}
 
 
 @app.post("/api/webhooks/github/config")
 async def github_webhook_config_set(request: Request):
     body = await request.json()
-    cfg = _kv_get("github_webhook", {}) or {}
+    cfg = await _akv_get("github_webhook", {}) or {}
     cfg.update({k: v for k, v in body.items() if k != "secret"})
-    _kv_set("github_webhook", cfg)
+    await _akv_set("github_webhook", cfg)
     return await github_webhook_config()
 
 
@@ -3901,10 +3933,10 @@ async def github_webhook_config_set(request: Request):
 async def github_webhook_secret_set(request: Request):
     body = await request.json()
     secret = body.get("secret") or ""
-    cfg = _kv_get("github_webhook", {}) or {}
+    cfg = await _akv_get("github_webhook", {}) or {}
     cfg["secret"] = secret if secret else ""
     cfg["hasSecret"] = bool(secret)
-    _kv_set("github_webhook", cfg)
+    await _akv_set("github_webhook", cfg)
     return {"ok": True, "hasSecret": bool(secret)}
 
 
@@ -3913,7 +3945,7 @@ async def github_webhook_receive(request: Request):
     event = request.headers.get("X-GitHub-Event") or "unknown"
     delivery = request.headers.get("X-GitHub-Delivery") or ""
     raw = await request.body()
-    cfg = _kv_get("github_webhook", {}) or {}
+    cfg = await _akv_get("github_webhook", {}) or {}
     secret = os.environ.get("GITHUB_WEBHOOK_SECRET") or cfg.get("secret") or ""
     # If a webhook secret is configured, require GitHub's HMAC signature.
     if secret and secret != "***":
@@ -3927,7 +3959,7 @@ async def github_webhook_receive(request: Request):
         payload = json.loads(raw.decode("utf-8") or "{}")
     except Exception:
         payload = {}
-    _kv_set("github_webhook_last", {"event": event, "delivery": delivery, "ts": int(time.time() * 1000), "repository": (payload.get("repository") or {}).get("full_name")})
+    await _akv_set("github_webhook_last", {"event": event, "delivery": delivery, "ts": int(time.time() * 1000), "repository": (payload.get("repository") or {}).get("full_name")})
     return {"ok": True, "event": event, "delivery": delivery, "processed": False, "message": "Webhook received and recorded."}
 
 
@@ -3947,7 +3979,7 @@ async def ops_action(request: Request):
 
 @app.get("/api/ops/audit")
 async def ops_audit():
-    return {"ok": True, "items": [_kv_get("github_webhook_last", {})], "message": "Minimal audit feed; structured logs carry trace_id."}
+    return {"ok": True, "items": [await _akv_get("github_webhook_last", {})], "message": "Minimal audit feed; structured logs carry trace_id."}
 
 
 # Generic catch-all for unimplemented agent endpoints so the UI does not
@@ -4106,7 +4138,7 @@ async def api_image_generate(request: Request):
     body = await request.json()
     # Resolve the active provider (with vault decryption) so we hit a real
     # images API instead of returning a placeholder.
-    provider = _resolve_provider(body, user=user)
+    provider = await _resolve_provider(body, user=user)
     result = await generate_image(
         body.get("prompt") or "",
         body.get("size") or "1024x1024",
