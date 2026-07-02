@@ -92,6 +92,7 @@ from core.auth import (
     _verify_password,
 )
 from core.conversations import (
+    conversation_alive,
     drop_mapping,
     get_mapping,
     get_or_create_conversation,
