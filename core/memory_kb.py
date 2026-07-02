@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import re
@@ -9,6 +10,92 @@ from collections import Counter
 from typing import Any, Dict, List, Optional
 
 from core.database import get_conn
+
+_schema_ready = False
+
+
+def init_memory_schema(force: bool = False) -> None:
+    """Create memory/KB tables used by /api/memory/* and /api/kb/*.
+
+    Older deployments had these as legacy Node-era tables, but fresh SQLite
+    databases/tests did not create them consistently. Keep this self-healing and
+    cheap after the first call.
+    """
+    global _schema_ready
+    if _schema_ready and not force:
+        return
+    conn = get_conn()
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS user_facts (
+                user_id    TEXT NOT NULL,
+                key        TEXT NOT NULL,
+                value      TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, key)
+            );
+            CREATE INDEX IF NOT EXISTS user_facts_user_idx ON user_facts(user_id, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS semantic_memory (
+                id            TEXT PRIMARY KEY,
+                user_id       TEXT NOT NULL,
+                chat_id       TEXT NOT NULL DEFAULT '',
+                text          TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at    INTEGER NOT NULL,
+                updated_at    INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS semantic_memory_user_idx ON semantic_memory(user_id, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS semantic_memory_chat_idx ON semantic_memory(user_id, chat_id, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS project_memory (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    TEXT NOT NULL,
+                chat_id    TEXT NOT NULL,
+                key        TEXT NOT NULL,
+                value      TEXT NOT NULL DEFAULT '',
+                updated_at INTEGER NOT NULL,
+                UNIQUE(user_id, chat_id, key)
+            );
+            CREATE INDEX IF NOT EXISTS project_memory_user_idx ON project_memory(user_id, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS project_memory_chat_idx ON project_memory(user_id, chat_id, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS kb_documents (
+                id         TEXT PRIMARY KEY,
+                user_id    TEXT NOT NULL,
+                title      TEXT NOT NULL DEFAULT 'Untitled',
+                source     TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                bytes      INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS kb_documents_user_idx ON kb_documents(user_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS kb_chunks (
+                id         TEXT PRIMARY KEY,
+                doc_id     TEXT NOT NULL,
+                user_id    TEXT NOT NULL,
+                ord        INTEGER NOT NULL DEFAULT 0,
+                text       TEXT NOT NULL,
+                tfidf_json TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS kb_chunks_user_idx ON kb_chunks(user_id);
+            CREATE INDEX IF NOT EXISTS kb_chunks_doc_idx ON kb_chunks(doc_id, ord);
+            """
+        )
+        # FTS5 is optional in some SQLite builds. Use it when available; the
+        # runtime search code already falls back to TF scoring if FTS is absent.
+        try:
+            conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS semantic_memory_fts "
+                "USING fts5(mem_id UNINDEXED, text)"
+            )
+        except Exception:
+            pass
+        conn.commit()
+        _schema_ready = True
+    finally:
+        conn.close()
 
 
 def _now() -> int:
@@ -55,6 +142,7 @@ _FACT_RE = [(re.compile(p, re.IGNORECASE), key) for p, key in _FACT_PATTERNS]
 def extract_facts(user_id: str, text: str) -> List[Dict[str, Any]]:
     """Scan text, persist any detected self-statements as facts.
     Returns the list of facts that were stored/updated."""
+    init_memory_schema()
     if not user_id or not text:
         return []
     stored: List[Dict[str, Any]] = []
@@ -71,6 +159,7 @@ def extract_facts(user_id: str, text: str) -> List[Dict[str, Any]]:
 
 
 def list_facts(user_id: str) -> List[Dict[str, Any]]:
+    init_memory_schema()
     conn = get_conn()
     try:
         rows = conn.execute(
@@ -83,6 +172,7 @@ def list_facts(user_id: str) -> List[Dict[str, Any]]:
 
 
 def upsert_fact(user_id: str, key: str, value: str) -> Dict[str, Any]:
+    init_memory_schema()
     conn = get_conn()
     try:
         conn.execute(
@@ -96,6 +186,7 @@ def upsert_fact(user_id: str, key: str, value: str) -> Dict[str, Any]:
 
 
 def delete_fact(user_id: str, key: str) -> bool:
+    init_memory_schema()
     conn = get_conn()
     try:
         cur = conn.execute("DELETE FROM user_facts WHERE user_id = ? AND key = ?", (user_id, key))
@@ -106,6 +197,7 @@ def delete_fact(user_id: str, key: str) -> bool:
 
 
 def search_semantic(user_id: str, query: str, limit: int = 10, chat_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    init_memory_schema()
     conn = get_conn()
     try:
         # Prefer FTS for speed, fall back to TF-IDF dot product
@@ -144,6 +236,7 @@ def search_semantic(user_id: str, query: str, limit: int = 10, chat_id: Optional
 
 
 def list_project_memory(user_id: str, chat_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    init_memory_schema()
     conn = get_conn()
     try:
         if chat_id:
@@ -162,6 +255,7 @@ def list_project_memory(user_id: str, chat_id: Optional[str] = None) -> List[Dic
 
 
 def upsert_project_memory(user_id: str, chat_id: str, key: str, value: str) -> Dict[str, Any]:
+    init_memory_schema()
     conn = get_conn()
     try:
         row = conn.execute(
@@ -187,6 +281,7 @@ def upsert_project_memory(user_id: str, chat_id: str, key: str, value: str) -> D
 
 
 def delete_project_memory(user_id: str, chat_id: str, key: str) -> bool:
+    init_memory_schema()
     conn = get_conn()
     try:
         cur = conn.execute(
@@ -200,6 +295,7 @@ def delete_project_memory(user_id: str, chat_id: str, key: str) -> bool:
 
 
 def kb_list(user_id: str) -> List[Dict[str, Any]]:
+    init_memory_schema()
     conn = get_conn()
     try:
         rows = conn.execute("SELECT * FROM kb_documents WHERE user_id = ? ORDER BY created_at DESC", (user_id,)).fetchall()
@@ -209,6 +305,7 @@ def kb_list(user_id: str) -> List[Dict[str, Any]]:
 
 
 def kb_add(user_id: str, title: str, text: str, source: str = '') -> Dict[str, Any]:
+    init_memory_schema()
     conn = get_conn()
     try:
         doc_id = f'doc_{uuid.uuid4().hex[:12]}'
@@ -232,6 +329,7 @@ def kb_add(user_id: str, title: str, text: str, source: str = '') -> Dict[str, A
 
 
 def kb_delete(user_id: str, doc_id: str) -> bool:
+    init_memory_schema()
     conn = get_conn()
     try:
         conn.execute("DELETE FROM kb_chunks WHERE user_id = ? AND doc_id = ?", (user_id, doc_id))
@@ -243,6 +341,7 @@ def kb_delete(user_id: str, doc_id: str) -> bool:
 
 
 def kb_search(user_id: str, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    init_memory_schema()
     conn = get_conn()
     try:
         qtf = _tf(query)
@@ -265,3 +364,55 @@ def kb_search(user_id: str, query: str, limit: int = 10) -> List[Dict[str, Any]]
         return scored[:limit]
     finally:
         conn.close()
+
+
+
+# ── Async wrappers ──────────────────────────────────────────────────────────
+# Keep sqlite3 implementation but run local DB work outside the event loop.
+
+async def aextract_facts(user_id: str, text: str) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(extract_facts, user_id, text)
+
+
+async def alist_facts(user_id: str) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(list_facts, user_id)
+
+
+async def aupsert_fact(user_id: str, key: str, value: str) -> Dict[str, Any]:
+    return await asyncio.to_thread(upsert_fact, user_id, key, value)
+
+
+async def adelete_fact(user_id: str, key: str) -> bool:
+    return await asyncio.to_thread(delete_fact, user_id, key)
+
+
+async def asearch_semantic(user_id: str, query: str, limit: int = 10, chat_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(search_semantic, user_id, query, limit, chat_id)
+
+
+async def alist_project_memory(user_id: str, chat_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(list_project_memory, user_id, chat_id)
+
+
+async def aupsert_project_memory(user_id: str, chat_id: str, key: str, value: str) -> Dict[str, Any]:
+    return await asyncio.to_thread(upsert_project_memory, user_id, chat_id, key, value)
+
+
+async def adelete_project_memory(user_id: str, chat_id: str, key: str) -> bool:
+    return await asyncio.to_thread(delete_project_memory, user_id, chat_id, key)
+
+
+async def akb_list(user_id: str) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(kb_list, user_id)
+
+
+async def akb_add(user_id: str, title: str, text: str, source: str = '') -> Dict[str, Any]:
+    return await asyncio.to_thread(kb_add, user_id, title, text, source)
+
+
+async def akb_delete(user_id: str, doc_id: str) -> bool:
+    return await asyncio.to_thread(kb_delete, user_id, doc_id)
+
+
+async def akb_search(user_id: str, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(kb_search, user_id, query, limit)

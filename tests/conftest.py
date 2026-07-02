@@ -34,21 +34,8 @@ def _fresh_db():
     init_auth_schema()
     init_conversations_schema(force=True)
     init_agent_state_schema(force=True)
-    # memory_kb relies on legacy tables that exist in prod but aren't created
-    # by an init fn; create the minimal one the memory test needs.
-    from core.database import get_conn
-    conn = get_conn()
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS user_facts (
-              user_id    TEXT NOT NULL,
-              key        TEXT NOT NULL,
-              value      TEXT NOT NULL,
-              updated_at INTEGER NOT NULL,
-              PRIMARY KEY (user_id, key)
-        )"""
-    )
-    conn.commit()
-    conn.close()
+    from core.memory_kb import init_memory_schema
+    init_memory_schema(force=True)
     yield
     if os.path.exists(_TMP_DB):
         os.remove(_TMP_DB)

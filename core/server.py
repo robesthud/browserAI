@@ -138,18 +138,19 @@ from core.agent_state import (
 from core import providers as provs
 from core import vault as vlt
 from core.memory_kb import (
-    delete_fact,
-    delete_project_memory,
-    extract_facts,
-    kb_add,
-    kb_delete,
-    kb_list,
-    kb_search,
-    list_facts,
-    list_project_memory,
-    search_semantic,
-    upsert_fact,
-    upsert_project_memory,
+    adelete_fact,
+    adelete_project_memory,
+    aextract_facts,
+    akb_add,
+    akb_delete,
+    akb_list,
+    akb_search,
+    alist_facts,
+    alist_project_memory,
+    asearch_semantic,
+    aupsert_fact,
+    aupsert_project_memory,
+    init_memory_schema,
 )
 from core.web_image import generate_image, web_search as do_web_search
 from core.admin_data import (
@@ -266,7 +267,8 @@ async def _startup_init() -> None:
         init_auth_schema()
         init_conversations_schema()
         init_agent_state_schema()
-        log.info("all schemas ready (db, auth, conversations, agent_state, vault)")
+        init_memory_schema()
+        log.info("all schemas ready (db, auth, conversations, agent_state, memory, vault)")
     except Exception as e:
         log.error("schema init failed: %s", e)
 
@@ -2434,7 +2436,7 @@ async def agent_chat(request: Request):
     # Step 7.1 — auto-extract durable facts from the user's message (best-effort)
     if user_id and prompt:
         try:
-            extract_facts(user_id, prompt)
+            await aextract_facts(user_id, prompt)
         except Exception as e:
             log.debug("fact extraction skipped: %s", e)
 
@@ -4101,7 +4103,7 @@ def _stub_response(name: str):
 @app.get("/api/memory/facts")
 async def memory_facts_get(request: Request):
     user = _require_user(request)
-    return {"ok": True, "items": list_facts(user["id"])}
+    return {"ok": True, "items": await alist_facts(user["id"])}
 
 
 @app.post("/api/memory/facts")
@@ -4112,7 +4114,7 @@ async def memory_facts_post(request: Request):
     value = (body.get("value") or "").strip()
     if not key or not value:
         raise HTTPException(status_code=400, detail="key and value required")
-    return {"ok": True, "item": upsert_fact(user["id"], key, value)}
+    return {"ok": True, "item": await aupsert_fact(user["id"], key, value)}
 
 
 @app.delete("/api/memory/facts")
@@ -4120,19 +4122,19 @@ async def memory_facts_delete(request: Request):
     user = _require_user(request)
     body = await request.json()
     key = (body.get("key") or "").strip()
-    return {"ok": delete_fact(user["id"], key)}
+    return {"ok": await adelete_fact(user["id"], key)}
 
 
 @app.get("/api/memory/semantic")
 async def memory_semantic_get(request: Request, q: str = "", limit: int = 10, chatId: Optional[str] = None):
     user = _require_user(request)
-    return {"ok": True, "items": search_semantic(user["id"], q, limit=max(1, min(limit, 50)), chat_id=chatId)}
+    return {"ok": True, "items": await asearch_semantic(user["id"], q, limit=max(1, min(limit, 50)), chat_id=chatId)}
 
 
 @app.get("/api/memory/project")
 async def memory_project_get(request: Request, chatId: Optional[str] = None):
     user = _require_user(request)
-    return {"ok": True, "items": list_project_memory(user["id"], chatId)}
+    return {"ok": True, "items": await alist_project_memory(user["id"], chatId)}
 
 
 @app.post("/api/memory/project")
@@ -4144,20 +4146,20 @@ async def memory_project_post(request: Request):
     value = (body.get("value") or "").strip()
     if not chat_id or not key:
         raise HTTPException(status_code=400, detail="chatId and key required")
-    return {"ok": True, "item": upsert_project_memory(user["id"], chat_id, key, value)}
+    return {"ok": True, "item": await aupsert_project_memory(user["id"], chat_id, key, value)}
 
 
 @app.delete("/api/memory/project")
 async def memory_project_delete(request: Request):
     user = _require_user(request)
     body = await request.json()
-    return {"ok": delete_project_memory(user["id"], (body.get("chatId") or "").strip(), (body.get("key") or "").strip())}
+    return {"ok": await adelete_project_memory(user["id"], (body.get("chatId") or "").strip(), (body.get("key") or "").strip())}
 
 
 @app.get("/api/kb/list")
 async def kb_list_get(request: Request):
     user = _require_user(request)
-    return {"ok": True, "items": kb_list(user["id"])}
+    return {"ok": True, "items": await akb_list(user["id"])}
 
 
 @app.get("/api/web/search")
@@ -4185,7 +4187,7 @@ async def api_image_generate(request: Request):
 @app.get("/api/kb/search")
 async def kb_search_get(request: Request, q: str = "", limit: int = 10):
     user = _require_user(request)
-    return {"ok": True, "items": kb_search(user["id"], q, limit=max(1, min(limit, 50)))}
+    return {"ok": True, "items": await akb_search(user["id"], q, limit=max(1, min(limit, 50)))}
 
 
 @app.post("/api/kb/add")
@@ -4197,7 +4199,7 @@ async def kb_add_post(request: Request):
     source = (body.get("source") or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text required")
-    return {"ok": True, "document": kb_add(user["id"], title, text, source)}
+    return {"ok": True, "document": await akb_add(user["id"], title, text, source)}
 
 
 @app.delete("/api/kb/delete")
@@ -4207,7 +4209,7 @@ async def kb_delete_post(request: Request):
     doc_id = (body.get("id") or body.get("docId") or "").strip()
     if not doc_id:
         raise HTTPException(status_code=400, detail="id required")
-    return {"ok": kb_delete(user["id"], doc_id)}
+    return {"ok": await akb_delete(user["id"], doc_id)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
