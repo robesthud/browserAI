@@ -84,14 +84,25 @@
 
 ## Применено автономно (безопасно, 2026-07-02)
 - **S3 ✅** — `chmod 600 /opt/browserai/.env` (был 644 с секретами).
-- **S8 ✅ (новое)** — nginx security headers + `server_tokens off`:
-  `X-Frame-Options`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`,
-  `Permissions-Policy`, `X-XSS-Protection`. Проверено `nginx -t` + reload
-  (без даунтайма), заголовки в ответе, health зелёный. Бэкап конфига сохранён.
-- **S1 переоценён:** `daemon.json` содержит `"iptables": false`, а openhands
-  достаёт runtime через gateway-IP (172.17.0.1), НЕ через loopback. Значит
-  `ip: 127.0.0.1` в daemon.json СЛОМАЕТ агента так же, как DROP-правило.
-  → S1 требует ручного окна с владельцем (см. ниже), автономно не делаю.
+- **S8 ✅** — nginx security headers + `server_tokens off`.
+- **S1 ✅ ЗАКРЫТО (2026-07-02)** — внешний доступ к runtime/сервисным портам.
+  Аудит показал, что реальная защита держалась на UFW default-deny (docker
+  запущен с `iptables:false`, поэтому весь трафик идёт через INPUT chain, а
+  не в обход через DOCKER chain). НО были **широкие правила**
+  `ALLOW IN on docker0/br-fee38ffbd0ea from Anywhere`, и живой трафик шёл
+  именно через них (scoped-правило ссылалось на устаревший bridge
+  `br-bc08054cced4`). Действия:
+  1. Снапшот iptables в `/root/iptables-backup-*.rules` (откат).
+  2. Добавлены корректно **scoped** правила: docker0←172.17/16, br-fee38←172.18/16.
+  3. Замер через временный LOG-rule: за полный agent-turn non-172.18 трафика
+     на bridge = **0 пакетов** → broad-правила избыточны.
+  4. Удалены широкие `Anywhere` правила (IPv4+IPv6, docker0+bridge).
+  5. `ufw reload` (persist). Проверено: снаружи `curl :8080 → 000` (закрыто),
+     health=200, полный self-test `pong`/complete зелёный ПОСЛЕ reload.
+  > Итог: контейнерные callbacks разрешены только из своих подсетей; периметр
+  > больше не зависит от внешнего firewall Timeweb.
+
+## S1 переоценён (историческая заметка)
 
 ## Что делаем прямо сейчас (безопасно, без риска доступа)
 1. **S3** — `chmod 600 .env` (нулевой риск, мгновенно).
