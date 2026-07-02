@@ -228,9 +228,11 @@ async def _startup_init() -> None:
         from core.isolation import ensure_openhands_config, ensure_sandbox_dir
         sandbox = ensure_sandbox_dir()
         oh_config = ensure_openhands_config()
-        log.info("workspace isolation config ready: sandbox=%s openhands_config=%s", sandbox, oh_config)
+        # "workspace config" not "isolation": the shared /workspace mount is an
+        # organization convenience, not a per-chat security boundary (#4).
+        log.info("workspace config ready: sandbox=%s openhands_config=%s", sandbox, oh_config)
     except Exception as e:
-        log.warning("workspace isolation config setup failed: %s", e)
+        log.warning("workspace config setup failed: %s", e)
 
     # Push OH settings on startup (they are lost on OH container restart)
     try:
@@ -386,7 +388,12 @@ def _chat_workspace_rel(chat_id: Optional[str]) -> str:
 
 def _chat_workspace_abs(chat_id: Optional[str]) -> Path:
     # _WORKSPACE_ROOT is defined in the workspace section below; Python resolves
-    # it at call time. One BrowserAI chat = one isolated OpenHands subworkspace.
+    # it at call time. NOTE (Sonnet review #4): this is per-chat *organization*,
+    # not a security boundary. The HTTP file APIs are confined to this subtree by
+    # _safe_abs (rejects path-escape + escaping symlinks), but the agent RUNTIME
+    # shares one /workspace mount across chats, so a prompt-injected agent could
+    # still touch a sibling chat's folder. Single-tenant accepts this; do not
+    # rely on chats/<id> as a trust boundary between mutually-distrusting users.
     return (_WORKSPACE_ROOT / _chat_workspace_rel(chat_id)).resolve()
 
 

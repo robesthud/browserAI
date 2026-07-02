@@ -60,7 +60,17 @@ recommended action order.
 - **#5 ✅** schema-init guarded by a module flag: the CREATE TABLE + ensure_columns
   (PRAGMA scan) + commit now runs once per process instead of on every hot-path
   call (upsert_run/get_run/get_mapping...). `force=True` for test DB resets.
-- **#4** workspace isolation — remaining (document or per-chat mount).
+- **#4 ✅** workspace isolation — resolved the honest way for single-tenant:
+  (a) verified the HTTP file-API boundary IS enforced by `_safe_abs` (rejects
+  '..' escapes + escaping symlinks) and locked it with tests
+  (test_workspace_path_safety.py, 6); (b) corrected the overstating "isolation"
+  naming/comments — per-chat folders are ORGANIZATION, not an OS trust boundary
+  (the agent runtime shares one /workspace mount). Documented in
+  core/isolation.py that chats are NOT a boundary between distrusting users.
+  Real per-chat OS mounts would require the docker.sock remount Phase 2.3
+  removed — out of scope for single-tenant.
+
+## STATUS: all 10 review findings resolved ✅ (deployed + pushed)
 
 **#9 ✅** — on lock-acquire timeout, if the in-flight run owns the SAME turn_id
 (flaky-mobile retry) the stream closes cleanly with reason `duplicate-turn`

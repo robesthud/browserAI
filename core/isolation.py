@@ -10,6 +10,17 @@ creates runtime containers; it receives a config.toml with a workspace bind:
 
 BrowserAI still scopes all UI file APIs to /workspace/chats/<chat_id> and the
 agent prompt instructs OpenHands to work only inside that per-chat subdirectory.
+
+SECURITY NOTE (Sonnet review #4): per-chat folders are ORGANIZATION, not an
+OS-level trust boundary. Two things are true:
+  * The HTTP file APIs ARE confined to the per-chat subtree by server.py's
+    _safe_abs() (rejects '..' escapes and symlinks leaving the root).
+  * The agent RUNTIME is NOT confined: every runtime container mounts the same
+    /workspace root, so a prompt-injected agent (e.g. via the browser tool) can
+    read/write a sibling chat's files. Real per-chat OS isolation would require
+    per-conversation sandbox mounts, which Phase 2.3 intentionally removed along
+    with docker.sock access. This deployment is single-tenant and accepts that:
+    chats are NOT a boundary between mutually-distrusting users.
 """
 
 from __future__ import annotations
