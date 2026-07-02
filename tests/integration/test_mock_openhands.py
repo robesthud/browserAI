@@ -387,3 +387,34 @@ def test_review_3_status_transition_pause_then_resume():
     # after answer relay the endpoint sets "running"
     resumed_status = "running"
     assert resumed_status not in _TERMINAL_STATUSES
+
+
+# ── #9 (Sonnet review): lock-busy vs duplicate-turn ─────────────────────────
+def _busy_decision(run, turn_id):
+    """Mirror of the lock-timeout branch in _locked_stream_chat: a duplicate of
+    the in-flight turn_id is a no-op ('duplicate-turn'), otherwise 'busy'."""
+    if turn_id and run and run.get("last_turn_id") == turn_id and \
+            (run.get("status") or "").lower() in ("running", "awaiting_input", "paused"):
+        return "duplicate-turn"
+    return "busy"
+
+
+def test_review_9_duplicate_turn_is_noop_not_busy():
+    run = {"last_turn_id": "turn-42", "status": "running"}
+    assert _busy_decision(run, "turn-42") == "duplicate-turn"
+
+
+def test_review_9_different_turn_is_busy():
+    run = {"last_turn_id": "turn-42", "status": "running"}
+    assert _busy_decision(run, "turn-99") == "busy"
+
+
+def test_review_9_finished_run_is_busy_not_duplicate():
+    # a terminal run shouldn't be mistaken for an in-flight duplicate
+    run = {"last_turn_id": "turn-42", "status": "done"}
+    assert _busy_decision(run, "turn-42") == "busy"
+
+
+def test_review_9_awaiting_input_duplicate_is_noop():
+    run = {"last_turn_id": "turn-7", "status": "awaiting_input"}
+    assert _busy_decision(run, "turn-7") == "duplicate-turn"

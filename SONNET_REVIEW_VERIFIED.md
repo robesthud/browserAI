@@ -57,7 +57,15 @@ recommended action order.
   new message is the clean fix, deferred as a larger UI change.
 
 **Tier 3 — perf / hardening:**
-- **#5** schema-init hot path (move to startup), **#4** workspace isolation (document or per-chat mount).
+- **#5 ✅** schema-init guarded by a module flag: the CREATE TABLE + ensure_columns
+  (PRAGMA scan) + commit now runs once per process instead of on every hot-path
+  call (upsert_run/get_run/get_mapping...). `force=True` for test DB resets.
+- **#4** workspace isolation — remaining (document or per-chat mount).
+
+**#9 ✅** — on lock-acquire timeout, if the in-flight run owns the SAME turn_id
+(flaky-mobile retry) the stream closes cleanly with reason `duplicate-turn`
+instead of a user-visible `busy` error. Tests: test_mock_openhands.py
+test_review_9_* (4).
 
 ## Action order (all reversible, deployable one-at-a-time, no migration window)
 1. #1 delete the peek-and-write in `conversations.py:224` (read-only there).

@@ -2228,6 +2228,22 @@ async def _locked_stream_chat(
             await asyncio.wait_for(lock.acquire(), timeout=0.25)
             acquired = True
         except asyncio.TimeoutError:
+            # Sonnet #9: the busy error fires BEFORE the turn_id idempotency
+            # check in get_or_create_conversation, so a duplicate submit of the
+            # SAME turn (flaky-mobile retry) surfaces as a user-visible error
+            # instead of a harmless no-op. If the in-flight run already owns this
+            # exact turn_id, treat the retry as a duplicate: close the stream
+            # cleanly (the original stream is delivering the real events) rather
+            # than shouting "busy".
+            if turn_id and chat_id:
+                try:
+                    run = get_run(chat_id)
+                    if run and run.get("last_turn_id") == turn_id and (run.get("status") or "").lower() in ("running", "awaiting_input", "paused"):
+                        log.info("duplicate turn_id=%s hit busy lock for chat_id=%s — treating as no-op", turn_id, chat_id)
+                        yield _sse("done", {"reason": "duplicate-turn", "chatId": chat_id}).encode("utf-8")
+                        return
+                except Exception:
+                    pass
             yield _sse("error", {"code": "busy", "message": "This chat is already running an agent task. Wait for completion or press Stop."}).encode("utf-8")
             yield _sse("done", {"reason": "busy", "chatId": chat_id}).encode("utf-8")
             return

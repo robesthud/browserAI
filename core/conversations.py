@@ -26,7 +26,14 @@ def _safe_chat_id(chat_id: str) -> str:
     return safe[:96] or "default"
 
 
-def init_conversations_schema() -> None:
+_schema_ready = False
+
+
+def init_conversations_schema(force: bool = False) -> None:
+    # Sonnet #5: run the schema/migration work once per process, not on every
+    # hot-path call (get_mapping/upsert_mapping/update_last_event...).
+    if _schema_ready and not force:
+        return
     conn = get_conn()
     try:
         conn.executescript(
@@ -50,6 +57,7 @@ def init_conversations_schema() -> None:
         except Exception:
             pass
         conn.commit()
+        globals()["_schema_ready"] = True
     finally:
         conn.close()
 

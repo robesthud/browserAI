@@ -16,7 +16,19 @@ def _now() -> int:
 from core.migrations import ensure_columns as _migrate_missing_columns  # noqa: E402
 
 
-def init_agent_state_schema() -> None:
+_schema_ready = False
+
+
+def init_agent_state_schema(force: bool = False) -> None:
+    # Sonnet #5: this used to run CREATE TABLE + ensure_columns (a full
+    # PRAGMA table_info scan) + commit on a freshly opened connection on EVERY
+    # call — and it's called at the top of every hot-path function (upsert_run,
+    # get_run, get_mapping, ...). Under SSE polling that multiplies file-open +
+    # write-transaction overhead. Guard with a module flag so the expensive work
+    # runs once per process (startup or first call); later calls are a no-op.
+    # `force=True` re-runs it (used by tests that reset the DB).
+    if _schema_ready and not force:
+        return
     conn = get_conn()
     try:
         conn.executescript(
@@ -54,6 +66,7 @@ def init_agent_state_schema() -> None:
         # Self-healing migration: add any columns missing from older DBs.
         _migrate_missing_columns(conn)
         conn.commit()
+        globals()["_schema_ready"] = True
     finally:
         conn.close()
 
