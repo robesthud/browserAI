@@ -41,6 +41,11 @@ recommended action order.
 - **#2 ✅** — `agent_answer` now relays through `_stream_lock_for(chat_id)`
   (bounded 5s acquire), so an answer can't interleave with a concurrent turn's
   message into the same conversation.
+- **#6 ✅** — `upsert_run` no longer does Python read-then-write. "Preserve if
+  not provided" now lives in SQL via `COALESCE(?, agent_runs.col)` inside the
+  single `INSERT..ON CONFLICT` statement (sentinels: last_event_id=NULL,
+  last_turn_id=''). Removes the read gap where two concurrent upserts could
+  clobber with stale derived values. Tests: test_upsert_run_coalesce.py (4).
 - **#3 ✅ backend** — run status is now `awaiting_input` when a turn pauses for a
   question (not `done`), and `agent_answer` sets it back to `running` after
   relaying. This un-breaks Stop on a resumed turn (the already_finished guard no

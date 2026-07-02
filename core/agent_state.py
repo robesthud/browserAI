@@ -59,29 +59,38 @@ def init_agent_state_schema() -> None:
 
 
 def upsert_run(chat_id: str, conversation_id: Optional[str], user_id: Optional[str], status: str, last_prompt: str = '', last_error: str = '', last_event_id: Optional[int] = None, last_turn_id: str = '') -> None:
+    # Sonnet #6: no Python read-then-write. Previously we SELECTed the current
+    # row, computed last_event_id / last_turn_id / created_at in Python, then
+    # INSERT..ON CONFLICT — two concurrent upserts could both read the same row
+    # and clobber each other with stale derived values. Now the "preserve if not
+    # provided" logic lives in SQL via COALESCE against the existing row, inside
+    # a single atomic statement. Sentinels: last_event_id=NULL means "keep",
+    # last_turn_id='' means "keep".
     init_agent_state_schema()
     now = _now()
+    lev_param = last_event_id  # None → keep existing (COALESCE)
+    ltid_param = last_turn_id or None  # '' → keep existing (COALESCE)
     conn = get_conn()
     try:
-        current = conn.execute("SELECT * FROM agent_runs WHERE chat_id = ?", (chat_id,)).fetchone()
-        created_at = current['created_at'] if current else now
-        lev = last_event_id if last_event_id is not None else (current['last_event_id'] if current else -1)
-        ltid = last_turn_id or (current['last_turn_id'] if current else '')
         conn.execute(
             """
             INSERT INTO agent_runs (chat_id, conversation_id, user_id, status, last_prompt, last_error, last_event_id, last_turn_id, updated_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, -1), COALESCE(?, ''), ?, ?)
             ON CONFLICT(chat_id) DO UPDATE SET
               conversation_id=excluded.conversation_id,
               user_id=excluded.user_id,
               status=excluded.status,
               last_prompt=excluded.last_prompt,
               last_error=excluded.last_error,
-              last_event_id=excluded.last_event_id,
-              last_turn_id=excluded.last_turn_id,
+              last_event_id=COALESCE(?, agent_runs.last_event_id),
+              last_turn_id=COALESCE(NULLIF(?, ''), agent_runs.last_turn_id),
               updated_at=excluded.updated_at
             """,
-            (chat_id, conversation_id or '', user_id or '', status, last_prompt or '', last_error or '', lev, ltid, now, created_at),
+            (
+                chat_id, conversation_id or '', user_id or '', status,
+                last_prompt or '', last_error or '', lev_param, ltid_param, now, now,
+                lev_param, last_turn_id or '',
+            ),
         )
         conn.commit()
     finally:
