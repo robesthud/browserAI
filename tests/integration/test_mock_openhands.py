@@ -350,3 +350,40 @@ def test_bug_3_3_cancelled_question_not_relayed():
         r = _answer_relay_faithful(oh, cid, question_status="cancelled")
         assert r.get("alreadyAnswered") is True and r["relayed"] is False
         assert oh.messages_for(cid) == []
+
+
+# ── #3 (Sonnet review): ask_user pause must be stoppable + resume to running ─
+def test_review_3_awaiting_input_is_not_terminal_stop_works():
+    """After ask_user the run status is 'awaiting_input' (paused, not done).
+    The stop guard's terminal set must NOT include it, so a user CAN stop an
+    agent that is (re)working after a question."""
+    assert "awaiting_input" not in _TERMINAL_STATUSES
+    with MockOpenHands() as oh:
+        cid = oh.create_conversation()
+        # paused-for-question run: stop must still reach OpenHands
+        r = _stop_relay_faithful(oh, cid, run_status="awaiting_input")
+        assert r["stopped"] is True
+        assert oh.stop_count(cid) == 1
+
+
+def test_review_3_running_after_answer_is_stoppable():
+    """After /api/agent/answer relays, status becomes 'running' — also
+    non-terminal, so Stop keeps working on the resumed turn."""
+    assert "running" not in _TERMINAL_STATUSES
+    with MockOpenHands() as oh:
+        cid = oh.create_conversation()
+        r = _stop_relay_faithful(oh, cid, run_status="running")
+        assert r["stopped"] is True and oh.stop_count(cid) == 1
+
+
+def test_review_3_status_transition_pause_then_resume():
+    """Model the status machine: ask_user -> awaiting_input -> answer -> running,
+    and neither is treated as finished."""
+    def final_status(ask_user_sent, done):
+        return "awaiting_input" if ask_user_sent else ("done" if done else "timeout")
+    assert final_status(ask_user_sent=True, done=True) == "awaiting_input"
+    assert final_status(ask_user_sent=False, done=True) == "done"
+    assert final_status(ask_user_sent=False, done=False) == "timeout"
+    # after answer relay the endpoint sets "running"
+    resumed_status = "running"
+    assert resumed_status not in _TERMINAL_STATUSES

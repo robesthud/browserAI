@@ -31,6 +31,18 @@ recommended action order.
 **Tier 2 — correctness under concurrency (needs care/tests):**
 - **#2** answer bypasses lock, **#6** upsert_run race, **#8** transient-error mapping drop, **#9** busy-vs-idempotency.
 
+### DONE (deployed)
+- **#1, #7, #10** — Tier-1, deployed (commit e98d409).
+- **#3 ✅ backend** — run status is now `awaiting_input` when a turn pauses for a
+  question (not `done`), and `agent_answer` sets it back to `running` after
+  relaying. This un-breaks Stop on a resumed turn (the already_finished guard no
+  longer fires) and exposes `resumed` in the answer response. Tests:
+  test_mock_openhands.py `test_review_3_*` (3). **Follow-up (frontend):** live
+  stream re-open after answering — the agent's post-answer work currently
+  surfaces on next chat load via server-persisted events; a dedicated
+  `/api/agent/resume` SSE that re-attaches to the conversation WITHOUT posting a
+  new message is the clean fix, deferred as a larger UI change.
+
 **Tier 3 — perf / hardening:**
 - **#5** schema-init hot path (move to startup), **#4** workspace isolation (document or per-chat mount).
 

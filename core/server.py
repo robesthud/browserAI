@@ -2176,13 +2176,22 @@ async def _stream_chat(
             # value lets the unseen tail replay. Run status is still recorded.
             cursor = max_seen if done else last_seen_event_id
             update_last_event(chat_id, cursor)
-            set_run_status(chat_id, "done" if done else "timeout")
-            upsert_run(chat_id, cid, user_id, "done" if done else "timeout", last_prompt=prompt, last_event_id=cursor)
+            # Bug #3 (Sonnet review): distinguish "paused for a question" from
+            # "genuinely finished". If this turn ended only because the agent
+            # asked the user something (ask_user_sent), the conversation is NOT
+            # done — the agent will resume after /api/agent/answer. Writing
+            # "done" here made Stop a no-op (already_finished guard) and hid the
+            # fact that work continues. Use "awaiting_input" so Stop/resume can
+            # tell the difference.
+            final_status = "awaiting_input" if ask_user_sent_ref.get("sent") else ("done" if done else "timeout")
+            set_run_status(chat_id, final_status)
+            upsert_run(chat_id, cid, user_id, final_status, last_prompt=prompt, last_event_id=cursor)
         except Exception as e:
             log.warning("update_last_event failed: %s", e)
     elif chat_id:
         try:
-            set_run_status(chat_id, "done" if done else "timeout")
+            final_status = "awaiting_input" if ask_user_sent_ref.get("sent") else ("done" if done else "timeout")
+            set_run_status(chat_id, final_status)
         except Exception:
             pass
 
@@ -2401,6 +2410,7 @@ async def agent_answer(request: Request):
     # their human labels so the agent gets readable text.
     text = _format_answer_text(body.get("answer"), q.get("options") or [])
     cid = q.get("conversation_id")
+    chat_id = q.get("chat_id")
     if cid:
         async with httpx.AsyncClient() as client:
             try:
@@ -2409,9 +2419,19 @@ async def agent_answer(request: Request):
                     json={"message": f"User answered question '{q.get('question')}': {text}"},
                     timeout=15.0,
                 )
+                # Bug #3: the agent has resumed working on this conversation, so
+                # mark the run "running" again. It was set to "awaiting_input"
+                # when the question paused the turn; without this the Stop
+                # button would stay a no-op (already_finished) while the agent
+                # is actively running post-answer.
+                if chat_id:
+                    try:
+                        set_run_status(chat_id, "running")
+                    except Exception:
+                        pass
             except Exception as e:
                 log.warning("agent answer relay failed: %s", e)
-    return {"ok": True, "question": saved}
+    return {"ok": True, "question": saved, "resumed": bool(cid)}
 
 
 @app.post("/api/agent/runs/{chat_id}/stop")
