@@ -165,3 +165,63 @@ export function streamAgent({ chatId = '', history, provider, extraSystem = '', 
 
   return () => { try { controller?.abort() } catch { /* already aborted */ } }
 }
+
+/**
+ * Resume an in-flight agent conversation WITHOUT sending a new message.
+ * Called after answering an ask_user question so the post-answer work streams
+ * live into the same assistant message. Reuses the SSE frame parser above.
+ *
+ *   const stop = resumeAgent({ chatId, onEvent, signal })
+ */
+export function resumeAgent({ chatId = '', onEvent, signal }) {
+  if (!chatId) { onEvent?.('done', { reason: 'no-chat' }); return () => {} }
+  const controller = signal ? null : new AbortController()
+  const actualSignal = signal || controller.signal
+  let sawDone = false
+  const emit = (kind, data) => { if (kind === 'done') sawDone = true; onEvent?.(kind, data) }
+
+  ;(async () => {
+    try {
+      const res = await fetch('/api/agent/resume', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId }),
+        signal: actualSignal,
+      })
+      if (!res.ok) { emit('error', { message: `HTTP ${res.status}` }); emit('done', { reason: 'http-error' }); return }
+      const reader = res.body?.getReader()
+      if (!reader) { emit('done', { reason: 'no-body' }); return }
+      const decoder = new TextDecoder()
+      let buffer = ''
+      const processBlock = (block) => {
+        if (!block.trim()) return
+        let evt = 'message'; const dataLines = []
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event:')) evt = line.slice(6).trim()
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
+        }
+        const raw = dataLines.join('\n')
+        let parsed = raw
+        try { parsed = JSON.parse(raw) } catch { /* keep string */ }
+        emit(evt, parsed)
+      }
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const events = buffer.split('\n\n')
+        buffer = events.pop() || ''
+        for (const block of events) processBlock(block)
+      }
+      if (buffer.trim()) processBlock(buffer)
+      if (!sawDone) { emit('done', { reason: 'stream-cut' }) }
+    } catch (e) {
+      if (sawDone) return
+      if (e?.name === 'AbortError') emit('done', { reason: 'aborted' })
+      else { emit('error', { message: e?.message || String(e) }); emit('done', { reason: 'exception' }) }
+    }
+  })()
+
+  return () => { try { controller?.abort() } catch { /* already aborted */ } }
+}

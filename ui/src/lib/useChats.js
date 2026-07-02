@@ -1279,16 +1279,20 @@ export function useChats(settings) {
   // Resolves the server-side promise so the agent loop continues. We also
   // mark the question card as answered locally so the user sees feedback.
   const answerAgentQuestion = useCallback(async (chatId, messageId, questionId, payload) => {
+    let relayed = false
     try {
-      await fetch('/api/agent/answer', {
+      const res = await fetch('/api/agent/answer', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question_id: questionId, answer: payload }),
       })
+      const data = await res.json().catch(() => ({}))
+      relayed = Boolean(data?.resumed)
     } catch (e) {
       console.warn('answerAgentQuestion failed:', e?.message || e)
     }
+    // Mark the question answered locally.
     setChats((prev) => prev.map((c) => c.id !== chatId ? c : {
       ...c,
       messages: (c.messages || []).map((m) => {
@@ -1302,6 +1306,67 @@ export function useChats(settings) {
       }),
     }))
     haptics.tap()
+
+    // Frontend-resume (Sonnet #3 follow-up): after the answer is relayed, the
+    // agent resumes on the same conversation. Re-open an SSE to stream that
+    // continuation live into the SAME assistant message instead of making the
+    // user reload. Only the essential events are applied here.
+    if (!relayed) return
+    const patchTarget = (fn) => setChats((prev) => prev.map((c) => c.id !== chatId ? c : {
+      ...c,
+      updatedAt: Date.now(),
+      messages: (c.messages || []).map((m) => (m.id === messageId ? fn(m) : m)),
+    }))
+    try {
+      const { resumeAgent } = await import('./agentStream.js')
+      markStreaming(chatId, true)
+      const controller = new AbortController()
+      abortControllers.current.set(chatId, controller)
+      patchTarget((m) => ({ ...m, pending: true }))
+      await new Promise((resolve) => {
+        resumeAgent({
+          chatId,
+          signal: controller.signal,
+          onEvent: (kind, data) => {
+            switch (kind) {
+              case 'assistant_delta':
+                patchTarget((m) => ({ ...m, content: (m.content || '') + (data?.chunk || '') }))
+                break
+              case 'assistant':
+                if (data?.text) patchTarget((m) => ({ ...m, content: data.text }))
+                break
+              case 'tool_start':
+              case 'tool_result':
+                patchTarget((m) => ({ ...m, toolCalls: [...(m.toolCalls || []), { kind, ...data }] }))
+                break
+              case 'ask_user':
+                patchTarget((m) => ({
+                  ...m,
+                  askUsers: [...(m.askUsers || []), {
+                    id: data.question_id, step: data.step, question: data.question,
+                    options: data.options || [], answered: false, answer: null,
+                  }],
+                }))
+                break
+              case 'done':
+                patchTarget((m) => ({ ...m, pending: false }))
+                resolve()
+                break
+              case 'error':
+                patchTarget((m) => ({ ...m, pending: false, error: data?.message || 'resume error' }))
+                break
+              default:
+                break
+            }
+          },
+        })
+      })
+    } catch (e) {
+      console.warn('resume after answer failed:', e?.message || e)
+    } finally {
+      if (abortControllers.current.get(chatId)) abortControllers.current.delete(chatId)
+      markStreaming(chatId, false)
+    }
   }, [])
 
 

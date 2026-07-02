@@ -2474,6 +2474,105 @@ async def agent_answer(request: Request):
     return {"ok": True, "question": saved, "resumed": bool(cid)}
 
 
+async def _resume_stream(chat_id: str, user_id: Optional[str] = None) -> AsyncIterator[bytes]:
+    """Re-attach to an existing OpenHands conversation and stream its remaining
+    events WITHOUT posting a new message (frontend-resume, Sonnet #3 follow-up).
+
+    Used after /api/agent/answer relays the user's answer: the agent resumes
+    work on the same conversation, and the client re-opens this SSE to watch the
+    continuation instead of waiting for a manual reload. It reuses the same poll
+    machinery as _stream_chat (which only READS events), so no message is sent.
+    """
+    step = 0
+    full_answer_ref = {"text": ""}
+    ask_user_sent_ref = {"sent": False}
+    done = False
+
+    yield _sse("stream_protocol", {
+        "version": 1,
+        "events": [
+            "stream_protocol", "agent_context", "agent_state", "thinking",
+            "thinking_delta", "thought", "tool_preview", "tool_start",
+            "tool_progress", "tool_result", "assistant_delta", "assistant",
+            "ask_user", "done", "error",
+        ],
+    }).encode("utf-8")
+
+    mapping = get_mapping(chat_id) if chat_id else None
+    cid = mapping["conversation_id"] if mapping else None
+    if not cid:
+        yield _sse("error", {"code": "no_conversation", "message": "No conversation to resume."}).encode("utf-8")
+        yield _sse("done", {"reason": "no-conversation", "chatId": chat_id}).encode("utf-8")
+        return
+
+    last_seen_event_id = mapping.get("last_event_id", -1) or -1
+    initial_seen_ids = set(range(0, last_seen_event_id + 1)) if last_seen_event_id >= 0 else set()
+    final_seen_ids: set = set(initial_seen_ids)
+    yield _sse("agent_state", {"step": 0, "phase": "resume", "raw": "resume", "conversationId": cid}).encode("utf-8")
+
+    async with httpx.AsyncClient() as client:
+        try:
+            async for chunk, step, done, seen_ids in _poll_openhands_events(
+                client, cid,
+                chat_id=chat_id, user_id=user_id,
+                start_after_id=last_seen_event_id,
+                initial_seen_ids=initial_seen_ids,
+                step=step,
+                full_answer_ref=full_answer_ref,
+                ask_user_sent_ref=ask_user_sent_ref,
+            ):
+                final_seen_ids = seen_ids
+                if chunk:
+                    yield chunk
+                if done:
+                    break
+        except Exception as e:
+            log.warning("resume stream error chat_id=%s: %s", chat_id, e)
+
+    # Emit any final assistant text + set run status (mirror of _stream_chat tail).
+    full_answer = full_answer_ref["text"]
+    if full_answer:
+        _, clean = _split_think(full_answer)
+        clean = _strip_ask_user_marker(clean) if clean else clean
+        if clean:
+            yield _sse("assistant", {"step": step, "text": clean}).encode("utf-8")
+    if chat_id:
+        try:
+            numeric_ids = [int(x) for x in final_seen_ids if str(x).lstrip("-").isdigit()]
+            cursor = max(numeric_ids) if (done and numeric_ids) else last_seen_event_id
+            update_last_event(chat_id, cursor)
+            final_status = "awaiting_input" if ask_user_sent_ref.get("sent") else ("done" if done else "timeout")
+            set_run_status(chat_id, final_status)
+        except Exception as e:
+            log.debug("resume cursor update skipped: %s", e)
+    yield _sse("done", {"reason": "complete" if done else "timeout", "steps": step, "conversationId": cid, "resumed": True}).encode("utf-8")
+
+
+@app.post("/api/agent/resume")
+async def agent_resume(request: Request):
+    """SSE endpoint: re-attach to the chat's conversation and stream the agent's
+    continuation without posting a message. Called by the UI after answering an
+    ask_user question so post-answer work is visible live."""
+    body = await request.json()
+    chat_id = body.get("chatId") or body.get("chat_id") or ""
+    user = current_user(request)
+    user_id = user["id"] if user else None
+    if not chat_id:
+        async def _err():
+            yield _sse("error", {"message": "chatId required"}).encode("utf-8")
+            yield _sse("done", {"reason": "no-chat"}).encode("utf-8")
+        return StreamingResponse(_err(), media_type="text/event-stream")
+    return StreamingResponse(
+        _resume_stream(chat_id, user_id=user_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @app.post("/api/agent/runs/{chat_id}/stop")
 async def agent_run_stop(chat_id: str):
     """Stop the agent's current turn WITHOUT destroying the conversation.
