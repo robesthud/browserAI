@@ -62,10 +62,6 @@ EXPECTED: Dict[str, Dict[str, str]] = {
         "answered_at": "answered_at INTEGER",
         "updated_at": "updated_at INTEGER NOT NULL DEFAULT 0",
     },
-    # ── auth subsystem (core/auth.py) ────────────────────────────────────────
-    # PRIMARY KEY / UNIQUE / FOREIGN KEY columns are intentionally listed
-    # WITHOUT those constraints: ALTER TABLE ADD COLUMN cannot add them, and we
-    # only ever ADD a missing column here. Such constraints live in CREATE TABLE.
     "users": {
         "id": "id TEXT",
         "email": "email TEXT",
@@ -89,7 +85,6 @@ EXPECTED: Dict[str, Dict[str, str]] = {
         "chats": "chats TEXT NOT NULL DEFAULT '[]'",
         "updated_at": "updated_at INTEGER NOT NULL DEFAULT 0",
     },
-    # ── conversations subsystem (core/conversations.py) ──────────────────────
     "chat_conversations": {
         "chat_id": "chat_id TEXT",
         "conversation_id": "conversation_id TEXT",
@@ -98,8 +93,55 @@ EXPECTED: Dict[str, Dict[str, str]] = {
         "created_at": "created_at INTEGER NOT NULL DEFAULT 0",
         "updated_at": "updated_at INTEGER NOT NULL DEFAULT 0",
     },
+    "keys": {
+        "id": "id TEXT",
+        "name": "name TEXT NOT NULL DEFAULT ''",
+        "base_url": "base_url TEXT NOT NULL DEFAULT ''",
+        "api_key": "api_key TEXT NOT NULL DEFAULT ''",
+        "model": "model TEXT NOT NULL DEFAULT ''",
+        "available_models": "available_models TEXT NOT NULL DEFAULT '[]'",
+        "is_active": "is_active INTEGER NOT NULL DEFAULT 0",
+        "enc": "enc INTEGER NOT NULL DEFAULT 0",
+        "created_at": "created_at INTEGER NOT NULL DEFAULT 0",
+        "updated_at": "updated_at INTEGER NOT NULL DEFAULT 0",
+        "auth_type": "auth_type TEXT NOT NULL DEFAULT 'bearer'",
+        "auth_header": "auth_header TEXT NOT NULL DEFAULT ''",
+        "response_path": "response_path TEXT NOT NULL DEFAULT ''",
+        "extra_headers": "extra_headers TEXT NOT NULL DEFAULT '{}'",
+        "only_free": "only_free INTEGER NOT NULL DEFAULT 0",
+    },
+    "app_kv": {
+        "key": "key TEXT",
+        "value_json": "value_json TEXT NOT NULL DEFAULT '{}'",
+        "updated_at": "updated_at INTEGER NOT NULL DEFAULT 0",
+    },
+    "push_subscriptions": {
+        "endpoint": "endpoint TEXT",
+        "user_id": "user_id TEXT",
+        "data_json": "data_json TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "created_at INTEGER NOT NULL DEFAULT 0",
+        "updated_at": "updated_at INTEGER NOT NULL DEFAULT 0",
+    },
+    "checkpoints": {
+        "id": "id TEXT",
+        "chat_id": "chat_id TEXT NOT NULL DEFAULT ''",
+        "step": "step INTEGER NOT NULL DEFAULT 0",
+        "label": "label TEXT NOT NULL DEFAULT ''",
+        "files_json": "files_json TEXT NOT NULL DEFAULT '[]'",
+        "created_at": "created_at INTEGER NOT NULL DEFAULT 0",
+    },
+    "agent_tool_ledger": {
+        "id": "id TEXT",
+        "chat_id": "chat_id TEXT",
+        "conversation_id": "conversation_id TEXT",
+        "user_id": "user_id TEXT",
+        "event": "event TEXT NOT NULL DEFAULT ''",
+        "tool_name": "tool_name TEXT",
+        "step": "step INTEGER",
+        "data_json": "data_json TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "created_at INTEGER NOT NULL DEFAULT 0",
+    },
 }
-
 
 def register_table(table: str, columns: Dict[str, str]) -> None:
     """Register/extend expected columns for a table (idempotent)."""
@@ -167,6 +209,15 @@ def _migration_operational_indexes(conn) -> None:
           data_json TEXT NOT NULL DEFAULT '{}',
           created_at INTEGER NOT NULL DEFAULT 0
         );
+        """
+    )
+    # Existing deployments may already have these lazily-created tables with an
+    # older shape. CREATE TABLE IF NOT EXISTS will not add columns, so heal them
+    # before creating indexes that reference created_at/updated_at.
+    for table in ("keys", "app_kv", "push_subscriptions", "checkpoints", "agent_tool_ledger"):
+        ensure_columns(conn, table)
+    conn.executescript(
+        """
         CREATE INDEX IF NOT EXISTS keys_active_idx ON keys(is_active, updated_at DESC);
         CREATE INDEX IF NOT EXISTS checkpoints_chat_step_idx ON checkpoints(chat_id, step DESC, created_at DESC);
         CREATE INDEX IF NOT EXISTS agent_tool_ledger_chat_idx ON agent_tool_ledger(chat_id, created_at DESC);

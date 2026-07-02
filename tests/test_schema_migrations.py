@@ -7,27 +7,25 @@ def _minimal_existing_db():
     c = sqlite3.connect(":memory:")
     c.executescript(
         """
+        -- Deliberately legacy/minimal shapes: migration 2 must add the
+        -- columns referenced by its indexes before creating those indexes.
         CREATE TABLE keys (
             id TEXT PRIMARY KEY,
-            is_active INTEGER NOT NULL DEFAULT 0,
-            updated_at INTEGER NOT NULL DEFAULT 0
+            is_active INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE checkpoints (
             id TEXT PRIMARY KEY,
             chat_id TEXT NOT NULL,
-            step INTEGER NOT NULL,
-            created_at INTEGER NOT NULL
+            step INTEGER NOT NULL
         );
         CREATE TABLE agent_tool_ledger (
             id TEXT PRIMARY KEY,
             chat_id TEXT,
-            conversation_id TEXT,
-            created_at INTEGER NOT NULL
+            conversation_id TEXT
         );
         CREATE TABLE push_subscriptions (
             endpoint TEXT PRIMARY KEY,
-            user_id TEXT,
-            updated_at INTEGER NOT NULL
+            user_id TEXT
         );
         """
     )
@@ -62,3 +60,7 @@ def test_operational_indexes_exist_after_migration():
     indexes = {r[1] for r in c.execute("PRAGMA index_list(agent_tool_ledger)").fetchall()}
     assert "agent_tool_ledger_chat_idx" in indexes
     assert "agent_tool_ledger_conversation_idx" in indexes
+    ledger_cols = {r[1] for r in c.execute("PRAGMA table_info(agent_tool_ledger)").fetchall()}
+    assert {"created_at", "event", "data_json"} <= ledger_cols
+    push_cols = {r[1] for r in c.execute("PRAGMA table_info(push_subscriptions)").fetchall()}
+    assert {"created_at", "updated_at", "data_json"} <= push_cols
