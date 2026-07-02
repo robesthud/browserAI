@@ -211,6 +211,29 @@ def _stream_lock_for(chat_id: str) -> asyncio.Lock:
         _chat_stream_locks[key] = lock
     return lock
 
+
+def _spawn_background(coro: Awaitable[Any], *, name: str) -> asyncio.Task:
+    """Create a background task and always log exceptions.
+
+    Audit hardening: raw asyncio.create_task() can hide failures until they show
+    up as noisy "Task exception was never retrieved" records, or not at all
+    in production logs. Centralize task creation so every fire-and-forget job is
+    named and observed.
+    """
+    task = asyncio.create_task(coro, name=name)
+
+    def _done(t: asyncio.Task) -> None:
+        try:
+            t.result()
+        except asyncio.CancelledError:
+            log.debug("background task cancelled: %s", name)
+        except Exception:
+            log.exception("background task failed: %s", name)
+
+    task.add_done_callback(_done)
+    return task
+
+
 app = FastAPI(title="BrowserAI-OpenHands Core Monolith", version="0.3.0")
 
 
@@ -594,7 +617,7 @@ async def activate_key(key_id: str, request: Request):
     _require_user(request)
     keys = await aset_active_key(key_id)
     # Push new provider into OpenHands settings so next chat uses it
-    asyncio.create_task(_sync_active_provider_to_openhands(request))
+    _spawn_background(_sync_active_provider_to_openhands(request), name="sync-active-provider")
     return {"keys": keys, "activeKeyId": key_id}
 
 
@@ -666,7 +689,7 @@ async def rotate_key(request: Request):
     await aset_active_key(key_id)
 
     # 3) Push to OpenHands so the next chat uses the new secret immediately.
-    asyncio.create_task(_sync_active_provider_to_openhands(request))
+    _spawn_background(_sync_active_provider_to_openhands(request), name="sync-active-provider")
 
     safe_keys = await alist_keys(include_secrets=False)
     return {
@@ -695,7 +718,7 @@ async def params_get():
 async def put_params(request: Request):
     body = await request.json()
     p = await aset_params(body or {})
-    asyncio.create_task(_sync_active_provider_to_openhands(request))
+    _spawn_background(_sync_active_provider_to_openhands(request), name="sync-active-provider")
     return {"ok": True, "params": p}
 
 
@@ -764,7 +787,13 @@ async def vault_setup(request: Request):
     user = _require_user(request)
     body = await request.json()
     try:
-        return vlt.setup(user["id"], body.get("passphrase") or "", int(body.get("autolockMinutes") or 30))
+        return vlt.setup(
+            user["id"],
+            body.get("passphrase") or "",
+            int(body.get("autolockMinutes") or 30),
+            confirm_overwrite=bool(body.get("confirmOverwrite") or body.get("confirm")),
+            current_passphrase=body.get("currentPassphrase") or "",
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
@@ -824,7 +853,12 @@ async def vault_restore(request: Request):
     user = _require_user(request)
     body = await request.json()
     try:
-        return vlt.restore(user["id"], body)
+        return vlt.restore(
+            user["id"],
+            body,
+            confirm_overwrite=bool(body.get("confirmOverwrite") or body.get("confirm")),
+            current_passphrase=body.get("currentPassphrase") or "",
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -3235,7 +3269,7 @@ async def workspace_chat_init(request: Request):
                                 )
                             except Exception as e:
                                 log.debug("workspace_chat_init: background start skipped: %s", e)
-                    asyncio.create_task(_bg_start())
+                    _spawn_background(_bg_start(), name="workspace-chat-bg-start")
         except Exception as e:
             log.warning("workspace_chat_init: failed to create OH conversation for chat_id=%s: %s", chat_id, e)
 

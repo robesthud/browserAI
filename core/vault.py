@@ -136,6 +136,21 @@ def _verifier(derived_key: bytes) -> bytes:
     return hmac.new(derived_key, VERIFIER_TAG, hashlib.sha256).digest()
 
 
+def _verify_passphrase(passphrase: str, row: Dict) -> Optional[bytes]:
+    if not passphrase or not row or not row.get("kdf_salt") or not row.get("verifier_hash"):
+        return None
+    key = _derive(passphrase, row["kdf_salt"])
+    if hmac.compare_digest(_verifier(key), row["verifier_hash"]):
+        return key
+    return None
+
+
+def _has_existing_access(user_id: str, row: Dict, current_passphrase: str = "") -> bool:
+    if _cached_key(user_id) is not None:
+        return True
+    return _verify_passphrase(current_passphrase, row) is not None
+
+
 def _cache_key(user_id: str, key: bytes, autolock_minutes: int) -> None:
     _cache[user_id] = CachedKey(user_id, key, time.time(), autolock_minutes)
 
@@ -194,11 +209,27 @@ def status(user_id: str) -> Dict:
     }
 
 
-def setup(user_id: str, passphrase: str, autolock_minutes: int = 30) -> Dict:
+def setup(
+    user_id: str,
+    passphrase: str,
+    autolock_minutes: int = 30,
+    *,
+    confirm_overwrite: bool = False,
+    current_passphrase: str = "",
+) -> Dict:
     if not _AVAILABLE:
         raise RuntimeError("vault_unavailable: cryptography module missing")
     if not passphrase or len(passphrase) < 6:
         raise ValueError("Passphrase too short (min 6 chars)")
+    existing = _row(user_id)
+    if existing and existing.get("enabled"):
+        # Re-running setup replaces the KDF salt/verifier and can make existing
+        # encrypted API keys undecryptable. Require an explicit destructive
+        # confirmation plus proof that the caller controls the current vault.
+        if not confirm_overwrite:
+            raise ValueError("vault_already_setup")
+        if not _has_existing_access(user_id, existing, current_passphrase):
+            raise ValueError("current_passphrase_required")
     salt = os.urandom(SALT_BYTES)
     key = _derive(passphrase, salt)
     _save_state(
@@ -236,7 +267,7 @@ def change(user_id: str, new_passphrase: str) -> Dict:
     # Caller must be unlocked already
     if _cached_key(user_id) is None:
         raise ValueError("vault_locked")
-    return setup(user_id, new_passphrase, _row(user_id)["autolock_minutes"])
+    return setup(user_id, new_passphrase, _row(user_id)["autolock_minutes"], confirm_overwrite=True)
 
 
 def disable(user_id: str) -> Dict:
@@ -274,15 +305,36 @@ def backup(user_id: str) -> Dict:
     }
 
 
-def restore(user_id: str, payload: Dict) -> Dict:
+def restore(
+    user_id: str,
+    payload: Dict,
+    *,
+    confirm_overwrite: bool = False,
+    current_passphrase: str = "",
+) -> Dict:
     if not payload or payload.get("version") != 1:
         raise ValueError("unsupported_backup")
+    existing = _row(user_id)
+    if existing and existing.get("enabled"):
+        # Restoring replaces the verifier/salt. Without this guard, any logged-in
+        # session could silently take over or brick the user's encrypted keys.
+        if not confirm_overwrite:
+            raise ValueError("vault_restore_overwrites_existing")
+        if not _has_existing_access(user_id, existing, current_passphrase):
+            raise ValueError("current_passphrase_required")
+    try:
+        salt = base64.b64decode(payload["kdfSalt"], validate=True)
+        verifier_hash = base64.b64decode(payload["verifierHash"], validate=True)
+    except Exception:
+        raise ValueError("invalid_backup")
+    if len(salt) != SALT_BYTES or len(verifier_hash) != 32:
+        raise ValueError("invalid_backup")
     _save_state(
         user_id,
         enabled=1,
         locked=1,
-        kdf_salt=base64.b64decode(payload["kdfSalt"]),
-        verifier_hash=base64.b64decode(payload["verifierHash"]),
+        kdf_salt=salt,
+        verifier_hash=verifier_hash,
         autolock_minutes=int(payload.get("autolockMinutes", 30)),
     )
     _cache.pop(user_id, None)
