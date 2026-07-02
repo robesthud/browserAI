@@ -157,3 +157,38 @@ class TestErrorCodes:
             # Quick check: no Cyrillic characters in the payload
             has_cyrillic = any('\u0400' <= c <= '\u04FF' for c in payload)
             assert not has_cyrillic, f"Cyrillic found in error payload for code '{code}'"
+
+
+# ── Disconnect propagation ─────────────────────────────────────────────────
+
+
+class _NeverCalledClient:
+    async def get(self, *args, **kwargs):  # pragma: no cover - should not run
+        raise AssertionError("client.get should not be called after disconnect")
+
+
+def test_poll_events_stops_before_io_when_client_disconnected():
+    """P0 regression: polling loop must notice disconnected clients before
+    issuing more OpenHands HTTP requests, otherwise orphan streams can hold
+    per-chat locks until the 15-minute watchdog."""
+    import asyncio
+    import pytest
+    from core.server import _poll_openhands_events
+
+    async def disconnected():
+        return True
+
+    async def run():
+        gen = _poll_openhands_events(
+            _NeverCalledClient(),
+            "cid",
+            chat_id="chat-disconnect",
+            user_id="u",
+            start_after_id=-1,
+            timeout_s=1,
+            disconnect_check=disconnected,
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await gen.__anext__()
+
+    asyncio.run(run())

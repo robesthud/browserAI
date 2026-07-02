@@ -23,6 +23,7 @@ log = logging.getLogger("browserai.providers")
 
 _MODELS_CACHE: Dict[str, Dict[str, Any]] = {}
 _MODELS_TTL = int(os.environ.get("BROWSERAI_MODELS_TTL", "3600"))
+_MODELS_CACHE_MAX = int(os.environ.get("BROWSERAI_MODELS_CACHE_MAX", "64"))
 
 
 def _is_private_base_url(base_url: str) -> bool:
@@ -53,6 +54,18 @@ def _is_private_base_url(base_url: str) -> bool:
         if str(ip) in ("169.254.169.254", "169.254.169.253", "fd00:ec2::254"):
             return True
     return False
+
+
+def _prune_models_cache(now: Optional[float] = None) -> None:
+    """Evict expired model-cache entries and cap total size."""
+    now = time.time() if now is None else now
+    expired = [k for k, v in _MODELS_CACHE.items() if (now - float(v.get("ts", 0))) >= _MODELS_TTL]
+    for k in expired:
+        _MODELS_CACHE.pop(k, None)
+    max_size = max(1, _MODELS_CACHE_MAX)
+    while len(_MODELS_CACHE) > max_size:
+        oldest = min(_MODELS_CACHE, key=lambda k: float(_MODELS_CACHE[k].get("ts", 0)))
+        _MODELS_CACHE.pop(oldest, None)
 
 
 # Hardcoded fallbacks for providers that don't expose /models or whose
@@ -134,8 +147,10 @@ async def fetch_models(base_url: str, provider: Dict[str, Any]) -> List[str]:
     if _is_private_base_url(bu):
         log.warning("blocked private/invalid provider model URL: %s", bu)
         return []
+    now = time.time()
+    _prune_models_cache(now)
     cache = _MODELS_CACHE.get(bu)
-    if cache and (time.time() - cache["ts"]) < _MODELS_TTL:
+    if cache and (now - cache["ts"]) < _MODELS_TTL:
         return cache["models"]
 
     headers = _build_headers(provider)
@@ -183,6 +198,7 @@ async def fetch_models(base_url: str, provider: Dict[str, Any]) -> List[str]:
             uniq.append(m); seen.add(m)
 
     _MODELS_CACHE[bu] = {"ts": time.time(), "models": uniq}
+    _prune_models_cache()
     return uniq
 
 

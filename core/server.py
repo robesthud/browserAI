@@ -40,7 +40,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 import socket
 
@@ -1900,6 +1900,7 @@ async def _poll_openhands_events(
     full_answer_ref: Optional[Dict[str, str]] = None,
     ask_user_sent_ref: Optional[Dict[str, bool]] = None,
     timeout_s: Optional[int] = None,
+    disconnect_check: Optional[Callable[[], Awaitable[bool]]] = None,
 ) -> AsyncIterator[Tuple[bytes, int, bool, set]]:
     seen_ids = set(initial_seen_ids or set())
     next_start_id = start_after_id + 1 if start_after_id >= 0 else 0
@@ -1911,7 +1912,13 @@ async def _poll_openhands_events(
     timeout_s = timeout_s or EVENT_POLL_TIMEOUT_S
     log.info("agent.poll.start cid=%s chat_id=%s start_after=%s seen=%s timeout=%s", cid, chat_id, start_after_id, len(seen_ids), timeout_s)
 
+    async def _raise_if_disconnected() -> None:
+        if disconnect_check and await disconnect_check():
+            log.info("agent.poll.client_disconnected cid=%s chat_id=%s", cid, chat_id)
+            raise asyncio.CancelledError()
+
     while not done and (time.time() - t0) < timeout_s:
+        await _raise_if_disconnected()
         try:
             r = await client.get(f"{OPENHANDS_SERVER}/api/conversations/{cid}/events?limit=100", timeout=20.0)
             if r.status_code == 404:
@@ -1920,6 +1927,7 @@ async def _poll_openhands_events(
                     drop_mapping(chat_id)
                 return
             if r.status_code >= 400:
+                await _raise_if_disconnected()
                 await asyncio.sleep(EVENT_POLL_INTERVAL)
                 continue
             body = r.json()
@@ -1927,6 +1935,7 @@ async def _poll_openhands_events(
             new_events = [e for e in events if e.get("id") not in seen_ids]
             log.info("agent.poll.tick cid=%s total=%s new=%s", cid, len(events), len(new_events))
             for e in new_events:
+                await _raise_if_disconnected()
                 seen_ids.add(e.get("id"))
                 last_event_ts = time.time()
                 eid = int(e.get("id", -1))
@@ -1984,6 +1993,7 @@ async def _poll_openhands_events(
             log.warning("agent.poll.timeout cid=%s step=%s seen=%s", cid, step, len(seen_ids))
             yield _sse("error", {"code": "agent_timeout", "message": "Agent timed out (no events for 3 min)."}).encode("utf-8"), step, False, seen_ids
             break
+        await _raise_if_disconnected()
         await asyncio.sleep(EVENT_POLL_INTERVAL)
     log.info("agent.poll.end cid=%s done=%s step=%s seen=%s answer_chars=%s", cid, done, step, len(seen_ids), len(full_answer_ref.get("text", "")))
     yield b"", step, done, seen_ids
@@ -2001,6 +2011,7 @@ async def _stream_chat_ws(
     full_answer_ref: Dict[str, str],
     ask_user_sent_ref: Dict[str, bool],
     seen_ids: Optional[set] = None,
+    disconnect_check: Optional[Callable[[], Awaitable[bool]]] = None,
 ) -> AsyncIterator[Tuple[bytes, int, bool, set]]:
     """Phase 2.1: stream OpenHands Socket.IO events, fallback handled by caller."""
     if seen_ids is None:
@@ -2011,7 +2022,13 @@ async def _stream_chat_ws(
     t0 = time.time()
     last_event_ts = time.time()
     log.info("agent.ws.start cid=%s chat_id=%s last_seen=%s was_created=%s", cid, chat_id, last_seen_event_id, was_created)
+    async def _raise_if_disconnected() -> None:
+        if disconnect_check and await disconnect_check():
+            log.info("agent.ws.client_disconnected cid=%s chat_id=%s", cid, chat_id)
+            raise asyncio.CancelledError()
+
     async for e in stream_openhands_events_ws(OPENHANDS_SERVER, cid, last_seen_event_id):
+        await _raise_if_disconnected()
         eid_raw = e.get("id")
         if eid_raw in seen_ids:
             continue
@@ -2050,6 +2067,7 @@ async def _stream_chat(
     provider: Dict[str, Any],
     user_id: Optional[str] = None,
     turn_id: str = "",
+    disconnect_check: Optional[Callable[[], Awaitable[bool]]] = None,
 ) -> AsyncIterator[bytes]:
     step = 0
     full_answer_ref = {"text": ""}
@@ -2135,6 +2153,7 @@ async def _stream_chat(
                 full_answer_ref=full_answer_ref,
                 ask_user_sent_ref=ask_user_sent_ref,
                 seen_ids=ws_seen_ids,
+                disconnect_check=disconnect_check,
             ):
                 # Snapshot the latest dedup state for potential WS→poll fallback.
                 ws_fallback_seen_ids = set(seen_ids)
@@ -2161,6 +2180,7 @@ async def _stream_chat(
                 step=step,
                 full_answer_ref=full_answer_ref,
                 ask_user_sent_ref=ask_user_sent_ref,
+                disconnect_check=disconnect_check,
             ):
                 if chunk:
                     yield chunk
@@ -2177,6 +2197,7 @@ async def _stream_chat(
             step=step,
             full_answer_ref=full_answer_ref,
             ask_user_sent_ref=ask_user_sent_ref,
+            disconnect_check=disconnect_check,
         ):
             if chunk:
                 yield chunk
@@ -2255,6 +2276,7 @@ async def _locked_stream_chat(
     provider: Dict[str, Any],
     user_id: Optional[str] = None,
     turn_id: str = "",
+    disconnect_check: Optional[Callable[[], Awaitable[bool]]] = None,
 ) -> AsyncIterator[bytes]:
     """Phase 2.1: prevent concurrent streams for the same BrowserAI chat."""
     lock: Optional[asyncio.Lock] = None
@@ -2290,7 +2312,7 @@ async def _locked_stream_chat(
             yield _sse("done", {"reason": "busy", "chatId": chat_id}).encode("utf-8")
             return
     try:
-        async for chunk in _stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id, turn_id=turn_id):
+        async for chunk in _stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id, turn_id=turn_id, disconnect_check=disconnect_check):
             yield chunk
     except asyncio.CancelledError:
         if chat_id:
@@ -2322,8 +2344,11 @@ async def _client_aware_locked_stream(
     turn_id: str = "",
 ) -> AsyncIterator[bytes]:
     try:
-        async for chunk in _locked_stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id, turn_id=turn_id):
-            if await request.is_disconnected():
+        async def _is_disconnected() -> bool:
+            return await request.is_disconnected()
+
+        async for chunk in _locked_stream_chat(chat_id, model, prompt, extra_system, provider, user_id=user_id, turn_id=turn_id, disconnect_check=_is_disconnected):
+            if await _is_disconnected():
                 raise asyncio.CancelledError()
             yield chunk
     except asyncio.CancelledError:
@@ -2548,7 +2573,11 @@ async def agent_answer(request: Request):
     return {"ok": True, "question": saved, "resumed": bool(cid)}
 
 
-async def _resume_stream(chat_id: str, user_id: Optional[str] = None) -> AsyncIterator[bytes]:
+async def _resume_stream(
+    chat_id: str,
+    user_id: Optional[str] = None,
+    disconnect_check: Optional[Callable[[], Awaitable[bool]]] = None,
+) -> AsyncIterator[bytes]:
     """Re-attach to an existing OpenHands conversation and stream its remaining
     events WITHOUT posting a new message (frontend-resume, Sonnet #3 follow-up).
 
@@ -2594,12 +2623,20 @@ async def _resume_stream(chat_id: str, user_id: Optional[str] = None) -> AsyncIt
                 step=step,
                 full_answer_ref=full_answer_ref,
                 ask_user_sent_ref=ask_user_sent_ref,
+                disconnect_check=disconnect_check,
             ):
                 final_seen_ids = seen_ids
                 if chunk:
                     yield chunk
                 if done:
                     break
+        except asyncio.CancelledError:
+            if chat_id:
+                try:
+                    set_run_status(chat_id, "stopped")
+                except Exception:
+                    pass
+            raise
         except Exception as e:
             log.warning("resume stream error chat_id=%s: %s", chat_id, e)
 
@@ -2637,7 +2674,7 @@ async def agent_resume(request: Request):
             yield _sse("done", {"reason": "no-chat"}).encode("utf-8")
         return StreamingResponse(_err(), media_type="text/event-stream")
     return StreamingResponse(
-        _resume_stream(chat_id, user_id=user_id),
+        _resume_stream(chat_id, user_id=user_id, disconnect_check=request.is_disconnected),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
