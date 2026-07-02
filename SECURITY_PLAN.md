@@ -82,6 +82,17 @@
 
 ---
 
+## Применено автономно (безопасно, 2026-07-02)
+- **S3 ✅** — `chmod 600 /opt/browserai/.env` (был 644 с секретами).
+- **S8 ✅ (новое)** — nginx security headers + `server_tokens off`:
+  `X-Frame-Options`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`,
+  `Permissions-Policy`, `X-XSS-Protection`. Проверено `nginx -t` + reload
+  (без даунтайма), заголовки в ответе, health зелёный. Бэкап конфига сохранён.
+- **S1 переоценён:** `daemon.json` содержит `"iptables": false`, а openhands
+  достаёт runtime через gateway-IP (172.17.0.1), НЕ через loopback. Значит
+  `ip: 127.0.0.1` в daemon.json СЛОМАЕТ агента так же, как DROP-правило.
+  → S1 требует ручного окна с владельцем (см. ниже), автономно не делаю.
+
 ## Что делаем прямо сейчас (безопасно, без риска доступа)
 1. **S3** — `chmod 600 .env` (нулевой риск, мгновенно).
 2. **S1 (вариант B)** — DROP внешних ephemeral-портов в `DOCKER-USER`
