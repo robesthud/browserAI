@@ -3079,11 +3079,61 @@ def _read_file_payload(path: Path, rel: str) -> Dict[str, Any]:
     return {**base, "kind": "binary", "text": None, "content": "", "truncated": truncated}
 
 
+async def _aread_file_payload(path: Path, rel: str) -> Dict[str, Any]:
+    return await asyncio.to_thread(_read_file_payload, path, rel)
+
+
 def _write_bytes(rel: str, data: bytes, base: Optional[Path] = None) -> Dict[str, Any]:
     path = _safe_abs(rel, allow_empty=False, base=base)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     return {"ok": True, "path": _safe_rel(rel, allow_empty=False), "size": len(data)}
+
+
+async def _awrite_bytes(rel: str, data: bytes, base: Optional[Path] = None) -> Dict[str, Any]:
+    return await asyncio.to_thread(_write_bytes, rel, data, base)
+
+
+def _ensure_folder(rel: str, base: Optional[Path] = None) -> Dict[str, Any]:
+    _safe_abs(rel, allow_empty=False, base=base).mkdir(parents=True, exist_ok=True)
+    return {"ok": True, "path": rel}
+
+
+async def _aensure_folder(rel: str, base: Optional[Path] = None) -> Dict[str, Any]:
+    return await asyncio.to_thread(_ensure_folder, rel, base)
+
+
+def _rename_workspace_item(src: Path, base: Path, new_name: str) -> Dict[str, Any]:
+    dst = src.with_name(new_name)
+    src.rename(dst)
+    return {"ok": True, "path": str(dst.relative_to(base)).replace("\\", "/")}
+
+
+async def _arename_workspace_item(src: Path, base: Path, new_name: str) -> Dict[str, Any]:
+    return await asyncio.to_thread(_rename_workspace_item, src, base, new_name)
+
+
+def _move_workspace_item(src: Path, base: Path, target_dir: Path) -> Dict[str, Any]:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dst = target_dir / src.name
+    shutil.move(str(src), str(dst))
+    return {"ok": True, "path": str(dst.relative_to(base)).replace("\\", "/")}
+
+
+async def _amove_workspace_item(src: Path, base: Path, target_dir: Path) -> Dict[str, Any]:
+    return await asyncio.to_thread(_move_workspace_item, src, base, target_dir)
+
+
+def _delete_workspace_item(target: Path) -> Dict[str, Any]:
+    if target.is_dir():
+        shutil.rmtree(target)
+    elif target.exists():
+        target.unlink()
+    return {"ok": True}
+
+
+async def _adelete_workspace_item(target: Path) -> Dict[str, Any]:
+    return await asyncio.to_thread(_delete_workspace_item, target)
 
 
 def _decode_upload_content(content: Any) -> bytes:
@@ -3330,24 +3380,14 @@ async def workspace_chat_delete(request: Request):
     return {"ok": True, "chatId": chat_id, "conversationId": cid, "deletedOpenHands": deleted_oh, "workspacePreserved": True}
 
 
-@app.post("/api/workspace/cleanup")
-async def workspace_cleanup(request: Request):
-    """Remove orphan workspace directories that have no DB mapping.
-    Only deletes dirs under /workspace/chats/ with no corresponding chat_conversations row.
-    """
+def _workspace_cleanup_dirs(chats_root: Path, mapped: set) -> Dict[str, Any]:
     import shutil as _shutil
-    chats_root = _WORKSPACE_ROOT / "chats"
-    if not chats_root.exists():
-        return {"ok": True, "removed": [], "kept": []}
-    # Get all mapped chat_ids from DB without blocking the event loop.
-    mapped = await _amapped_chat_ids()
     removed = []
     kept = []
     for d in sorted(chats_root.iterdir()):
         if not d.is_dir():
             continue
         name = d.name
-        # Keep dirs that are mapped in DB or are the _sandbox
         if name in mapped or name == "_sandbox":
             kept.append(name)
             continue
@@ -3359,6 +3399,24 @@ async def workspace_cleanup(request: Request):
             log.warning("workspace cleanup: failed to remove %s: %s", name, e)
             kept.append(name)
     return {"ok": True, "removed": removed, "removedCount": len(removed), "keptCount": len(kept)}
+
+
+async def _aworkspace_cleanup_dirs(chats_root: Path, mapped: set) -> Dict[str, Any]:
+    return await asyncio.to_thread(_workspace_cleanup_dirs, chats_root, mapped)
+
+
+@app.post("/api/workspace/cleanup")
+async def workspace_cleanup(request: Request):
+    """Remove orphan workspace directories that have no DB mapping.
+    Only deletes dirs under /workspace/chats/ with no corresponding chat_conversations row.
+    """
+    import shutil as _shutil
+    chats_root = _WORKSPACE_ROOT / "chats"
+    if not chats_root.exists():
+        return {"ok": True, "removed": [], "kept": []}
+    # Get all mapped chat_ids from DB without blocking the event loop.
+    mapped = await _amapped_chat_ids()
+    return await _aworkspace_cleanup_dirs(chats_root, mapped)
 
 
 def _workspace_snapshot(root: Path) -> Tuple[str, Dict[str, str]]:
@@ -3395,6 +3453,51 @@ def _workspace_snapshot(root: Path) -> Tuple[str, Dict[str, str]]:
     return f"{count}:{total}:{newest}", files
 
 
+def _workspace_tree_payload(root_path: Path, rel: str, show_hidden: bool) -> Tuple[str, Dict[str, str], Dict[str, Any], List[Dict[str, Any]]]:
+    if not root_path.exists():
+        root_path.mkdir(parents=True, exist_ok=True)
+    revision, file_revisions = _workspace_snapshot(root_path)
+    counter = {"n": 0}
+    tree = _node_for_path(root_path, rel, show_hidden, counter) or {
+        "name": "workspace", "path": "", "type": "dir", "children": []
+    }
+    return revision, file_revisions, tree, tree.get("children", [])
+
+
+async def _aworkspace_tree_payload(root_path: Path, rel: str, show_hidden: bool) -> Tuple[str, Dict[str, str], Dict[str, Any], List[Dict[str, Any]]]:
+    return await asyncio.to_thread(_workspace_tree_payload, root_path, rel, show_hidden)
+
+
+def _workspace_search_sync(base: Path, query: str, show_hidden: bool) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    if not query:
+        return results
+    for path in base.rglob("*"):
+        if len(results) >= 200:
+            break
+        rel = str(path.relative_to(base)).replace("\\", "/")
+        if not show_hidden and any(part.startswith(".") for part in rel.split("/")):
+            continue
+        if path.is_file() and (path.suffix.lower() in _TEXT_EXTS or query in path.name.lower()):
+            try:
+                text = path.read_text(errors="replace")[:200_000]
+            except Exception:
+                text = ""
+            idx = text.lower().find(query)
+            if query in path.name.lower() or idx >= 0:
+                snippet = text[max(0, idx - 80): idx + 180] if idx >= 0 else ""
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    size = 0
+                results.append({"path": rel, "name": path.name, "snippet": snippet, "size": size})
+    return results
+
+
+async def _aworkspace_search(base: Path, query: str, show_hidden: bool) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(_workspace_search_sync, base, query, show_hidden)
+
+
 @app.get("/api/workspace")
 @app.get("/api/workspace/tree")
 async def workspace_tree(request: Request, chatId: Optional[str] = None, path: Optional[str] = None, hidden: Optional[str] = None, ifRevision: Optional[str] = None):
@@ -3402,19 +3505,14 @@ async def workspace_tree(request: Request, chatId: Optional[str] = None, path: O
     base = _workspace_base_for_chat(chat_id, create=True)
     show_hidden = str(hidden or request.query_params.get("hidden") or "0").lower() in ("1", "true", "yes")
     root_path = _safe_abs(path or "", allow_empty=True, base=base)
-    if not root_path.exists():
-        root_path.mkdir(parents=True, exist_ok=True)
-    revision, file_revisions = _workspace_snapshot(root_path)
+    rel = _safe_rel(path or "", allow_empty=True)
+    revision, file_revisions, tree, items = await _aworkspace_tree_payload(root_path, rel, show_hidden)
     requested_revision = ifRevision or request.query_params.get("ifRevision") or request.headers.get("X-Workspace-Revision")
     root_label = f"/workspace/{_chat_workspace_rel(chat_id)}" if chat_id else "/workspace"
     if requested_revision and requested_revision == revision:
         return {"ok": True, "unchanged": True, "revision": revision, "fileRevisions": file_revisions, "chatId": chat_id, "path": path or "", "root": root_label}
-    counter = {"n": 0}
-    tree = _node_for_path(root_path, _safe_rel(path or "", allow_empty=True), show_hidden, counter) or {
-        "name": "workspace", "path": "", "type": "dir", "children": []
-    }
     # BrowserAI's current Workspace.jsx expects {tree}; older adapters used {items}.
-    return {"ok": True, "tree": tree, "items": tree.get("children", []), "chatId": chat_id, "path": path or "", "root": root_label, "revision": revision, "fileRevisions": file_revisions}
+    return {"ok": True, "tree": tree, "items": items, "chatId": chat_id, "path": path or "", "root": root_label, "revision": revision, "fileRevisions": file_revisions}
 
 
 @app.get("/api/workspace/metadata")
@@ -3430,7 +3528,7 @@ async def workspace_file(request: Request, path: str, chatId: Optional[str] = No
     chat_id = _request_chat_id(request, chatId)
     base = _workspace_base_for_chat(chat_id, create=True)
     rel = _safe_rel(path, allow_empty=False)
-    return _read_file_payload(_safe_abs(rel, allow_empty=False, base=base), rel)
+    return await _aread_file_payload(_safe_abs(rel, allow_empty=False, base=base), rel)
 
 
 @app.post("/api/workspace/file")
@@ -3442,7 +3540,7 @@ async def workspace_create_file(request: Request):
     name = _safe_rel(body.get("name") or body.get("path"), allow_empty=False)
     # If name already contains a directory, honour it. Otherwise place under parent.
     rel = name if "/" in name or not parent else f"{parent}/{name}"
-    return _write_bytes(rel, str(body.get("content") or "").encode("utf-8"), base=base)
+    return await _awrite_bytes(rel, str(body.get("content") or "").encode("utf-8"), base=base)
 
 
 @app.put("/api/workspace/file")
@@ -3451,7 +3549,7 @@ async def workspace_save_file(request: Request):
     chat_id = _request_chat_id(request, body.get("chatId"))
     base = _workspace_base_for_chat(chat_id, create=True)
     rel = _safe_rel(body.get("path"), allow_empty=False)
-    return _write_bytes(rel, str(body.get("content") or "").encode("utf-8"), base=base)
+    return await _awrite_bytes(rel, str(body.get("content") or "").encode("utf-8"), base=base)
 
 
 @app.post("/api/workspace/folder")
@@ -3462,8 +3560,7 @@ async def workspace_create_folder(request: Request):
     parent = _safe_rel(body.get("parentPath") or "", allow_empty=True)
     name = _safe_rel(body.get("name") or body.get("path"), allow_empty=False)
     rel = name if "/" in name or not parent else f"{parent}/{name}"
-    _safe_abs(rel, allow_empty=False, base=base).mkdir(parents=True, exist_ok=True)
-    return {"ok": True, "path": rel}
+    return await _aensure_folder(rel, base=base)
 
 
 @app.post("/api/workspace/upload")
@@ -3481,7 +3578,7 @@ async def workspace_upload(request: Request):
         rel_name = _safe_rel(raw_path, allow_empty=False)
         rel = rel_name if not parent else f"{parent}/{rel_name}"
         data = _decode_upload_content(f.get("content"))
-        saved.append(_write_bytes(rel, data, base=base))
+        saved.append(await _awrite_bytes(rel, data, base=base))
     return {"ok": True, "saved": saved, "count": len(saved)}
 
 
@@ -3509,9 +3606,7 @@ async def workspace_rename(request: Request):
     new_name = _safe_rel(body.get("newName"), allow_empty=False)
     if "/" in new_name:
         raise HTTPException(status_code=400, detail="newName_must_be_name_only")
-    dst = src.with_name(new_name)
-    src.rename(dst)
-    return {"ok": True, "path": str(dst.relative_to(base)).replace("\\", "/")}
+    return await _arename_workspace_item(src, base, new_name)
 
 
 @app.post("/api/workspace/move")
@@ -3521,10 +3616,7 @@ async def workspace_move(request: Request):
     base = _workspace_base_for_chat(chat_id, create=True)
     src = _safe_abs(body.get("sourcePath"), allow_empty=False, base=base)
     target_dir = _safe_abs(body.get("targetDirPath") or "", allow_empty=True, base=base)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    dst = target_dir / src.name
-    shutil.move(str(src), str(dst))
-    return {"ok": True, "path": str(dst.relative_to(base)).replace("\\", "/")}
+    return await _amove_workspace_item(src, base, target_dir)
 
 
 @app.delete("/api/workspace/item")
@@ -3533,11 +3625,7 @@ async def workspace_delete_item(request: Request):
     chat_id = _request_chat_id(request, body.get("chatId"))
     base = _workspace_base_for_chat(chat_id, create=True)
     target = _safe_abs(body.get("path"), allow_empty=False, base=base)
-    if target.is_dir():
-        shutil.rmtree(target)
-    elif target.exists():
-        target.unlink()
-    return {"ok": True}
+    return await _adelete_workspace_item(target)
 
 
 @app.get("/api/workspace/search")
@@ -3546,24 +3634,7 @@ async def workspace_search(request: Request, q: str = "", hidden: Optional[str] 
     base = _workspace_base_for_chat(chat_id, create=True)
     query = str(q or "").lower()
     show_hidden = str(hidden or "0").lower() in ("1", "true", "yes")
-    results: List[Dict[str, Any]] = []
-    if not query:
-        return {"ok": True, "results": []}
-    for path in base.rglob("*"):
-        if len(results) >= 200:
-            break
-        rel = str(path.relative_to(base)).replace("\\", "/")
-        if not show_hidden and any(part.startswith(".") for part in rel.split("/")):
-            continue
-        if path.is_file() and (path.suffix.lower() in _TEXT_EXTS or query in path.name.lower()):
-            try:
-                text = path.read_text(errors="replace")[:200_000]
-            except Exception:
-                text = ""
-            idx = text.lower().find(query)
-            if query in path.name.lower() or idx >= 0:
-                snippet = text[max(0, idx - 80): idx + 180] if idx >= 0 else ""
-                results.append({"path": rel, "name": path.name, "snippet": snippet, "size": path.stat().st_size})
+    results = await _aworkspace_search(base, query, show_hidden)
     return {"ok": True, "results": results}
 
 

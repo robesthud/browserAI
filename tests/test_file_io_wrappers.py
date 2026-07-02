@@ -57,3 +57,30 @@ def test_mcp_async_wrappers_roundtrip(tmp_path, monkeypatch):
         assert (await server._amcp_load())["servers"] == {}
 
     asyncio.run(run())
+
+
+def test_workspace_crud_async_wrappers(tmp_path):
+    async def run():
+        written = await server._awrite_bytes("dir/file.txt", b"hello world", tmp_path)
+        assert written["path"] == "dir/file.txt"
+
+        payload = await server._aread_file_payload(tmp_path / "dir" / "file.txt", "dir/file.txt")
+        assert payload["kind"] == "text"
+        assert payload["text"] == "hello world"
+
+        folder = await server._aensure_folder("other", tmp_path)
+        assert folder["ok"] is True
+        moved = await server._amove_workspace_item(tmp_path / "dir" / "file.txt", tmp_path, tmp_path / "other")
+        assert moved["path"] == "other/file.txt"
+
+        renamed = await server._arename_workspace_item(tmp_path / "other" / "file.txt", tmp_path, "renamed.txt")
+        assert renamed["path"] == "other/renamed.txt"
+
+        results = await server._aworkspace_search(tmp_path, "hello", False)
+        assert results and results[0]["path"] == "other/renamed.txt"
+
+        deleted = await server._adelete_workspace_item(tmp_path / "other" / "renamed.txt")
+        assert deleted["ok"] is True
+        assert not (tmp_path / "other" / "renamed.txt").exists()
+
+    asyncio.run(run())
